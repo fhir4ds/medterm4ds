@@ -1,0 +1,29 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.venv/
+venv/
+
+# Data
+*.duckdb
+data/
+benchmark_*.json
+parity_*.json
+parity_*.md
+acceptance_*.json
+acceptance_outputs/
+
+# Environment
+.env
+
+# OS / IDE
+.DS_Store
+.idea/
+.vscode/
+*.swp
