@@ -150,6 +150,13 @@ def test_mcp_runtime_discovery_tools(tmp_path):
             sources=["ICD10CM", "MEDLINEPLUS"],
             tty_filters=["MH"],
         )["results"]
+        diagnosis_rows = runtime.diagnosis_codes(condition="diabetes", limit=5)["results"]
+        xref_rows = runtime.cross_reference(
+            code="E11.9",
+            from_source="ICD10CM",
+            to_sources=["SNOMED"],
+        )["results"]
+        evidence = runtime.fda_label_by_rxcui(rxcui="12345")
     finally:
         runtime.close()
 
@@ -165,6 +172,9 @@ def test_mcp_runtime_discovery_tools(tmp_path):
     assert [(row["source"], row["code"], row["match_type"]) for row in search_rows] == [
         ("MEDLINEPLUS", "D_DIAB", "exact")
     ]
+    assert {row["source"] for row in diagnosis_rows} == {"ICD10CM", "SNOMEDCT_US"}
+    assert xref_rows[0]["target_source"] == "SNOMEDCT_US"
+    assert evidence["status"] == "not_available"
 
 
 def test_mcp_runtime_map_codes_tool(tmp_path):
@@ -198,13 +208,30 @@ def test_mcp_server_registers_expected_tools(tmp_path):
     assert {
         "health",
         "code_ttys",
+        "cross_reference",
+        "diagnosis_codes",
+        "discover",
+        "drugs_by_class",
+        "drugs_for_indication",
+        "fda_label_by_rxcui",
+        "guideline_fulltext",
+        "guideline_recommendations",
+        "guideline_search",
+        "guidelines_for_code",
+        "hcpcs_drugs",
+        "indication_search",
+        "lab_codes",
+        "lab_value_codes",
         "lookup_code",
         "lookup_codes",
         "map_codes",
+        "procedure_codes",
         "sample_codes",
         "search_names",
+        "search_drug",
         "source_stats",
         "sources",
+        "vaccine_codes",
         "code_relations",
         "get_ancestors",
         "get_children",

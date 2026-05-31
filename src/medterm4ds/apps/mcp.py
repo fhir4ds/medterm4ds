@@ -11,6 +11,8 @@ from typing import Any
 
 from medterm4ds.core.config import MemoryProfile, local_lite_config
 from medterm4ds.core.models import CodeRef
+from medterm4ds.domains import evidence as evidence_domain
+from medterm4ds.domains import terminology as terminology_domain
 from medterm4ds.engines.duckdb import LocalLiteEngine
 from medterm4ds.services.conceptmap import get_concept_map
 from medterm4ds.services.discovery import (
@@ -188,6 +190,100 @@ class McpRuntime:
             limit=limit,
         )
         return {"results": [result.to_dict() for result in results]}
+
+    def discover(
+        self,
+        *,
+        source_terminology: str,
+        code: str | None = None,
+        depth: int = 1,
+        include_ancestors: bool = False,
+        limit: int = 20,
+    ) -> dict[str, Any]:
+        return terminology_domain.discover(
+            source_terminology,
+            engine=self._engine(),
+            code=code,
+            depth=depth,
+            include_ancestors=include_ancestors,
+            limit=limit,
+        )
+
+    def cross_reference(
+        self,
+        *,
+        code: str,
+        from_source: str,
+        to_sources: Sequence[str] | None = None,
+        mode: str = "exact",
+        max_depth: int = 5,
+        max_results_per_code: int = 50,
+    ) -> dict[str, Any]:
+        return terminology_domain.cross_reference(
+            code,
+            from_source,
+            engine=self._engine(),
+            to_sources=to_sources,
+            mode=mode,
+            max_depth=max_depth,
+            max_results_per_code=max_results_per_code,
+        )
+
+    def diagnosis_codes(self, *, condition: str, limit: int = 20) -> dict[str, Any]:
+        return terminology_domain.diagnosis_codes(condition, engine=self._engine(), limit=limit)
+
+    def lab_codes(self, *, lab_test: str, limit: int = 20) -> dict[str, Any]:
+        return terminology_domain.lab_codes(lab_test, engine=self._engine(), limit=limit)
+
+    def lab_value_codes(self, *, clinical_value: str, limit: int = 20) -> dict[str, Any]:
+        return terminology_domain.lab_value_codes(clinical_value, engine=self._engine(), limit=limit)
+
+    def procedure_codes(self, *, procedure: str, limit: int = 20) -> dict[str, Any]:
+        return terminology_domain.procedure_codes(procedure, engine=self._engine(), limit=limit)
+
+    def hcpcs_drugs(self, *, drug_name: str, limit: int = 20) -> dict[str, Any]:
+        return terminology_domain.hcpcs_drugs(drug_name, engine=self._engine(), limit=limit)
+
+    def vaccine_codes(self, *, vaccine: str, limit: int = 20) -> dict[str, Any]:
+        return terminology_domain.vaccine_codes(vaccine, engine=self._engine(), limit=limit)
+
+    def search_drug(
+        self,
+        *,
+        drug_name: str,
+        limit: int = 20,
+        tty_filters: Sequence[str] | None = None,
+    ) -> dict[str, Any]:
+        return terminology_domain.search_drug(
+            drug_name,
+            engine=self._engine(),
+            limit=limit,
+            tty_filters=tty_filters,
+        )
+
+    def drugs_by_class(self, *, class_id: str, limit: int = 20) -> dict[str, Any]:
+        return terminology_domain.drugs_by_class(class_id, engine=self._engine(), limit=limit)
+
+    def drugs_for_indication(self, *, condition: str, limit: int = 20) -> dict[str, Any]:
+        return terminology_domain.drugs_for_indication(condition, engine=self._engine(), limit=limit)
+
+    def indication_search(self, *, indication: str, limit: int = 20) -> dict[str, Any]:
+        return evidence_domain.indication_search(indication, limit=limit)
+
+    def fda_label_by_rxcui(self, *, rxcui: str) -> dict[str, Any]:
+        return evidence_domain.fda_label_by_rxcui(rxcui)
+
+    def guideline_search(self, *, query: str, limit: int = 20) -> dict[str, Any]:
+        return evidence_domain.guideline_search(query, limit=limit)
+
+    def guideline_recommendations(self, *, topic: str, limit: int = 20) -> dict[str, Any]:
+        return evidence_domain.guideline_recommendations(topic, limit=limit)
+
+    def guideline_fulltext(self, *, guideline_id: str) -> dict[str, Any]:
+        return evidence_domain.guideline_fulltext(guideline_id)
+
+    def guidelines_for_code(self, *, code: str, source: str, limit: int = 20) -> dict[str, Any]:
+        return evidence_domain.guidelines_for_code(code, source, limit=limit)
 
     def code_relations(
         self,
@@ -412,6 +508,125 @@ def create_mcp_server(
             tty_filters=tty_filters,
             limit=limit,
         )
+
+    @mcp.tool()
+    async def discover(
+        source_terminology: str,
+        code: str | None = None,
+        depth: int = 1,
+        include_ancestors: bool = False,
+        limit: int = 20,
+    ) -> dict[str, Any]:
+        """Browse a source or a code's local hierarchy."""
+        return server_runtime.discover(
+            source_terminology=source_terminology,
+            code=code,
+            depth=depth,
+            include_ancestors=include_ancestors,
+            limit=limit,
+        )
+
+    @mcp.tool()
+    async def cross_reference(
+        code: str,
+        from_source: str,
+        to_sources: list[str] | None = None,
+        mode: str = "exact",
+        max_depth: int = 5,
+        max_results_per_code: int = 50,
+    ) -> dict[str, Any]:
+        """Map one code to target terminology sources."""
+        return server_runtime.cross_reference(
+            code=code,
+            from_source=from_source,
+            to_sources=to_sources,
+            mode=mode,
+            max_depth=max_depth,
+            max_results_per_code=max_results_per_code,
+        )
+
+    @mcp.tool()
+    async def diagnosis_codes(condition: str, limit: int = 20) -> dict[str, Any]:
+        """Search diagnosis-oriented ICD-10-CM and SNOMED CT codes."""
+        return server_runtime.diagnosis_codes(condition=condition, limit=limit)
+
+    @mcp.tool()
+    async def lab_codes(lab_test: str, limit: int = 20) -> dict[str, Any]:
+        """Search lab test terminology sources."""
+        return server_runtime.lab_codes(lab_test=lab_test, limit=limit)
+
+    @mcp.tool()
+    async def lab_value_codes(clinical_value: str, limit: int = 20) -> dict[str, Any]:
+        """Search lab value or clinical finding terminology sources."""
+        return server_runtime.lab_value_codes(clinical_value=clinical_value, limit=limit)
+
+    @mcp.tool()
+    async def procedure_codes(procedure: str, limit: int = 20) -> dict[str, Any]:
+        """Search procedure terminology sources."""
+        return server_runtime.procedure_codes(procedure=procedure, limit=limit)
+
+    @mcp.tool()
+    async def hcpcs_drugs(drug_name: str, limit: int = 20) -> dict[str, Any]:
+        """Search HCPCS drug/device codes."""
+        return server_runtime.hcpcs_drugs(drug_name=drug_name, limit=limit)
+
+    @mcp.tool()
+    async def vaccine_codes(vaccine: str, limit: int = 20) -> dict[str, Any]:
+        """Search vaccine-oriented CVX, RxNorm, and HCPCS codes."""
+        return server_runtime.vaccine_codes(vaccine=vaccine, limit=limit)
+
+    @mcp.tool()
+    async def search_drug(
+        drug_name: str,
+        limit: int = 20,
+        tty_filters: list[str] | None = None,
+    ) -> dict[str, Any]:
+        """Search RxNorm drug names."""
+        return server_runtime.search_drug(
+            drug_name=drug_name,
+            limit=limit,
+            tty_filters=tty_filters,
+        )
+
+    @mcp.tool()
+    async def drugs_by_class(class_id: str, limit: int = 20) -> dict[str, Any]:
+        """Search ATC/RxNorm class names or class identifiers."""
+        return server_runtime.drugs_by_class(class_id=class_id, limit=limit)
+
+    @mcp.tool()
+    async def drugs_for_indication(condition: str, limit: int = 20) -> dict[str, Any]:
+        """Return UMLS-backed indication context for drug workflows."""
+        return server_runtime.drugs_for_indication(condition=condition, limit=limit)
+
+    @mcp.tool()
+    async def indication_search(indication: str, limit: int = 20) -> dict[str, Any]:
+        """Search indication evidence when an external evidence adapter is available."""
+        return server_runtime.indication_search(indication=indication, limit=limit)
+
+    @mcp.tool()
+    async def fda_label_by_rxcui(rxcui: str) -> dict[str, Any]:
+        """Fetch FDA label evidence when an external evidence adapter is available."""
+        return server_runtime.fda_label_by_rxcui(rxcui=rxcui)
+
+    @mcp.tool()
+    async def guideline_search(query: str, limit: int = 20) -> dict[str, Any]:
+        """Search guideline evidence when an external evidence adapter is available."""
+        return server_runtime.guideline_search(query=query, limit=limit)
+
+    @mcp.tool()
+    async def guideline_recommendations(topic: str, limit: int = 20) -> dict[str, Any]:
+        """Fetch guideline recommendations when an external evidence adapter is available."""
+        return server_runtime.guideline_recommendations(topic=topic, limit=limit)
+
+    @mcp.tool()
+    async def guideline_fulltext(guideline_id: str) -> dict[str, Any]:
+        """Fetch guideline full text when an external evidence adapter is available."""
+        return server_runtime.guideline_fulltext(guideline_id=guideline_id)
+
+    @mcp.tool()
+    async def guidelines_for_code(code: str, source: str, limit: int = 20) -> dict[str, Any]:
+        """Fetch guideline evidence for a code when an external adapter is available."""
+        return server_runtime.guidelines_for_code(code=code, source=source, limit=limit)
 
     @mcp.tool()
     async def code_relations(

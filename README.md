@@ -30,6 +30,7 @@ src/medterm4ds/
     medterm_baseline/    # comparison adapter for /mnt/d/medterm
   services/              # public batch-first service functions
   ds.py                  # DataFrame-friendly service wrappers
+  domains/               # Diagnosis/lab/procedure/drug/vaccine wrappers
   outputs/               # serialization/dataframe helpers
 ```
 
@@ -560,6 +561,23 @@ Registered tools:
 - `sample_codes`
 - `code_ttys`
 - `search_names`
+- `discover`
+- `cross_reference`
+- `diagnosis_codes`
+- `lab_codes`
+- `lab_value_codes`
+- `procedure_codes`
+- `hcpcs_drugs`
+- `vaccine_codes`
+- `search_drug`
+- `drugs_by_class`
+- `drugs_for_indication`
+- `indication_search`
+- `fda_label_by_rxcui`
+- `guideline_search`
+- `guideline_recommendations`
+- `guideline_fulltext`
+- `guidelines_for_code`
 - `map_codes`
 - `code_relations`
 - `get_parents`
@@ -573,6 +591,11 @@ Registered tools:
 The MCP tools return structured dictionaries/lists rather than ASCII trees, so
 callers can use fields such as `relationship`, `depth`, `match_type`,
 `match_depth`, source/target atom metadata, and `matched_via` directly.
+Domain tools such as `diagnosis_codes`, `lab_codes`, `procedure_codes`,
+`search_drug`, and `vaccine_codes` are wrappers over the same search, lookup,
+map, and hierarchy services. External evidence names are registered for
+compatibility but return structured `not_available` responses until an FDA or
+guideline evidence adapter is added.
 
 ## Benchmarking
 

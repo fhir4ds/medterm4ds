@@ -12,6 +12,7 @@ engines/    Execution backends implementing service protocols.
 services/   Batch-first terminology workflows.
 outputs/    Serialization and export helpers.
 ds.py       Notebook/DataFrame-friendly wrappers over services.
+domains/    Diagnosis, lab, procedure, drug, vaccine, and compatibility helpers.
 apps/       CLI, API, and MCP adapters.
 scripts/    Benchmarks, parity checks, and acceptance checks.
 ```
@@ -90,6 +91,12 @@ batch contract with one code.
 `medterm4ds.ds` wraps these services for pandas or Polars use. DataFrame helpers
 must not add terminology rules; they convert service outputs to tabular records
 and preserve the same output schemas.
+
+`domains/` provides thin workflow names for common clinical use cases and MCP
+compatibility. UMLS-backed tools must delegate to lookup, search, mapping, or
+hierarchy services. External evidence tools should remain explicit adapter
+boundaries and return structured unavailable responses until their data sources
+are configured.
 
 ## Bulk Is Not A Separate Terminology Layer
 
