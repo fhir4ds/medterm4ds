@@ -32,6 +32,7 @@ from .ds import (
     search_names_dataframe,
     source_stats_dataframe,
 )
+from .engines.api import RemoteApiEngine
 from .services.conceptmap import (
     get_concept_map,
     get_mapping_concept_map,
@@ -65,6 +66,7 @@ __all__ = [
     "OutputSchema",
     "Provenance",
     "ProvenanceStep",
+    "RemoteApiEngine",
     "SourceStats",
     "code_ttys_dataframe",
     "conceptmap_dataframe",

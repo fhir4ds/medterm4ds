@@ -31,9 +31,9 @@ The core domain records are:
 - `Provenance` and `ProvenanceStep`: structured path showing how a result was
   selected.
 
-Services depend on protocols, not concrete engines. A local DuckDB engine,
-remote API engine, or test double should be able to implement the same service
-contract.
+Services depend on protocols, not concrete engines. `LocalLiteEngine`, the
+remote `RemoteApiEngine`, or a test double should be able to implement the same
+service contract.
 
 Each public result model has a versioned schema exposed through
 `get_output_schema(...)`. The schema field order is expected to match the
@@ -45,6 +45,10 @@ the schema version.
 `LocalLiteEngine` is the default local engine. It keeps large terminology data
 inside DuckDB, uses temp input/cache tables, resolves codes in batches, and
 chunks high-risk recursive query paths internally.
+
+`RemoteApiEngine` implements the same protocols by POSTing to the FastAPI
+surface. Python code can therefore switch from local DuckDB execution to a
+remote terminology process without changing service calls.
 
 Source-to-source mapping is exact same-CUI by default. Broader/narrower mapping
 is opt-in through bounded hierarchy traversal so high-volume exports do not

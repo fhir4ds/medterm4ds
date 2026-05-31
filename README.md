@@ -482,7 +482,21 @@ curl -X POST http://localhost:8000/patient-friendly \
       {"source": "CVX", "code": "208"}
     ],
     "max_depth": 5
-  }'
+}'
+```
+
+Python clients can use the same service functions against a running API process
+with `RemoteApiEngine`:
+
+```python
+from medterm4ds import CodeRef, RemoteApiEngine, get_code_mappings
+
+engine = RemoteApiEngine("http://localhost:8000")
+rows = get_code_mappings(
+    [CodeRef("ICD10CM", "E11.9")],
+    engine=engine,
+    target_sources=["SNOMEDCT_US"],
+)
 ```
 
 API environment variables:

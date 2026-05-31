@@ -1,5 +1,6 @@
 """Execution engines."""
 
+from .api import RemoteApiEngine
 from .base import (
     DiscoveryEngine,
     HierarchyEngine,
@@ -15,5 +16,6 @@ __all__ = [
     "LookupEngine",
     "MappingEngine",
     "PatientFriendlyEngine",
+    "RemoteApiEngine",
     "TerminologyEngine",
 ]
