@@ -1,4 +1,4 @@
-.PHONY: test lint compile verify help benchmark-smoke parity-smoke acceptance-smoke real-data-smoke api-smoke mcp-smoke
+.PHONY: test lint compile verify help benchmark-smoke parity-smoke acceptance-smoke real-data-smoke bulk-validation-smoke mapping-quality-smoke api-smoke mcp-smoke
 
 PYTHON ?= python3
 PYTHONPATH ?= src:/mnt/d/medterm/src
@@ -16,6 +16,8 @@ help:
 	  '  parity-smoke      Compare a small sample against /mnt/d/medterm.' \
 	  '  acceptance-smoke  Exercise CLI JSONL resume, CSV, and FHIR output.' \
 	  '  real-data-smoke   Exercise lookup, mapping, hierarchy, and discovery against UMLS_DB.' \
+	  '  bulk-validation-smoke Run bounded bulk mapping and patient-friendly workflows.' \
+	  '  mapping-quality-smoke Sample crosswalk mappings and write review flags.' \
 	  '  api-smoke         Import the API app factory.' \
 	  '  mcp-smoke         Import the MCP server factory.'
 
@@ -66,6 +68,21 @@ real-data-smoke:
 	  --target-source SNOMEDCT_US \
 	  --memory-profile low \
 	  --output-json real_data_smoke.json
+
+bulk-validation-smoke:
+	PYTHONPATH=src $(PYTHON) scripts/run_bulk_validation.py \
+	  --db $(UMLS_DB) \
+	  --work-dir validation_outputs \
+	  --output-json bulk_validation_report.json \
+	  --limit 100 \
+	  --batch-size 50 \
+	  --memory-profile low
+
+mapping-quality-smoke:
+	PYTHONPATH=src $(PYTHON) scripts/review_mapping_quality.py \
+	  --db $(UMLS_DB) \
+	  --per-source 50 \
+	  --output-json mapping_quality_report.json
 
 api-smoke:
 	PYTHONPATH=src $(PYTHON) -c "from medterm4ds.apps.api import create_app; print(create_app)"

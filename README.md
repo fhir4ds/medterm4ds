@@ -19,6 +19,9 @@ patient-friendly names:
   pandas or Polars DataFrames
 - versioned public output schemas for core result records
 - structured provenance through `matched_via.steps`
+- real-data validation scripts for bulk throughput and mapping quality review
+- optional openFDA label and PubMed guideline evidence adapters for MCP/domain
+  compatibility tools
 
 ## Layout
 
@@ -47,6 +50,8 @@ make compile
 make verify
 make parity-smoke
 make acceptance-smoke
+make bulk-validation-smoke
+make mapping-quality-smoke
 ```
 
 Install extras as needed:
@@ -430,6 +435,39 @@ python3 scripts/run_real_data_smoke.py \
   --output-json real_data_smoke.json
 ```
 
+To run bounded real-data bulk workflow validation:
+
+```bash
+python3 scripts/run_bulk_validation.py \
+  --db /mnt/d/medterm/data/umls_local.duckdb \
+  --work-dir validation_outputs \
+  --output-json bulk_validation_report.json \
+  --limit 1000 \
+  --batch-size 500 \
+  --memory-profile low
+```
+
+The bulk validation report covers ICD-10-CM, LOINC, CPT/HCPCS to SNOMED CT
+mapping trials plus patient-friendly names for ICD-10, SNOMED CT, RxNorm,
+LOINC, CVX, CPT, and HCPCS. Use `--full` for full source inventories, and
+`--prepare-cache` when you want the same warmed-cache path as production bulk
+runs.
+
+To sample crosswalk quality and flag rows for review:
+
+```bash
+python3 scripts/review_mapping_quality.py \
+  --db /mnt/d/medterm/data/umls_local.duckdb \
+  --pairs ICD10CM:SNOMEDCT_US,LNC:SNOMEDCT_US,CPT:SNOMEDCT_US,HCPCS:SNOMEDCT_US \
+  --per-source 250 \
+  --output-json mapping_quality_report.json
+```
+
+The mapping quality report counts `match_type`, `relationship`, and review
+flags such as hierarchy fallback, many targets for one source code, broad target
+display names, and low source/target name overlap. It is a triage aid, not a
+clinical validation substitute.
+
 ## API
 
 The API is a thin FastAPI wrapper over the same service layer. It is configured
@@ -593,9 +631,25 @@ callers can use fields such as `relationship`, `depth`, `match_type`,
 `match_depth`, source/target atom metadata, and `matched_via` directly.
 Domain tools such as `diagnosis_codes`, `lab_codes`, `procedure_codes`,
 `search_drug`, and `vaccine_codes` are wrappers over the same search, lookup,
-map, and hierarchy services. External evidence names are registered for
-compatibility but return structured `not_available` responses until an FDA or
-guideline evidence adapter is added.
+map, and hierarchy services.
+
+External evidence tools use public adapters:
+
+- `indication_search` and `fda_label_by_rxcui` call the openFDA drug label API.
+- `guideline_search`, `guideline_recommendations`, `guideline_fulltext`, and
+  `guidelines_for_code` call PubMed through NCBI E-utilities.
+
+Optional environment variables:
+
+- `OPENFDA_API_KEY`: recommended for regular openFDA use.
+- `NCBI_API_KEY`: optional NCBI API key.
+- `NCBI_EMAIL`: recommended contact email for NCBI E-utilities requests.
+
+External evidence responses include `status`. Service failures are returned as
+structured `status: "error"` payloads instead of terminology-engine failures.
+openFDA documents the drug label endpoint at
+https://open.fda.gov/apis/drug/label/how-to-use-the-endpoint/ and NCBI
+documents E-utilities at https://www.ncbi.nlm.nih.gov/books/NBK25499/.
 
 ## Benchmarking
 

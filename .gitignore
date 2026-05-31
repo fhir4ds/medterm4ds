@@ -19,6 +19,9 @@ parity_*.md
 acceptance_*.json
 real_data_smoke*.json
 acceptance_outputs/
+bulk_validation*.json
+mapping_quality*.json
+validation_outputs/
 
 # Environment
 .env

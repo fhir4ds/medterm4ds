@@ -283,7 +283,7 @@ class McpRuntime:
         return evidence_domain.guideline_fulltext(guideline_id)
 
     def guidelines_for_code(self, *, code: str, source: str, limit: int = 20) -> dict[str, Any]:
-        return evidence_domain.guidelines_for_code(code, source, limit=limit)
+        return evidence_domain.guidelines_for_code(code, source, engine=self._engine(), limit=limit)
 
     def code_relations(
         self,

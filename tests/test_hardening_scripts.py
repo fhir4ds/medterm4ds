@@ -42,6 +42,7 @@ def _make_duckdb(path: Path) -> None:
             "INSERT INTO mrconso VALUES (?, ?, ?, ?, ?, ?, ?)",
             [
                 ("E11.9", "PT", "Type 2 diabetes mellitus", "ICD_E119", "N", "ICD10CM", "C_DIAB"),
+                ("44054006", "PT", "Diabetes mellitus type 2", "SNOMED_DIAB", "N", "SNOMEDCT_US", "C_DIAB"),
                 ("D_DIAB", "MH", "Diabetes", "MP_DIAB", "N", "MEDLINEPLUS", "C_DIAB"),
                 ("208", "PT", "COVID-19 vaccine", "CVX_208", "N", "CVX", "C_CVX"),
             ],
@@ -144,3 +145,63 @@ def test_acceptance_script_exercises_cli_outputs(tmp_path):
     assert (work_dir / "acceptance.fhir.json").exists()
     assert (work_dir / "lookup.json").exists()
     assert (work_dir / "map.json").exists()
+
+
+def test_bulk_validation_and_mapping_quality_scripts(tmp_path):
+    db_path = tmp_path / "umls.duckdb"
+    work_dir = tmp_path / "bulk_validation"
+    validation_path = tmp_path / "bulk_validation.json"
+    quality_path = tmp_path / "mapping_quality.json"
+    _make_duckdb(db_path)
+
+    validation = subprocess.run(
+        [
+            sys.executable,
+            str(ROOT / "scripts" / "run_bulk_validation.py"),
+            "--db",
+            str(db_path),
+            "--work-dir",
+            str(work_dir),
+            "--output-json",
+            str(validation_path),
+            "--limit",
+            "1",
+            "--batch-size",
+            "1",
+            "--prepare-cache",
+        ],
+        cwd=ROOT,
+        env=_env(),
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    quality = subprocess.run(
+        [
+            sys.executable,
+            str(ROOT / "scripts" / "review_mapping_quality.py"),
+            "--db",
+            str(db_path),
+            "--pairs",
+            "ICD10CM:SNOMEDCT_US",
+            "--per-source",
+            "1",
+            "--output-json",
+            str(quality_path),
+        ],
+        cwd=ROOT,
+        env=_env(),
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert validation.returncode == 0, validation.stderr
+    validation_report = json.loads(validation_path.read_text(encoding="utf-8"))
+    assert {trial["status"] for trial in validation_report["trials"]} == {"pass"}
+    assert (work_dir / "icd10cm_to_snomed.jsonl").exists()
+
+    assert quality.returncode == 0, quality.stderr
+    quality_report = json.loads(quality_path.read_text(encoding="utf-8"))
+    assert quality_report["reviews"][0]["source"] == "ICD10CM"
+    assert quality_report["reviews"][0]["match_types"] == {"same_cui": 1}

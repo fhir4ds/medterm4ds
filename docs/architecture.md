@@ -95,8 +95,11 @@ and preserve the same output schemas.
 `domains/` provides thin workflow names for common clinical use cases and MCP
 compatibility. UMLS-backed tools must delegate to lookup, search, mapping, or
 hierarchy services. External evidence tools should remain explicit adapter
-boundaries and return structured unavailable responses until their data sources
-are configured.
+boundaries. The current adapters wrap openFDA drug labels and PubMed
+E-utilities with injectable HTTP clients, so tests and future deployments can
+swap transport/authentication without changing the terminology service layer.
+External service failures return structured error payloads at the domain/MCP
+edge rather than surfacing as terminology-engine failures.
 
 ## Bulk Is Not A Separate Terminology Layer
 
@@ -109,6 +112,12 @@ not in terminology rules.
 and patient-friendly workflows. CLI bulk commands should compose these iterators
 with inventory streaming and checkpointed writers rather than creating separate
 transform implementations.
+
+Real-data validation follows the same rule. `scripts/run_bulk_validation.py`
+streams source inventories through the shared bulk iterators, while
+`scripts/review_mapping_quality.py` samples source-to-target mappings and flags
+rows that need domain review. These scripts are quality gates around the public
+services, not an alternate mapping engine.
 
 ## Interfaces
 

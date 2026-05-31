@@ -135,10 +135,20 @@ def test_mcp_runtime_concept_map_tool(tmp_path):
     assert rows[0]["relationship"] == "equivalent"
 
 
-def test_mcp_runtime_discovery_tools(tmp_path):
+def test_mcp_runtime_discovery_tools(tmp_path, monkeypatch):
     db_path = tmp_path / "umls.duckdb"
     _make_duckdb(db_path)
     runtime = McpRuntime(_settings(db_path, prepare_cache=False))
+    monkeypatch.setattr(
+        "medterm4ds.apps.mcp.evidence_domain.fda_label_by_rxcui",
+        lambda rxcui: {
+            "query": "fda_label_by_rxcui",
+            "status": "ok",
+            "rxcui": rxcui,
+            "result_count": 0,
+            "results": [],
+        },
+    )
 
     runtime.open()
     try:
@@ -174,7 +184,7 @@ def test_mcp_runtime_discovery_tools(tmp_path):
     ]
     assert {row["source"] for row in diagnosis_rows} == {"ICD10CM", "SNOMEDCT_US"}
     assert xref_rows[0]["target_source"] == "SNOMEDCT_US"
-    assert evidence["status"] == "not_available"
+    assert evidence["status"] == "ok"
 
 
 def test_mcp_runtime_map_codes_tool(tmp_path):
