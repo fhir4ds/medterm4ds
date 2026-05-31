@@ -14,6 +14,13 @@ from .models import (
     SourceStats,
 )
 from .normalize import normalize_source
+from .schemas import (
+    OUTPUT_SCHEMA_VERSION,
+    OutputField,
+    OutputSchema,
+    get_output_schema,
+    list_output_schemas,
+)
 
 __all__ = [
     "CodeRef",
@@ -25,9 +32,14 @@ __all__ = [
     "NameSearchResult",
     "LOCAL_LITE_MEMORY_PROFILES",
     "LocalLiteConfig",
+    "OUTPUT_SCHEMA_VERSION",
+    "OutputField",
+    "OutputSchema",
     "Provenance",
     "ProvenanceStep",
     "SourceStats",
+    "get_output_schema",
+    "list_output_schemas",
     "local_lite_config",
     "normalize_source",
 ]

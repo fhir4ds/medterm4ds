@@ -16,7 +16,16 @@ from .fhir import (
     fhir_equivalence,
     write_fhir_concept_map,
 )
-from .records import to_csv_record, to_dataframe, to_record, to_records, write_csv, write_jsonl
+from .records import (
+    to_csv_record,
+    to_dataframe,
+    to_pandas,
+    to_polars,
+    to_record,
+    to_records,
+    write_csv,
+    write_jsonl,
+)
 
 __all__ = [
     "DEFAULT_CONCEPT_MAP_URL",
@@ -30,6 +39,8 @@ __all__ = [
     "read_output_position",
     "to_csv_record",
     "to_dataframe",
+    "to_pandas",
+    "to_polars",
     "to_record",
     "to_records",
     "fhir_equivalence",

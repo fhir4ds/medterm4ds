@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import csv
 import json
+from collections.abc import Iterable, Mapping
 from pathlib import Path
-from typing import Any, Iterable, Mapping, Protocol
+from typing import Any, Literal, Protocol
 
 
 class SupportsToDict(Protocol):
@@ -15,6 +16,7 @@ class SupportsToDict(Protocol):
 
 
 ResultLike = SupportsToDict | Mapping[str, Any]
+DataFrameBackend = Literal["pandas", "polars"]
 
 
 def to_records(rows: Iterable[ResultLike]) -> list[dict[str, Any]]:
@@ -22,13 +24,31 @@ def to_records(rows: Iterable[ResultLike]) -> list[dict[str, Any]]:
     return [to_record(row) for row in rows]
 
 
-def to_dataframe(rows: Iterable[ResultLike]):
+def to_dataframe(rows: Iterable[ResultLike], *, backend: DataFrameBackend = "pandas"):
+    """Convert service results to a pandas or Polars DataFrame."""
+    if backend == "pandas":
+        return to_pandas(rows)
+    if backend == "polars":
+        return to_polars(rows)
+    raise ValueError("backend must be 'pandas' or 'polars'")
+
+
+def to_pandas(rows: Iterable[ResultLike]):
     """Convert service results to a pandas DataFrame when pandas is installed."""
     try:
         import pandas as pd
     except ImportError as exc:
-        raise ImportError("Install pandas to use to_dataframe().") from exc
+        raise ImportError("Install pandas to use to_pandas() or to_dataframe().") from exc
     return pd.DataFrame(to_records(rows))
+
+
+def to_polars(rows: Iterable[ResultLike]):
+    """Convert service results to a Polars DataFrame when polars is installed."""
+    try:
+        import polars as pl
+    except ImportError as exc:
+        raise ImportError("Install polars to use to_polars() or to_dataframe(backend='polars').") from exc
+    return pl.DataFrame(to_records(rows))
 
 
 def write_jsonl(rows: Iterable[ResultLike], path: str | Path) -> Path:

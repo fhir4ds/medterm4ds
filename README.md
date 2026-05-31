@@ -16,7 +16,8 @@ patient-friendly names:
 - DuckDB `LocalLiteEngine`
 - dirty-working-tree parity adapter for `/mnt/d/medterm`
 - output helpers for records, JSONL, CSV, FHIR ConceptMap JSON, and optional
-  pandas DataFrames
+  pandas or Polars DataFrames
+- versioned public output schemas for core result records
 - structured provenance through `matched_via.steps`
 
 ## Layout
@@ -28,6 +29,7 @@ src/medterm4ds/
     duckdb/              # LocalLite DuckDB execution
     medterm_baseline/    # comparison adapter for /mnt/d/medterm
   services/              # public batch-first service functions
+  ds.py                  # DataFrame-friendly service wrappers
   outputs/               # serialization/dataframe helpers
 ```
 
@@ -52,6 +54,7 @@ Install extras as needed:
 pip install -e '.[duckdb]'
 pip install -e '.[api]'
 pip install -e '.[mcp]'
+pip install -e '.[dataframe]'
 pip install -e '.[dev]'
 ```
 
@@ -126,6 +129,38 @@ covers:
 The LocalLite engine is DuckDB-only and avoids loading a full in-memory graph.
 It uses temporary input tables and set-based SQL for source grouping,
 cross-reference, hierarchy fallback, and source-specific strategies.
+
+## DataFrames and Schemas
+
+`medterm4ds.outputs.to_dataframe(...)` converts service rows to pandas by
+default, or Polars with `backend="polars"` when Polars is installed. The
+`medterm4ds.ds` module adds notebook-friendly wrappers over the same service
+layer:
+
+```python
+from medterm4ds import CodeRef, lookup_dataframe, map_dataframe
+
+lookup_df = lookup_dataframe(
+    [CodeRef("ICD10CM", "E11.9")],
+    engine=engine,
+)
+
+mapping_df = map_dataframe(
+    [CodeRef("ICD10CM", "E11.9")],
+    engine=engine,
+    target_sources=["SNOMEDCT_US"],
+)
+```
+
+Stable result shapes are exposed through versioned schemas:
+
+```python
+from medterm4ds import get_output_schema
+
+schema = get_output_schema("CodeMapping")
+print(schema.version)
+print(schema.field_names)
+```
 
 `get_concept_map(...)` and `iter_concept_map(...)` build on the same service
 contract. They turn patient-friendly results into `ConceptMapRow` records and

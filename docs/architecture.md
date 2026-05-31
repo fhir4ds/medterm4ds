@@ -11,6 +11,7 @@ core/       Typed records, normalization, and configuration.
 engines/    Execution backends implementing service protocols.
 services/   Batch-first terminology workflows.
 outputs/    Serialization and export helpers.
+ds.py       Notebook/DataFrame-friendly wrappers over services.
 apps/       CLI, API, and MCP adapters.
 scripts/    Benchmarks, parity checks, and acceptance checks.
 ```
@@ -33,6 +34,11 @@ The core domain records are:
 Services depend on protocols, not concrete engines. A local DuckDB engine,
 remote API engine, or test double should be able to implement the same service
 contract.
+
+Each public result model has a versioned schema exposed through
+`get_output_schema(...)`. The schema field order is expected to match the
+model's `to_dict()` output and is treated as a stable downstream contract within
+the schema version.
 
 ## Execution Model
 
@@ -76,6 +82,10 @@ Current services:
 
 These functions are batch-first. Single-code workflows should call the same
 batch contract with one code.
+
+`medterm4ds.ds` wraps these services for pandas or Polars use. DataFrame helpers
+must not add terminology rules; they convert service outputs to tabular records
+and preserve the same output schemas.
 
 ## Bulk Is Not A Separate Terminology Layer
 
