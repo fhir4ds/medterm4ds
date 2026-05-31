@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
-from typing import Any, Iterable, Mapping
+from typing import Any
 
 from .normalize import normalize_source
 
@@ -20,12 +21,35 @@ class CodeRef:
         object.__setattr__(self, "code", str(self.code))
 
     @classmethod
-    def from_pair(cls, pair: tuple[str, str]) -> "CodeRef":
+    def from_pair(cls, pair: tuple[str, str]) -> CodeRef:
         code, source = pair
         return cls(source=source, code=code)
 
     def as_pair(self) -> tuple[str, str]:
         return (self.code, self.source)
+
+
+@dataclass(frozen=True)
+class CodeInfo:
+    """Canonical atom information for one terminology code."""
+
+    code: CodeRef
+    name: str | None = None
+    cui: str | None = None
+    aui: str | None = None
+    tty: str | None = None
+    suppress: str | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "source": self.code.source,
+            "code": self.code.code,
+            "name": self.name,
+            "cui": self.cui,
+            "aui": self.aui,
+            "tty": self.tty,
+            "suppress": self.suppress,
+        }
 
 
 @dataclass(frozen=True)
@@ -75,7 +99,7 @@ class Provenance:
     steps: tuple[ProvenanceStep, ...] = ()
 
     @classmethod
-    def from_steps(cls, strategy: str, steps: Iterable[ProvenanceStep]) -> "Provenance":
+    def from_steps(cls, strategy: str, steps: Iterable[ProvenanceStep]) -> Provenance:
         return cls(strategy=strategy, steps=tuple(steps))
 
     def to_dict(self) -> dict[str, Any]:
@@ -111,7 +135,7 @@ class FriendlyNameResult:
         return data
 
     @classmethod
-    def from_legacy_dict(cls, row: Mapping[str, Any]) -> "FriendlyNameResult":
+    def from_legacy_dict(cls, row: Mapping[str, Any]) -> FriendlyNameResult:
         code = CodeRef(source=str(row.get("source", "")), code=str(row.get("code", "")))
         friendly_source = str(row.get("friendly_source") or row.get("source") or code.source)
         raw_matched_via = row.get("matched_via")
@@ -147,7 +171,7 @@ class ConceptMapRow:
         result: FriendlyNameResult,
         *,
         target_source: str = "PATIENT_FRIENDLY",
-    ) -> "ConceptMapRow":
+    ) -> ConceptMapRow:
         target = CodeRef(
             source=target_source,
             code=f"{result.code.source}:{result.code.code}",

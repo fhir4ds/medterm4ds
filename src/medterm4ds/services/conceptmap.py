@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
-from typing import Iterable, Iterator, Literal
+from collections.abc import Iterable, Iterator
+from typing import Literal
 
 from medterm4ds.core.models import CodeRef, ConceptMapRow
-from medterm4ds.engines.base import TerminologyEngine
+from medterm4ds.engines.base import PatientFriendlyEngine
 from medterm4ds.services.patient_friendly import get_patient_friendly_names
 
 ConceptMapTarget = Literal["patient_friendly"]
@@ -13,7 +14,7 @@ ConceptMapTarget = Literal["patient_friendly"]
 
 def iter_concept_map(
     codes: Iterable[CodeRef | tuple[str, str]],
-    engine: TerminologyEngine,
+    engine: PatientFriendlyEngine,
     *,
     target: ConceptMapTarget = "patient_friendly",
     batch_size: int = 5000,
@@ -34,7 +35,7 @@ def iter_concept_map(
 
 def get_concept_map(
     codes: Iterable[CodeRef | tuple[str, str]],
-    engine: TerminologyEngine,
+    engine: PatientFriendlyEngine,
     *,
     target: ConceptMapTarget = "patient_friendly",
     batch_size: int = 5000,

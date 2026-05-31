@@ -7,11 +7,14 @@ from .inventory import (
     iter_source_codes,
     normalize_sources,
 )
-from .patient_friendly import get_patient_friendly_names, get_patient_friendly_name
+from .lookup import get_code_info, get_code_infos
+from .patient_friendly import get_patient_friendly_name, get_patient_friendly_names
 
 __all__ = [
     "DEFAULT_INVENTORY_SOURCES",
     "count_source_codes",
+    "get_code_info",
+    "get_code_infos",
     "get_concept_map",
     "get_patient_friendly_name",
     "get_patient_friendly_names",

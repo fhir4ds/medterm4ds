@@ -7,8 +7,8 @@ from pathlib import Path
 import duckdb
 
 from medterm4ds.apps.cli import main
-from medterm4ds.core.models import CodeRef
 from medterm4ds.core.config import local_lite_config
+from medterm4ds.core.models import CodeRef
 from medterm4ds.services.inventory import count_source_codes, iter_source_codes, normalize_sources
 
 
@@ -183,6 +183,82 @@ def test_cli_writes_patient_friendly_conceptmap_fhir_json(tmp_path):
     assert resource["group"][0]["element"][0]["target"][0]["display"] == "Diabetes"
     assert resource["group"][0]["element"][0]["target"][0]["equivalence"] == "equivalent"
     assert "relationship" not in resource["group"][0]["element"][0]["target"][0]
+
+
+def test_cli_lookup_prints_json(tmp_path, capsys):
+    db_path = tmp_path / "umls.duckdb"
+    _make_duckdb(db_path)
+
+    status = main(
+        [
+            "lookup",
+            "--db",
+            str(db_path),
+            "--source",
+            "ICD10-CM",
+            "--code",
+            "E11.9",
+            "--code",
+            "NOPE",
+            "--memory-profile",
+            "low",
+        ]
+    )
+
+    assert status == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["results"][0] == {
+        "source": "ICD10CM",
+        "code": "E11.9",
+        "name": "Type 2 diabetes mellitus",
+        "cui": "C_DIAB",
+        "aui": "ICD_E119",
+        "tty": "PT",
+        "suppress": "N",
+    }
+    assert payload["results"][1] == {
+        "source": "ICD10CM",
+        "code": "NOPE",
+        "name": None,
+        "cui": None,
+        "aui": None,
+        "tty": None,
+        "suppress": None,
+    }
+
+
+def test_cli_lookup_writes_jsonl(tmp_path):
+    db_path = tmp_path / "umls.duckdb"
+    output_path = tmp_path / "lookup.jsonl"
+    _make_duckdb(db_path)
+
+    status = main(
+        [
+            "lookup",
+            "--db",
+            str(db_path),
+            "--source",
+            "ICD10CM",
+            "--code",
+            "E11.9",
+            "--source",
+            "CVX",
+            "--code",
+            "208",
+            "--output",
+            str(output_path),
+        ]
+    )
+
+    assert status == 0
+    rows = [
+        json.loads(line)
+        for line in output_path.read_text(encoding="utf-8").splitlines()
+    ]
+    assert [(row["source"], row["code"], row["name"]) for row in rows] == [
+        ("ICD10CM", "E11.9", "Type 2 diabetes mellitus"),
+        ("CVX", "208", "COVID-19 vaccine"),
+    ]
 
 
 def test_cli_resumes_jsonl_from_existing_output(tmp_path):

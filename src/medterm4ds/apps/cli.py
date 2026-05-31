@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 import argparse
-from pathlib import Path
 import sys
 import time
+from pathlib import Path
 
 from medterm4ds.core.config import LOCAL_LITE_MEMORY_PROFILES, local_lite_config
 from medterm4ds.engines.duckdb import LocalLiteEngine
@@ -14,7 +14,9 @@ from medterm4ds.outputs import (
     default_checkpoint_path,
     read_output_position,
     write_checkpointed_rows,
+    write_csv,
     write_fhir_concept_map,
+    write_jsonl,
 )
 from medterm4ds.services.conceptmap import iter_concept_map
 from medterm4ds.services.inventory import (
@@ -23,6 +25,7 @@ from medterm4ds.services.inventory import (
     iter_source_codes,
     normalize_sources,
 )
+from medterm4ds.services.lookup import get_code_infos
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -44,11 +47,34 @@ def build_parser() -> argparse.ArgumentParser:
     _add_patient_friendly_args(patient_friendly)
     patient_friendly.set_defaults(func=run_patient_friendly_conceptmap)
 
+    lookup = subparsers.add_parser("lookup", help="Look up exact terminology codes.")
+    _add_lookup_args(lookup)
+    lookup.set_defaults(func=run_lookup)
+
     return parser
 
 
-def _add_patient_friendly_args(parser: argparse.ArgumentParser) -> None:
+def _add_common_engine_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--db", required=True, help="Path to the UMLS DuckDB database.")
+    parser.add_argument(
+        "--memory-profile",
+        choices=tuple(sorted(LOCAL_LITE_MEMORY_PROFILES)),
+        default="balanced",
+        help="Named LocalLite memory profile.",
+    )
+    parser.add_argument("--memory-limit", default=None, help="Override DuckDB memory limit.")
+    parser.add_argument("--temp-dir", default=None, help="DuckDB temporary directory.")
+    parser.add_argument("--threads", type=int, default=None, help="Override DuckDB thread count.")
+    parser.add_argument(
+        "--query-chunk-size",
+        type=int,
+        default=None,
+        help="Override LocalLite internal query chunk size.",
+    )
+
+
+def _add_patient_friendly_args(parser: argparse.ArgumentParser) -> None:
+    _add_common_engine_args(parser)
     parser.add_argument(
         "--sources",
         default=",".join(DEFAULT_INVENTORY_SOURCES),
@@ -65,21 +91,6 @@ def _add_patient_friendly_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--fetch-size", type=int, default=10_000)
     parser.add_argument("--max-depth", type=int, default=5)
     parser.add_argument("--limit", type=int, default=None, help="Optional total code limit.")
-    parser.add_argument(
-        "--memory-profile",
-        choices=tuple(sorted(LOCAL_LITE_MEMORY_PROFILES)),
-        default="balanced",
-        help="Named LocalLite memory profile.",
-    )
-    parser.add_argument("--memory-limit", default=None, help="Override DuckDB memory limit.")
-    parser.add_argument("--temp-dir", default=None, help="DuckDB temporary directory.")
-    parser.add_argument("--threads", type=int, default=None, help="Override DuckDB thread count.")
-    parser.add_argument(
-        "--query-chunk-size",
-        type=int,
-        default=None,
-        help="Override LocalLite internal query chunk size.",
-    )
     parser.add_argument(
         "--no-prepare-cache",
         action="store_true",
@@ -110,6 +121,23 @@ def _add_patient_friendly_args(parser: argparse.ArgumentParser) -> None:
         type=int,
         default=1000,
         help="Write checkpoint state every N output rows.",
+    )
+
+
+def _add_lookup_args(parser: argparse.ArgumentParser) -> None:
+    _add_common_engine_args(parser)
+    parser.add_argument("--source", action="append", required=True, help="Source vocabulary.")
+    parser.add_argument("--code", action="append", required=True, help="Code to look up.")
+    parser.add_argument(
+        "--output",
+        default=None,
+        help="Optional output path. Defaults to stdout JSON.",
+    )
+    parser.add_argument(
+        "--format",
+        choices=("json", "jsonl", "csv"),
+        default=None,
+        help="Output format. Defaults to output extension, or JSON for stdout.",
     )
 
 
@@ -223,6 +251,58 @@ def run_patient_friendly_conceptmap(args: argparse.Namespace) -> int:
     return 0
 
 
+def run_lookup(args: argparse.Namespace) -> int:
+    try:
+        import duckdb
+    except ImportError as exc:
+        raise SystemExit("DuckDB is required. Install medterm4ds[duckdb].") from exc
+
+    if len(args.source) == 1 and len(args.code) > 1:
+        sources = args.source * len(args.code)
+    else:
+        sources = args.source
+    if len(sources) != len(args.code):
+        raise SystemExit("--source must be provided once for all codes or once per --code")
+
+    db_path = Path(args.db)
+    if not db_path.exists():
+        raise SystemExit(f"Database not found: {db_path}")
+
+    config = local_lite_config(
+        args.memory_profile,
+        memory_limit=args.memory_limit,
+        temp_directory=args.temp_dir,
+        threads=args.threads,
+        query_chunk_size=args.query_chunk_size,
+    )
+    refs = list(zip(args.code, sources, strict=True))
+    con = duckdb.connect(str(db_path), read_only=True)
+    try:
+        engine = LocalLiteEngine(con, config=config)
+        infos = get_code_infos(refs, engine=engine)
+    finally:
+        con.close()
+
+    rows = [
+        info.to_dict() if info else _missing_code_info(code=code, source=source)
+        for info, (code, source) in zip(infos, refs, strict=True)
+    ]
+    output_format = args.format or (_lookup_format_from_path(Path(args.output)) if args.output else "json")
+    if args.output:
+        output_path = Path(args.output)
+        if output_format == "json":
+            output_path.write_text(_json_dumps({"results": rows}), encoding="utf-8")
+        elif output_format == "jsonl":
+            write_jsonl(rows, output_path)
+        elif output_format == "csv":
+            write_csv(rows, output_path)
+        else:
+            raise SystemExit(f"Unsupported output format: {output_format}")
+    else:
+        print(_json_dumps({"results": rows}), file=sys.stdout)
+    return 0
+
+
 def _format_from_path(path: Path) -> str:
     suffix = path.suffix.lower()
     if suffix == ".jsonl":
@@ -232,6 +312,38 @@ def _format_from_path(path: Path) -> str:
     if suffix == ".json":
         return "fhir-json"
     raise SystemExit("Could not infer output format. Use --format jsonl, --format csv, or --format fhir-json.")
+
+
+def _lookup_format_from_path(path: Path) -> str:
+    suffix = path.suffix.lower()
+    if suffix == ".json":
+        return "json"
+    if suffix == ".jsonl":
+        return "jsonl"
+    if suffix == ".csv":
+        return "csv"
+    raise SystemExit("Could not infer lookup output format. Use --format json, jsonl, or csv.")
+
+
+def _missing_code_info(*, code: str, source: str) -> dict[str, object]:
+    from medterm4ds.core.models import CodeRef
+
+    ref = CodeRef(source=source, code=code)
+    return {
+        "source": ref.source,
+        "code": ref.code,
+        "name": None,
+        "cui": None,
+        "aui": None,
+        "tty": None,
+        "suppress": None,
+    }
+
+
+def _json_dumps(data: object) -> str:
+    import json
+
+    return json.dumps(data, indent=2, sort_keys=True) + "\n"
 
 
 class _Progress:

@@ -6,23 +6,23 @@ tables instead of large Python-side object graphs.
 
 from __future__ import annotations
 
+import logging
+import re
 from collections import defaultdict
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
-import logging
 from pathlib import Path
-import re
-from typing import Any, Callable, Iterator, Mapping, Sequence
 from uuid import uuid4
 
 from medterm4ds.core.config import LocalLiteConfig
 from medterm4ds.core.models import (
+    CodeInfo,
     CodeRef,
     FriendlyNameResult,
     Provenance,
     ProvenanceStep,
 )
-from medterm4ds.core.normalize import normalize_source
 
 logger = logging.getLogger(__name__)
 
@@ -316,6 +316,58 @@ class LocalLiteEngine:
                 row = non_snomed.get((ref.source, ref.code)) or self._make_original(ref.code, ref.source)
             output.append(row.result())
         return output
+
+    def get_code_infos(self, codes: Sequence[CodeRef]) -> list[CodeInfo | None]:
+        """Return canonical active atom info for input codes."""
+        if not codes:
+            return []
+
+        ordered = [CodeRef(source=code.source, code=code.code) for code in codes]
+        grouped: dict[str, list[str]] = defaultdict(list)
+        for ref in ordered:
+            grouped[ref.source].append(ref.code)
+
+        lookup: dict[tuple[str, str], CodeInfo] = {}
+        for source, source_codes in grouped.items():
+            with self._temp_codes(source_codes) as temp:
+                rows = self.con.execute(
+                    f"""
+                    WITH ranked AS (
+                        SELECT CODE, STR, CUI, AUI, TTY, SUPPRESS,
+                               ROW_NUMBER() OVER (
+                                   PARTITION BY CODE
+                                   ORDER BY
+                                       CASE WHEN SUPPRESS = 'N' THEN 0 ELSE 1 END,
+                                       CASE TTY
+                                           WHEN 'PT' THEN 0
+                                           WHEN 'MH' THEN 1
+                                           WHEN 'LN' THEN 2
+                                           ELSE 3
+                                       END,
+                                       AUI
+                               ) AS rn
+                        FROM mrconso
+                        WHERE SAB = ?
+                          AND SUPPRESS = 'N'
+                          AND CODE IN (SELECT code FROM {temp})
+                    )
+                    SELECT CODE, STR, CUI, AUI, TTY, SUPPRESS
+                    FROM ranked
+                    WHERE rn = 1
+                    """,
+                    [source],
+                ).fetchall()
+            for code, name, cui, aui, tty, suppress in rows:
+                lookup[(source, code)] = CodeInfo(
+                    code=CodeRef(source=source, code=code),
+                    name=name,
+                    cui=cui,
+                    aui=aui,
+                    tty=tty,
+                    suppress=suppress,
+                )
+
+        return [lookup.get((ref.source, ref.code)) for ref in ordered]
 
     def _resolve_source(self, source: str, codes: Sequence[str], max_depth: int) -> list[_Row]:
         if not codes:

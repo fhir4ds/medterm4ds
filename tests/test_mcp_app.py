@@ -70,11 +70,24 @@ def test_mcp_runtime_patient_friendly_tools(tmp_path):
         assert single["name"] == "Diabetes"
         assert single["match_type"] == "exact"
 
+        lookup = runtime.lookup_code(code="E11.9", source="ICD10-CM")
+        assert lookup["name"] == "Type 2 diabetes mellitus"
+        assert lookup["source"] == "ICD10CM"
+
         batch = runtime.patient_friendly_names(
             codes=["E11.9", "208"],
             sources=["ICD10CM", "CVX"],
         )
         assert [row["name"] for row in batch["results"]] == ["Diabetes", "COVID-19 vaccine"]
+
+        lookup_batch = runtime.lookup_codes(
+            codes=["E11.9", "NOPE"],
+            sources=["ICD10CM", "CVX"],
+        )
+        assert [row["name"] if row else None for row in lookup_batch["results"]] == [
+            "Type 2 diabetes mellitus",
+            None,
+        ]
     finally:
         runtime.close()
 
@@ -110,6 +123,8 @@ def test_mcp_server_registers_expected_tools(tmp_path):
 
     assert {
         "health",
+        "lookup_code",
+        "lookup_codes",
         "patient_friendly_name",
         "patient_friendly_names",
         "patient_friendly_concept_map",

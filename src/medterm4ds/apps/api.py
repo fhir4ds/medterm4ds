@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
+import os
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
-import os
 from pathlib import Path
 from typing import Any
 
@@ -13,6 +13,7 @@ from medterm4ds.core.models import CodeRef
 from medterm4ds.engines.duckdb import LocalLiteEngine
 from medterm4ds.services.conceptmap import get_concept_map
 from medterm4ds.services.inventory import DEFAULT_INVENTORY_SOURCES, normalize_sources
+from medterm4ds.services.lookup import get_code_infos
 from medterm4ds.services.patient_friendly import get_patient_friendly_names
 
 try:
@@ -38,7 +39,7 @@ class ApiSettings:
     cache_indexes: bool = False
 
     @classmethod
-    def from_env(cls) -> "ApiSettings":
+    def from_env(cls) -> ApiSettings:
         db_path = os.getenv("MEDTERM4DS_DB")
         if not db_path:
             raise RuntimeError("MEDTERM4DS_DB is required for the API app.")
@@ -66,6 +67,10 @@ class CodeInput(BaseModel):
 class PatientFriendlyRequest(BaseModel):
     codes: list[CodeInput] = Field(default_factory=list)
     max_depth: int = Field(default=5, ge=0)
+
+
+class LookupRequest(BaseModel):
+    codes: list[CodeInput] = Field(default_factory=list)
 
 
 class ConceptMapRequest(BaseModel):
@@ -136,6 +141,18 @@ def create_app(settings: ApiSettings | None = None) -> FastAPI:
             max_depth=payload.max_depth,
         )
         return {"results": [result.to_dict() for result in results]}
+
+    @app.post("/lookup")
+    async def lookup(
+        payload: LookupRequest,
+        request: Request,
+    ) -> dict[str, Any]:
+        engine = _engine(request)
+        results = get_code_infos(
+            [code.to_ref() for code in payload.codes],
+            engine=engine,
+        )
+        return {"results": [result.to_dict() if result else None for result in results]}
 
     @app.post("/conceptmap/patient-friendly")
     async def conceptmap_patient_friendly(

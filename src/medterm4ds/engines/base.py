@@ -2,9 +2,21 @@
 
 from __future__ import annotations
 
-from typing import Protocol, Sequence
+from collections.abc import Sequence
+from typing import Protocol
 
-from medterm4ds.core.models import CodeRef, FriendlyNameResult
+from medterm4ds.core.models import CodeInfo, CodeRef, FriendlyNameResult
+
+
+class LookupEngine(Protocol):
+    """Batch-first exact code lookup engine."""
+
+    def get_code_infos(
+        self,
+        codes: Sequence[CodeRef],
+    ) -> list[CodeInfo | None]:
+        """Return one code info row per input code, preserving order."""
+        ...
 
 
 class PatientFriendlyEngine(Protocol):
@@ -19,7 +31,7 @@ class PatientFriendlyEngine(Protocol):
         ...
 
 
-class TerminologyEngine(PatientFriendlyEngine, Protocol):
+class TerminologyEngine(LookupEngine, PatientFriendlyEngine, Protocol):
     """Shared terminology engine contract for services.
 
     Engines may be local, remote, or test doubles. Service modules should depend

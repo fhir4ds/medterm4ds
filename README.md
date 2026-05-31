@@ -2,10 +2,11 @@
 
 `medterm4ds` is a refactor/prototype for batch-first medical terminology workflows.
 
-The current slice focuses on patient-friendly names:
+The current slice focuses on exact code lookup and patient-friendly names:
 
 - typed domain results
 - batch-first service API
+- active atom lookup for one or many codes
 - ConceptMap rows derived from patient-friendly results
 - DuckDB `LocalLiteEngine`
 - dirty-working-tree parity adapter for `/mnt/d/medterm`
@@ -51,8 +52,22 @@ pip install -e '.[dev]'
 
 ## Current Scope
 
-The first vertical slice is `get_patient_friendly_names(...)`. It supports one
-or many codes through the same service contract and currently covers:
+The lookup vertical slice is `get_code_infos(...)`. It returns one active UMLS
+atom row per input code, preserving input order and returning `None` for missing
+or suppressed-only codes.
+
+```python
+from medterm4ds import CodeRef, get_code_infos
+
+infos = get_code_infos(
+    [CodeRef("ICD10CM", "E11.9")],
+    engine=engine,
+)
+```
+
+The patient-friendly vertical slice is `get_patient_friendly_names(...)`. It
+supports one or many codes through the same service contract and currently
+covers:
 
 - ICD-10-CM and ICD-10-PCS
 - SNOMED CT
@@ -92,6 +107,18 @@ write_jsonl(
 ```
 
 ## CLI
+
+For exact active atom lookup:
+
+```bash
+medterm4ds lookup \
+  --db /mnt/d/medterm/data/umls_local.duckdb \
+  --source ICD10CM \
+  --code E11.9
+```
+
+Provide one `--source` for all codes, or one `--source` per `--code`. Lookup
+output can be JSON, JSONL, or CSV.
 
 The first CLI workflow generates a patient-friendly ConceptMap directly from a
 DuckDB UMLS database:
@@ -223,10 +250,24 @@ uvicorn 'medterm4ds.apps.api:create_app' --factory --host 0.0.0.0 --port 8000
 Supported endpoints:
 
 - `GET /health`
+- `POST /lookup`
 - `POST /patient-friendly`
 - `POST /conceptmap/patient-friendly`
 
-Example request:
+Example lookup request:
+
+```bash
+curl -X POST http://localhost:8000/lookup \
+  -H 'content-type: application/json' \
+  -d '{
+    "codes": [
+      {"source": "ICD10CM", "code": "E11.9"},
+      {"source": "CVX", "code": "208"}
+    ]
+  }'
+```
+
+Example patient-friendly request:
 
 ```bash
 curl -X POST http://localhost:8000/patient-friendly \
@@ -266,6 +307,8 @@ medterm4ds-mcp
 Registered tools:
 
 - `health`
+- `lookup_code`
+- `lookup_codes`
 - `patient_friendly_name`
 - `patient_friendly_names`
 - `patient_friendly_concept_map`

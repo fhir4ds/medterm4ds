@@ -20,6 +20,7 @@ scripts/    Benchmarks, parity checks, and acceptance checks.
 The core domain records are:
 
 - `CodeRef`: normalized source/code input.
+- `CodeInfo`: active UMLS atom metadata for exact code lookup.
 - `FriendlyNameResult`: one patient-friendly display result plus provenance.
 - `ConceptMapRow`: source-to-target mapping row used by exports.
 - `Provenance` and `ProvenanceStep`: structured path showing how a result was
@@ -48,6 +49,8 @@ and some DuckDB allocations can exceed the configured limit.
 
 Current services:
 
+- `get_code_info(...)`
+- `get_code_infos(...)`
 - `get_patient_friendly_names(...)`
 - `get_concept_map(...)`
 - `iter_concept_map(...)`

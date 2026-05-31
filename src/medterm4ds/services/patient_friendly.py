@@ -2,15 +2,15 @@
 
 from __future__ import annotations
 
-from typing import Sequence
+from collections.abc import Sequence
 
 from medterm4ds.core.models import CodeRef, FriendlyNameResult
-from medterm4ds.engines.base import TerminologyEngine
+from medterm4ds.engines.base import PatientFriendlyEngine
 
 
 def get_patient_friendly_names(
     codes: Sequence[CodeRef | tuple[str, str]],
-    engine: TerminologyEngine,
+    engine: PatientFriendlyEngine,
     max_depth: int = 5,
 ) -> list[FriendlyNameResult]:
     """Resolve patient-friendly names for one or many codes.
@@ -26,7 +26,7 @@ def get_patient_friendly_names(
 
 def get_patient_friendly_name(
     code: CodeRef | tuple[str, str],
-    engine: TerminologyEngine,
+    engine: PatientFriendlyEngine,
     max_depth: int = 5,
 ) -> FriendlyNameResult:
     """Resolve one patient-friendly name through the batch contract."""

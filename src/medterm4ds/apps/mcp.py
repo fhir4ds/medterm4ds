@@ -2,17 +2,19 @@
 
 from __future__ import annotations
 
+import os
+from collections.abc import Sequence
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
-import os
 from pathlib import Path
-from typing import Any, Sequence
+from typing import Any
 
 from medterm4ds.core.config import MemoryProfile, local_lite_config
 from medterm4ds.core.models import CodeRef
 from medterm4ds.engines.duckdb import LocalLiteEngine
 from medterm4ds.services.conceptmap import get_concept_map
 from medterm4ds.services.inventory import DEFAULT_INVENTORY_SOURCES, normalize_sources
+from medterm4ds.services.lookup import get_code_infos
 from medterm4ds.services.patient_friendly import get_patient_friendly_names
 
 try:
@@ -37,7 +39,7 @@ class McpSettings:
     cache_indexes: bool = False
 
     @classmethod
-    def from_env(cls) -> "McpSettings":
+    def from_env(cls) -> McpSettings:
         db_path = os.getenv("MEDTERM4DS_DB")
         if not db_path:
             raise RuntimeError("MEDTERM4DS_DB is required for the MCP server.")
@@ -112,6 +114,24 @@ class McpRuntime:
             max_depth=max_depth,
         )[0]
         return result.to_dict()
+
+    def lookup_code(
+        self,
+        *,
+        code: str,
+        source: str,
+    ) -> dict[str, Any] | None:
+        return self.lookup_codes(codes=[code], sources=[source])["results"][0]
+
+    def lookup_codes(
+        self,
+        *,
+        codes: Sequence[str],
+        sources: Sequence[str],
+    ) -> dict[str, Any]:
+        refs = _code_refs(codes, sources)
+        infos = get_code_infos(refs, engine=self._engine())
+        return {"results": [info.to_dict() if info else None for info in infos]}
 
     def patient_friendly_names(
         self,
@@ -190,6 +210,25 @@ def create_mcp_server(
         )
 
     @mcp.tool()
+    async def lookup_code(
+        code: str,
+        source: str,
+    ) -> dict[str, Any] | None:
+        """Look up canonical atom information for one clinical code."""
+        return server_runtime.lookup_code(code=code, source=source)
+
+    @mcp.tool()
+    async def lookup_codes(
+        codes: list[str],
+        sources: list[str],
+    ) -> dict[str, Any]:
+        """Look up canonical atom information for clinical codes.
+
+        `sources` can contain one source for all codes, or one source per code.
+        """
+        return server_runtime.lookup_codes(codes=codes, sources=sources)
+
+    @mcp.tool()
     async def patient_friendly_names(
         codes: list[str],
         sources: list[str],
@@ -239,7 +278,7 @@ def _code_refs(codes: Sequence[str], sources: Sequence[str]) -> list[CodeRef]:
         raise ValueError("sources must contain either one source or one source per code")
     return [
         CodeRef(source=source, code=code)
-        for code, source in zip(codes, sources)
+        for code, source in zip(codes, sources, strict=True)
     ]
 
 

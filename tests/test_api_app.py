@@ -99,6 +99,36 @@ def test_api_patient_friendly_endpoint(tmp_path):
     assert [row["match_type"] for row in payload["results"]] == ["exact", "original"]
 
 
+def test_api_lookup_endpoint(tmp_path):
+    db_path = tmp_path / "umls.duckdb"
+    _make_duckdb(db_path)
+
+    app = create_app(_settings(db_path, prepare_cache=False))
+    with TestClient(app) as client:
+        response = client.post(
+            "/lookup",
+            json={
+                "codes": [
+                    {"source": "ICD10-CM", "code": "E11.9"},
+                    {"source": "CVX", "code": "NOPE"},
+                ]
+            },
+        )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["results"][0] == {
+        "source": "ICD10CM",
+        "code": "E11.9",
+        "name": "Type 2 diabetes mellitus",
+        "cui": "C_DIAB",
+        "aui": "ICD_E119",
+        "tty": "PT",
+        "suppress": "N",
+    }
+    assert payload["results"][1] is None
+
+
 def test_api_conceptmap_endpoint(tmp_path):
     db_path = tmp_path / "umls.duckdb"
     _make_duckdb(db_path)
