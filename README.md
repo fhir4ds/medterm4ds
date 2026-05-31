@@ -188,6 +188,34 @@ write_jsonl(
 )
 ```
 
+For non-ConceptMap bulk exports, use the shared `bulk` CLI namespace. These
+commands stream source inventory through the same lookup, mapping, hierarchy, or
+patient-friendly services and write JSONL or CSV with checkpoint sidecars:
+
+```bash
+medterm4ds bulk lookup \
+  --db /mnt/d/medterm/data/umls_local.duckdb \
+  --sources ICD10CM,CVX \
+  --output lookup.jsonl
+
+medterm4ds bulk map \
+  --db /mnt/d/medterm/data/umls_local.duckdb \
+  --sources ICD10CM,LNC,CPT,HCPCS \
+  --target-sources SNOMEDCT_US \
+  --output source_to_snomed.jsonl
+
+medterm4ds bulk hierarchy \
+  --db /mnt/d/medterm/data/umls_local.duckdb \
+  --sources ICD10CM \
+  --direction parents \
+  --output icd10_parents.jsonl
+
+medterm4ds bulk patient-friendly \
+  --db /mnt/d/medterm/data/umls_local.duckdb \
+  --sources ICD10CM,RXNORM,LNC,CVX \
+  --output friendly_names.csv
+```
+
 ## CLI
 
 For exact active atom lookup:

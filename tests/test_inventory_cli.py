@@ -608,6 +608,142 @@ def test_cli_search_names_filters_by_tty(tmp_path, capsys):
     ]
 
 
+def test_cli_bulk_lookup_writes_checkpointed_jsonl(tmp_path):
+    db_path = tmp_path / "umls.duckdb"
+    output_path = tmp_path / "bulk_lookup.jsonl"
+    _make_duckdb(db_path)
+
+    status = main(
+        [
+            "bulk",
+            "lookup",
+            "--db",
+            str(db_path),
+            "--sources",
+            "ICD10CM,CVX",
+            "--output",
+            str(output_path),
+            "--batch-size",
+            "1",
+            "--checkpoint-every",
+            "1",
+            "--memory-profile",
+            "low",
+        ]
+    )
+
+    assert status == 0
+    rows = [
+        json.loads(line)
+        for line in output_path.read_text(encoding="utf-8").splitlines()
+    ]
+    assert [(row["source"], row["code"], row["name"]) for row in rows] == [
+        ("ICD10CM", "E11.9", "Type 2 diabetes mellitus"),
+        ("CVX", "208", "COVID-19 vaccine"),
+    ]
+    checkpoint = json.loads((tmp_path / "bulk_lookup.jsonl.checkpoint.json").read_text(encoding="utf-8"))
+    assert checkpoint["complete"] is True
+    assert checkpoint["metadata"]["command"] == "bulk lookup"
+
+
+def test_cli_bulk_patient_friendly_writes_csv(tmp_path):
+    db_path = tmp_path / "umls.duckdb"
+    output_path = tmp_path / "bulk_friendly.csv"
+    _make_duckdb(db_path)
+
+    status = main(
+        [
+            "bulk",
+            "patient-friendly",
+            "--db",
+            str(db_path),
+            "--sources",
+            "ICD10CM,CVX",
+            "--output",
+            str(output_path),
+            "--format",
+            "csv",
+            "--batch-size",
+            "1",
+            "--no-prepare-cache",
+        ]
+    )
+
+    assert status == 0
+    with output_path.open(encoding="utf-8", newline="") as file:
+        rows = list(csv.DictReader(file))
+    assert [row["name"] for row in rows] == ["Diabetes", "COVID-19 vaccine"]
+
+
+def test_cli_bulk_map_writes_jsonl(tmp_path):
+    db_path = tmp_path / "umls.duckdb"
+    output_path = tmp_path / "bulk_map.jsonl"
+    _make_duckdb(db_path)
+
+    status = main(
+        [
+            "bulk",
+            "map",
+            "--db",
+            str(db_path),
+            "--sources",
+            "ICD10CM,CVX",
+            "--target-sources",
+            "SNOMED",
+            "--output",
+            str(output_path),
+            "--format",
+            "jsonl",
+            "--batch-size",
+            "1",
+        ]
+    )
+
+    assert status == 0
+    rows = [
+        json.loads(line)
+        for line in output_path.read_text(encoding="utf-8").splitlines()
+    ]
+    assert [(row["source"], row["code"], row["target_source"], row["target_code"]) for row in rows] == [
+        ("ICD10CM", "E11.9", "SNOMEDCT_US", "44054006")
+    ]
+
+
+def test_cli_bulk_hierarchy_writes_jsonl(tmp_path):
+    db_path = tmp_path / "umls.duckdb"
+    output_path = tmp_path / "bulk_hierarchy.jsonl"
+    _make_hierarchy_duckdb(db_path)
+
+    status = main(
+        [
+            "bulk",
+            "hierarchy",
+            "--db",
+            str(db_path),
+            "--sources",
+            "ICD10CM",
+            "--direction",
+            "parents",
+            "--output",
+            str(output_path),
+            "--format",
+            "jsonl",
+            "--batch-size",
+            "2",
+        ]
+    )
+
+    assert status == 0
+    rows = [
+        json.loads(line)
+        for line in output_path.read_text(encoding="utf-8").splitlines()
+    ]
+    assert [(row["code"], row["target_code"], row["relationship"]) for row in rows] == [
+        ("E11", "E00-E89", "parent"),
+        ("E11.9", "E11", "parent"),
+    ]
+
+
 def test_cli_resumes_jsonl_from_existing_output(tmp_path):
     db_path = tmp_path / "umls.duckdb"
     output_path = tmp_path / "conceptmap.jsonl"

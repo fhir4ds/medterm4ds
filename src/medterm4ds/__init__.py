@@ -33,6 +33,13 @@ from .ds import (
     source_stats_dataframe,
 )
 from .engines.api import RemoteApiEngine
+from .services.bulk import (
+    iter_batches,
+    iter_hierarchy_bulk,
+    iter_lookup_bulk,
+    iter_mapping_bulk,
+    iter_patient_friendly_bulk,
+)
 from .services.conceptmap import (
     get_concept_map,
     get_mapping_concept_map,
@@ -94,8 +101,13 @@ __all__ = [
     "search_names_dataframe",
     "search_names",
     "source_stats_dataframe",
+    "iter_batches",
     "iter_concept_map",
+    "iter_hierarchy_bulk",
+    "iter_lookup_bulk",
+    "iter_mapping_bulk",
     "iter_mapping_concept_map",
+    "iter_patient_friendly_bulk",
     "list_output_schemas",
     "local_lite_config",
 ]

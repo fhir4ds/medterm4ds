@@ -7,6 +7,7 @@ from typing import Literal
 
 from medterm4ds.core.models import CodeRef, ConceptMapRow
 from medterm4ds.engines.base import MappingEngine, PatientFriendlyEngine
+from medterm4ds.services.bulk import iter_batches
 from medterm4ds.services.mapping import get_code_mappings
 from medterm4ds.services.patient_friendly import get_patient_friendly_names
 
@@ -28,7 +29,7 @@ def iter_concept_map(
     if batch_size < 1:
         raise ValueError("batch_size must be at least 1")
 
-    for batch in _batched(codes, batch_size):
+    for batch in iter_batches(codes, batch_size):
         results = get_patient_friendly_names(batch, engine=engine, max_depth=max_depth)
         for result in results:
             yield ConceptMapRow.from_friendly_result(result, target_source=target_source)
@@ -70,7 +71,7 @@ def iter_mapping_concept_map(
     """Yield ConceptMap rows for source-to-target code mappings."""
     if batch_size < 1:
         raise ValueError("batch_size must be at least 1")
-    for batch in _batched(codes, batch_size):
+    for batch in iter_batches(codes, batch_size):
         mappings = get_code_mappings(
             batch,
             engine=engine,
@@ -108,17 +109,3 @@ def get_mapping_concept_map(
             include_target_descendants=include_target_descendants,
         )
     )
-
-
-def _batched(
-    values: Iterable[CodeRef | tuple[str, str]],
-    size: int,
-) -> Iterator[list[CodeRef | tuple[str, str]]]:
-    batch: list[CodeRef | tuple[str, str]] = []
-    for value in values:
-        batch.append(value)
-        if len(batch) >= size:
-            yield batch
-            batch = []
-    if batch:
-        yield batch

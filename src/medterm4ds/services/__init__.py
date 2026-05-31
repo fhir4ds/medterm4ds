@@ -1,5 +1,12 @@
 """Service-layer entry points."""
 
+from .bulk import (
+    iter_batches,
+    iter_hierarchy_bulk,
+    iter_lookup_bulk,
+    iter_mapping_bulk,
+    iter_patient_friendly_bulk,
+)
 from .conceptmap import (
     get_concept_map,
     get_mapping_concept_map,
@@ -41,8 +48,13 @@ __all__ = [
     "get_patient_friendly_name",
     "get_patient_friendly_names",
     "get_source_stats",
+    "iter_batches",
     "iter_concept_map",
+    "iter_hierarchy_bulk",
+    "iter_lookup_bulk",
+    "iter_mapping_bulk",
     "iter_mapping_concept_map",
+    "iter_patient_friendly_bulk",
     "iter_source_codes",
     "normalize_sources",
     "sample_source_codes",

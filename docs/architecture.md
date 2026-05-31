@@ -98,6 +98,11 @@ The CLI streams source inventory through the same services and writes JSONL,
 CSV, or FHIR output. Resume/checkpoint behavior lives in `outputs/` and the CLI,
 not in terminology rules.
 
+`services.bulk` provides shared batch iterators for lookup, mapping, hierarchy,
+and patient-friendly workflows. CLI bulk commands should compose these iterators
+with inventory streaming and checkpointed writers rather than creating separate
+transform implementations.
+
 ## Interfaces
 
 `apps/cli.py`, `apps/api.py`, and `apps/mcp.py` are intentionally thin:

@@ -18,6 +18,12 @@ from medterm4ds.outputs import (
     write_fhir_concept_map,
     write_jsonl,
 )
+from medterm4ds.services.bulk import (
+    iter_hierarchy_bulk,
+    iter_lookup_bulk,
+    iter_mapping_bulk,
+    iter_patient_friendly_bulk,
+)
 from medterm4ds.services.conceptmap import iter_concept_map, iter_mapping_concept_map
 from medterm4ds.services.discovery import (
     get_code_ttys,
@@ -62,6 +68,24 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _add_mapping_conceptmap_args(mapping_conceptmap)
     mapping_conceptmap.set_defaults(func=run_mapping_conceptmap)
+
+    bulk = subparsers.add_parser("bulk", help="Run bulk terminology exports.")
+    bulk_subparsers = bulk.add_subparsers(dest="workflow", required=True)
+    bulk_lookup = bulk_subparsers.add_parser("lookup", help="Bulk exact code lookup.")
+    _add_bulk_lookup_args(bulk_lookup)
+    bulk_lookup.set_defaults(func=run_bulk_lookup)
+    bulk_map = bulk_subparsers.add_parser("map", help="Bulk source-to-target mapping.")
+    _add_bulk_mapping_args(bulk_map)
+    bulk_map.set_defaults(func=run_bulk_mapping)
+    bulk_hierarchy = bulk_subparsers.add_parser("hierarchy", help="Bulk hierarchy traversal.")
+    _add_bulk_hierarchy_args(bulk_hierarchy)
+    bulk_hierarchy.set_defaults(func=run_bulk_hierarchy)
+    bulk_patient_friendly = bulk_subparsers.add_parser(
+        "patient-friendly",
+        help="Bulk patient-friendly name resolution.",
+    )
+    _add_bulk_patient_friendly_args(bulk_patient_friendly)
+    bulk_patient_friendly.set_defaults(func=run_bulk_patient_friendly)
 
     lookup = subparsers.add_parser("lookup", help="Look up exact terminology codes.")
     _add_lookup_args(lookup)
@@ -209,6 +233,117 @@ def _add_bulk_output_args(parser: argparse.ArgumentParser) -> None:
         default=1000,
         help="Write checkpoint state every N output rows for JSONL/CSV outputs.",
     )
+
+
+def _add_bulk_record_args(parser: argparse.ArgumentParser) -> None:
+    _add_common_engine_args(parser)
+    parser.add_argument(
+        "--sources",
+        default=",".join(DEFAULT_INVENTORY_SOURCES),
+        help="Comma-separated source vocabularies.",
+    )
+    parser.add_argument("--output", required=True, help="Output file path.")
+    parser.add_argument(
+        "--format",
+        choices=("jsonl", "csv"),
+        default=None,
+        help="Output format. Defaults to the output file extension.",
+    )
+    parser.add_argument("--batch-size", type=int, default=5000)
+    parser.add_argument("--fetch-size", type=int, default=10_000)
+    parser.add_argument("--limit", type=int, default=None, help="Optional total code limit.")
+    parser.add_argument(
+        "--no-prepare-cache",
+        action="store_true",
+        help="Skip LocalLite temp cache preparation.",
+    )
+    parser.add_argument(
+        "--cache-indexes",
+        action="store_true",
+        help="Create temp cache indexes. Usually slower for this workflow.",
+    )
+    parser.add_argument(
+        "--progress",
+        action="store_true",
+        help="Print progress and throughput to stderr.",
+    )
+    parser.add_argument(
+        "--resume",
+        action="store_true",
+        help="Append to an existing output and resume after its last completed source/code.",
+    )
+    parser.add_argument(
+        "--checkpoint",
+        default=None,
+        help="Checkpoint sidecar path. Defaults to <output>.checkpoint.json.",
+    )
+    parser.add_argument(
+        "--checkpoint-every",
+        type=int,
+        default=1000,
+        help="Write checkpoint state every N output rows.",
+    )
+
+
+def _add_bulk_lookup_args(parser: argparse.ArgumentParser) -> None:
+    _add_bulk_record_args(parser)
+    parser.add_argument(
+        "--skip-missing",
+        action="store_true",
+        help="Skip missing/suppressed lookup rows instead of writing null-valued records.",
+    )
+
+
+def _add_bulk_mapping_args(parser: argparse.ArgumentParser) -> None:
+    _add_bulk_record_args(parser)
+    parser.add_argument(
+        "--target-sources",
+        required=True,
+        help="Comma-separated target vocabularies.",
+    )
+    parser.add_argument(
+        "--max-results-per-code",
+        type=int,
+        default=50,
+        help="Maximum target mappings per input code.",
+    )
+    parser.add_argument(
+        "--max-depth",
+        type=int,
+        default=0,
+        help="Hierarchy fallback depth for broader/narrower mapping.",
+    )
+    parser.add_argument(
+        "--include-target-ancestors",
+        action="store_true",
+        help="Also include broader target ancestors from exact same-CUI target mappings.",
+    )
+    parser.add_argument(
+        "--include-target-descendants",
+        action="store_true",
+        help="Also include narrower target descendants from exact same-CUI target mappings.",
+    )
+
+
+def _add_bulk_hierarchy_args(parser: argparse.ArgumentParser) -> None:
+    _add_bulk_record_args(parser)
+    parser.add_argument(
+        "--direction",
+        choices=_HIERARCHY_DIRECTIONS,
+        required=True,
+        help="Hierarchy direction.",
+    )
+    parser.add_argument(
+        "--max-depth",
+        type=int,
+        default=5,
+        help="Maximum depth for ancestors or descendants. Parents and children are direct only.",
+    )
+
+
+def _add_bulk_patient_friendly_args(parser: argparse.ArgumentParser) -> None:
+    _add_bulk_record_args(parser)
+    parser.add_argument("--max-depth", type=int, default=5)
 
 
 def _add_lookup_args(parser: argparse.ArgumentParser) -> None:
@@ -639,6 +774,83 @@ def run_mapping_conceptmap(args: argparse.Namespace) -> int:
     return 0
 
 
+def run_bulk_lookup(args: argparse.Namespace) -> int:
+    sources = normalize_sources(args.sources)
+    return _run_bulk_record_export(
+        args,
+        sources=sources,
+        cache_sources=sources,
+        command="bulk lookup",
+        allow_resume=True,
+        row_factory=lambda codes, engine: iter_lookup_bulk(
+            codes,
+            engine=engine,
+            batch_size=args.batch_size,
+            include_missing=not args.skip_missing,
+        ),
+    )
+
+
+def run_bulk_mapping(args: argparse.Namespace) -> int:
+    sources = normalize_sources(args.sources)
+    target_sources = normalize_sources(args.target_sources)
+    return _run_bulk_record_export(
+        args,
+        sources=sources,
+        cache_sources=(*sources, *target_sources),
+        command="bulk map",
+        allow_resume=False,
+        row_factory=lambda codes, engine: iter_mapping_bulk(
+            codes,
+            engine=engine,
+            target_sources=target_sources,
+            batch_size=args.batch_size,
+            max_results_per_code=args.max_results_per_code,
+            max_depth=args.max_depth,
+            include_target_ancestors=args.include_target_ancestors,
+            include_target_descendants=args.include_target_descendants,
+        ),
+        metadata={"target_sources": list(target_sources), "max_depth": args.max_depth},
+    )
+
+
+def run_bulk_hierarchy(args: argparse.Namespace) -> int:
+    sources = normalize_sources(args.sources)
+    return _run_bulk_record_export(
+        args,
+        sources=sources,
+        cache_sources=sources,
+        command="bulk hierarchy",
+        allow_resume=False,
+        row_factory=lambda codes, engine: iter_hierarchy_bulk(
+            codes,
+            engine=engine,
+            direction=args.direction,
+            batch_size=args.batch_size,
+            max_depth=args.max_depth,
+        ),
+        metadata={"direction": args.direction, "max_depth": args.max_depth},
+    )
+
+
+def run_bulk_patient_friendly(args: argparse.Namespace) -> int:
+    sources = normalize_sources(args.sources)
+    return _run_bulk_record_export(
+        args,
+        sources=sources,
+        cache_sources=sources,
+        command="bulk patient-friendly",
+        allow_resume=True,
+        row_factory=lambda codes, engine: iter_patient_friendly_bulk(
+            codes,
+            engine=engine,
+            batch_size=args.batch_size,
+            max_depth=args.max_depth,
+        ),
+        metadata={"max_depth": args.max_depth},
+    )
+
+
 def run_lookup(args: argparse.Namespace) -> int:
     try:
         import duckdb
@@ -866,6 +1078,106 @@ def run_search_names(args: argparse.Namespace) -> int:
     return 0
 
 
+def _run_bulk_record_export(
+    args: argparse.Namespace,
+    *,
+    sources: tuple[str, ...],
+    cache_sources: tuple[str, ...],
+    command: str,
+    row_factory,
+    allow_resume: bool,
+    metadata: dict[str, object] | None = None,
+) -> int:
+    try:
+        import duckdb
+    except ImportError as exc:
+        raise SystemExit("DuckDB is required. Install medterm4ds[duckdb].") from exc
+
+    if args.resume and not allow_resume:
+        raise SystemExit(
+            f"{command} can write multiple rows per code, so append/resume is not supported."
+        )
+
+    db_path = Path(args.db)
+    if not db_path.exists():
+        raise SystemExit(f"Database not found: {db_path}")
+
+    output_path = Path(args.output)
+    output_format = args.format or _bulk_record_format_from_path(output_path)
+    checkpoint_path = Path(args.checkpoint) if args.checkpoint else default_checkpoint_path(output_path)
+    config = _local_lite_config_from_args(args)
+
+    resume_position = (
+        read_output_position(output_path, output_format)
+        if args.resume
+        else OutputPosition()
+    )
+    remaining_limit = None
+    if args.limit is not None:
+        remaining_limit = max(args.limit - resume_position.rows, 0)
+
+    progress = _Progress(enabled=args.progress, initial_rows=resume_position.rows)
+    con = duckdb.connect(str(db_path), read_only=True)
+    try:
+        if args.progress:
+            counts = count_source_codes(con, sources)
+            total = sum(counts.values())
+            if args.limit is not None:
+                total = min(total, args.limit)
+            remaining = max(total - resume_position.rows, 0)
+            progress.print(f"sources={dict(sorted(counts.items()))} total={total:,} remaining={remaining:,}")
+            if resume_position.has_rows:
+                progress.print(
+                    "resuming after "
+                    f"{resume_position.last_code.source}:{resume_position.last_code.code} "
+                    f"({resume_position.rows:,} existing rows)"
+                )
+
+        engine = LocalLiteEngine(
+            con,
+            config=config,
+            progress=progress.print if args.progress else None,
+        )
+        if not args.no_prepare_cache:
+            start = time.perf_counter()
+            engine.prepare_cache(cache_sources, create_indexes=args.cache_indexes)
+            progress.print(f"prepared cache in {time.perf_counter() - start:.2f}s")
+
+        codes = iter_source_codes(
+            con,
+            sources,
+            fetch_size=args.fetch_size,
+            limit=remaining_limit,
+            resume_after=resume_position.last_code if resume_position.has_rows else None,
+        )
+        rows = row_factory(codes, engine)
+        checkpoint_metadata = {
+            "command": command,
+            "db": str(db_path),
+            "sources": list(sources),
+            "memory_profile": args.memory_profile,
+            "limit": args.limit,
+            **(metadata or {}),
+        }
+        final_position = write_checkpointed_rows(
+            rows,
+            output_path,
+            output_format=output_format,
+            checkpoint_path=checkpoint_path,
+            append=args.resume and output_path.exists(),
+            checkpoint_every=args.checkpoint_every,
+            initial_position=resume_position,
+            metadata=checkpoint_metadata,
+            on_row=progress.record_row,
+        )
+    finally:
+        con.close()
+
+    progress.print(f"wrote {final_position.rows:,} rows to {output_path}")
+    progress.print(f"checkpoint {checkpoint_path}")
+    return 0
+
+
 def _local_lite_config_from_args(args: argparse.Namespace):
     return local_lite_config(
         args.memory_profile,
@@ -896,6 +1208,15 @@ def _record_format_from_path(path: Path) -> str:
     if suffix == ".csv":
         return "csv"
     raise SystemExit("Could not infer output format. Use --format json, jsonl, or csv.")
+
+
+def _bulk_record_format_from_path(path: Path) -> str:
+    suffix = path.suffix.lower()
+    if suffix == ".jsonl":
+        return "jsonl"
+    if suffix == ".csv":
+        return "csv"
+    raise SystemExit("Could not infer output format. Use --format jsonl or csv.")
 
 
 def _code_source_pairs(codes: list[str], sources: list[str]) -> list[tuple[str, str]]:
