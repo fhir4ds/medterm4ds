@@ -52,6 +52,7 @@ make parity-smoke
 make acceptance-smoke
 make bulk-validation-smoke
 make mapping-quality-smoke
+make build
 ```
 
 Install extras as needed:
@@ -79,6 +80,25 @@ infos = get_code_infos(
 )
 ```
 
+Historical, obsolete, and NDC inputs are handled by `resolve_codes(...)`.
+Resolution is explicit for normal code systems and automatic for `source="NDC"`
+when a service receives an NDC input.
+
+```python
+from medterm4ds import CodeRef, resolve_codes
+
+rows = resolve_codes(
+    [CodeRef("NDC", "0002-0821-01")],
+    engine=engine,
+)
+```
+
+Resolution rows preserve the input, the current/effective code when one is
+available, `status`, `match_type`, `normalized_code`, candidate replacements,
+and `matched_via` provenance. Lookup, mapping, patient-friendly, API, and MCP
+surfaces accept `resolve_mode` where resolving historical inputs should be
+explicit.
+
 The discovery vertical slice exposes inventory and search helpers:
 
 ```python
@@ -104,6 +124,19 @@ mappings = get_code_mappings(
     [CodeRef("ICD10CM", "E11.9")],
     engine=engine,
     target_sources=["SNOMEDCT_US"],
+)
+```
+
+The valueset optimization slice is `optimize_codes(...)`. It uses same-source
+hierarchy relationships to compact a list of leaf codes into include/exclude
+rules.
+
+```python
+from medterm4ds import CodeRef, optimize_codes
+
+result = optimize_codes(
+    [CodeRef("ICD10CM", "E11.40"), CodeRef("ICD10CM", "E11.41")],
+    engine=engine,
 )
 ```
 
@@ -274,6 +307,30 @@ medterm4ds conceptmap mapping \
   --output icd10_to_snomed_conceptmap.json \
   --format fhir-json
 ```
+
+For historical/obsolete input resolution:
+
+```bash
+medterm4ds resolve \
+  --db /mnt/d/medterm/data/umls_local.duckdb \
+  --source NDC \
+  --code 0002-0821-01 \
+  --format table
+```
+
+For valueset optimization:
+
+```bash
+medterm4ds optimize \
+  --db /mnt/d/medterm/data/umls_local.duckdb \
+  --source ICD10CM \
+  --code E11.40 \
+  --code E11.41 \
+  --format table
+```
+
+Single-command lookup and map support `--resolve-mode resolve_current` when
+historical inputs should be mapped forward before the operation.
 
 For terminology discovery:
 
@@ -468,6 +525,30 @@ flags such as hierarchy fallback, many targets for one source code, broad target
 display names, and low source/target name overlap. It is a triage aid, not a
 clinical validation substitute.
 
+## Data Setup
+
+The CLI can download UTS release files with a UMLS API key and build the
+minimal LocalLite DuckDB schema:
+
+```bash
+export UMLS_API_KEY=...
+
+medterm4ds data download \
+  --output-dir data/downloads \
+  --release-type umls-full-release \
+  --extract
+
+medterm4ds data build-duckdb \
+  --rrf-dir data/downloads/<extracted-release>/META \
+  --output-db data/umls_local.duckdb
+
+medterm4ds data verify \
+  --db data/umls_local.duckdb
+```
+
+The builder loads `MRCONSO.RRF`, `MRREL.RRF`, and `MRSAT.RRF` into the compact
+tables used by LocalLite. `MRSAT.RRF` is needed for NDC to RxCUI resolution.
+
 ## API
 
 The API is a thin FastAPI wrapper over the same service layer. It is configured
@@ -487,12 +568,14 @@ Supported endpoints:
 
 - `GET /health`
 - `POST /lookup`
+- `POST /resolve`
 - `POST /sources`
 - `POST /source-stats`
 - `POST /sample-codes`
 - `POST /code-ttys`
 - `POST /search-names`
 - `POST /map`
+- `POST /optimize`
 - `POST /hierarchy`
 - `POST /patient-friendly`
 - `POST /conceptmap/patient-friendly`
@@ -599,6 +682,7 @@ Registered tools:
 - `sample_codes`
 - `code_ttys`
 - `search_names`
+- `resolve_codes`
 - `discover`
 - `cross_reference`
 - `diagnosis_codes`
@@ -617,6 +701,7 @@ Registered tools:
 - `guideline_fulltext`
 - `guidelines_for_code`
 - `map_codes`
+- `optimize`
 - `code_relations`
 - `get_parents`
 - `get_children`
@@ -629,6 +714,8 @@ Registered tools:
 The MCP tools return structured dictionaries/lists rather than ASCII trees, so
 callers can use fields such as `relationship`, `depth`, `match_type`,
 `match_depth`, source/target atom metadata, and `matched_via` directly.
+Tools that may produce wider output also accept `output_format="table"` or
+`output_format="tree"` for compact ASCII output.
 Domain tools such as `diagnosis_codes`, `lab_codes`, `procedure_codes`,
 `search_drug`, and `vaccine_codes` are wrappers over the same search, lookup,
 map, and hierarchy services.
@@ -678,3 +765,18 @@ Measured profiles on `/mnt/d/medterm/data/umls_local.duckdb`:
 
 DuckDB's memory limit is not a strict cap on total Python process RSS. It limits
 DuckDB-managed memory, while Python and some DuckDB allocations can exceed it.
+
+## Packaging
+
+Build a wheel and source distribution:
+
+```bash
+make build
+```
+
+Publish targets are available once credentials are configured for Twine:
+
+```bash
+make publish-test
+make publish
+```

@@ -7,6 +7,7 @@ from collections.abc import Sequence
 from medterm4ds.core.models import CodeMapping, CodeRef
 from medterm4ds.core.normalize import normalize_source
 from medterm4ds.engines.base import MappingEngine
+from medterm4ds.services.resolution import effective_code_refs
 
 
 def get_code_mappings(
@@ -18,6 +19,7 @@ def get_code_mappings(
     max_depth: int = 0,
     include_target_ancestors: bool = False,
     include_target_descendants: bool = False,
+    resolve_mode: str = "active_only",
 ) -> list[CodeMapping]:
     """Return same-CUI active target mappings for one or many codes."""
     if max_results_per_code < 1:
@@ -31,8 +33,13 @@ def get_code_mappings(
     normalized_targets = tuple(dict.fromkeys(normalize_source(source) for source in target_sources))
     if not normalized_targets:
         raise ValueError("target_sources must not be empty")
-    return engine.get_code_mappings(
+    effective_codes, _resolutions = effective_code_refs(
         normalized_codes,
+        engine=engine,
+        resolve_mode=resolve_mode,
+    )
+    return engine.get_code_mappings(
+        effective_codes,
         target_sources=normalized_targets,
         max_results_per_code=max_results_per_code,
         max_depth=max_depth,

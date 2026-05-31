@@ -10,8 +10,10 @@ from medterm4ds.core.models import (
     CodeMapping,
     CodeRef,
     CodeRelation,
+    CodeResolution,
     FriendlyNameResult,
     NameSearchResult,
+    OptimizeResult,
     SourceStats,
 )
 
@@ -104,12 +106,37 @@ class PatientFriendlyEngine(Protocol):
         ...
 
 
+class ResolutionEngine(Protocol):
+    """Batch-first input-code resolution engine."""
+
+    def resolve_codes(self, codes: Sequence[CodeRef]) -> list[CodeResolution]:
+        """Resolve active, historical, obsolete, and NDC code inputs."""
+        ...
+
+
+class OptimizeEngine(Protocol):
+    """Hierarchy-backed valueset optimization engine."""
+
+    def optimize_codes(
+        self,
+        codes: Sequence[CodeRef],
+        *,
+        relationship: str | None = None,
+        output_format: str = "compact",
+        include_codes: bool = False,
+    ) -> OptimizeResult:
+        """Compact a code list into include/exclude hierarchy rules."""
+        ...
+
+
 class TerminologyEngine(
     LookupEngine,
     HierarchyEngine,
     MappingEngine,
     DiscoveryEngine,
     PatientFriendlyEngine,
+    ResolutionEngine,
+    OptimizeEngine,
     Protocol,
 ):
     """Shared terminology engine contract for services.

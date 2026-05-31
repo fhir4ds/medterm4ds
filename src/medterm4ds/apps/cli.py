@@ -8,11 +8,14 @@ import time
 from pathlib import Path
 
 from medterm4ds.core.config import LOCAL_LITE_MEMORY_PROFILES, local_lite_config
+from medterm4ds.core.models import CodeRef
 from medterm4ds.engines.duckdb import LocalLiteEngine
 from medterm4ds.outputs import (
     OutputPosition,
     default_checkpoint_path,
     read_output_position,
+    render_table,
+    render_tree,
     write_checkpointed_rows,
     write_csv,
     write_fhir_concept_map,
@@ -25,6 +28,11 @@ from medterm4ds.services.bulk import (
     iter_patient_friendly_bulk,
 )
 from medterm4ds.services.conceptmap import iter_concept_map, iter_mapping_concept_map
+from medterm4ds.services.data_setup import (
+    build_duckdb_from_rrf,
+    download_release,
+    verify_duckdb,
+)
 from medterm4ds.services.discovery import (
     get_code_ttys,
     get_source_stats,
@@ -40,6 +48,8 @@ from medterm4ds.services.inventory import (
 )
 from medterm4ds.services.lookup import get_code_infos
 from medterm4ds.services.mapping import get_code_mappings
+from medterm4ds.services.optimize import optimize_codes
+from medterm4ds.services.resolution import resolve_codes
 
 _HIERARCHY_DIRECTIONS = ("parents", "children", "ancestors", "descendants")
 
@@ -95,6 +105,14 @@ def build_parser() -> argparse.ArgumentParser:
     _add_mapping_args(mapping)
     mapping.set_defaults(func=run_mapping)
 
+    resolve = subparsers.add_parser("resolve", help="Resolve active, obsolete, and NDC inputs.")
+    _add_resolve_args(resolve)
+    resolve.set_defaults(func=run_resolve)
+
+    optimize = subparsers.add_parser("optimize", aliases=["opt", "optimise"], help="Optimize valueset codes.")
+    _add_optimize_args(optimize)
+    optimize.set_defaults(func=run_optimize)
+
     sources = subparsers.add_parser("sources", help="List terminology source statistics.")
     _add_sources_args(sources)
     sources.set_defaults(func=run_source_stats)
@@ -127,6 +145,18 @@ def build_parser() -> argparse.ArgumentParser:
         )
         _add_hierarchy_args(hierarchy_command)
         hierarchy_command.set_defaults(func=run_hierarchy)
+
+    data = subparsers.add_parser("data", help="Download and build terminology data.")
+    data_subparsers = data.add_subparsers(dest="data_command", required=True)
+    data_download = data_subparsers.add_parser("download", help="Download a UTS release zip.")
+    _add_data_download_args(data_download)
+    data_download.set_defaults(func=run_data_download)
+    data_build = data_subparsers.add_parser("build-duckdb", help="Build the LocalLite DuckDB database from RRF files.")
+    _add_data_build_args(data_build)
+    data_build.set_defaults(func=run_data_build_duckdb)
+    data_verify = data_subparsers.add_parser("verify", help="Verify a LocalLite DuckDB database.")
+    _add_data_verify_args(data_verify)
+    data_verify.set_defaults(func=run_data_verify)
 
     return parser
 
@@ -351,13 +381,19 @@ def _add_lookup_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--source", action="append", required=True, help="Source vocabulary.")
     parser.add_argument("--code", action="append", required=True, help="Code to look up.")
     parser.add_argument(
+        "--resolve-mode",
+        choices=("active_only", "resolve_current", "historical"),
+        default="active_only",
+        help="Whether obsolete/NDC inputs should resolve before lookup.",
+    )
+    parser.add_argument(
         "--output",
         default=None,
         help="Optional output path. Defaults to stdout JSON.",
     )
     parser.add_argument(
         "--format",
-        choices=("json", "jsonl", "csv"),
+        choices=("json", "jsonl", "csv", "table", "tree"),
         default=None,
         help="Output format. Defaults to output extension, or JSON for stdout.",
     )
@@ -456,13 +492,53 @@ def _add_mapping_args(parser: argparse.ArgumentParser) -> None:
         help="Also include narrower target descendants from exact same-CUI target mappings.",
     )
     parser.add_argument(
+        "--resolve-mode",
+        choices=("active_only", "resolve_current", "historical"),
+        default="active_only",
+        help="Whether obsolete/NDC inputs should resolve before mapping.",
+    )
+    parser.add_argument(
         "--output",
         default=None,
         help="Optional output path. Defaults to stdout JSON.",
     )
     parser.add_argument(
         "--format",
-        choices=("json", "jsonl", "csv"),
+        choices=("json", "jsonl", "csv", "table", "tree"),
+        default=None,
+        help="Output format. Defaults to output extension, or JSON for stdout.",
+    )
+
+
+def _add_resolve_args(parser: argparse.ArgumentParser) -> None:
+    _add_common_engine_args(parser)
+    parser.add_argument("--source", action="append", required=True, help="Source vocabulary.")
+    parser.add_argument("--code", action="append", required=True, help="Code to resolve.")
+    parser.add_argument("--output", default=None, help="Optional output path. Defaults to stdout JSON.")
+    parser.add_argument(
+        "--format",
+        choices=("json", "jsonl", "csv", "table", "tree"),
+        default=None,
+        help="Output format. Defaults to output extension, or JSON for stdout.",
+    )
+
+
+def _add_optimize_args(parser: argparse.ArgumentParser) -> None:
+    _add_common_engine_args(parser)
+    parser.add_argument("--source", required=True, help="Source vocabulary for all codes.")
+    parser.add_argument("--code", action="append", required=True, help="Code to optimize.")
+    parser.add_argument("--relationship", default=None, help="Hierarchy relationship override.")
+    parser.add_argument(
+        "--output-format",
+        choices=("compact", "flat"),
+        default="compact",
+        help="Optimize rule format.",
+    )
+    parser.add_argument("--include-codes", action="store_true")
+    parser.add_argument("--output", default=None, help="Optional output path. Defaults to stdout JSON.")
+    parser.add_argument(
+        "--format",
+        choices=("json", "jsonl", "csv", "table", "tree"),
         default=None,
         help="Output format. Defaults to output extension, or JSON for stdout.",
     )
@@ -556,6 +632,34 @@ def _add_search_names_args(parser: argparse.ArgumentParser) -> None:
         choices=("json", "jsonl", "csv"),
         default=None,
         help="Output format. Defaults to output extension, or JSON for stdout.",
+    )
+
+
+def _add_data_download_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--api-key", default=None, help="UMLS/UTS API key. Defaults to UMLS_API_KEY.")
+    parser.add_argument(
+        "--release-type",
+        default="umls-full-release",
+        help="UTS releaseType, for example umls-full-release or rxnorm-full-monthly-release.",
+    )
+    parser.add_argument("--current", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument("--output-dir", required=True, help="Directory for downloaded files.")
+    parser.add_argument("--extract", action="store_true", help="Extract the downloaded zip.")
+
+
+def _add_data_build_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--rrf-dir", required=True, help="Directory containing MRCONSO.RRF, MRREL.RRF, and MRSAT.RRF.")
+    parser.add_argument("--output-db", required=True, help="DuckDB database path to create.")
+    parser.add_argument("--replace", action="store_true", help="Replace output database if it exists.")
+    parser.add_argument("--batch-size", type=int, default=100_000)
+
+
+def _add_data_verify_args(parser: argparse.ArgumentParser) -> None:
+    _add_common_engine_args(parser)
+    parser.add_argument(
+        "--sources",
+        default="ICD10CM,SNOMEDCT_US,RXNORM,LNC,CVX,CPT,HCPCS",
+        help="Comma-separated source vocabularies to verify.",
     )
 
 
@@ -872,7 +976,7 @@ def run_lookup(args: argparse.Namespace) -> int:
     con = duckdb.connect(str(db_path), read_only=True)
     try:
         engine = LocalLiteEngine(con, config=config)
-        infos = get_code_infos(refs, engine=engine)
+        infos = get_code_infos(refs, engine=engine, resolve_mode=args.resolve_mode)
     finally:
         con.close()
 
@@ -881,6 +985,64 @@ def run_lookup(args: argparse.Namespace) -> int:
         for info, (code, source) in zip(infos, refs, strict=True)
     ]
     _write_record_results(rows, output=args.output, output_format=args.format)
+    return 0
+
+
+def run_resolve(args: argparse.Namespace) -> int:
+    try:
+        import duckdb
+    except ImportError as exc:
+        raise SystemExit("DuckDB is required. Install medterm4ds[duckdb].") from exc
+
+    db_path = Path(args.db)
+    if not db_path.exists():
+        raise SystemExit(f"Database not found: {db_path}")
+
+    refs = _code_source_pairs(args.code, args.source)
+    con = duckdb.connect(str(db_path), read_only=True)
+    try:
+        engine = LocalLiteEngine(con, config=_local_lite_config_from_args(args))
+        rows = [
+            resolution.to_dict()
+            for resolution in resolve_codes(refs, engine=engine)
+        ]
+    finally:
+        con.close()
+
+    _write_record_results(rows, output=args.output, output_format=args.format)
+    return 0
+
+
+def run_optimize(args: argparse.Namespace) -> int:
+    try:
+        import duckdb
+    except ImportError as exc:
+        raise SystemExit("DuckDB is required. Install medterm4ds[duckdb].") from exc
+
+    db_path = Path(args.db)
+    if not db_path.exists():
+        raise SystemExit(f"Database not found: {db_path}")
+
+    refs = [CodeRef(source=args.source, code=code) for code in args.code]
+    con = duckdb.connect(str(db_path), read_only=True)
+    try:
+        engine = LocalLiteEngine(con, config=_local_lite_config_from_args(args))
+        result = optimize_codes(
+            refs,
+            engine=engine,
+            relationship=args.relationship,
+            output_format=args.output_format,
+            include_codes=args.include_codes,
+        )
+    finally:
+        con.close()
+
+    payload = result.to_dict(include_codes=args.include_codes)
+    if args.format in {"table", "csv", "jsonl"}:
+        rows = payload["rules"]
+        _write_record_results(rows, output=args.output, output_format=args.format)
+    else:
+        _write_payload(payload, output=args.output, output_format=args.format)
     return 0
 
 
@@ -951,6 +1113,7 @@ def run_mapping(args: argparse.Namespace) -> int:
             max_depth=args.max_depth,
             include_target_ancestors=args.include_target_ancestors,
             include_target_descendants=args.include_target_descendants,
+            resolve_mode=args.resolve_mode,
         )
     finally:
         con.close()
@@ -1075,6 +1238,38 @@ def run_search_names(args: argparse.Namespace) -> int:
         output=args.output,
         output_format=args.format,
     )
+    return 0
+
+
+def run_data_download(args: argparse.Namespace) -> int:
+    path = download_release(
+        output_dir=args.output_dir,
+        api_key=args.api_key,
+        release_type=args.release_type,
+        current=args.current,
+        extract=args.extract,
+    )
+    print(_json_dumps({"downloaded": str(path)}), file=sys.stdout)
+    return 0
+
+
+def run_data_build_duckdb(args: argparse.Namespace) -> int:
+    path = build_duckdb_from_rrf(
+        rrf_dir=args.rrf_dir,
+        output_db=args.output_db,
+        replace=args.replace,
+        batch_size=args.batch_size,
+    )
+    print(_json_dumps({"db": str(path), "status": "ok"}), file=sys.stdout)
+    return 0
+
+
+def run_data_verify(args: argparse.Namespace) -> int:
+    report = verify_duckdb(
+        args.db,
+        sources=normalize_sources(args.sources),
+    )
+    print(_json_dumps(report), file=sys.stdout)
     return 0
 
 
@@ -1207,6 +1402,8 @@ def _record_format_from_path(path: Path) -> str:
         return "jsonl"
     if suffix == ".csv":
         return "csv"
+    if suffix == ".txt":
+        return "table"
     raise SystemExit("Could not infer output format. Use --format json, jsonl, or csv.")
 
 
@@ -1242,10 +1439,38 @@ def _write_record_results(
             write_jsonl(rows, output_path)
         elif resolved_format == "csv":
             write_csv(rows, output_path)
+        elif resolved_format == "table":
+            output_path.write_text(render_table(rows) + "\n", encoding="utf-8")
+        elif resolved_format == "tree":
+            output_path.write_text(render_tree({"results": rows}) + "\n", encoding="utf-8")
         else:
             raise SystemExit(f"Unsupported output format: {resolved_format}")
     else:
-        print(_json_dumps({"results": rows}), file=sys.stdout)
+        if resolved_format == "table":
+            print(render_table(rows), file=sys.stdout)
+        elif resolved_format == "tree":
+            print(render_tree({"results": rows}), file=sys.stdout)
+        else:
+            print(_json_dumps({"results": rows}), file=sys.stdout)
+
+
+def _write_payload(
+    payload: dict[str, object],
+    *,
+    output: str | None,
+    output_format: str | None,
+) -> None:
+    resolved_format = output_format or (_record_format_from_path(Path(output)) if output else "json")
+    if resolved_format == "tree":
+        text = render_tree(payload)
+    elif resolved_format == "table" and isinstance(payload.get("rules"), list):
+        text = render_table(payload["rules"])  # type: ignore[arg-type]
+    else:
+        text = _json_dumps(payload)
+    if output:
+        Path(output).write_text(text if text.endswith("\n") else f"{text}\n", encoding="utf-8")
+    else:
+        print(text, file=sys.stdout)
 
 
 def _missing_code_info(*, code: str, source: str) -> dict[str, object]:

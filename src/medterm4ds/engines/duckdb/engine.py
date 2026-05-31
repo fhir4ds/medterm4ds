@@ -22,8 +22,11 @@ from medterm4ds.core.models import (
     CodeMapping,
     CodeRef,
     CodeRelation,
+    CodeResolution,
     FriendlyNameResult,
     NameSearchResult,
+    OptimizeResult,
+    OptimizeRule,
     Provenance,
     ProvenanceStep,
     SourceStats,
@@ -41,6 +44,19 @@ _HIERARCHY_RELATIONSHIPS = {
     "children": "child",
     "ancestors": "ancestor",
     "descendants": "descendant",
+}
+_REPLACEMENT_RELAS = (
+    "replaced_by",
+    "same_as",
+    "possibly_replaced_by",
+    "mapped_to",
+    "moved_to",
+)
+_DEFAULT_OPTIMIZE_REL = {
+    "ICD10CM": "isa",
+    "ICD10PCS": "isa",
+    "SNOMEDCT_US": "isa",
+    "ATC": "isa",
 }
 
 _BROAD_CHV_NAMES = {
@@ -151,6 +167,17 @@ class _Row:
             technical_name=self.technical_name,
             matched_via=self.matched_via,
         )
+
+
+@dataclass(frozen=True)
+class _ReplacementCandidate:
+    code: CodeRef
+    name: str | None
+    cui: str | None
+    aui: str | None
+    tty: str | None
+    suppress: str | None
+    relationship: str | None
 
 
 class LocalLiteEngine:
@@ -380,6 +407,215 @@ class LocalLiteEngine:
                 )
 
         return [lookup.get((ref.source, ref.code)) for ref in ordered]
+
+    def resolve_codes(self, codes: Sequence[CodeRef]) -> list[CodeResolution]:
+        """Resolve active, historical, obsolete, and NDC inputs."""
+        return [self._resolve_code(CodeRef(source=code.source, code=code.code)) for code in codes]
+
+    def optimize_codes(
+        self,
+        codes: Sequence[CodeRef],
+        *,
+        relationship: str | None = None,
+        output_format: str = "compact",
+        include_codes: bool = False,
+    ) -> OptimizeResult:
+        """Optimize a source-specific valueset into hierarchy include/exclude rules."""
+        if output_format not in {"compact", "flat"}:
+            raise ValueError("output_format must be compact or flat")
+        if not codes:
+            return OptimizeResult(
+                source="",
+                relationship=relationship or "isa",
+                rules=(),
+                original_count=0,
+                optimized_count=0,
+                reduction=0.0,
+            )
+        refs = [CodeRef(source=code.source, code=code.code) for code in codes]
+        sources = {ref.source for ref in refs}
+        if len(sources) != 1:
+            raise ValueError("optimize_codes requires all codes to use the same source")
+        source = refs[0].source
+        rel = relationship or _DEFAULT_OPTIMIZE_REL.get(source, "isa")
+        if source in {"ICD10CM", "ICD10PCS"}:
+            return self._optimize_prefix_codes(
+                refs,
+                relationship=rel,
+                output_format=output_format,
+            )
+
+        leaves = self._normalize_optimize_input(refs, rel)
+        remaining = set(leaves)
+        if not remaining:
+            return OptimizeResult(
+                source=source,
+                relationship=rel,
+                rules=(),
+                original_count=len(refs),
+                optimized_count=0,
+                reduction=0.0,
+            )
+
+        ancestor_cache = self._related_code_map(
+            source,
+            sorted(remaining),
+            relationship=rel,
+            upward=True,
+            max_depth=12,
+        )
+        candidate_set = set(remaining)
+        for ancestors in ancestor_cache.values():
+            candidate_set.update(ancestors)
+        leaf_cache = self._leaf_descendants_for_candidates(source, sorted(candidate_set), rel)
+        rules: list[OptimizeRule] = []
+
+        while remaining:
+            best_code: str | None = None
+            best_covered: set[str] = set()
+            best_excluded: set[str] = set()
+            best_score = -1.0
+            candidates = set(remaining)
+            for code in remaining:
+                candidates.update(ancestor_cache.get(code, set()))
+
+            for candidate in sorted(candidates):
+                descendant_leaves = leaf_cache.get(candidate, set())
+                if not descendant_leaves:
+                    descendant_leaves = {candidate}
+                covered = descendant_leaves & remaining
+                if not covered:
+                    continue
+                excluded = descendant_leaves - remaining
+                mentions = 1 + len(excluded)
+                score = len(covered) / mentions
+                if (
+                    score > best_score
+                    or (
+                        score == best_score
+                        and (
+                            len(excluded) < len(best_excluded)
+                            or (best_code is not None and candidate > best_code)
+                        )
+                    )
+                ):
+                    best_code = candidate
+                    best_covered = covered
+                    best_excluded = excluded
+                    best_score = score
+
+            if best_code is None:
+                best_code = min(remaining)
+                best_covered = {best_code}
+                best_excluded = set()
+
+            if output_format == "flat":
+                rules.append(
+                    OptimizeRule(
+                        include=CodeRef(source, best_code),
+                        covered_codes=tuple(CodeRef(source, code) for code in sorted(best_covered)),
+                    )
+                )
+                rules.extend(
+                    OptimizeRule(include=CodeRef(source, code))
+                    for code in sorted(best_excluded)
+                )
+            else:
+                rules.append(
+                    OptimizeRule(
+                        include=CodeRef(source, best_code),
+                        exclude=tuple(CodeRef(source, code) for code in sorted(best_excluded)),
+                        covered_codes=tuple(CodeRef(source, code) for code in sorted(best_covered)),
+                        excluded_codes=tuple(CodeRef(source, code) for code in sorted(best_excluded)),
+                    )
+                )
+            remaining -= best_covered
+
+        reduction = 0.0
+        if refs:
+            reduction = round((1 - (len(rules) / len(refs))) * 100, 2)
+        return OptimizeResult(
+            source=source,
+            relationship=rel,
+            rules=tuple(rules),
+            original_count=len(refs),
+            optimized_count=len(rules),
+            reduction=reduction,
+        )
+
+    def _optimize_prefix_codes(
+        self,
+        refs: Sequence[CodeRef],
+        *,
+        relationship: str,
+        output_format: str,
+    ) -> OptimizeResult:
+        source = refs[0].source
+        active_codes = self._active_source_code_set(source)
+        input_codes = {ref.code for ref in refs}
+        leaves: set[str] = set()
+        for code in input_codes:
+            descendant_leaves = _prefix_leaf_descendants(code, active_codes)
+            leaves.update(descendant_leaves or {code})
+        remaining = set(leaves)
+        ancestor_cache = {
+            code: _prefix_ancestors(code, active_codes)
+            for code in remaining
+        }
+        candidate_set = set(remaining)
+        for ancestors in ancestor_cache.values():
+            candidate_set.update(ancestors)
+        leaf_cache = {
+            candidate: _prefix_leaf_descendants(candidate, active_codes)
+            for candidate in candidate_set
+        }
+        rules: list[OptimizeRule] = []
+        while remaining:
+            best_code: str | None = None
+            best_covered: set[str] = set()
+            best_excluded: set[str] = set()
+            best_score = -1.0
+            candidates = set(remaining)
+            for code in remaining:
+                candidates.update(ancestor_cache.get(code, set()))
+            for candidate in sorted(candidates):
+                descendant_leaves = leaf_cache.get(candidate) or {candidate}
+                covered = descendant_leaves & remaining
+                if not covered:
+                    continue
+                excluded = descendant_leaves - remaining
+                score = len(covered) / (1 + len(excluded))
+                if score > best_score or (score == best_score and len(excluded) < len(best_excluded)):
+                    best_code = candidate
+                    best_covered = covered
+                    best_excluded = excluded
+                    best_score = score
+            if best_code is None:
+                best_code = min(remaining)
+                best_covered = {best_code}
+                best_excluded = set()
+            if output_format == "flat":
+                rules.append(OptimizeRule(include=CodeRef(source, best_code)))
+                rules.extend(OptimizeRule(include=CodeRef(source, code)) for code in sorted(best_excluded))
+            else:
+                rules.append(
+                    OptimizeRule(
+                        include=CodeRef(source, best_code),
+                        exclude=tuple(CodeRef(source, code) for code in sorted(best_excluded)),
+                        covered_codes=tuple(CodeRef(source, code) for code in sorted(best_covered)),
+                        excluded_codes=tuple(CodeRef(source, code) for code in sorted(best_excluded)),
+                    )
+                )
+            remaining -= best_covered
+        reduction = round((1 - (len(rules) / len(refs))) * 100, 2) if refs else 0.0
+        return OptimizeResult(
+            source=source,
+            relationship=relationship,
+            rules=tuple(rules),
+            original_count=len(refs),
+            optimized_count=len(rules),
+            reduction=reduction,
+        )
 
     def get_source_stats(self, sources: Sequence[str] | None = None) -> list[SourceStats]:
         """Return active code and atom counts by source."""
@@ -726,6 +962,539 @@ class LocalLiteEngine:
                 ),
             )
         ]
+
+    def _resolve_code(self, ref: CodeRef) -> CodeResolution:
+        if ref.source == "NDC":
+            return self._resolve_ndc(ref)
+
+        active = self.get_code_infos([ref])[0]
+        if active is not None:
+            return CodeResolution(
+                input=ref,
+                resolved=ref,
+                status="active",
+                match_type="active_exact",
+                input_display=active.name,
+                resolved_display=active.name,
+                input_cui=active.cui,
+                resolved_cui=active.cui,
+                input_aui=active.aui,
+                resolved_aui=active.aui,
+                input_suppress=active.suppress,
+                resolved_suppress=active.suppress,
+                matched_via=Provenance.from_steps(
+                    "active_exact",
+                    [
+                        ProvenanceStep(op="input", source=ref.source, code=ref.code),
+                        ProvenanceStep(
+                            op="active_atom",
+                            source=ref.source,
+                            code=ref.code,
+                            cui=active.cui,
+                            aui=active.aui,
+                            tty=active.tty,
+                            name=active.name,
+                        ),
+                    ],
+                ),
+            )
+
+        historical = self._lookup_any_code(ref)
+        if historical is None:
+            return CodeResolution(
+                input=ref,
+                resolved=None,
+                status="not_found",
+                match_type="not_found",
+                matched_via=Provenance.from_steps(
+                    "not_found",
+                    [ProvenanceStep(op="input", source=ref.source, code=ref.code)],
+                ),
+            )
+
+        replacements = self._replacement_candidates(historical)
+        if len(replacements) == 1:
+            replacement = replacements[0]
+            return CodeResolution(
+                input=ref,
+                resolved=replacement.code,
+                status="replaced",
+                match_type="historical_replacement",
+                input_display=historical.name,
+                resolved_display=replacement.name,
+                input_cui=historical.cui,
+                resolved_cui=replacement.cui,
+                input_aui=historical.aui,
+                resolved_aui=replacement.aui,
+                input_suppress=historical.suppress,
+                resolved_suppress=replacement.suppress,
+                replacement_relationship=replacement.relationship,
+                candidates=(replacement.code,),
+                matched_via=Provenance.from_steps(
+                    "historical_replacement",
+                    [
+                        ProvenanceStep(op="input", source=ref.source, code=ref.code),
+                        ProvenanceStep(
+                            op="historical_atom",
+                            source=ref.source,
+                            code=ref.code,
+                            cui=historical.cui,
+                            aui=historical.aui,
+                            tty=historical.tty,
+                            name=historical.name,
+                            metadata={"suppress": historical.suppress},
+                        ),
+                        ProvenanceStep(
+                            op="replacement",
+                            source=ref.source,
+                            code=ref.code,
+                            target_source=replacement.code.source,
+                            target_code=replacement.code.code,
+                            mode=replacement.relationship,
+                            name=replacement.name,
+                        ),
+                    ],
+                ),
+            )
+        if len(replacements) > 1:
+            return CodeResolution(
+                input=ref,
+                resolved=None,
+                status="ambiguous",
+                match_type="multiple_historical_replacements",
+                input_display=historical.name,
+                input_cui=historical.cui,
+                input_aui=historical.aui,
+                input_suppress=historical.suppress,
+                candidates=tuple(replacement.code for replacement in replacements),
+                matched_via=Provenance.from_steps(
+                    "multiple_historical_replacements",
+                    [
+                        ProvenanceStep(op="input", source=ref.source, code=ref.code),
+                        ProvenanceStep(
+                            op="historical_atom",
+                            source=ref.source,
+                            code=ref.code,
+                            cui=historical.cui,
+                            aui=historical.aui,
+                            tty=historical.tty,
+                            name=historical.name,
+                            metadata={"suppress": historical.suppress},
+                        ),
+                    ],
+                ),
+            )
+
+        status = "historical" if historical.suppress in {"O", "E"} else "suppressed"
+        return CodeResolution(
+            input=ref,
+            resolved=ref,
+            status=status,
+            match_type="historical_exact",
+            input_display=historical.name,
+            resolved_display=historical.name,
+            input_cui=historical.cui,
+            resolved_cui=historical.cui,
+            input_aui=historical.aui,
+            resolved_aui=historical.aui,
+            input_suppress=historical.suppress,
+            resolved_suppress=historical.suppress,
+            matched_via=Provenance.from_steps(
+                "historical_exact",
+                [
+                    ProvenanceStep(op="input", source=ref.source, code=ref.code),
+                    ProvenanceStep(
+                        op="historical_atom",
+                        source=ref.source,
+                        code=ref.code,
+                        cui=historical.cui,
+                        aui=historical.aui,
+                        tty=historical.tty,
+                        name=historical.name,
+                        metadata={"suppress": historical.suppress},
+                    ),
+                ],
+            ),
+        )
+
+    def _active_source_code_set(self, source: str) -> set[str]:
+        rows = self.con.execute(
+            """
+            SELECT DISTINCT CODE
+            FROM mrconso
+            WHERE SAB = ?
+              AND SUPPRESS = 'N'
+              AND CODE IS NOT NULL
+              AND CODE != ''
+            """,
+            [source],
+        ).fetchall()
+        return {str(row[0]) for row in rows}
+
+    def _resolve_ndc(self, ref: CodeRef) -> CodeResolution:
+        candidates = _ndc_candidates(ref.code)
+        if not candidates:
+            return CodeResolution(
+                input=ref,
+                resolved=None,
+                status="not_found",
+                match_type="invalid_ndc",
+                matched_via=Provenance.from_steps(
+                    "invalid_ndc",
+                    [ProvenanceStep(op="input", source=ref.source, code=ref.code)],
+                ),
+            )
+
+        rows = []
+        if self._table_exists("mrsat"):
+            placeholders = ",".join(["?"] * len(candidates))
+            rows = self.con.execute(
+                f"""
+                WITH ranked AS (
+                    SELECT s.ATV AS ndc, c.CODE, c.STR, c.CUI, c.AUI, c.TTY, c.SUPPRESS,
+                           ROW_NUMBER() OVER (
+                               PARTITION BY s.ATV, c.CODE
+                               ORDER BY
+                                   CASE WHEN c.SUPPRESS = 'N' THEN 0 ELSE 1 END,
+                                   CASE c.TTY
+                                       WHEN 'SCD' THEN 0
+                                       WHEN 'SBD' THEN 1
+                                       WHEN 'GPCK' THEN 2
+                                       WHEN 'BPCK' THEN 3
+                                       WHEN 'PSN' THEN 4
+                                       ELSE 5
+                                   END,
+                                   c.AUI
+                           ) AS rn
+                    FROM mrsat s
+                    JOIN mrconso c ON c.SAB = 'RXNORM' AND c.CODE = s.CODE
+                    WHERE s.SAB = 'RXNORM'
+                      AND s.ATN = 'NDC'
+                      AND s.ATV IN ({placeholders})
+                )
+                SELECT ndc, CODE, STR, CUI, AUI, TTY, SUPPRESS
+                FROM ranked
+                WHERE rn = 1
+                ORDER BY
+                    CASE WHEN SUPPRESS = 'N' THEN 0 ELSE 1 END,
+                    ndc,
+                    CODE
+                """,
+                candidates,
+            ).fetchall()
+
+        active_rows = [row for row in rows if row[6] == "N"]
+        selected_rows = active_rows or rows
+        if len({row[1] for row in selected_rows}) == 1 and selected_rows:
+            ndc, rxcui, name, cui, aui, tty, suppress = selected_rows[0]
+            status = "ndc_resolved" if suppress == "N" else "historical"
+            return CodeResolution(
+                input=ref,
+                resolved=CodeRef("RXNORM", rxcui),
+                status=status,
+                match_type="ndc_to_rxcui",
+                input_display=ndc,
+                resolved_display=name,
+                resolved_cui=cui,
+                resolved_aui=aui,
+                resolved_suppress=suppress,
+                normalized_code=ndc,
+                candidates=(CodeRef("RXNORM", rxcui),),
+                matched_via=Provenance.from_steps(
+                    "ndc_to_rxcui",
+                    [
+                        ProvenanceStep(op="input", source=ref.source, code=ref.code),
+                        ProvenanceStep(op="normalize_ndc", source="NDC", code=ndc),
+                        ProvenanceStep(
+                            op="rxnorm_ndc_attribute",
+                            source="NDC",
+                            code=ndc,
+                            target_source="RXNORM",
+                            target_code=rxcui,
+                            cui=cui,
+                            aui=aui,
+                            tty=tty,
+                            name=name,
+                            metadata={"suppress": suppress},
+                        ),
+                    ],
+                ),
+            )
+        if selected_rows:
+            candidate_refs = tuple(CodeRef("RXNORM", row[1]) for row in selected_rows)
+            return CodeResolution(
+                input=ref,
+                resolved=None,
+                status="ambiguous",
+                match_type="multiple_ndc_rxcui_candidates",
+                normalized_code=selected_rows[0][0],
+                candidates=candidate_refs,
+                matched_via=Provenance.from_steps(
+                    "multiple_ndc_rxcui_candidates",
+                    [
+                        ProvenanceStep(op="input", source=ref.source, code=ref.code),
+                        *[
+                            ProvenanceStep(
+                                op="rxnorm_ndc_candidate",
+                                source="NDC",
+                                code=row[0],
+                                target_source="RXNORM",
+                                target_code=row[1],
+                                name=row[2],
+                                metadata={"suppress": row[6]},
+                            )
+                            for row in selected_rows[:20]
+                        ],
+                    ],
+                ),
+            )
+
+        return CodeResolution(
+            input=ref,
+            resolved=None,
+            status="not_found",
+            match_type="ndc_not_found",
+            normalized_code=candidates[0],
+            matched_via=Provenance.from_steps(
+                "ndc_not_found",
+                [
+                    ProvenanceStep(op="input", source=ref.source, code=ref.code),
+                    *[
+                        ProvenanceStep(op="normalize_ndc_candidate", source="NDC", code=candidate)
+                        for candidate in candidates
+                    ],
+                ],
+            ),
+        )
+
+    def _lookup_any_code(self, ref: CodeRef) -> CodeInfo | None:
+        rows = self.con.execute(
+            """
+            SELECT CODE, STR, CUI, AUI, TTY, SUPPRESS
+            FROM mrconso
+            WHERE SAB = ?
+              AND CODE = ?
+            ORDER BY
+                CASE SUPPRESS
+                    WHEN 'N' THEN 0
+                    WHEN 'O' THEN 1
+                    WHEN 'E' THEN 2
+                    ELSE 3
+                END,
+                CASE TTY
+                    WHEN 'PT' THEN 0
+                    WHEN 'MH' THEN 1
+                    WHEN 'LN' THEN 2
+                    ELSE 3
+                END,
+                AUI
+            LIMIT 1
+            """,
+            [ref.source, ref.code],
+        ).fetchone()
+        if rows is None:
+            return None
+        code, name, cui, aui, tty, suppress = rows
+        return CodeInfo(
+            code=CodeRef(ref.source, code),
+            name=name,
+            cui=cui,
+            aui=aui,
+            tty=tty,
+            suppress=suppress,
+        )
+
+    def _replacement_candidates(self, historical: CodeInfo) -> list[_ReplacementCandidate]:
+        if not historical.aui:
+            return []
+        rela_placeholders = ",".join(["?"] * len(_REPLACEMENT_RELAS))
+        params: list[object] = [
+            historical.aui,
+            historical.code.source,
+            *_REPLACEMENT_RELAS,
+            historical.aui,
+            historical.code.source,
+            *_REPLACEMENT_RELAS,
+        ]
+        rows = self.con.execute(
+            f"""
+            WITH candidates AS (
+                SELECT c.CODE, c.STR, c.CUI, c.AUI, c.TTY, c.SUPPRESS, r.RELA
+                FROM mrrel r
+                JOIN mrconso c ON c.AUI = r.AUI2
+                WHERE r.AUI1 = ?
+                  AND c.SAB = ?
+                  AND c.SUPPRESS = 'N'
+                  AND r.RELA IN ({rela_placeholders})
+                UNION ALL
+                SELECT c.CODE, c.STR, c.CUI, c.AUI, c.TTY, c.SUPPRESS, r.RELA
+                FROM mrrel r
+                JOIN mrconso c ON c.AUI = r.AUI1
+                WHERE r.AUI2 = ?
+                  AND c.SAB = ?
+                  AND c.SUPPRESS = 'N'
+                  AND r.RELA IN ({rela_placeholders})
+            ),
+            ranked AS (
+                SELECT *,
+                       ROW_NUMBER() OVER (
+                           PARTITION BY CODE
+                           ORDER BY
+                               CASE RELA
+                                   WHEN 'same_as' THEN 0
+                                   WHEN 'replaced_by' THEN 1
+                                   ELSE 2
+                               END,
+                               CASE TTY
+                                   WHEN 'PT' THEN 0
+                                   WHEN 'MH' THEN 1
+                                   WHEN 'LN' THEN 2
+                                   ELSE 3
+                               END,
+                               AUI
+                       ) AS rn
+                FROM candidates
+            )
+            SELECT CODE, STR, CUI, AUI, TTY, SUPPRESS, RELA
+            FROM ranked
+            WHERE rn = 1
+            ORDER BY CODE
+            LIMIT 25
+            """,
+            params,
+        ).fetchall()
+        output: list[_ReplacementCandidate] = []
+        for code, name, cui, aui, tty, suppress, rela in rows:
+            output.append(_ReplacementCandidate(
+                code=CodeRef(historical.code.source, code),
+                name=name,
+                cui=cui,
+                aui=aui,
+                tty=tty,
+                suppress=suppress,
+                relationship=rela,
+            ))
+        return output
+
+    def _normalize_optimize_input(self, refs: Sequence[CodeRef], relationship: str) -> set[str]:
+        source = refs[0].source
+        input_codes = {ref.code for ref in refs}
+        leaf_map = self._leaf_descendants_for_candidates(source, sorted(input_codes), relationship)
+        leaves: set[str] = set()
+        for code in sorted(input_codes):
+            descendant_leaves = leaf_map.get(code, set())
+            if descendant_leaves:
+                leaves.update(descendant_leaves)
+            else:
+                leaves.add(code)
+        return leaves
+
+    def _leaf_descendants_for_candidates(
+        self,
+        source: str,
+        codes: Sequence[str],
+        relationship: str,
+    ) -> dict[str, set[str]]:
+        descendant_map = self._related_code_map(
+            source,
+            codes,
+            relationship=relationship,
+            upward=False,
+            max_depth=12,
+        )
+        all_descendants = sorted({code for descendants in descendant_map.values() for code in descendants})
+        if not all_descendants:
+            return {code: set() for code in codes}
+        child_map = self._related_code_map(
+            source,
+            all_descendants,
+            relationship=relationship,
+            upward=False,
+            max_depth=1,
+        )
+        non_leaf = {code for code, children in child_map.items() if children}
+        return {
+            code: set(descendants) - non_leaf
+            for code, descendants in descendant_map.items()
+        }
+
+    def _related_code_map(
+        self,
+        source: str,
+        codes: Sequence[str],
+        *,
+        relationship: str,
+        upward: bool,
+        max_depth: int,
+    ) -> dict[str, set[str]]:
+        if not codes:
+            return {}
+        output = {str(code): set() for code in codes}
+        frontier = {str(code): {str(code)} for code in codes}
+        seen = {str(code): {str(code)} for code in codes}
+        for _depth in range(max_depth):
+            frontier_codes = sorted({code for values in frontier.values() for code in values})
+            if not frontier_codes:
+                break
+            direct = self._direct_related_code_map(
+                source,
+                frontier_codes,
+                relationship=relationship,
+                upward=upward,
+            )
+            next_frontier = {origin: set() for origin in frontier}
+            for origin, current_codes in frontier.items():
+                for current in current_codes:
+                    for target in direct.get(current, set()):
+                        if target in seen[origin]:
+                            continue
+                        seen[origin].add(target)
+                        output[origin].add(target)
+                        next_frontier[origin].add(target)
+            frontier = {origin: values for origin, values in next_frontier.items() if values}
+        return output
+
+    def _direct_related_code_map(
+        self,
+        source: str,
+        codes: Sequence[str],
+        *,
+        relationship: str,
+        upward: bool,
+    ) -> dict[str, set[str]]:
+        if not codes:
+            return {}
+        rel_values = _relationship_values(relationship)
+        rel_placeholders = ",".join(["?"] * len(rel_values))
+        source_join = "r.AUI1 = c.AUI" if upward else "r.AUI2 = c.AUI"
+        source_target = "r.AUI2" if upward else "r.AUI1"
+        output = {str(code): set() for code in codes}
+        for chunk in _chunks([str(code) for code in codes], self.query_chunk_size):
+            code_placeholders = ",".join(["?"] * len(chunk))
+            rows = self.con.execute(
+                f"""
+                SELECT DISTINCT c.CODE AS source_code, t.CODE AS target_code
+                FROM mrconso c
+                JOIN mrrel r ON {source_join}
+                JOIN mrconso t ON t.AUI = {source_target}
+                WHERE c.SAB = ?
+                  AND c.SUPPRESS = 'N'
+                  AND c.CODE IN ({code_placeholders})
+                  AND t.SAB = ?
+                  AND t.SUPPRESS = 'N'
+                  AND (r.RELA IN ({rel_placeholders}) OR r.REL IN ({rel_placeholders}))
+                """,
+                [
+                    source,
+                    *chunk,
+                    source,
+                    *rel_values,
+                    *rel_values,
+                ],
+            ).fetchall()
+            for source_code, target_code in rows:
+                output.setdefault(str(source_code), set()).add(str(target_code))
+        return output
 
     def _get_source_code_relations(
         self,
@@ -2447,6 +3216,86 @@ def _dedupe(values: Sequence[str]) -> list[str]:
 def _chunks(values: Sequence[T], size: int) -> Iterator[list[T]]:
     for start in range(0, len(values), size):
         yield list(values[start:start + size])
+
+
+def _ndc_candidates(code: str) -> list[str]:
+    raw = str(code).strip()
+    if not raw:
+        return []
+    if "-" in raw:
+        parts = raw.split("-")
+        if len(parts) != 3 or not all(part.isdigit() for part in parts):
+            return []
+        labeler, product, package = parts
+        if (len(labeler), len(product), len(package)) == (4, 4, 2):
+            return [f"0{labeler}{product}{package}"]
+        if (len(labeler), len(product), len(package)) == (5, 3, 2):
+            return [f"{labeler}0{product}{package}"]
+        if (len(labeler), len(product), len(package)) == (5, 4, 1):
+            return [f"{labeler}{product}0{package}"]
+        if (len(labeler), len(product), len(package)) == (5, 4, 2):
+            return [f"{labeler}{product}{package}"]
+        return []
+    digits = re.sub(r"\D", "", raw)
+    if len(digits) == 11:
+        return [digits]
+    if len(digits) == 10:
+        return _dedupe([
+            f"0{digits[0:4]}{digits[4:8]}{digits[8:10]}",
+            f"{digits[0:5]}0{digits[5:8]}{digits[8:10]}",
+            f"{digits[0:5]}{digits[5:9]}0{digits[9:10]}",
+        ])
+    return []
+
+
+def _relationship_values(relationship: str) -> list[str]:
+    value = str(relationship or "isa")
+    if value.upper() == "PAR" or value.lower() == "isa":
+        return ["isa", "PAR"]
+    return [value]
+
+
+def _prefix_ancestors(code: str, active_codes: set[str]) -> set[str]:
+    ancestors: set[str] = set()
+    for candidate in _prefix_candidates(code):
+        if candidate != code and candidate in active_codes:
+            ancestors.add(candidate)
+    return ancestors
+
+
+def _prefix_leaf_descendants(code: str, active_codes: set[str]) -> set[str]:
+    descendants = {
+        candidate
+        for candidate in active_codes
+        if candidate != code and _is_prefix_descendant(code, candidate)
+    }
+    return {
+        candidate
+        for candidate in descendants
+        if not any(
+            other != candidate and _is_prefix_descendant(candidate, other)
+            for other in descendants
+        )
+    }
+
+
+def _prefix_candidates(code: str) -> list[str]:
+    candidates: list[str] = []
+    current = code
+    while "." in current and len(current) > 1:
+        current = current[:-1]
+        candidates.append(current.rstrip("."))
+    if len(code) > 3:
+        candidates.append(code[:3])
+    return _dedupe([candidate for candidate in candidates if candidate])
+
+
+def _is_prefix_descendant(parent: str, child: str) -> bool:
+    if child == parent:
+        return False
+    if "." in parent:
+        return child.startswith(parent)
+    return child.startswith(parent) and (len(child) == len(parent) or child[len(parent):].startswith("."))
 
 
 def _is_broad_friendly_name(friendly_source: str | None, name: str | None) -> bool:

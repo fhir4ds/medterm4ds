@@ -25,10 +25,14 @@ The core domain records are:
 - `CodeInfo`: active UMLS atom metadata for exact code lookup.
 - `CodeMapping`: source-to-target same-CUI mapping row.
 - `CodeRelation`: one same-source hierarchy relationship row.
+- `CodeResolution`: one input-to-effective-code resolution row for active,
+  historical, obsolete, ambiguous, missing, and NDC inputs.
 - `SourceStats`: code and atom counts for a terminology source.
 - `NameSearchResult`: one active atom name search hit.
 - `FriendlyNameResult`: one patient-friendly display result plus provenance.
 - `ConceptMapRow`: source-to-target mapping row used by exports.
+- `OptimizeResult` and `OptimizeRule`: valueset include/exclude compaction
+  results.
 - `Provenance` and `ProvenanceStep`: structured path showing how a result was
   selected.
 
@@ -55,6 +59,12 @@ Source-to-source mapping is exact same-CUI by default. Broader/narrower mapping
 is opt-in through bounded hierarchy traversal so high-volume exports do not
 silently expand into noisy mappings.
 
+Code resolution is a separate step from lookup and mapping. Normal current-code
+workflows can keep `active_only`, while historical data workflows can resolve
+obsolete or suppressed inputs to current replacements when the source data makes
+that appropriate. NDC inputs are always normalized and resolved through RxNorm
+`MRSAT` NDC attributes before downstream RxNorm workflows.
+
 Memory behavior is controlled through `LocalLiteConfig` and named profiles:
 
 - `fast`: more memory, higher throughput.
@@ -70,6 +80,7 @@ Current services:
 
 - `get_code_info(...)`
 - `get_code_infos(...)`
+- `resolve_codes(...)`
 - `get_source_stats(...)`
 - `sample_source_codes(...)`
 - `get_code_ttys(...)`
@@ -83,6 +94,7 @@ Current services:
 - `get_patient_friendly_names(...)`
 - `get_concept_map(...)`
 - `iter_concept_map(...)`
+- `optimize_codes(...)`
 - source inventory helpers for DuckDB-backed code lists
 
 These functions are batch-first. Single-code workflows should call the same
@@ -91,6 +103,10 @@ batch contract with one code.
 `medterm4ds.ds` wraps these services for pandas or Polars use. DataFrame helpers
 must not add terminology rules; they convert service outputs to tabular records
 and preserve the same output schemas.
+
+`outputs.render` owns compact ASCII table/tree rendering. Service and engine
+layers should continue returning typed records or dictionaries; CLI/MCP adapters
+decide when to render text for human/tool compactness.
 
 `domains/` provides thin workflow names for common clinical use cases and MCP
 compatibility. UMLS-backed tools must delegate to lookup, search, mapping, or
@@ -119,6 +135,11 @@ streams source inventories through the shared bulk iterators, while
 rows that need domain review. These scripts are quality gates around the public
 services, not an alternate mapping engine.
 
+Data setup lives in `services.data_setup` and the CLI `data` namespace. It
+downloads UTS release artifacts, builds the compact DuckDB tables from RRF
+files, and verifies required tables/source counts. Runtime terminology services
+should not know how files were downloaded or built.
+
 ## Interfaces
 
 `apps/cli.py`, `apps/api.py`, and `apps/mcp.py` are intentionally thin:
@@ -127,7 +148,7 @@ services, not an alternate mapping engine.
 - API owns one configured DuckDB engine per process and exposes service
   endpoints.
 - MCP owns one configured DuckDB engine per process and registers structured
-  tools.
+  tools with optional compact ASCII output.
 
 None of these adapters should implement terminology rules.
 

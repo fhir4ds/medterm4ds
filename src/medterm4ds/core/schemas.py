@@ -75,6 +75,29 @@ OUTPUT_SCHEMAS = MappingProxyType(
                 ("atom_count", "integer", False),
             ),
         ),
+        "CodeResolution": _schema(
+            "CodeResolution",
+            (
+                ("source", "string", False),
+                ("code", "string", False),
+                ("resolved_source", "string", True),
+                ("resolved_code", "string", True),
+                ("status", "string", False),
+                ("match_type", "string", False),
+                ("input_display", "string", True),
+                ("resolved_display", "string", True),
+                ("input_cui", "string", True),
+                ("resolved_cui", "string", True),
+                ("input_aui", "string", True),
+                ("resolved_aui", "string", True),
+                ("input_suppress", "string", True),
+                ("resolved_suppress", "string", True),
+                ("replacement_relationship", "string", True),
+                ("normalized_code", "string", True),
+                ("candidates", "array", False),
+                ("matched_via", "object", True),
+            ),
+        ),
         "NameSearchResult": _schema(
             "NameSearchResult",
             (
@@ -153,6 +176,18 @@ OUTPUT_SCHEMAS = MappingProxyType(
                 ("match_type", "string", True),
                 ("match_depth", "integer", False),
                 ("matched_via", "object", True),
+            ),
+        ),
+        "OptimizeResult": _schema(
+            "OptimizeResult",
+            (
+                ("source", "string", False),
+                ("relationship", "string", False),
+                ("strategy", "string", False),
+                ("original_count", "integer", False),
+                ("optimized_count", "integer", False),
+                ("reduction", "number", False),
+                ("rules", "array", False),
             ),
         ),
     }

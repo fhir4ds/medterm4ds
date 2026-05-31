@@ -5,6 +5,8 @@ from medterm4ds import (
     get_code_infos,
     get_code_mappings,
     get_patient_friendly_names,
+    optimize_codes,
+    resolve_codes,
 )
 from medterm4ds.engines.api import RemoteApiEngine
 from medterm4ds.services.discovery import (
@@ -120,6 +122,41 @@ def test_remote_api_engine_implements_service_protocols():
                 }
             ]
         },
+        "/resolve": {
+            "results": [
+                {
+                    "source": "NDC",
+                    "code": "0002-0821-01",
+                    "resolved_source": "RXNORM",
+                    "resolved_code": "12345",
+                    "status": "ndc_resolved",
+                    "match_type": "ndc_to_rxcui",
+                    "input_display": "00002082101",
+                    "resolved_display": "Insulin",
+                    "input_cui": None,
+                    "resolved_cui": "C_RX",
+                    "input_aui": None,
+                    "resolved_aui": "RX_AUI",
+                    "input_suppress": None,
+                    "resolved_suppress": "N",
+                    "replacement_relationship": None,
+                    "normalized_code": "00002082101",
+                    "candidates": [{"source": "RXNORM", "code": "12345"}],
+                    "matched_via": {"strategy": "ndc_to_rxcui", "steps": [{"op": "input"}]},
+                }
+            ]
+        },
+        "/optimize": {
+            "result": {
+                "source": "ICD10CM",
+                "relationship": "isa",
+                "strategy": "greedy_hierarchy",
+                "original_count": 2,
+                "optimized_count": 1,
+                "reduction": 50.0,
+                "rules": [{"include_source": "ICD10CM", "include": "E11", "exclude": []}],
+            }
+        },
     }
 
     def transport(path, payload):
@@ -145,6 +182,11 @@ def test_remote_api_engine_implements_service_protocols():
     samples = sample_source_codes(engine=engine, sources=["ICD10CM"], per_source=1)
     ttys = get_code_ttys([CodeRef("ICD10CM", "E11.9")], engine=engine)
     search = search_names("diabetes", engine=engine, sources=["ICD10CM"], tty_filters=["PT"])
+    resolved = resolve_codes([CodeRef("NDC", "0002-0821-01")], engine=engine)
+    optimized = optimize_codes(
+        [CodeRef("ICD10CM", "E11.40"), CodeRef("ICD10CM", "E11.41")],
+        engine=engine,
+    )
     health = engine.health()
 
     assert infos[0].name == "Type 2 diabetes mellitus"
@@ -157,6 +199,8 @@ def test_remote_api_engine_implements_service_protocols():
     assert samples == [CodeRef("ICD10CM", "E11.9")]
     assert ttys[0].tty == "PT"
     assert search[0].match_type == "contains"
+    assert resolved[0].resolved == CodeRef("RXNORM", "12345")
+    assert optimized.rules[0].include == CodeRef("ICD10CM", "E11")
     assert health["status"] == "ok"
     assert calls[1][1]["target_sources"] == ["SNOMEDCT_US"]
     assert calls[4][1]["sources"] == ["ICD10CM"]

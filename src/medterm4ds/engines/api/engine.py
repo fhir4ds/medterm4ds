@@ -13,8 +13,11 @@ from medterm4ds.core.models import (
     CodeMapping,
     CodeRef,
     CodeRelation,
+    CodeResolution,
     FriendlyNameResult,
     NameSearchResult,
+    OptimizeResult,
+    OptimizeRule,
     Provenance,
     ProvenanceStep,
     SourceStats,
@@ -127,6 +130,30 @@ class RemoteApiEngine:
             "max_depth": max_depth,
         }
         return [_friendly_name_result(row) for row in self._results("/patient-friendly", payload)]
+
+    def resolve_codes(self, codes: Sequence[CodeRef]) -> list[CodeResolution]:
+        payload = {"codes": [_code_payload(code) for code in codes]}
+        return [_code_resolution(row) for row in self._results("/resolve", payload)]
+
+    def optimize_codes(
+        self,
+        codes: Sequence[CodeRef],
+        *,
+        relationship: str | None = None,
+        output_format: str = "compact",
+        include_codes: bool = False,
+    ) -> OptimizeResult:
+        payload = {
+            "codes": [_code_payload(code) for code in codes],
+            "relationship": relationship,
+            "output_format": output_format,
+            "include_codes": include_codes,
+        }
+        response = self._post("/optimize", payload)
+        result = response.get("result")
+        if not isinstance(result, Mapping):
+            raise RuntimeError("Remote API response did not include an optimize result.")
+        return _optimize_result(result)
 
     def health(self) -> Mapping[str, Any]:
         """Return remote API health payload."""
@@ -262,6 +289,69 @@ def _friendly_name_result(row: Mapping[str, Any]) -> FriendlyNameResult:
         match_depth=int(row.get("match_depth") or 0),
         technical_name=row.get("technical_name"),
         matched_via=_provenance(row.get("matched_via")),
+    )
+
+
+def _code_resolution(row: Mapping[str, Any]) -> CodeResolution:
+    resolved = (
+        CodeRef(source=str(row["resolved_source"]), code=str(row["resolved_code"]))
+        if row.get("resolved_source") and row.get("resolved_code")
+        else None
+    )
+    return CodeResolution(
+        input=_code_ref(row),
+        resolved=resolved,
+        status=str(row["status"]),
+        match_type=str(row["match_type"]),
+        input_display=row.get("input_display"),
+        resolved_display=row.get("resolved_display"),
+        input_cui=row.get("input_cui"),
+        resolved_cui=row.get("resolved_cui"),
+        input_aui=row.get("input_aui"),
+        resolved_aui=row.get("resolved_aui"),
+        input_suppress=row.get("input_suppress"),
+        resolved_suppress=row.get("resolved_suppress"),
+        replacement_relationship=row.get("replacement_relationship"),
+        normalized_code=row.get("normalized_code"),
+        candidates=tuple(
+            CodeRef(source=str(candidate["source"]), code=str(candidate["code"]))
+            for candidate in row.get("candidates", [])
+            if isinstance(candidate, Mapping)
+        ),
+        matched_via=_provenance(row.get("matched_via")),
+    )
+
+
+def _optimize_result(row: Mapping[str, Any]) -> OptimizeResult:
+    rules = []
+    for rule in row.get("rules", []):
+        if not isinstance(rule, Mapping):
+            continue
+        source = str(rule.get("include_source") or row.get("source") or "")
+        rules.append(
+            OptimizeRule(
+                include=CodeRef(source, str(rule["include"])),
+                exclude=tuple(CodeRef(source, str(code)) for code in rule.get("exclude", [])),
+                covered_codes=tuple(
+                    CodeRef(source=str(code["source"]), code=str(code["code"]))
+                    for code in rule.get("covered_codes", [])
+                    if isinstance(code, Mapping)
+                ),
+                excluded_codes=tuple(
+                    CodeRef(source=str(code["source"]), code=str(code["code"]))
+                    for code in rule.get("excluded_codes", [])
+                    if isinstance(code, Mapping)
+                ),
+            )
+        )
+    return OptimizeResult(
+        source=str(row.get("source") or ""),
+        relationship=str(row.get("relationship") or "isa"),
+        rules=tuple(rules),
+        original_count=int(row.get("original_count") or 0),
+        optimized_count=int(row.get("optimized_count") or len(rules)),
+        reduction=float(row.get("reduction") or 0.0),
+        strategy=str(row.get("strategy") or "greedy_hierarchy"),
     )
 
 

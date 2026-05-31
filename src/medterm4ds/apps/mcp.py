@@ -14,6 +14,7 @@ from medterm4ds.core.models import CodeRef
 from medterm4ds.domains import evidence as evidence_domain
 from medterm4ds.domains import terminology as terminology_domain
 from medterm4ds.engines.duckdb import LocalLiteEngine
+from medterm4ds.outputs import render_output
 from medterm4ds.services.conceptmap import get_concept_map
 from medterm4ds.services.discovery import (
     get_code_ttys,
@@ -25,7 +26,9 @@ from medterm4ds.services.hierarchy import get_code_relations
 from medterm4ds.services.inventory import DEFAULT_INVENTORY_SOURCES, normalize_sources
 from medterm4ds.services.lookup import get_code_infos
 from medterm4ds.services.mapping import get_code_mappings
+from medterm4ds.services.optimize import optimize_codes
 from medterm4ds.services.patient_friendly import get_patient_friendly_names
+from medterm4ds.services.resolution import resolve_codes
 
 try:
     import duckdb
@@ -117,31 +120,59 @@ class McpRuntime:
         code: str,
         source: str,
         max_depth: int = 5,
-    ) -> dict[str, Any]:
+        output_format: str = "dict",
+    ) -> dict[str, Any] | str:
         result = get_patient_friendly_names(
             [CodeRef(source=source, code=code)],
             engine=self._engine(),
             max_depth=max_depth,
+            resolve_mode="resolve_current",
         )[0]
-        return result.to_dict()
+        return render_output(result.to_dict(), output_format=output_format, title=f"{source}:{code}")
 
     def lookup_code(
         self,
         *,
         code: str,
         source: str,
-    ) -> dict[str, Any] | None:
-        return self.lookup_codes(codes=[code], sources=[source])["results"][0]
+        resolve_mode: str = "active_only",
+        output_format: str = "dict",
+    ) -> dict[str, Any] | str | None:
+        payload = self.lookup_codes(
+            codes=[code],
+            sources=[source],
+            resolve_mode=resolve_mode,
+            output_format="dict",
+        )
+        result = payload["results"][0]
+        if result is None and output_format == "dict":
+            return None
+        return render_output(result or {}, output_format=output_format, title=f"{source}:{code}")
 
     def lookup_codes(
         self,
         *,
         codes: Sequence[str],
         sources: Sequence[str],
-    ) -> dict[str, Any]:
+        resolve_mode: str = "active_only",
+        output_format: str = "dict",
+    ) -> dict[str, Any] | str:
         refs = _code_refs(codes, sources)
-        infos = get_code_infos(refs, engine=self._engine())
-        return {"results": [info.to_dict() if info else None for info in infos]}
+        infos = get_code_infos(refs, engine=self._engine(), resolve_mode=resolve_mode)
+        payload = {"results": [info.to_dict() if info else None for info in infos]}
+        return render_output(payload, output_format=output_format)
+
+    def resolve_codes(
+        self,
+        *,
+        codes: Sequence[str],
+        sources: Sequence[str],
+        output_format: str = "dict",
+    ) -> dict[str, Any] | str:
+        refs = _code_refs(codes, sources)
+        results = resolve_codes(refs, engine=self._engine())
+        payload = {"results": [result.to_dict() for result in results]}
+        return render_output(payload, output_format=output_format)
 
     def source_stats(
         self,
@@ -229,8 +260,21 @@ class McpRuntime:
             max_results_per_code=max_results_per_code,
         )
 
-    def diagnosis_codes(self, *, condition: str, limit: int = 20) -> dict[str, Any]:
-        return terminology_domain.diagnosis_codes(condition, engine=self._engine(), limit=limit)
+    def diagnosis_codes(
+        self,
+        *,
+        condition: str,
+        limit: int = 20,
+        descendant_depth: int | None = None,
+        include_ancestors: bool | None = None,
+    ) -> dict[str, Any]:
+        return terminology_domain.diagnosis_codes(
+            condition,
+            engine=self._engine(),
+            limit=limit,
+            descendant_depth=descendant_depth,
+            include_ancestors=include_ancestors,
+        )
 
     def lab_codes(self, *, lab_test: str, limit: int = 20) -> dict[str, Any]:
         return terminology_domain.lab_codes(lab_test, engine=self._engine(), limit=limit)
@@ -238,8 +282,21 @@ class McpRuntime:
     def lab_value_codes(self, *, clinical_value: str, limit: int = 20) -> dict[str, Any]:
         return terminology_domain.lab_value_codes(clinical_value, engine=self._engine(), limit=limit)
 
-    def procedure_codes(self, *, procedure: str, limit: int = 20) -> dict[str, Any]:
-        return terminology_domain.procedure_codes(procedure, engine=self._engine(), limit=limit)
+    def procedure_codes(
+        self,
+        *,
+        procedure: str,
+        limit: int = 20,
+        descendant_depth: int | None = None,
+        include_ancestors: bool | None = None,
+    ) -> dict[str, Any]:
+        return terminology_domain.procedure_codes(
+            procedure,
+            engine=self._engine(),
+            limit=limit,
+            descendant_depth=descendant_depth,
+            include_ancestors=include_ancestors,
+        )
 
     def hcpcs_drugs(self, *, drug_name: str, limit: int = 20) -> dict[str, Any]:
         return terminology_domain.hcpcs_drugs(drug_name, engine=self._engine(), limit=limit)
@@ -253,12 +310,16 @@ class McpRuntime:
         drug_name: str,
         limit: int = 20,
         tty_filters: Sequence[str] | None = None,
+        include_equivalents: bool = True,
+        include_ndc: bool = False,
     ) -> dict[str, Any]:
         return terminology_domain.search_drug(
             drug_name,
             engine=self._engine(),
             limit=limit,
             tty_filters=tty_filters,
+            include_equivalents=include_equivalents,
+            include_ndc=include_ndc,
         )
 
     def drugs_by_class(self, *, class_id: str, limit: int = 20) -> dict[str, Any]:
@@ -312,7 +373,9 @@ class McpRuntime:
         max_depth: int = 0,
         include_target_ancestors: bool = False,
         include_target_descendants: bool = False,
-    ) -> dict[str, Any]:
+        resolve_mode: str = "active_only",
+        output_format: str = "dict",
+    ) -> dict[str, Any] | str:
         refs = _code_refs(codes, sources)
         mappings = get_code_mappings(
             refs,
@@ -322,8 +385,32 @@ class McpRuntime:
             max_depth=max_depth,
             include_target_ancestors=include_target_ancestors,
             include_target_descendants=include_target_descendants,
+            resolve_mode=resolve_mode,
         )
-        return {"results": [mapping.to_dict() for mapping in mappings]}
+        payload = {"results": [mapping.to_dict() for mapping in mappings]}
+        return render_output(payload, output_format=output_format)
+
+    def optimize(
+        self,
+        *,
+        codes: Sequence[str],
+        source: str,
+        relationship: str | None = None,
+        output_format: str = "dict",
+        rule_format: str = "compact",
+        include_codes: bool = False,
+    ) -> dict[str, Any] | str:
+        result = optimize_codes(
+            [CodeRef(source=source, code=code) for code in codes],
+            engine=self._engine(),
+            relationship=relationship,
+            output_format=rule_format,
+            include_codes=include_codes,
+        )
+        payload = result.to_dict(include_codes=include_codes)
+        if output_format == "table":
+            return render_output({"results": payload["rules"]}, output_format="table")
+        return render_output(payload, output_format=output_format, title=f"Optimize {source}")
 
     def parents(
         self,
@@ -375,10 +462,17 @@ class McpRuntime:
         codes: Sequence[str],
         sources: Sequence[str],
         max_depth: int = 5,
-    ) -> dict[str, Any]:
+        output_format: str = "dict",
+    ) -> dict[str, Any] | str:
         refs = _code_refs(codes, sources)
-        results = get_patient_friendly_names(refs, engine=self._engine(), max_depth=max_depth)
-        return {"results": [result.to_dict() for result in results]}
+        results = get_patient_friendly_names(
+            refs,
+            engine=self._engine(),
+            max_depth=max_depth,
+            resolve_mode="resolve_current",
+        )
+        payload = {"results": [result.to_dict() for result in results]}
+        return render_output(payload, output_format=output_format)
 
     def patient_friendly_concept_map(
         self,
@@ -437,32 +531,61 @@ def create_mcp_server(
         code: str,
         source: str,
         max_depth: int = 5,
-    ) -> dict[str, Any]:
+        output_format: str = "dict",
+    ) -> dict[str, Any] | str:
         """Resolve one clinical code to a patient-friendly name."""
         return server_runtime.patient_friendly_name(
             code=code,
             source=source,
             max_depth=max_depth,
+            output_format=output_format,
         )
 
     @mcp.tool()
     async def lookup_code(
         code: str,
         source: str,
-    ) -> dict[str, Any] | None:
+        resolve_mode: str = "active_only",
+        output_format: str = "dict",
+    ) -> dict[str, Any] | str | None:
         """Look up canonical atom information for one clinical code."""
-        return server_runtime.lookup_code(code=code, source=source)
+        return server_runtime.lookup_code(
+            code=code,
+            source=source,
+            resolve_mode=resolve_mode,
+            output_format=output_format,
+        )
 
     @mcp.tool()
     async def lookup_codes(
         codes: list[str],
         sources: list[str],
-    ) -> dict[str, Any]:
+        resolve_mode: str = "active_only",
+        output_format: str = "dict",
+    ) -> dict[str, Any] | str:
         """Look up canonical atom information for clinical codes.
 
         `sources` can contain one source for all codes, or one source per code.
         """
-        return server_runtime.lookup_codes(codes=codes, sources=sources)
+        return server_runtime.lookup_codes(
+            codes=codes,
+            sources=sources,
+            resolve_mode=resolve_mode,
+            output_format=output_format,
+        )
+
+    @mcp.tool()
+    async def resolve_codes(
+        codes: list[str],
+        sources: list[str],
+        output_format: str = "dict",
+    ) -> dict[str, Any] | str:
+        """Resolve active, historical, obsolete, and NDC code inputs."""
+        return server_runtime.resolve_codes(
+            codes=codes,
+            sources=sources,
+            output_format=output_format,
+        )
 
     @mcp.tool()
     async def sources(
@@ -546,9 +669,19 @@ def create_mcp_server(
         )
 
     @mcp.tool()
-    async def diagnosis_codes(condition: str, limit: int = 20) -> dict[str, Any]:
+    async def diagnosis_codes(
+        condition: str,
+        limit: int = 20,
+        descendant_depth: int | None = None,
+        include_ancestors: bool | None = None,
+    ) -> dict[str, Any]:
         """Search diagnosis-oriented ICD-10-CM and SNOMED CT codes."""
-        return server_runtime.diagnosis_codes(condition=condition, limit=limit)
+        return server_runtime.diagnosis_codes(
+            condition=condition,
+            limit=limit,
+            descendant_depth=descendant_depth,
+            include_ancestors=include_ancestors,
+        )
 
     @mcp.tool()
     async def lab_codes(lab_test: str, limit: int = 20) -> dict[str, Any]:
@@ -561,9 +694,19 @@ def create_mcp_server(
         return server_runtime.lab_value_codes(clinical_value=clinical_value, limit=limit)
 
     @mcp.tool()
-    async def procedure_codes(procedure: str, limit: int = 20) -> dict[str, Any]:
+    async def procedure_codes(
+        procedure: str,
+        limit: int = 20,
+        descendant_depth: int | None = None,
+        include_ancestors: bool | None = None,
+    ) -> dict[str, Any]:
         """Search procedure terminology sources."""
-        return server_runtime.procedure_codes(procedure=procedure, limit=limit)
+        return server_runtime.procedure_codes(
+            procedure=procedure,
+            limit=limit,
+            descendant_depth=descendant_depth,
+            include_ancestors=include_ancestors,
+        )
 
     @mcp.tool()
     async def hcpcs_drugs(drug_name: str, limit: int = 20) -> dict[str, Any]:
@@ -580,12 +723,16 @@ def create_mcp_server(
         drug_name: str,
         limit: int = 20,
         tty_filters: list[str] | None = None,
+        include_equivalents: bool = True,
+        include_ndc: bool = False,
     ) -> dict[str, Any]:
         """Search RxNorm drug names."""
         return server_runtime.search_drug(
             drug_name=drug_name,
             limit=limit,
             tty_filters=tty_filters,
+            include_equivalents=include_equivalents,
+            include_ndc=include_ndc,
         )
 
     @mcp.tool()
@@ -652,7 +799,9 @@ def create_mcp_server(
         max_depth: int = 0,
         include_target_ancestors: bool = False,
         include_target_descendants: bool = False,
-    ) -> dict[str, Any]:
+        resolve_mode: str = "active_only",
+        output_format: str = "dict",
+    ) -> dict[str, Any] | str:
         """Map clinical codes to target vocabularies using active same-CUI atoms."""
         return server_runtime.map_codes(
             codes=codes,
@@ -662,6 +811,27 @@ def create_mcp_server(
             max_depth=max_depth,
             include_target_ancestors=include_target_ancestors,
             include_target_descendants=include_target_descendants,
+            resolve_mode=resolve_mode,
+            output_format=output_format,
+        )
+
+    @mcp.tool()
+    async def optimize(
+        codes: list[str],
+        source: str,
+        relationship: str | None = None,
+        output_format: str = "dict",
+        rule_format: str = "compact",
+        include_codes: bool = False,
+    ) -> dict[str, Any] | str:
+        """Optimize a valueset into compact hierarchy include/exclude rules."""
+        return server_runtime.optimize(
+            codes=codes,
+            source=source,
+            relationship=relationship,
+            output_format=output_format,
+            rule_format=rule_format,
+            include_codes=include_codes,
         )
 
     @mcp.tool()
@@ -703,7 +873,8 @@ def create_mcp_server(
         codes: list[str],
         sources: list[str],
         max_depth: int = 5,
-    ) -> dict[str, Any]:
+        output_format: str = "dict",
+    ) -> dict[str, Any] | str:
         """Resolve multiple clinical codes to patient-friendly names.
 
         `sources` can contain one source for all codes, or one source per code.
@@ -712,6 +883,7 @@ def create_mcp_server(
             codes=codes,
             sources=sources,
             max_depth=max_depth,
+            output_format=output_format,
         )
 
     @mcp.tool()

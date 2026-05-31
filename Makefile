@@ -1,4 +1,4 @@
-.PHONY: test lint compile verify help benchmark-smoke parity-smoke acceptance-smoke real-data-smoke bulk-validation-smoke mapping-quality-smoke api-smoke mcp-smoke
+.PHONY: test lint compile verify help benchmark-smoke parity-smoke acceptance-smoke real-data-smoke bulk-validation-smoke mapping-quality-smoke api-smoke mcp-smoke build publish-test publish
 
 PYTHON ?= python3
 PYTHONPATH ?= src:/mnt/d/medterm/src
@@ -19,7 +19,10 @@ help:
 	  '  bulk-validation-smoke Run bounded bulk mapping and patient-friendly workflows.' \
 	  '  mapping-quality-smoke Sample crosswalk mappings and write review flags.' \
 	  '  api-smoke         Import the API app factory.' \
-	  '  mcp-smoke         Import the MCP server factory.'
+	  '  mcp-smoke         Import the MCP server factory.' \
+	  '  build             Build wheel and sdist.' \
+	  '  publish-test      Build and upload to TestPyPI.' \
+	  '  publish           Build and upload to PyPI.'
 
 test:
 	PYTHONPATH=$(PYTHONPATH) pytest -q
@@ -89,3 +92,12 @@ api-smoke:
 
 mcp-smoke:
 	PYTHONPATH=src $(PYTHON) -c "from medterm4ds.apps.mcp import create_mcp_server; print(create_mcp_server)"
+
+build:
+	$(PYTHON) scripts/build_package.py
+
+publish-test:
+	$(PYTHON) scripts/build_package.py --publish testpypi
+
+publish:
+	$(PYTHON) scripts/build_package.py --publish pypi

@@ -22,7 +22,9 @@ from medterm4ds.services.hierarchy import get_code_relations
 from medterm4ds.services.inventory import DEFAULT_INVENTORY_SOURCES, normalize_sources
 from medterm4ds.services.lookup import get_code_infos
 from medterm4ds.services.mapping import get_code_mappings
+from medterm4ds.services.optimize import optimize_codes
 from medterm4ds.services.patient_friendly import get_patient_friendly_names
+from medterm4ds.services.resolution import resolve_codes
 
 try:
     import duckdb
@@ -79,6 +81,7 @@ class PatientFriendlyRequest(BaseModel):
 
 class LookupRequest(BaseModel):
     codes: list[CodeInput] = Field(default_factory=list)
+    resolve_mode: str = "active_only"
 
 
 class SourceStatsRequest(BaseModel):
@@ -114,6 +117,7 @@ class MappingRequest(BaseModel):
     max_depth: int = Field(default=0, ge=0)
     include_target_ancestors: bool = False
     include_target_descendants: bool = False
+    resolve_mode: str = "active_only"
 
 
 class ConceptMapRequest(BaseModel):
@@ -121,6 +125,17 @@ class ConceptMapRequest(BaseModel):
     max_depth: int = Field(default=5, ge=0)
     batch_size: int = Field(default=5000, ge=1)
     target_source: str = "PATIENT_FRIENDLY"
+
+
+class ResolveRequest(BaseModel):
+    codes: list[CodeInput] = Field(default_factory=list)
+
+
+class OptimizeRequest(BaseModel):
+    codes: list[CodeInput] = Field(default_factory=list)
+    relationship: str | None = None
+    output_format: Literal["compact", "flat"] = "compact"
+    include_codes: bool = False
 
 
 def create_app(settings: ApiSettings | None = None) -> FastAPI:
@@ -182,6 +197,7 @@ def create_app(settings: ApiSettings | None = None) -> FastAPI:
             [code.to_ref() for code in payload.codes],
             engine=engine,
             max_depth=payload.max_depth,
+            resolve_mode="resolve_current",
         )
         return {"results": [result.to_dict() for result in results]}
 
@@ -194,8 +210,18 @@ def create_app(settings: ApiSettings | None = None) -> FastAPI:
         results = get_code_infos(
             [code.to_ref() for code in payload.codes],
             engine=engine,
+            resolve_mode=payload.resolve_mode,
         )
         return {"results": [result.to_dict() if result else None for result in results]}
+
+    @app.post("/resolve")
+    async def resolve(
+        payload: ResolveRequest,
+        request: Request,
+    ) -> dict[str, Any]:
+        engine = _engine(request)
+        results = resolve_codes([code.to_ref() for code in payload.codes], engine=engine)
+        return {"results": [result.to_dict() for result in results]}
 
     @app.post("/sources")
     async def sources(
@@ -280,8 +306,24 @@ def create_app(settings: ApiSettings | None = None) -> FastAPI:
             max_depth=payload.max_depth,
             include_target_ancestors=payload.include_target_ancestors,
             include_target_descendants=payload.include_target_descendants,
+            resolve_mode=payload.resolve_mode,
         )
         return {"results": [result.to_dict() for result in results]}
+
+    @app.post("/optimize")
+    async def optimize(
+        payload: OptimizeRequest,
+        request: Request,
+    ) -> dict[str, Any]:
+        engine = _engine(request)
+        result = optimize_codes(
+            [code.to_ref() for code in payload.codes],
+            engine=engine,
+            relationship=payload.relationship,
+            output_format=payload.output_format,
+            include_codes=payload.include_codes,
+        )
+        return {"result": result.to_dict(include_codes=payload.include_codes)}
 
     @app.post("/conceptmap/patient-friendly")
     async def conceptmap_patient_friendly(

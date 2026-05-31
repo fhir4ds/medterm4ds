@@ -6,9 +6,12 @@ from .core.models import (
     CodeMapping,
     CodeRef,
     CodeRelation,
+    CodeResolution,
     ConceptMapRow,
     FriendlyNameResult,
     NameSearchResult,
+    OptimizeResult,
+    OptimizeRule,
     Provenance,
     ProvenanceStep,
     SourceStats,
@@ -75,16 +78,21 @@ from .services.hierarchy import (
 )
 from .services.lookup import get_code_info, get_code_infos
 from .services.mapping import get_code_mappings
+from .services.optimize import optimize_codes
 from .services.patient_friendly import get_patient_friendly_names
+from .services.resolution import resolve_codes
 
 __all__ = [
     "CodeRef",
     "CodeInfo",
     "CodeMapping",
     "CodeRelation",
+    "CodeResolution",
     "ConceptMapRow",
     "FriendlyNameResult",
     "NameSearchResult",
+    "OptimizeResult",
+    "OptimizeRule",
     "LOCAL_LITE_MEMORY_PROFILES",
     "LocalLiteConfig",
     "OUTPUT_SCHEMA_VERSION",
@@ -113,6 +121,7 @@ __all__ = [
     "get_code_info",
     "get_code_infos",
     "get_code_mappings",
+    "optimize_codes",
     "get_output_schema",
     "get_parents",
     "get_patient_friendly_names",
@@ -146,4 +155,5 @@ __all__ = [
     "iter_patient_friendly_bulk",
     "list_output_schemas",
     "local_lite_config",
+    "resolve_codes",
 ]

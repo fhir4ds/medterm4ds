@@ -59,9 +59,11 @@ def diagnosis_codes(
     *,
     engine,
     limit: int = 20,
+    descendant_depth: int | None = None,
+    include_ancestors: bool | None = None,
 ) -> dict[str, Any]:
     """Search diagnosis-oriented ICD-10-CM and SNOMED CT codes."""
-    return terminology_search(
+    payload = terminology_search(
         condition,
         engine=engine,
         sources=("ICD10CM", "SNOMEDCT_US"),
@@ -69,6 +71,8 @@ def diagnosis_codes(
         query_name="diagnosis_codes",
         query_field="condition",
     )
+    _add_context_relations(payload, engine=engine, descendant_depth=descendant_depth, include_ancestors=include_ancestors)
+    return payload
 
 
 def lab_codes(
@@ -110,9 +114,11 @@ def procedure_codes(
     *,
     engine,
     limit: int = 20,
+    descendant_depth: int | None = None,
+    include_ancestors: bool | None = None,
 ) -> dict[str, Any]:
     """Search procedure terminology sources."""
-    return terminology_search(
+    payload = terminology_search(
         procedure,
         engine=engine,
         sources=("CPT", "HCPCS", "SNOMEDCT_US", "ICD10PCS"),
@@ -120,6 +126,8 @@ def procedure_codes(
         query_name="procedure_codes",
         query_field="procedure",
     )
+    _add_context_relations(payload, engine=engine, descendant_depth=descendant_depth, include_ancestors=include_ancestors)
+    return payload
 
 
 def hcpcs_drugs(
@@ -162,9 +170,11 @@ def search_drug(
     engine,
     limit: int = 20,
     tty_filters: Sequence[str] | str | None = None,
+    include_equivalents: bool = True,
+    include_ndc: bool = False,
 ) -> dict[str, Any]:
     """Search RxNorm drug names."""
-    return terminology_search(
+    payload = terminology_search(
         drug_name,
         engine=engine,
         sources=("RXNORM",),
@@ -173,6 +183,29 @@ def search_drug(
         query_name="search_drug",
         query_field="drug_name",
     )
+    rows = payload["results"]
+    if include_equivalents and rows:
+        refs = [CodeRef("RXNORM", row["code"]) for row in rows[: min(len(rows), 10)]]
+        mappings = get_code_mappings(
+            refs,
+            engine=engine,
+            target_sources=["RXNORM"],
+            max_results_per_code=10,
+        )
+        equivalents: dict[str, list[dict[str, Any]]] = {}
+        for mapping in mappings:
+            if mapping.source.code == mapping.target.code:
+                continue
+            equivalents.setdefault(mapping.source.code, []).append(mapping.to_dict())
+        for row in rows:
+            row["equivalents"] = equivalents.get(row["code"], [])
+    if include_ndc and rows:
+        ndcs = _ndcs_for_rxcuis(engine, [str(row["code"]) for row in rows[: min(len(rows), 10)]])
+        for row in rows:
+            row["ndc"] = ndcs.get(str(row["code"]), [])
+    payload["include_equivalents"] = include_equivalents
+    payload["include_ndc"] = include_ndc
+    return payload
 
 
 def drugs_by_class(
@@ -200,12 +233,20 @@ def drugs_for_indication(
 ) -> dict[str, Any]:
     """Return UMLS-backed indication search context for drug workflows."""
     diagnosis = diagnosis_codes(condition, engine=engine, limit=limit)
+    drug_context = search_drug(
+        condition,
+        engine=engine,
+        limit=limit,
+        include_equivalents=False,
+        include_ndc=False,
+    )
     return {
         "query": "drugs_for_indication",
         "condition": condition,
         "status": "terminology_context_only",
-        "reason": "Drug-by-indication requires RxClass/MEDRT relationship data outside the core UMLS code search path.",
+        "reason": "UMLS-only mode returns diagnosis and RxNorm name context; use external evidence adapters for label-based indication evidence.",
         "diagnosis_context": diagnosis,
+        "drug_name_context": drug_context,
     }
 
 
@@ -294,3 +335,55 @@ def cross_reference(
         "result_count": len(rows),
         "results": [row.to_dict() for row in rows],
     }
+
+
+def _ndcs_for_rxcuis(engine, rxcuis: Sequence[str]) -> dict[str, list[str]]:
+    con = getattr(engine, "con", None)
+    if con is None or not rxcuis:
+        return {}
+    try:
+        rows = con.execute(
+            f"""
+            SELECT CODE, ATV
+            FROM mrsat
+            WHERE SAB = 'RXNORM'
+              AND ATN = 'NDC'
+              AND CODE IN ({','.join(['?'] * len(rxcuis))})
+            ORDER BY CODE, ATV
+            """,
+            list(rxcuis),
+        ).fetchall()
+    except Exception:
+        return {}
+    output: dict[str, list[str]] = {}
+    for rxcui, ndc in rows:
+        bucket = output.setdefault(str(rxcui), [])
+        if len(bucket) < 10:
+            bucket.append(str(ndc))
+    return output
+
+
+def _add_context_relations(
+    payload: dict[str, Any],
+    *,
+    engine,
+    descendant_depth: int | None,
+    include_ancestors: bool | None,
+) -> None:
+    refs = [CodeRef(row["source"], row["code"]) for row in payload.get("results", [])[:10]]
+    if descendant_depth:
+        descendants = get_code_relations(
+            refs,
+            engine=engine,
+            direction="descendants",
+            max_depth=min(max(descendant_depth, 1), 3),
+        )
+        payload["descendants"] = [row.to_dict() for row in descendants]
+    if include_ancestors:
+        ancestors = get_code_relations(
+            refs,
+            engine=engine,
+            direction="ancestors",
+            max_depth=3,
+        )
+        payload["ancestors"] = [row.to_dict() for row in ancestors]

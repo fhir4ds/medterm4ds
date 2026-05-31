@@ -166,6 +166,10 @@ def test_mcp_runtime_discovery_tools(tmp_path, monkeypatch):
             from_source="ICD10CM",
             to_sources=["SNOMED"],
         )["results"]
+        resolved_rows = runtime.resolve_codes(
+            codes=["E11.9"],
+            sources=["ICD10CM"],
+        )["results"]
         evidence = runtime.fda_label_by_rxcui(rxcui="12345")
     finally:
         runtime.close()
@@ -184,6 +188,7 @@ def test_mcp_runtime_discovery_tools(tmp_path, monkeypatch):
     ]
     assert {row["source"] for row in diagnosis_rows} == {"ICD10CM", "SNOMEDCT_US"}
     assert xref_rows[0]["target_source"] == "SNOMEDCT_US"
+    assert resolved_rows[0]["status"] == "active"
     assert evidence["status"] == "ok"
 
 
@@ -235,7 +240,9 @@ def test_mcp_server_registers_expected_tools(tmp_path):
         "lookup_code",
         "lookup_codes",
         "map_codes",
+        "optimize",
         "procedure_codes",
+        "resolve_codes",
         "sample_codes",
         "search_names",
         "search_drug",

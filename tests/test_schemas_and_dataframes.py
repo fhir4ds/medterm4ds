@@ -7,9 +7,12 @@ from medterm4ds import (
     CodeMapping,
     CodeRef,
     CodeRelation,
+    CodeResolution,
     ConceptMapRow,
     FriendlyNameResult,
     NameSearchResult,
+    OptimizeResult,
+    OptimizeRule,
     Provenance,
     ProvenanceStep,
     SourceStats,
@@ -94,6 +97,12 @@ def test_public_output_schemas_match_to_dict_fields():
     rows = {
         "CodeInfo": CodeInfo(CodeRef("ICD10CM", "E11.9"), name="Type 2 diabetes"),
         "SourceStats": SourceStats("ICD10CM", 1, 2),
+        "CodeResolution": CodeResolution(
+            input=CodeRef("NDC", "0002-0821-01"),
+            resolved=CodeRef("RXNORM", "12345"),
+            status="ndc_resolved",
+            match_type="ndc_to_rxcui",
+        ),
         "NameSearchResult": NameSearchResult(CodeRef("ICD10CM", "E11.9"), "Type 2 diabetes"),
         "CodeMapping": CodeMapping(
             source=CodeRef("ICD10CM", "E11.9"),
@@ -120,6 +129,14 @@ def test_public_output_schemas_match_to_dict_fields():
             target_display="Diabetes",
             relationship="equivalent",
             matched_via=_provenance(),
+        ),
+        "OptimizeResult": OptimizeResult(
+            source="ICD10CM",
+            relationship="isa",
+            rules=(OptimizeRule(include=CodeRef("ICD10CM", "E11")),),
+            original_count=2,
+            optimized_count=1,
+            reduction=50.0,
         ),
     }
 

@@ -13,6 +13,8 @@ SOURCE_MAP = {
     "SNOMED CT": "SNOMEDCT_US",
     "RXNORM": "RXNORM",
     "RXN": "RXNORM",
+    "NDC": "NDC",
+    "NDC11": "NDC",
     "ATC": "ATC",
     "MSH": "MSH",
     "MESH": "MSH",

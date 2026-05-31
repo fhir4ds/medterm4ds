@@ -53,6 +53,57 @@ class CodeInfo:
 
 
 @dataclass(frozen=True)
+class CodeResolution:
+    """Resolution from an input code to the code that should be used for work."""
+
+    input: CodeRef
+    resolved: CodeRef | None
+    status: str
+    match_type: str
+    input_display: str | None = None
+    resolved_display: str | None = None
+    input_cui: str | None = None
+    resolved_cui: str | None = None
+    input_aui: str | None = None
+    resolved_aui: str | None = None
+    input_suppress: str | None = None
+    resolved_suppress: str | None = None
+    replacement_relationship: str | None = None
+    normalized_code: str | None = None
+    candidates: tuple[CodeRef, ...] = ()
+    matched_via: Provenance | None = None
+
+    @property
+    def is_resolved(self) -> bool:
+        return self.resolved is not None and self.status not in {"not_found", "ambiguous"}
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "source": self.input.source,
+            "code": self.input.code,
+            "resolved_source": self.resolved.source if self.resolved else None,
+            "resolved_code": self.resolved.code if self.resolved else None,
+            "status": self.status,
+            "match_type": self.match_type,
+            "input_display": self.input_display,
+            "resolved_display": self.resolved_display,
+            "input_cui": self.input_cui,
+            "resolved_cui": self.resolved_cui,
+            "input_aui": self.input_aui,
+            "resolved_aui": self.resolved_aui,
+            "input_suppress": self.input_suppress,
+            "resolved_suppress": self.resolved_suppress,
+            "replacement_relationship": self.replacement_relationship,
+            "normalized_code": self.normalized_code,
+            "candidates": [
+                {"source": candidate.source, "code": candidate.code}
+                for candidate in self.candidates
+            ],
+            "matched_via": self.matched_via.to_dict() if self.matched_via else None,
+        }
+
+
+@dataclass(frozen=True)
 class SourceStats:
     """Inventory statistics for one terminology source."""
 
@@ -332,6 +383,63 @@ class ConceptMapRow:
             "match_type": self.match_type,
             "match_depth": self.match_depth,
             "matched_via": self.matched_via.to_dict() if self.matched_via else None,
+        }
+
+
+@dataclass(frozen=True)
+class OptimizeRule:
+    """One include/exclude rule for a compact valueset."""
+
+    include: CodeRef
+    exclude: tuple[CodeRef, ...] = ()
+    covered_codes: tuple[CodeRef, ...] = ()
+    excluded_codes: tuple[CodeRef, ...] = ()
+
+    def to_dict(self, *, include_codes: bool = False) -> dict[str, Any]:
+        row: dict[str, Any] = {
+            "include_source": self.include.source,
+            "include": self.include.code,
+            "exclude": [code.code for code in self.exclude],
+        }
+        if include_codes:
+            row["covered_codes"] = [
+                {"source": code.source, "code": code.code}
+                for code in self.covered_codes
+            ]
+            row["excluded_codes"] = [
+                {"source": code.source, "code": code.code}
+                for code in self.excluded_codes
+            ]
+        return row
+
+
+@dataclass(frozen=True)
+class OptimizeResult:
+    """Valueset optimization output."""
+
+    source: str
+    relationship: str
+    rules: tuple[OptimizeRule, ...]
+    original_count: int
+    optimized_count: int
+    reduction: float
+    strategy: str = "greedy_hierarchy"
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "source", normalize_source(self.source))
+
+    def to_dict(self, *, include_codes: bool = False) -> dict[str, Any]:
+        return {
+            "source": self.source,
+            "relationship": self.relationship,
+            "strategy": self.strategy,
+            "original_count": self.original_count,
+            "optimized_count": self.optimized_count,
+            "reduction": self.reduction,
+            "rules": [
+                rule.to_dict(include_codes=include_codes)
+                for rule in self.rules
+            ],
         }
 
 

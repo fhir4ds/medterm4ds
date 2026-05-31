@@ -26,6 +26,7 @@ from .records import (
     write_csv,
     write_jsonl,
 )
+from .render import render_output, render_table, render_tree
 
 __all__ = [
     "DEFAULT_CONCEPT_MAP_URL",
@@ -37,6 +38,9 @@ __all__ = [
     "concept_map_to_fhir",
     "default_checkpoint_path",
     "read_output_position",
+    "render_output",
+    "render_table",
+    "render_tree",
     "to_csv_record",
     "to_dataframe",
     "to_pandas",
