@@ -1,6 +1,7 @@
 """Execution engines."""
 
 from .base import (
+    DiscoveryEngine,
     HierarchyEngine,
     LookupEngine,
     MappingEngine,
@@ -10,6 +11,7 @@ from .base import (
 
 __all__ = [
     "HierarchyEngine",
+    "DiscoveryEngine",
     "LookupEngine",
     "MappingEngine",
     "PatientFriendlyEngine",

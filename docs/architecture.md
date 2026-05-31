@@ -23,6 +23,8 @@ The core domain records are:
 - `CodeInfo`: active UMLS atom metadata for exact code lookup.
 - `CodeMapping`: source-to-target same-CUI mapping row.
 - `CodeRelation`: one same-source hierarchy relationship row.
+- `SourceStats`: code and atom counts for a terminology source.
+- `NameSearchResult`: one active atom name search hit.
 - `FriendlyNameResult`: one patient-friendly display result plus provenance.
 - `ConceptMapRow`: source-to-target mapping row used by exports.
 - `Provenance` and `ProvenanceStep`: structured path showing how a result was
@@ -57,6 +59,10 @@ Current services:
 
 - `get_code_info(...)`
 - `get_code_infos(...)`
+- `get_source_stats(...)`
+- `sample_source_codes(...)`
+- `get_code_ttys(...)`
+- `search_names(...)`
 - `get_code_mappings(...)`
 - `get_code_relations(...)`
 - `get_parents(...)`

@@ -135,6 +135,38 @@ def test_mcp_runtime_concept_map_tool(tmp_path):
     assert rows[0]["relationship"] == "equivalent"
 
 
+def test_mcp_runtime_discovery_tools(tmp_path):
+    db_path = tmp_path / "umls.duckdb"
+    _make_duckdb(db_path)
+    runtime = McpRuntime(_settings(db_path, prepare_cache=False))
+
+    runtime.open()
+    try:
+        source_rows = runtime.source_stats(sources=["ICD10-CM", "CVX"])["results"]
+        sample_rows = runtime.sample_codes(sources=["ICD10CM", "CVX"], per_source=1)["results"]
+        tty_rows = runtime.code_ttys(codes=["E11.9"], sources=["ICD10CM"])["results"]
+        search_rows = runtime.search_names(
+            query="diabetes",
+            sources=["ICD10CM", "MEDLINEPLUS"],
+            tty_filters=["MH"],
+        )["results"]
+    finally:
+        runtime.close()
+
+    assert source_rows == [
+        {"source": "CVX", "code_count": 1, "atom_count": 1},
+        {"source": "ICD10CM", "code_count": 2, "atom_count": 2},
+    ]
+    assert [(row["source"], row["code"]) for row in sample_rows] == [
+        ("CVX", "208"),
+        ("ICD10CM", "E11"),
+    ]
+    assert [row["tty"] for row in tty_rows] == ["PT"]
+    assert [(row["source"], row["code"], row["match_type"]) for row in search_rows] == [
+        ("MEDLINEPLUS", "D_DIAB", "exact")
+    ]
+
+
 def test_mcp_runtime_map_codes_tool(tmp_path):
     db_path = tmp_path / "umls.duckdb"
     _make_duckdb(db_path)
@@ -165,9 +197,14 @@ def test_mcp_server_registers_expected_tools(tmp_path):
 
     assert {
         "health",
+        "code_ttys",
         "lookup_code",
         "lookup_codes",
         "map_codes",
+        "sample_codes",
+        "search_names",
+        "source_stats",
+        "sources",
         "code_relations",
         "get_ancestors",
         "get_children",

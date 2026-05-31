@@ -507,6 +507,107 @@ def test_cli_map_writes_jsonl(tmp_path):
     ]
 
 
+def test_cli_sources_prints_json(tmp_path, capsys):
+    db_path = tmp_path / "umls.duckdb"
+    _make_duckdb(db_path)
+
+    status = main(
+        [
+            "sources",
+            "--db",
+            str(db_path),
+            "--sources",
+            "ICD10CM,CVX",
+            "--memory-profile",
+            "low",
+        ]
+    )
+
+    assert status == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["results"] == [
+        {"source": "CVX", "code_count": 1, "atom_count": 2},
+        {"source": "ICD10CM", "code_count": 1, "atom_count": 1},
+    ]
+
+
+def test_cli_sample_codes_writes_csv(tmp_path):
+    db_path = tmp_path / "umls.duckdb"
+    output_path = tmp_path / "samples.csv"
+    _make_duckdb(db_path)
+
+    status = main(
+        [
+            "sample-codes",
+            "--db",
+            str(db_path),
+            "--sources",
+            "ICD10CM,CVX",
+            "--per-source",
+            "1",
+            "--output",
+            str(output_path),
+        ]
+    )
+
+    assert status == 0
+    with output_path.open(encoding="utf-8", newline="") as file:
+        rows = list(csv.DictReader(file))
+    assert [(row["source"], row["code"]) for row in rows] == [
+        ("CVX", "208"),
+        ("ICD10CM", "E11.9"),
+    ]
+
+
+def test_cli_code_ttys_prints_json(tmp_path, capsys):
+    db_path = tmp_path / "umls.duckdb"
+    _make_duckdb(db_path)
+
+    status = main(
+        [
+            "code-ttys",
+            "--db",
+            str(db_path),
+            "--source",
+            "CVX",
+            "--code",
+            "208",
+        ]
+    )
+
+    assert status == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert [row["aui"] for row in payload["results"]] == ["CVX_208", "CVX_208_B"]
+    assert [row["tty"] for row in payload["results"]] == ["PT", "PT"]
+
+
+def test_cli_search_names_filters_by_tty(tmp_path, capsys):
+    db_path = tmp_path / "umls.duckdb"
+    _make_duckdb(db_path)
+
+    status = main(
+        [
+            "search-names",
+            "--db",
+            str(db_path),
+            "--query",
+            "diabetes",
+            "--sources",
+            "ICD10CM,MEDLINEPLUS",
+            "--tty",
+            "MH",
+            "--limit",
+            "5",
+        ]
+    )
+
+    assert status == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert [(row["source"], row["code"], row["match_type"]) for row in payload["results"]] == [
+        ("MEDLINEPLUS", "D_DIAB", "exact")
+    ]
+
+
 def test_cli_resumes_jsonl_from_existing_output(tmp_path):
     db_path = tmp_path / "umls.duckdb"
     output_path = tmp_path / "conceptmap.jsonl"

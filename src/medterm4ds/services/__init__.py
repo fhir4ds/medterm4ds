@@ -6,6 +6,7 @@ from .conceptmap import (
     iter_concept_map,
     iter_mapping_concept_map,
 )
+from .discovery import get_code_ttys, get_source_stats, sample_source_codes, search_names
 from .hierarchy import (
     get_ancestors,
     get_children,
@@ -29,6 +30,7 @@ __all__ = [
     "get_ancestors",
     "get_children",
     "get_code_relations",
+    "get_code_ttys",
     "get_code_info",
     "get_code_infos",
     "get_code_mappings",
@@ -38,8 +40,11 @@ __all__ = [
     "get_parents",
     "get_patient_friendly_name",
     "get_patient_friendly_names",
+    "get_source_stats",
     "iter_concept_map",
     "iter_mapping_concept_map",
     "iter_source_codes",
     "normalize_sources",
+    "sample_source_codes",
+    "search_names",
 ]

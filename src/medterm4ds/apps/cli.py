@@ -19,6 +19,12 @@ from medterm4ds.outputs import (
     write_jsonl,
 )
 from medterm4ds.services.conceptmap import iter_concept_map, iter_mapping_concept_map
+from medterm4ds.services.discovery import (
+    get_code_ttys,
+    get_source_stats,
+    sample_source_codes,
+    search_names,
+)
 from medterm4ds.services.hierarchy import get_code_relations
 from medterm4ds.services.inventory import (
     DEFAULT_INVENTORY_SOURCES,
@@ -64,6 +70,29 @@ def build_parser() -> argparse.ArgumentParser:
     mapping = subparsers.add_parser("map", help="Map codes to target vocabularies.")
     _add_mapping_args(mapping)
     mapping.set_defaults(func=run_mapping)
+
+    sources = subparsers.add_parser("sources", help="List terminology source statistics.")
+    _add_sources_args(sources)
+    sources.set_defaults(func=run_source_stats)
+
+    source_stats = subparsers.add_parser(
+        "source-stats",
+        help="List terminology source statistics.",
+    )
+    _add_sources_args(source_stats)
+    source_stats.set_defaults(func=run_source_stats)
+
+    sample_codes = subparsers.add_parser("sample-codes", help="Sample active source codes.")
+    _add_sample_codes_args(sample_codes)
+    sample_codes.set_defaults(func=run_sample_codes)
+
+    code_ttys = subparsers.add_parser("code-ttys", help="Inspect active atoms and TTYs for codes.")
+    _add_code_ttys_args(code_ttys)
+    code_ttys.set_defaults(func=run_code_ttys)
+
+    search = subparsers.add_parser("search-names", help="Search active terminology names.")
+    _add_search_names_args(search)
+    search.set_defaults(func=run_search_names)
 
     hierarchy = subparsers.add_parser("hierarchy", help="Traverse code hierarchies.")
     hierarchy_subparsers = hierarchy.add_subparsers(dest="direction", required=True)
@@ -291,6 +320,97 @@ def _add_mapping_args(parser: argparse.ArgumentParser) -> None:
         action="store_true",
         help="Also include narrower target descendants from exact same-CUI target mappings.",
     )
+    parser.add_argument(
+        "--output",
+        default=None,
+        help="Optional output path. Defaults to stdout JSON.",
+    )
+    parser.add_argument(
+        "--format",
+        choices=("json", "jsonl", "csv"),
+        default=None,
+        help="Output format. Defaults to output extension, or JSON for stdout.",
+    )
+
+
+def _add_sources_args(parser: argparse.ArgumentParser) -> None:
+    _add_common_engine_args(parser)
+    parser.add_argument(
+        "--sources",
+        default=None,
+        help="Optional comma-separated source vocabulary filter. Defaults to all active sources.",
+    )
+    parser.add_argument(
+        "--output",
+        default=None,
+        help="Optional output path. Defaults to stdout JSON.",
+    )
+    parser.add_argument(
+        "--format",
+        choices=("json", "jsonl", "csv"),
+        default=None,
+        help="Output format. Defaults to output extension, or JSON for stdout.",
+    )
+
+
+def _add_sample_codes_args(parser: argparse.ArgumentParser) -> None:
+    _add_common_engine_args(parser)
+    parser.add_argument(
+        "--sources",
+        default=",".join(DEFAULT_INVENTORY_SOURCES),
+        help="Comma-separated source vocabularies.",
+    )
+    parser.add_argument(
+        "--per-source",
+        type=int,
+        default=10,
+        help="Maximum codes to sample per source.",
+    )
+    parser.add_argument(
+        "--output",
+        default=None,
+        help="Optional output path. Defaults to stdout JSON.",
+    )
+    parser.add_argument(
+        "--format",
+        choices=("json", "jsonl", "csv"),
+        default=None,
+        help="Output format. Defaults to output extension, or JSON for stdout.",
+    )
+
+
+def _add_code_ttys_args(parser: argparse.ArgumentParser) -> None:
+    _add_common_engine_args(parser)
+    parser.add_argument("--source", action="append", required=True, help="Source vocabulary.")
+    parser.add_argument("--code", action="append", required=True, help="Code to inspect.")
+    parser.add_argument(
+        "--output",
+        default=None,
+        help="Optional output path. Defaults to stdout JSON.",
+    )
+    parser.add_argument(
+        "--format",
+        choices=("json", "jsonl", "csv"),
+        default=None,
+        help="Output format. Defaults to output extension, or JSON for stdout.",
+    )
+
+
+def _add_search_names_args(parser: argparse.ArgumentParser) -> None:
+    _add_common_engine_args(parser)
+    parser.add_argument("--query", required=True, help="Name text to search for.")
+    parser.add_argument(
+        "--sources",
+        default=None,
+        help="Optional comma-separated source vocabulary filter.",
+    )
+    parser.add_argument(
+        "--tty",
+        action="append",
+        default=None,
+        help="Optional TTY filter. Repeat for multiple TTYs.",
+    )
+    parser.add_argument("--limit", type=int, default=25, help="Maximum results to return.")
     parser.add_argument(
         "--output",
         default=None,
@@ -629,6 +749,131 @@ def run_mapping(args: argparse.Namespace) -> int:
         output_format=args.format,
     )
     return 0
+
+
+def run_source_stats(args: argparse.Namespace) -> int:
+    try:
+        import duckdb
+    except ImportError as exc:
+        raise SystemExit("DuckDB is required. Install medterm4ds[duckdb].") from exc
+
+    db_path = Path(args.db)
+    if not db_path.exists():
+        raise SystemExit(f"Database not found: {db_path}")
+
+    config = _local_lite_config_from_args(args)
+    con = duckdb.connect(str(db_path), read_only=True)
+    try:
+        engine = LocalLiteEngine(con, config=config)
+        stats = get_source_stats(engine=engine, sources=args.sources)
+    finally:
+        con.close()
+
+    _write_record_results(
+        [stat.to_dict() for stat in stats],
+        output=args.output,
+        output_format=args.format,
+    )
+    return 0
+
+
+def run_sample_codes(args: argparse.Namespace) -> int:
+    try:
+        import duckdb
+    except ImportError as exc:
+        raise SystemExit("DuckDB is required. Install medterm4ds[duckdb].") from exc
+
+    db_path = Path(args.db)
+    if not db_path.exists():
+        raise SystemExit(f"Database not found: {db_path}")
+
+    config = _local_lite_config_from_args(args)
+    con = duckdb.connect(str(db_path), read_only=True)
+    try:
+        engine = LocalLiteEngine(con, config=config)
+        codes = sample_source_codes(
+            engine=engine,
+            sources=args.sources,
+            per_source=args.per_source,
+        )
+    finally:
+        con.close()
+
+    _write_record_results(
+        [{"source": code.source, "code": code.code} for code in codes],
+        output=args.output,
+        output_format=args.format,
+    )
+    return 0
+
+
+def run_code_ttys(args: argparse.Namespace) -> int:
+    try:
+        import duckdb
+    except ImportError as exc:
+        raise SystemExit("DuckDB is required. Install medterm4ds[duckdb].") from exc
+
+    db_path = Path(args.db)
+    if not db_path.exists():
+        raise SystemExit(f"Database not found: {db_path}")
+
+    config = _local_lite_config_from_args(args)
+    refs = _code_source_pairs(args.code, args.source)
+    con = duckdb.connect(str(db_path), read_only=True)
+    try:
+        engine = LocalLiteEngine(con, config=config)
+        infos = get_code_ttys(refs, engine=engine)
+    finally:
+        con.close()
+
+    _write_record_results(
+        [info.to_dict() for info in infos],
+        output=args.output,
+        output_format=args.format,
+    )
+    return 0
+
+
+def run_search_names(args: argparse.Namespace) -> int:
+    try:
+        import duckdb
+    except ImportError as exc:
+        raise SystemExit("DuckDB is required. Install medterm4ds[duckdb].") from exc
+
+    db_path = Path(args.db)
+    if not db_path.exists():
+        raise SystemExit(f"Database not found: {db_path}")
+
+    config = _local_lite_config_from_args(args)
+    con = duckdb.connect(str(db_path), read_only=True)
+    try:
+        engine = LocalLiteEngine(con, config=config)
+        results = search_names(
+            args.query,
+            engine=engine,
+            sources=args.sources,
+            tty_filters=args.tty,
+            limit=args.limit,
+        )
+    finally:
+        con.close()
+
+    _write_record_results(
+        [result.to_dict() for result in results],
+        output=args.output,
+        output_format=args.format,
+    )
+    return 0
+
+
+def _local_lite_config_from_args(args: argparse.Namespace):
+    return local_lite_config(
+        args.memory_profile,
+        memory_limit=args.memory_limit,
+        temp_directory=args.temp_dir,
+        threads=args.threads,
+        query_chunk_size=args.query_chunk_size,
+    )
 
 
 def _format_from_path(path: Path) -> str:

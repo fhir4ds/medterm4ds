@@ -2,12 +2,14 @@
 
 `medterm4ds` is a refactor/prototype for batch-first medical terminology workflows.
 
-The current slice focuses on exact code lookup, same-CUI source mapping,
-hierarchy traversal, and patient-friendly names:
+The current slice focuses on exact code lookup, source inventory/search,
+same-CUI plus bounded hierarchy source mapping, hierarchy traversal, and
+patient-friendly names:
 
 - typed domain results
 - batch-first service API
 - active atom lookup for one or many codes
+- source statistics, code samples, TTY inspection, and name search
 - same-CUI mappings from source codes to target vocabularies
 - same-source parent, child, ancestor, and descendant traversal
 - ConceptMap rows derived from patient-friendly results
@@ -65,6 +67,20 @@ from medterm4ds import CodeRef, get_code_infos
 infos = get_code_infos(
     [CodeRef("ICD10CM", "E11.9")],
     engine=engine,
+)
+```
+
+The discovery vertical slice exposes inventory and search helpers:
+
+```python
+from medterm4ds import search_names
+
+results = search_names(
+    "diabetes",
+    engine=engine,
+    sources=["ICD10CM", "SNOMEDCT_US"],
+    tty_filters=["PT"],
+    limit=25,
 )
 ```
 
@@ -188,6 +204,31 @@ medterm4ds conceptmap mapping \
   --target-sources SNOMEDCT_US \
   --output icd10_to_snomed_conceptmap.json \
   --format fhir-json
+```
+
+For terminology discovery:
+
+```bash
+medterm4ds sources \
+  --db /mnt/d/medterm/data/umls_local.duckdb \
+  --sources ICD10CM,LNC,SNOMEDCT_US
+
+medterm4ds sample-codes \
+  --db /mnt/d/medterm/data/umls_local.duckdb \
+  --sources ICD10CM,CVX \
+  --per-source 10
+
+medterm4ds code-ttys \
+  --db /mnt/d/medterm/data/umls_local.duckdb \
+  --source ICD10CM \
+  --code E11.9
+
+medterm4ds search-names \
+  --db /mnt/d/medterm/data/umls_local.duckdb \
+  --query diabetes \
+  --sources ICD10CM,SNOMEDCT_US \
+  --tty PT \
+  --limit 25
 ```
 
 For hierarchy traversal:
@@ -344,6 +385,11 @@ Supported endpoints:
 
 - `GET /health`
 - `POST /lookup`
+- `POST /sources`
+- `POST /source-stats`
+- `POST /sample-codes`
+- `POST /code-ttys`
+- `POST /search-names`
 - `POST /map`
 - `POST /hierarchy`
 - `POST /patient-friendly`
@@ -432,6 +478,11 @@ Registered tools:
 - `health`
 - `lookup_code`
 - `lookup_codes`
+- `sources`
+- `source_stats`
+- `sample_codes`
+- `code_ttys`
+- `search_names`
 - `map_codes`
 - `code_relations`
 - `get_parents`

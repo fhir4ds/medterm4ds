@@ -137,6 +137,47 @@ def test_api_lookup_endpoint(tmp_path):
     assert payload["results"][1] is None
 
 
+def test_api_discovery_endpoints(tmp_path):
+    db_path = tmp_path / "umls.duckdb"
+    _make_duckdb(db_path)
+
+    app = create_app(_settings(db_path, prepare_cache=False))
+    with TestClient(app) as client:
+        source_response = client.post("/sources", json={"sources": ["ICD10-CM", "CVX"]})
+        sample_response = client.post(
+            "/sample-codes",
+            json={"sources": ["ICD10CM", "CVX"], "per_source": 1},
+        )
+        tty_response = client.post(
+            "/code-ttys",
+            json={"codes": [{"source": "ICD10CM", "code": "E11.9"}]},
+        )
+        search_response = client.post(
+            "/search-names",
+            json={
+                "query": "diabetes",
+                "sources": ["ICD10CM", "MEDLINEPLUS"],
+                "tty_filters": ["MH"],
+            },
+        )
+
+    assert source_response.status_code == 200
+    assert source_response.json()["results"] == [
+        {"source": "CVX", "code_count": 1, "atom_count": 1},
+        {"source": "ICD10CM", "code_count": 2, "atom_count": 2},
+    ]
+    assert sample_response.status_code == 200
+    assert [(row["source"], row["code"]) for row in sample_response.json()["results"]] == [
+        ("CVX", "208"),
+        ("ICD10CM", "E11"),
+    ]
+    assert tty_response.status_code == 200
+    assert [row["tty"] for row in tty_response.json()["results"]] == ["PT"]
+    assert search_response.status_code == 200
+    assert search_response.json()["results"][0]["source"] == "MEDLINEPLUS"
+    assert search_response.json()["results"][0]["match_type"] == "exact"
+
+
 def test_api_hierarchy_endpoint(tmp_path):
     db_path = tmp_path / "umls.duckdb"
     _make_duckdb(db_path)

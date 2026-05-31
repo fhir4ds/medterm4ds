@@ -8,8 +8,10 @@ from .models import (
     CodeRelation,
     ConceptMapRow,
     FriendlyNameResult,
+    NameSearchResult,
     Provenance,
     ProvenanceStep,
+    SourceStats,
 )
 from .normalize import normalize_source
 
@@ -20,10 +22,12 @@ __all__ = [
     "CodeRelation",
     "ConceptMapRow",
     "FriendlyNameResult",
+    "NameSearchResult",
     "LOCAL_LITE_MEMORY_PROFILES",
     "LocalLiteConfig",
     "Provenance",
     "ProvenanceStep",
+    "SourceStats",
     "local_lite_config",
     "normalize_source",
 ]

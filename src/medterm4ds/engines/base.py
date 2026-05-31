@@ -11,6 +11,8 @@ from medterm4ds.core.models import (
     CodeRef,
     CodeRelation,
     FriendlyNameResult,
+    NameSearchResult,
+    SourceStats,
 )
 
 HierarchyDirection = Literal["parents", "children", "ancestors", "descendants"]
@@ -58,6 +60,38 @@ class MappingEngine(Protocol):
         ...
 
 
+class DiscoveryEngine(Protocol):
+    """Batch-first terminology inventory and search engine."""
+
+    def get_source_stats(self, sources: Sequence[str] | None = None) -> list[SourceStats]:
+        """Return source inventory statistics."""
+        ...
+
+    def sample_source_codes(
+        self,
+        sources: Sequence[str],
+        *,
+        per_source: int = 10,
+    ) -> list[CodeRef]:
+        """Return sample active codes by source."""
+        ...
+
+    def get_code_ttys(self, codes: Sequence[CodeRef]) -> list[CodeInfo]:
+        """Return active atoms/TTYs for input codes."""
+        ...
+
+    def search_names(
+        self,
+        query: str,
+        *,
+        sources: Sequence[str] | None = None,
+        tty_filters: Sequence[str] | None = None,
+        limit: int = 25,
+    ) -> list[NameSearchResult]:
+        """Search active atom names."""
+        ...
+
+
 class PatientFriendlyEngine(Protocol):
     """Batch-first patient-friendly name engine."""
 
@@ -74,6 +108,7 @@ class TerminologyEngine(
     LookupEngine,
     HierarchyEngine,
     MappingEngine,
+    DiscoveryEngine,
     PatientFriendlyEngine,
     Protocol,
 ):

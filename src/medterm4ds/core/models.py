@@ -53,6 +53,48 @@ class CodeInfo:
 
 
 @dataclass(frozen=True)
+class SourceStats:
+    """Inventory statistics for one terminology source."""
+
+    source: str
+    code_count: int
+    atom_count: int
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "source", normalize_source(self.source))
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "source": self.source,
+            "code_count": self.code_count,
+            "atom_count": self.atom_count,
+        }
+
+
+@dataclass(frozen=True)
+class NameSearchResult:
+    """One terminology name search result."""
+
+    code: CodeRef
+    name: str
+    cui: str | None = None
+    aui: str | None = None
+    tty: str | None = None
+    match_type: str = "contains"
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "source": self.code.source,
+            "code": self.code.code,
+            "name": self.name,
+            "cui": self.cui,
+            "aui": self.aui,
+            "tty": self.tty,
+            "match_type": self.match_type,
+        }
+
+
+@dataclass(frozen=True)
 class CodeMapping:
     """One source-to-target terminology mapping."""
 

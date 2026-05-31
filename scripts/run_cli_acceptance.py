@@ -1,18 +1,20 @@
 #!/usr/bin/env python3
 """Run small end-to-end CLI acceptance checks against a DuckDB UMLS database."""
 
+# ruff: noqa: E402
+
 from __future__ import annotations
 
 import argparse
 import csv
-from dataclasses import asdict, dataclass
-from datetime import datetime, timezone
 import json
-from pathlib import Path
 import shutil
 import sys
 import tempfile
 import time
+from dataclasses import asdict, dataclass
+from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -110,7 +112,7 @@ def main() -> int:
         if args.output_json:
             Path(args.output_json).write_text(json.dumps(report, indent=2), encoding="utf-8")
         print(json.dumps({check.name: check.status for check in checks}, sort_keys=True))
-        return 0 if all(check.status == "pass" for check in checks) else 1
+        return 0 if all(check.status in {"pass", "skip"} for check in checks) else 1
     finally:
         if cleanup:
             shutil.rmtree(work_dir, ignore_errors=True)
@@ -156,6 +158,24 @@ def run_acceptance(
             memory_profile=memory_profile,
             prepare_cache=prepare_cache,
             progress=progress,
+        ),
+        _check_lookup_cli(
+            db_path=db_path,
+            work_dir=work_dir,
+            sources=sources,
+            memory_profile=memory_profile,
+        ),
+        _check_map_cli(
+            db_path=db_path,
+            work_dir=work_dir,
+            sources=sources,
+            memory_profile=memory_profile,
+        ),
+        _check_hierarchy_cli(
+            db_path=db_path,
+            work_dir=work_dir,
+            sources=sources,
+            memory_profile=memory_profile,
         ),
     ]
     return checks
@@ -294,6 +314,157 @@ def _check_fhir(
     )
 
 
+def _check_lookup_cli(
+    *,
+    db_path: Path,
+    work_dir: Path,
+    sources: tuple[str, ...],
+    memory_profile: str,
+) -> CheckResult:
+    start = time.perf_counter()
+    sample = _first_active_code(db_path, sources)
+    if sample is None:
+        return CheckResult(
+            name="lookup_cli",
+            status="skip",
+            elapsed_seconds=time.perf_counter() - start,
+            details={"reason": "no active source code"},
+        )
+    source, code = sample
+    output = work_dir / "lookup.json"
+    status = cli_main(
+        [
+            "lookup",
+            "--db",
+            str(db_path),
+            "--source",
+            source,
+            "--code",
+            code,
+            "--output",
+            str(output),
+            "--memory-profile",
+            memory_profile,
+        ]
+    )
+    payload = json.loads(output.read_text(encoding="utf-8")) if output.exists() else {"results": []}
+    rows = payload.get("results", [])
+    passed = status == 0 and rows and rows[0].get("source") == source and rows[0].get("code") == code
+    return CheckResult(
+        name="lookup_cli",
+        status="pass" if passed else "fail",
+        elapsed_seconds=time.perf_counter() - start,
+        details={"source": source, "code": code, "rows": len(rows), "status": status},
+    )
+
+
+def _check_map_cli(
+    *,
+    db_path: Path,
+    work_dir: Path,
+    sources: tuple[str, ...],
+    memory_profile: str,
+) -> CheckResult:
+    start = time.perf_counter()
+    sample = _first_same_cui_pair(db_path, sources)
+    if sample is None:
+        return CheckResult(
+            name="map_cli",
+            status="skip",
+            elapsed_seconds=time.perf_counter() - start,
+            details={"reason": "no same-CUI source/target pair"},
+        )
+    source, code, target_source = sample
+    output = work_dir / "map.json"
+    status = cli_main(
+        [
+            "map",
+            "--db",
+            str(db_path),
+            "--source",
+            source,
+            "--code",
+            code,
+            "--target-source",
+            target_source,
+            "--output",
+            str(output),
+            "--memory-profile",
+            memory_profile,
+        ]
+    )
+    payload = json.loads(output.read_text(encoding="utf-8")) if output.exists() else {"results": []}
+    rows = payload.get("results", [])
+    passed = status == 0 and any(
+        row.get("source") == source
+        and row.get("code") == code
+        and row.get("target_source") == target_source
+        for row in rows
+    )
+    return CheckResult(
+        name="map_cli",
+        status="pass" if passed else "fail",
+        elapsed_seconds=time.perf_counter() - start,
+        details={
+            "source": source,
+            "code": code,
+            "target_source": target_source,
+            "rows": len(rows),
+            "status": status,
+        },
+    )
+
+
+def _check_hierarchy_cli(
+    *,
+    db_path: Path,
+    work_dir: Path,
+    sources: tuple[str, ...],
+    memory_profile: str,
+) -> CheckResult:
+    start = time.perf_counter()
+    sample = _first_parent_pair(db_path, sources)
+    if sample is None:
+        return CheckResult(
+            name="hierarchy_cli",
+            status="skip",
+            elapsed_seconds=time.perf_counter() - start,
+            details={"reason": "no same-source parent edge"},
+        )
+    source, code = sample
+    output = work_dir / "hierarchy.json"
+    status = cli_main(
+        [
+            "hierarchy",
+            "parents",
+            "--db",
+            str(db_path),
+            "--source",
+            source,
+            "--code",
+            code,
+            "--output",
+            str(output),
+            "--memory-profile",
+            memory_profile,
+        ]
+    )
+    payload = json.loads(output.read_text(encoding="utf-8")) if output.exists() else {"results": []}
+    rows = payload.get("results", [])
+    passed = status == 0 and any(
+        row.get("source") == source
+        and row.get("code") == code
+        and row.get("relationship") == "parent"
+        for row in rows
+    )
+    return CheckResult(
+        name="hierarchy_cli",
+        status="pass" if passed else "fail",
+        elapsed_seconds=time.perf_counter() - start,
+        details={"source": source, "code": code, "rows": len(rows), "status": status},
+    )
+
+
 def _run_cli(
     *,
     db_path: Path,
@@ -335,6 +506,106 @@ def _run_cli(
     status = cli_main(argv)
     if status != 0:
         raise RuntimeError(f"CLI acceptance command failed with status {status}: {' '.join(argv)}")
+
+
+def _first_active_code(db_path: Path, sources: tuple[str, ...]) -> tuple[str, str] | None:
+    try:
+        import duckdb
+    except ImportError as exc:
+        raise SystemExit("DuckDB is required. Install medterm4ds[duckdb].") from exc
+    con = duckdb.connect(str(db_path), read_only=True)
+    try:
+        rows = con.execute(
+            f"""
+            SELECT SAB, CODE
+            FROM mrconso
+            WHERE SUPPRESS = 'N'
+              AND CODE IS NOT NULL
+              AND CODE != ''
+              AND SAB IN ({','.join(['?'] * len(sources))})
+            GROUP BY SAB, CODE
+            ORDER BY SAB, CODE
+            LIMIT 1
+            """,
+            list(sources),
+        ).fetchone()
+    finally:
+        con.close()
+    return (str(rows[0]), str(rows[1])) if rows else None
+
+
+def _first_same_cui_pair(db_path: Path, sources: tuple[str, ...]) -> tuple[str, str, str] | None:
+    try:
+        import duckdb
+    except ImportError as exc:
+        raise SystemExit("DuckDB is required. Install medterm4ds[duckdb].") from exc
+    con = duckdb.connect(str(db_path), read_only=True)
+    try:
+        row = con.execute(
+            f"""
+            WITH source_atoms AS (
+                SELECT SAB, CODE, CUI
+                FROM mrconso
+                WHERE SUPPRESS = 'N'
+                  AND CODE IS NOT NULL
+                  AND CODE != ''
+                  AND CUI IS NOT NULL
+                  AND SAB IN ({','.join(['?'] * len(sources))})
+                GROUP BY SAB, CODE, CUI
+                ORDER BY SAB, CODE
+                LIMIT 1000
+            )
+            SELECT s.SAB, s.CODE, t.SAB
+            FROM source_atoms s
+            JOIN mrconso t ON t.CUI = s.CUI AND t.SAB != s.SAB
+            WHERE t.SUPPRESS = 'N'
+              AND t.CODE IS NOT NULL
+              AND t.CODE != ''
+            GROUP BY s.SAB, s.CODE, t.SAB
+            ORDER BY s.SAB, s.CODE, t.SAB
+            LIMIT 1
+            """,
+            list(sources),
+        ).fetchone()
+    finally:
+        con.close()
+    return (str(row[0]), str(row[1]), str(row[2])) if row else None
+
+
+def _first_parent_pair(db_path: Path, sources: tuple[str, ...]) -> tuple[str, str] | None:
+    try:
+        import duckdb
+    except ImportError as exc:
+        raise SystemExit("DuckDB is required. Install medterm4ds[duckdb].") from exc
+    con = duckdb.connect(str(db_path), read_only=True)
+    try:
+        row = con.execute(
+            f"""
+            WITH source_atoms AS (
+                SELECT SAB, CODE, AUI
+                FROM mrconso
+                WHERE SUPPRESS = 'N'
+                  AND CODE IS NOT NULL
+                  AND CODE != ''
+                  AND AUI IS NOT NULL
+                  AND SAB IN ({','.join(['?'] * len(sources))})
+                ORDER BY SAB, CODE
+                LIMIT 2000
+            )
+            SELECT c.SAB, c.CODE
+            FROM source_atoms c
+            JOIN mrrel r ON r.AUI1 = c.AUI AND r.REL = 'PAR'
+            JOIN mrconso p ON p.AUI = r.AUI2 AND p.SAB = c.SAB
+            WHERE p.SUPPRESS = 'N'
+            GROUP BY c.SAB, c.CODE
+            ORDER BY c.SAB, c.CODE
+            LIMIT 1
+            """,
+            list(sources),
+        ).fetchone()
+    finally:
+        con.close()
+    return (str(row[0]), str(row[1])) if row else None
 
 
 if __name__ == "__main__":

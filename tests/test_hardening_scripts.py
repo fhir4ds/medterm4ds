@@ -2,12 +2,11 @@ from __future__ import annotations
 
 import json
 import os
-from pathlib import Path
 import subprocess
 import sys
+from pathlib import Path
 
 import duckdb
-
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -133,7 +132,12 @@ def test_acceptance_script_exercises_cli_outputs(tmp_path):
         "jsonl_resume": "pass",
         "csv": "pass",
         "fhir_json_r4": "pass",
+        "lookup_cli": "pass",
+        "map_cli": "pass",
+        "hierarchy_cli": "skip",
     }
     assert (work_dir / "acceptance.jsonl").exists()
     assert (work_dir / "acceptance.csv").exists()
     assert (work_dir / "acceptance.fhir.json").exists()
+    assert (work_dir / "lookup.json").exists()
+    assert (work_dir / "map.json").exists()

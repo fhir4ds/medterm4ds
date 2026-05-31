@@ -13,6 +13,12 @@ from medterm4ds.core.config import MemoryProfile, local_lite_config
 from medterm4ds.core.models import CodeRef
 from medterm4ds.engines.duckdb import LocalLiteEngine
 from medterm4ds.services.conceptmap import get_concept_map
+from medterm4ds.services.discovery import (
+    get_code_ttys,
+    get_source_stats,
+    sample_source_codes,
+    search_names,
+)
 from medterm4ds.services.hierarchy import get_code_relations
 from medterm4ds.services.inventory import DEFAULT_INVENTORY_SOURCES, normalize_sources
 from medterm4ds.services.lookup import get_code_infos
@@ -134,6 +140,54 @@ class McpRuntime:
         refs = _code_refs(codes, sources)
         infos = get_code_infos(refs, engine=self._engine())
         return {"results": [info.to_dict() if info else None for info in infos]}
+
+    def source_stats(
+        self,
+        *,
+        sources: Sequence[str] | None = None,
+    ) -> dict[str, Any]:
+        stats = get_source_stats(engine=self._engine(), sources=sources)
+        return {"results": [stat.to_dict() for stat in stats]}
+
+    def sample_codes(
+        self,
+        *,
+        sources: Sequence[str] | None = None,
+        per_source: int = 10,
+    ) -> dict[str, Any]:
+        codes = sample_source_codes(
+            engine=self._engine(),
+            sources=sources,
+            per_source=per_source,
+        )
+        return {"results": [{"source": code.source, "code": code.code} for code in codes]}
+
+    def code_ttys(
+        self,
+        *,
+        codes: Sequence[str],
+        sources: Sequence[str],
+    ) -> dict[str, Any]:
+        refs = _code_refs(codes, sources)
+        infos = get_code_ttys(refs, engine=self._engine())
+        return {"results": [info.to_dict() for info in infos]}
+
+    def search_names(
+        self,
+        *,
+        query: str,
+        sources: Sequence[str] | None = None,
+        tty_filters: Sequence[str] | None = None,
+        limit: int = 25,
+    ) -> dict[str, Any]:
+        results = search_names(
+            query,
+            engine=self._engine(),
+            sources=sources,
+            tty_filters=tty_filters,
+            limit=limit,
+        )
+        return {"results": [result.to_dict() for result in results]}
 
     def code_relations(
         self,
@@ -313,6 +367,51 @@ def create_mcp_server(
         `sources` can contain one source for all codes, or one source per code.
         """
         return server_runtime.lookup_codes(codes=codes, sources=sources)
+
+    @mcp.tool()
+    async def sources(
+        sources: list[str] | None = None,
+    ) -> dict[str, Any]:
+        """Return active code and atom counts by source."""
+        return server_runtime.source_stats(sources=sources)
+
+    @mcp.tool()
+    async def source_stats(
+        sources: list[str] | None = None,
+    ) -> dict[str, Any]:
+        """Return active code and atom counts by source."""
+        return server_runtime.source_stats(sources=sources)
+
+    @mcp.tool()
+    async def sample_codes(
+        sources: list[str] | None = None,
+        per_source: int = 10,
+    ) -> dict[str, Any]:
+        """Return sample active codes by source."""
+        return server_runtime.sample_codes(sources=sources, per_source=per_source)
+
+    @mcp.tool()
+    async def code_ttys(
+        codes: list[str],
+        sources: list[str],
+    ) -> dict[str, Any]:
+        """Return active UMLS atoms and term types for clinical codes."""
+        return server_runtime.code_ttys(codes=codes, sources=sources)
+
+    @mcp.tool()
+    async def search_names(
+        query: str,
+        sources: list[str] | None = None,
+        tty_filters: list[str] | None = None,
+        limit: int = 25,
+    ) -> dict[str, Any]:
+        """Search active terminology names."""
+        return server_runtime.search_names(
+            query=query,
+            sources=sources,
+            tty_filters=tty_filters,
+            limit=limit,
+        )
 
     @mcp.tool()
     async def code_relations(

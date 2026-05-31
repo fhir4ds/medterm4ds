@@ -23,8 +23,10 @@ from medterm4ds.core.models import (
     CodeRef,
     CodeRelation,
     FriendlyNameResult,
+    NameSearchResult,
     Provenance,
     ProvenanceStep,
+    SourceStats,
 )
 
 logger = logging.getLogger(__name__)
@@ -378,6 +380,217 @@ class LocalLiteEngine:
                 )
 
         return [lookup.get((ref.source, ref.code)) for ref in ordered]
+
+    def get_source_stats(self, sources: Sequence[str] | None = None) -> list[SourceStats]:
+        """Return active code and atom counts by source."""
+        params: list[object] = []
+        source_filter = ""
+        if sources:
+            normalized_sources = _dedupe(sources)
+            placeholders = ",".join(["?"] * len(normalized_sources))
+            source_filter = f"AND SAB IN ({placeholders})"
+            params.extend(normalized_sources)
+        rows = self.con.execute(
+            f"""
+            SELECT SAB, COUNT(DISTINCT CODE) AS code_count, COUNT(*) AS atom_count
+            FROM mrconso
+            WHERE SUPPRESS = 'N'
+              AND CODE IS NOT NULL
+              AND CODE != ''
+              {source_filter}
+            GROUP BY SAB
+            ORDER BY SAB
+            """,
+            params,
+        ).fetchall()
+        return [
+            SourceStats(source=source, code_count=int(code_count), atom_count=int(atom_count))
+            for source, code_count, atom_count in rows
+        ]
+
+    def sample_source_codes(
+        self,
+        sources: Sequence[str],
+        *,
+        per_source: int = 10,
+    ) -> list[CodeRef]:
+        """Return sample active codes by source."""
+        if per_source < 1:
+            raise ValueError("per_source must be at least 1")
+        if not sources:
+            return []
+        normalized_sources = _dedupe(sources)
+        placeholders = ",".join(["?"] * len(normalized_sources))
+        rows = self.con.execute(
+            f"""
+            WITH ranked AS (
+                SELECT SAB, CODE,
+                       ROW_NUMBER() OVER (PARTITION BY SAB ORDER BY CODE) AS rn
+                FROM (
+                    SELECT SAB, CODE
+                    FROM mrconso
+                    WHERE SUPPRESS = 'N'
+                      AND CODE IS NOT NULL
+                      AND CODE != ''
+                      AND SAB IN ({placeholders})
+                    GROUP BY SAB, CODE
+                )
+            )
+            SELECT SAB, CODE
+            FROM ranked
+            WHERE rn <= ?
+            ORDER BY SAB, CODE
+            """,
+            [*normalized_sources, per_source],
+        ).fetchall()
+        return [CodeRef(source=source, code=code) for source, code in rows]
+
+    def get_code_ttys(self, codes: Sequence[CodeRef]) -> list[CodeInfo]:
+        """Return active atoms and TTYs for input codes."""
+        if not codes:
+            return []
+        ordered = [CodeRef(source=code.source, code=code.code) for code in codes]
+        grouped: dict[str, list[tuple[int, str]]] = defaultdict(list)
+        for ordinal, ref in enumerate(ordered):
+            grouped[ref.source].append((ordinal, ref.code))
+
+        rows: list[tuple[int, CodeInfo]] = []
+        for source, code_ordinals in grouped.items():
+            with self._temp_code_ordinals(code_ordinals) as temp:
+                source_rows = self.con.execute(
+                    f"""
+                    SELECT i.ordinal, c.CODE, c.STR, c.CUI, c.AUI, c.TTY, c.SUPPRESS
+                    FROM {temp} i
+                    JOIN mrconso c ON c.CODE = i.code
+                    WHERE c.SAB = ?
+                      AND c.SUPPRESS = 'N'
+                    ORDER BY i.ordinal,
+                             CASE c.TTY
+                                 WHEN 'PT' THEN 0
+                                 WHEN 'MH' THEN 1
+                                 WHEN 'LN' THEN 2
+                                 ELSE 3
+                             END,
+                             c.TTY,
+                             c.AUI
+                    """,
+                    [source],
+                ).fetchall()
+            rows.extend(
+                (
+                    int(ordinal),
+                    CodeInfo(
+                        code=CodeRef(source=source, code=code),
+                        name=name,
+                        cui=cui,
+                        aui=aui,
+                        tty=tty,
+                        suppress=suppress,
+                    ),
+                )
+                for ordinal, code, name, cui, aui, tty, suppress in source_rows
+            )
+        return [info for _ordinal, info in sorted(rows, key=lambda item: item[0])]
+
+    def search_names(
+        self,
+        query: str,
+        *,
+        sources: Sequence[str] | None = None,
+        tty_filters: Sequence[str] | None = None,
+        limit: int = 25,
+    ) -> list[NameSearchResult]:
+        """Search active atom names."""
+        stripped_query = query.strip()
+        if not stripped_query:
+            raise ValueError("query must not be empty")
+        if limit < 1:
+            raise ValueError("limit must be at least 1")
+
+        filters = ["SUPPRESS = 'N'", "CODE IS NOT NULL", "CODE != ''", "STR IS NOT NULL"]
+        filter_params: list[object] = []
+        if sources:
+            normalized_sources = _dedupe(sources)
+            filters.append(f"SAB IN ({','.join(['?'] * len(normalized_sources))})")
+            filter_params.extend(normalized_sources)
+        if tty_filters:
+            normalized_ttys = _dedupe([tty.upper() for tty in tty_filters])
+            filters.append(f"TTY IN ({','.join(['?'] * len(normalized_ttys))})")
+            filter_params.extend(normalized_ttys)
+
+        lowered_query = stripped_query.lower()
+        prefix_pattern = f"{lowered_query}%"
+        contains_pattern = f"%{lowered_query}%"
+
+        rows = self.con.execute(
+            f"""
+            WITH ranked AS (
+                SELECT SAB, CODE, STR, CUI, AUI, TTY,
+                       CASE
+                           WHEN LOWER(STR) = ? THEN 'exact'
+                           WHEN LOWER(STR) LIKE ? THEN 'prefix'
+                           ELSE 'contains'
+                       END AS match_type,
+                       ROW_NUMBER() OVER (
+                           PARTITION BY SAB, CODE
+                           ORDER BY
+                               CASE
+                                   WHEN LOWER(STR) = ? THEN 0
+                                   WHEN LOWER(STR) LIKE ? THEN 1
+                                   ELSE 2
+                               END,
+                               CASE TTY
+                                   WHEN 'PT' THEN 0
+                                   WHEN 'MH' THEN 1
+                                   WHEN 'LN' THEN 2
+                                   ELSE 3
+                               END,
+                               LENGTH(STR),
+                               AUI
+                       ) AS atom_rn
+                FROM mrconso
+                WHERE {' AND '.join(filters)}
+                  AND LOWER(STR) LIKE ?
+            ),
+            deduped AS (
+                SELECT *
+                FROM ranked
+                WHERE atom_rn = 1
+            )
+            SELECT SAB, CODE, STR, CUI, AUI, TTY, match_type
+            FROM deduped
+            ORDER BY
+                CASE match_type
+                    WHEN 'exact' THEN 0
+                    WHEN 'prefix' THEN 1
+                    ELSE 2
+                END,
+                LENGTH(STR),
+                SAB,
+                CODE
+            LIMIT ?
+            """,
+            [
+                lowered_query,
+                prefix_pattern,
+                lowered_query,
+                prefix_pattern,
+                *filter_params,
+                contains_pattern,
+                limit,
+            ],
+        ).fetchall()
+        return [
+            NameSearchResult(
+                code=CodeRef(source=source, code=code),
+                name=name,
+                cui=cui,
+                aui=aui,
+                tty=tty,
+                match_type=match_type,
+            )
+            for source, code, name, cui, aui, tty, match_type in rows
+        ]
 
     def get_code_relations(
         self,

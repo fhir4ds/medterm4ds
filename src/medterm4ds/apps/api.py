@@ -12,6 +12,12 @@ from medterm4ds.core.config import MemoryProfile, local_lite_config
 from medterm4ds.core.models import CodeRef
 from medterm4ds.engines.duckdb import LocalLiteEngine
 from medterm4ds.services.conceptmap import get_concept_map
+from medterm4ds.services.discovery import (
+    get_code_ttys,
+    get_source_stats,
+    sample_source_codes,
+    search_names,
+)
 from medterm4ds.services.hierarchy import get_code_relations
 from medterm4ds.services.inventory import DEFAULT_INVENTORY_SOURCES, normalize_sources
 from medterm4ds.services.lookup import get_code_infos
@@ -73,6 +79,26 @@ class PatientFriendlyRequest(BaseModel):
 
 class LookupRequest(BaseModel):
     codes: list[CodeInput] = Field(default_factory=list)
+
+
+class SourceStatsRequest(BaseModel):
+    sources: list[str] | None = None
+
+
+class SampleCodesRequest(BaseModel):
+    sources: list[str] | None = None
+    per_source: int = Field(default=10, ge=1)
+
+
+class CodeTtysRequest(BaseModel):
+    codes: list[CodeInput] = Field(default_factory=list)
+
+
+class SearchNamesRequest(BaseModel):
+    query: str = Field(min_length=1)
+    sources: list[str] | None = None
+    tty_filters: list[str] | None = None
+    limit: int = Field(default=25, ge=1)
 
 
 class HierarchyRequest(BaseModel):
@@ -170,6 +196,61 @@ def create_app(settings: ApiSettings | None = None) -> FastAPI:
             engine=engine,
         )
         return {"results": [result.to_dict() if result else None for result in results]}
+
+    @app.post("/sources")
+    async def sources(
+        payload: SourceStatsRequest,
+        request: Request,
+    ) -> dict[str, Any]:
+        engine = _engine(request)
+        stats = get_source_stats(engine=engine, sources=payload.sources)
+        return {"results": [stat.to_dict() for stat in stats]}
+
+    @app.post("/source-stats")
+    async def source_stats(
+        payload: SourceStatsRequest,
+        request: Request,
+    ) -> dict[str, Any]:
+        engine = _engine(request)
+        stats = get_source_stats(engine=engine, sources=payload.sources)
+        return {"results": [stat.to_dict() for stat in stats]}
+
+    @app.post("/sample-codes")
+    async def sample_codes(
+        payload: SampleCodesRequest,
+        request: Request,
+    ) -> dict[str, Any]:
+        engine = _engine(request)
+        codes = sample_source_codes(
+            engine=engine,
+            sources=payload.sources,
+            per_source=payload.per_source,
+        )
+        return {"results": [{"source": code.source, "code": code.code} for code in codes]}
+
+    @app.post("/code-ttys")
+    async def code_ttys(
+        payload: CodeTtysRequest,
+        request: Request,
+    ) -> dict[str, Any]:
+        engine = _engine(request)
+        infos = get_code_ttys([code.to_ref() for code in payload.codes], engine=engine)
+        return {"results": [info.to_dict() for info in infos]}
+
+    @app.post("/search-names")
+    async def search(
+        payload: SearchNamesRequest,
+        request: Request,
+    ) -> dict[str, Any]:
+        engine = _engine(request)
+        results = search_names(
+            payload.query,
+            engine=engine,
+            sources=payload.sources,
+            tty_filters=payload.tty_filters,
+            limit=payload.limit,
+        )
+        return {"results": [result.to_dict() for result in results]}
 
     @app.post("/hierarchy")
     async def hierarchy(

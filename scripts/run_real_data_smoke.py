@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Smoke-test lookup, mapping, and hierarchy against a real UMLS DuckDB file."""
+"""Smoke-test lookup, mapping, hierarchy, and discovery against real UMLS DuckDB."""
 
 # ruff: noqa: E402
 
@@ -19,7 +19,14 @@ SRC = ROOT / "src"
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
-from medterm4ds import CodeRef, get_code_infos, get_code_mappings
+from medterm4ds import (
+    CodeRef,
+    get_code_infos,
+    get_code_mappings,
+    get_code_ttys,
+    get_source_stats,
+    search_names,
+)
 from medterm4ds.core.config import local_lite_config
 from medterm4ds.engines.duckdb import LocalLiteEngine
 from medterm4ds.services.hierarchy import get_code_relations
@@ -64,6 +71,9 @@ def main() -> int:
         engine = LocalLiteEngine(con, config=local_lite_config(args.memory_profile))
         checks = [
             _check_lookup(con, engine, source),
+            _check_source_stats(engine, source),
+            _check_code_ttys(con, engine, source),
+            _check_search_names(con, engine, source),
             _check_mapping(con, engine, source, target_source),
             _check_hierarchy(con, engine, source),
         ]
@@ -134,6 +144,54 @@ def _check_mapping(
     )
 
 
+def _check_source_stats(engine: LocalLiteEngine, source: str) -> SmokeCheck:
+    start = time.perf_counter()
+    rows = get_source_stats(engine=engine, sources=[source])
+    status = "pass" if rows and rows[0].code_count > 0 and rows[0].atom_count > 0 else "fail"
+    return SmokeCheck(
+        "source_stats",
+        status,
+        time.perf_counter() - start,
+        {"source": source, "rows": [row.to_dict() for row in rows]},
+    )
+
+
+def _check_code_ttys(con, engine: LocalLiteEngine, source: str) -> SmokeCheck:
+    start = time.perf_counter()
+    code = _first_active_code(con, source)
+    if not code:
+        return SmokeCheck("code_ttys", "skip", time.perf_counter() - start, {"reason": "no active code"})
+    rows = get_code_ttys([CodeRef(source, code)], engine=engine)
+    status = "pass" if rows and all(row.code.code == code for row in rows) else "fail"
+    return SmokeCheck(
+        "code_ttys",
+        status,
+        time.perf_counter() - start,
+        {
+            "source": source,
+            "code": code,
+            "rows": len(rows),
+            "ttys": sorted({row.tty for row in rows if row.tty}),
+        },
+    )
+
+
+def _check_search_names(con, engine: LocalLiteEngine, source: str) -> SmokeCheck:
+    start = time.perf_counter()
+    sample = _first_active_code_name(con, source)
+    if not sample:
+        return SmokeCheck("search_names", "skip", time.perf_counter() - start, {"reason": "no active name"})
+    code, name = sample
+    rows = search_names(name, engine=engine, sources=[source], limit=5)
+    status = "pass" if any(row.code.code == code for row in rows) else "fail"
+    return SmokeCheck(
+        "search_names",
+        status,
+        time.perf_counter() - start,
+        {"source": source, "code": code, "query": name, "rows": len(rows)},
+    )
+
+
 def _check_hierarchy(con, engine: LocalLiteEngine, source: str) -> SmokeCheck:
     start = time.perf_counter()
     code = _first_child_code(con, source)
@@ -170,6 +228,31 @@ def _first_active_code(con, source: str) -> str | None:
         [source],
     ).fetchone()
     return str(row[0]) if row else None
+
+
+def _first_active_code_name(con, source: str) -> tuple[str, str] | None:
+    row = con.execute(
+        """
+        SELECT CODE, STR
+        FROM mrconso
+        WHERE SAB = ?
+          AND SUPPRESS = 'N'
+          AND CODE IS NOT NULL
+          AND CODE != ''
+          AND STR IS NOT NULL
+        ORDER BY
+          CASE TTY
+              WHEN 'PT' THEN 0
+              WHEN 'MH' THEN 1
+              WHEN 'LN' THEN 2
+              ELSE 3
+          END,
+          CODE
+        LIMIT 1
+        """,
+        [source],
+    ).fetchone()
+    return (str(row[0]), str(row[1])) if row else None
 
 
 def _first_same_cui_mapping_code(con, source: str, target_source: str) -> str | None:
