@@ -53,6 +53,42 @@ class CodeInfo:
 
 
 @dataclass(frozen=True)
+class CodeRelation:
+    """One hierarchical relationship between terminology codes."""
+
+    source: CodeRef
+    target: CodeRef
+    relationship: str
+    depth: int = 1
+    source_display: str | None = None
+    target_display: str | None = None
+    rel: str | None = None
+    rela: str | None = None
+    source_cui: str | None = None
+    target_cui: str | None = None
+    source_aui: str | None = None
+    target_aui: str | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "source": self.source.source,
+            "code": self.source.code,
+            "source_display": self.source_display,
+            "target_source": self.target.source,
+            "target_code": self.target.code,
+            "target_display": self.target_display,
+            "relationship": self.relationship,
+            "depth": self.depth,
+            "rel": self.rel,
+            "rela": self.rela,
+            "source_cui": self.source_cui,
+            "target_cui": self.target_cui,
+            "source_aui": self.source_aui,
+            "target_aui": self.target_aui,
+        }
+
+
+@dataclass(frozen=True)
 class ProvenanceStep:
     """One auditable step in a terminology resolution path."""
 

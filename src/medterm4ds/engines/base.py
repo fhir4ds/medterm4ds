@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
-from typing import Protocol
+from typing import Literal, Protocol
 
-from medterm4ds.core.models import CodeInfo, CodeRef, FriendlyNameResult
+from medterm4ds.core.models import CodeInfo, CodeRef, CodeRelation, FriendlyNameResult
+
+HierarchyDirection = Literal["parents", "children", "ancestors", "descendants"]
 
 
 class LookupEngine(Protocol):
@@ -16,6 +18,20 @@ class LookupEngine(Protocol):
         codes: Sequence[CodeRef],
     ) -> list[CodeInfo | None]:
         """Return one code info row per input code, preserving order."""
+        ...
+
+
+class HierarchyEngine(Protocol):
+    """Batch-first hierarchy traversal engine."""
+
+    def get_code_relations(
+        self,
+        codes: Sequence[CodeRef],
+        *,
+        direction: HierarchyDirection,
+        max_depth: int = 1,
+    ) -> list[CodeRelation]:
+        """Return hierarchical relationship rows for input codes."""
         ...
 
 
@@ -31,7 +47,7 @@ class PatientFriendlyEngine(Protocol):
         ...
 
 
-class TerminologyEngine(LookupEngine, PatientFriendlyEngine, Protocol):
+class TerminologyEngine(LookupEngine, HierarchyEngine, PatientFriendlyEngine, Protocol):
     """Shared terminology engine contract for services.
 
     Engines may be local, remote, or test doubles. Service modules should depend

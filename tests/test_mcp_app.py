@@ -40,8 +40,15 @@ def _make_duckdb(path: Path) -> None:
             "INSERT INTO mrconso VALUES (?, ?, ?, ?, ?, ?, ?)",
             [
                 ("E11.9", "PT", "Type 2 diabetes mellitus", "ICD_E119", "N", "ICD10CM", "C_DIAB"),
+                ("E11", "PT", "Type 2 diabetes mellitus", "ICD_E11", "N", "ICD10CM", "C_E11"),
                 ("D_DIAB", "MH", "Diabetes", "MP_DIAB", "N", "MEDLINEPLUS", "C_DIAB"),
                 ("208", "PT", "COVID-19 vaccine", "CVX_208", "N", "CVX", "C_CVX"),
+            ],
+        )
+        con.executemany(
+            "INSERT INTO mrrel VALUES (?, ?, ?, ?)",
+            [
+                ("ICD_E119", "ICD_E11", "isa", "PAR"),
             ],
         )
     finally:
@@ -88,6 +95,19 @@ def test_mcp_runtime_patient_friendly_tools(tmp_path):
             "Type 2 diabetes mellitus",
             None,
         ]
+
+        parents = runtime.parents(codes=["E11.9"], sources=["ICD10CM"])
+        assert parents["results"][0]["target_code"] == "E11"
+        assert parents["results"][0]["relationship"] == "parent"
+
+        generic = runtime.code_relations(
+            codes=["E11.9"],
+            sources=["ICD10CM"],
+            direction="ancestors",
+        )
+        assert [(row["target_code"], row["relationship"]) for row in generic["results"]] == [
+            ("E11", "ancestor")
+        ]
     finally:
         runtime.close()
 
@@ -125,6 +145,11 @@ def test_mcp_server_registers_expected_tools(tmp_path):
         "health",
         "lookup_code",
         "lookup_codes",
+        "code_relations",
+        "get_ancestors",
+        "get_children",
+        "get_descendants",
+        "get_parents",
         "patient_friendly_name",
         "patient_friendly_names",
         "patient_friendly_concept_map",

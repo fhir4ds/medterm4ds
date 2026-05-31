@@ -2,11 +2,13 @@
 
 `medterm4ds` is a refactor/prototype for batch-first medical terminology workflows.
 
-The current slice focuses on exact code lookup and patient-friendly names:
+The current slice focuses on exact code lookup, hierarchy traversal, and
+patient-friendly names:
 
 - typed domain results
 - batch-first service API
 - active atom lookup for one or many codes
+- same-source parent, child, ancestor, and descendant traversal
 - ConceptMap rows derived from patient-friendly results
 - DuckDB `LocalLiteEngine`
 - dirty-working-tree parity adapter for `/mnt/d/medterm`
@@ -18,7 +20,7 @@ The current slice focuses on exact code lookup and patient-friendly names:
 
 ```text
 src/medterm4ds/
-  core/                  # CodeRef, FriendlyNameResult, provenance models
+  core/                  # CodeRef, CodeInfo, CodeRelation, provenance models
   engines/
     duckdb/              # LocalLite DuckDB execution
     medterm_baseline/    # comparison adapter for /mnt/d/medterm
@@ -62,6 +64,20 @@ from medterm4ds import CodeRef, get_code_infos
 infos = get_code_infos(
     [CodeRef("ICD10CM", "E11.9")],
     engine=engine,
+)
+```
+
+The hierarchy vertical slice is `get_code_relations(...)`. It returns flat
+`CodeRelation` rows for same-source parent, child, ancestor, or descendant
+relationships.
+
+```python
+from medterm4ds import CodeRef, get_ancestors
+
+relations = get_ancestors(
+    [CodeRef("ICD10CM", "E11.9")],
+    engine=engine,
+    max_depth=3,
 )
 ```
 
@@ -119,6 +135,19 @@ medterm4ds lookup \
 
 Provide one `--source` for all codes, or one `--source` per `--code`. Lookup
 output can be JSON, JSONL, or CSV.
+
+For hierarchy traversal:
+
+```bash
+medterm4ds hierarchy ancestors \
+  --db /mnt/d/medterm/data/umls_local.duckdb \
+  --source ICD10CM \
+  --code E11.9 \
+  --max-depth 3
+```
+
+Supported hierarchy subcommands are `parents`, `children`, `ancestors`, and
+`descendants`. Output can be JSON, JSONL, or CSV.
 
 The first CLI workflow generates a patient-friendly ConceptMap directly from a
 DuckDB UMLS database:
@@ -251,6 +280,7 @@ Supported endpoints:
 
 - `GET /health`
 - `POST /lookup`
+- `POST /hierarchy`
 - `POST /patient-friendly`
 - `POST /conceptmap/patient-friendly`
 
@@ -264,6 +294,20 @@ curl -X POST http://localhost:8000/lookup \
       {"source": "ICD10CM", "code": "E11.9"},
       {"source": "CVX", "code": "208"}
     ]
+}'
+```
+
+Example hierarchy request:
+
+```bash
+curl -X POST http://localhost:8000/hierarchy \
+  -H 'content-type: application/json' \
+  -d '{
+    "codes": [
+      {"source": "ICD10CM", "code": "E11.9"}
+    ],
+    "direction": "ancestors",
+    "max_depth": 3
   }'
 ```
 
@@ -309,12 +353,18 @@ Registered tools:
 - `health`
 - `lookup_code`
 - `lookup_codes`
+- `code_relations`
+- `get_parents`
+- `get_children`
+- `get_ancestors`
+- `get_descendants`
 - `patient_friendly_name`
 - `patient_friendly_names`
 - `patient_friendly_concept_map`
 
 The MCP tools return structured dictionaries/lists rather than ASCII trees, so
-callers can use `match_type`, `match_depth`, and `matched_via` directly.
+callers can use fields such as `relationship`, `depth`, `match_type`,
+`match_depth`, and `matched_via` directly.
 
 ## Benchmarking
 

@@ -21,6 +21,7 @@ The core domain records are:
 
 - `CodeRef`: normalized source/code input.
 - `CodeInfo`: active UMLS atom metadata for exact code lookup.
+- `CodeRelation`: one same-source hierarchy relationship row.
 - `FriendlyNameResult`: one patient-friendly display result plus provenance.
 - `ConceptMapRow`: source-to-target mapping row used by exports.
 - `Provenance` and `ProvenanceStep`: structured path showing how a result was
@@ -51,6 +52,11 @@ Current services:
 
 - `get_code_info(...)`
 - `get_code_infos(...)`
+- `get_code_relations(...)`
+- `get_parents(...)`
+- `get_children(...)`
+- `get_ancestors(...)`
+- `get_descendants(...)`
 - `get_patient_friendly_names(...)`
 - `get_concept_map(...)`
 - `iter_concept_map(...)`

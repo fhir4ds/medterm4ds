@@ -6,12 +6,13 @@ import os
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from medterm4ds.core.config import MemoryProfile, local_lite_config
 from medterm4ds.core.models import CodeRef
 from medterm4ds.engines.duckdb import LocalLiteEngine
 from medterm4ds.services.conceptmap import get_concept_map
+from medterm4ds.services.hierarchy import get_code_relations
 from medterm4ds.services.inventory import DEFAULT_INVENTORY_SOURCES, normalize_sources
 from medterm4ds.services.lookup import get_code_infos
 from medterm4ds.services.patient_friendly import get_patient_friendly_names
@@ -71,6 +72,12 @@ class PatientFriendlyRequest(BaseModel):
 
 class LookupRequest(BaseModel):
     codes: list[CodeInput] = Field(default_factory=list)
+
+
+class HierarchyRequest(BaseModel):
+    codes: list[CodeInput] = Field(default_factory=list)
+    direction: Literal["parents", "children", "ancestors", "descendants"]
+    max_depth: int = Field(default=5, ge=1)
 
 
 class ConceptMapRequest(BaseModel):
@@ -153,6 +160,20 @@ def create_app(settings: ApiSettings | None = None) -> FastAPI:
             engine=engine,
         )
         return {"results": [result.to_dict() if result else None for result in results]}
+
+    @app.post("/hierarchy")
+    async def hierarchy(
+        payload: HierarchyRequest,
+        request: Request,
+    ) -> dict[str, Any]:
+        engine = _engine(request)
+        results = get_code_relations(
+            [code.to_ref() for code in payload.codes],
+            engine=engine,
+            direction=payload.direction,
+            max_depth=payload.max_depth,
+        )
+        return {"results": [result.to_dict() for result in results]}
 
     @app.post("/conceptmap/patient-friendly")
     async def conceptmap_patient_friendly(

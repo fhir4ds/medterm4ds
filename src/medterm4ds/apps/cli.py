@@ -19,6 +19,7 @@ from medterm4ds.outputs import (
     write_jsonl,
 )
 from medterm4ds.services.conceptmap import iter_concept_map
+from medterm4ds.services.hierarchy import get_code_relations
 from medterm4ds.services.inventory import (
     DEFAULT_INVENTORY_SOURCES,
     count_source_codes,
@@ -26,6 +27,8 @@ from medterm4ds.services.inventory import (
     normalize_sources,
 )
 from medterm4ds.services.lookup import get_code_infos
+
+_HIERARCHY_DIRECTIONS = ("parents", "children", "ancestors", "descendants")
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -50,6 +53,16 @@ def build_parser() -> argparse.ArgumentParser:
     lookup = subparsers.add_parser("lookup", help="Look up exact terminology codes.")
     _add_lookup_args(lookup)
     lookup.set_defaults(func=run_lookup)
+
+    hierarchy = subparsers.add_parser("hierarchy", help="Traverse code hierarchies.")
+    hierarchy_subparsers = hierarchy.add_subparsers(dest="direction", required=True)
+    for direction in _HIERARCHY_DIRECTIONS:
+        hierarchy_command = hierarchy_subparsers.add_parser(
+            direction,
+            help=f"Return {direction} for terminology codes.",
+        )
+        _add_hierarchy_args(hierarchy_command)
+        hierarchy_command.set_defaults(func=run_hierarchy)
 
     return parser
 
@@ -128,6 +141,29 @@ def _add_lookup_args(parser: argparse.ArgumentParser) -> None:
     _add_common_engine_args(parser)
     parser.add_argument("--source", action="append", required=True, help="Source vocabulary.")
     parser.add_argument("--code", action="append", required=True, help="Code to look up.")
+    parser.add_argument(
+        "--output",
+        default=None,
+        help="Optional output path. Defaults to stdout JSON.",
+    )
+    parser.add_argument(
+        "--format",
+        choices=("json", "jsonl", "csv"),
+        default=None,
+        help="Output format. Defaults to output extension, or JSON for stdout.",
+    )
+
+
+def _add_hierarchy_args(parser: argparse.ArgumentParser) -> None:
+    _add_common_engine_args(parser)
+    parser.add_argument("--source", action="append", required=True, help="Source vocabulary.")
+    parser.add_argument("--code", action="append", required=True, help="Code to traverse.")
+    parser.add_argument(
+        "--max-depth",
+        type=int,
+        default=5,
+        help="Maximum depth for ancestors or descendants. Parents and children are direct only.",
+    )
     parser.add_argument(
         "--output",
         default=None,
@@ -257,12 +293,38 @@ def run_lookup(args: argparse.Namespace) -> int:
     except ImportError as exc:
         raise SystemExit("DuckDB is required. Install medterm4ds[duckdb].") from exc
 
-    if len(args.source) == 1 and len(args.code) > 1:
-        sources = args.source * len(args.code)
-    else:
-        sources = args.source
-    if len(sources) != len(args.code):
-        raise SystemExit("--source must be provided once for all codes or once per --code")
+    db_path = Path(args.db)
+    if not db_path.exists():
+        raise SystemExit(f"Database not found: {db_path}")
+
+    config = local_lite_config(
+        args.memory_profile,
+        memory_limit=args.memory_limit,
+        temp_directory=args.temp_dir,
+        threads=args.threads,
+        query_chunk_size=args.query_chunk_size,
+    )
+    refs = _code_source_pairs(args.code, args.source)
+    con = duckdb.connect(str(db_path), read_only=True)
+    try:
+        engine = LocalLiteEngine(con, config=config)
+        infos = get_code_infos(refs, engine=engine)
+    finally:
+        con.close()
+
+    rows = [
+        info.to_dict() if info else _missing_code_info(code=code, source=source)
+        for info, (code, source) in zip(infos, refs, strict=True)
+    ]
+    _write_record_results(rows, output=args.output, output_format=args.format)
+    return 0
+
+
+def run_hierarchy(args: argparse.Namespace) -> int:
+    try:
+        import duckdb
+    except ImportError as exc:
+        raise SystemExit("DuckDB is required. Install medterm4ds[duckdb].") from exc
 
     db_path = Path(args.db)
     if not db_path.exists():
@@ -275,31 +337,24 @@ def run_lookup(args: argparse.Namespace) -> int:
         threads=args.threads,
         query_chunk_size=args.query_chunk_size,
     )
-    refs = list(zip(args.code, sources, strict=True))
+    refs = _code_source_pairs(args.code, args.source)
     con = duckdb.connect(str(db_path), read_only=True)
     try:
         engine = LocalLiteEngine(con, config=config)
-        infos = get_code_infos(refs, engine=engine)
+        relations = get_code_relations(
+            refs,
+            engine=engine,
+            direction=args.direction,
+            max_depth=args.max_depth,
+        )
     finally:
         con.close()
 
-    rows = [
-        info.to_dict() if info else _missing_code_info(code=code, source=source)
-        for info, (code, source) in zip(infos, refs, strict=True)
-    ]
-    output_format = args.format or (_lookup_format_from_path(Path(args.output)) if args.output else "json")
-    if args.output:
-        output_path = Path(args.output)
-        if output_format == "json":
-            output_path.write_text(_json_dumps({"results": rows}), encoding="utf-8")
-        elif output_format == "jsonl":
-            write_jsonl(rows, output_path)
-        elif output_format == "csv":
-            write_csv(rows, output_path)
-        else:
-            raise SystemExit(f"Unsupported output format: {output_format}")
-    else:
-        print(_json_dumps({"results": rows}), file=sys.stdout)
+    _write_record_results(
+        [relation.to_dict() for relation in relations],
+        output=args.output,
+        output_format=args.format,
+    )
     return 0
 
 
@@ -314,7 +369,7 @@ def _format_from_path(path: Path) -> str:
     raise SystemExit("Could not infer output format. Use --format jsonl, --format csv, or --format fhir-json.")
 
 
-def _lookup_format_from_path(path: Path) -> str:
+def _record_format_from_path(path: Path) -> str:
     suffix = path.suffix.lower()
     if suffix == ".json":
         return "json"
@@ -322,7 +377,36 @@ def _lookup_format_from_path(path: Path) -> str:
         return "jsonl"
     if suffix == ".csv":
         return "csv"
-    raise SystemExit("Could not infer lookup output format. Use --format json, jsonl, or csv.")
+    raise SystemExit("Could not infer output format. Use --format json, jsonl, or csv.")
+
+
+def _code_source_pairs(codes: list[str], sources: list[str]) -> list[tuple[str, str]]:
+    if len(sources) == 1 and len(codes) > 1:
+        sources = sources * len(codes)
+    if len(sources) != len(codes):
+        raise SystemExit("--source must be provided once for all codes or once per --code")
+    return list(zip(codes, sources, strict=True))
+
+
+def _write_record_results(
+    rows: list[dict[str, object]],
+    *,
+    output: str | None,
+    output_format: str | None,
+) -> None:
+    resolved_format = output_format or (_record_format_from_path(Path(output)) if output else "json")
+    if output:
+        output_path = Path(output)
+        if resolved_format == "json":
+            output_path.write_text(_json_dumps({"results": rows}), encoding="utf-8")
+        elif resolved_format == "jsonl":
+            write_jsonl(rows, output_path)
+        elif resolved_format == "csv":
+            write_csv(rows, output_path)
+        else:
+            raise SystemExit(f"Unsupported output format: {resolved_format}")
+    else:
+        print(_json_dumps({"results": rows}), file=sys.stdout)
 
 
 def _missing_code_info(*, code: str, source: str) -> dict[str, object]:

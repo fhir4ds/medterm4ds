@@ -13,23 +13,32 @@ from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
+from typing import TypeVar
 from uuid import uuid4
 
 from medterm4ds.core.config import LocalLiteConfig
 from medterm4ds.core.models import (
     CodeInfo,
     CodeRef,
+    CodeRelation,
     FriendlyNameResult,
     Provenance,
     ProvenanceStep,
 )
 
 logger = logging.getLogger(__name__)
+T = TypeVar("T")
 
 _SNOMED_FALLBACK_SOURCES = {"ICD10CM", "ICD10PCS", "LNC"}
 _SNOMED_TARGET_PRIORITY = {"ICD10CM": 0, "RXNORM": 1, "LNC": 2, "CPT": 3}
 _CPT_TARGET_PRIORITY = {"HCPCS": 0, "ICD10CM": 1, "SNOMEDCT_US": 2}
 _SNOMED_TOP_LEVEL_GUARD_DEPTH = 3
+_HIERARCHY_RELATIONSHIPS = {
+    "parents": "parent",
+    "children": "child",
+    "ancestors": "ancestor",
+    "descendants": "descendant",
+}
 
 _BROAD_CHV_NAMES = {
     "clinical findings",
@@ -368,6 +377,179 @@ class LocalLiteEngine:
                 )
 
         return [lookup.get((ref.source, ref.code)) for ref in ordered]
+
+    def get_code_relations(
+        self,
+        codes: Sequence[CodeRef],
+        *,
+        direction: str,
+        max_depth: int = 1,
+    ) -> list[CodeRelation]:
+        """Return same-source hierarchy relationships for input codes."""
+        if not codes:
+            return []
+        if max_depth < 1:
+            raise ValueError("max_depth must be at least 1")
+
+        direction = direction.strip().lower()
+        if direction not in {"parents", "children", "ancestors", "descendants"}:
+            raise ValueError("direction must be one of parents, children, ancestors, or descendants")
+        if direction in {"parents", "children"}:
+            max_depth = 1
+
+        ordered = [CodeRef(source=code.source, code=code.code) for code in codes]
+        grouped: dict[str, list[tuple[int, str]]] = defaultdict(list)
+        for ordinal, ref in enumerate(ordered):
+            grouped[ref.source].append((ordinal, ref.code))
+
+        rows: list[tuple[int, CodeRelation]] = []
+        relationship = _HIERARCHY_RELATIONSHIPS[direction]
+        upward = direction in {"parents", "ancestors"}
+        for source, source_codes in grouped.items():
+            for chunk in _chunks(source_codes, self.query_chunk_size):
+                rows.extend(
+                    self._get_source_code_relations(
+                        source,
+                        chunk,
+                        relationship=relationship,
+                        upward=upward,
+                        max_depth=max_depth,
+                    )
+                )
+        return [
+            relation
+            for _ordinal, relation in sorted(
+                rows,
+                key=lambda item: (
+                    item[0],
+                    item[1].depth,
+                    item[1].target.code,
+                    item[1].target_aui or "",
+                ),
+            )
+        ]
+
+    def _get_source_code_relations(
+        self,
+        source: str,
+        code_ordinals: Sequence[tuple[int, str]],
+        *,
+        relationship: str,
+        upward: bool,
+        max_depth: int,
+    ) -> list[tuple[int, CodeRelation]]:
+        source_join = "r.AUI1 = s.source_aui" if upward else "r.AUI2 = s.source_aui"
+        source_target = "r.AUI2" if upward else "r.AUI1"
+        recursive_join = "r.AUI1 = w.target_aui" if upward else "r.AUI2 = w.target_aui"
+        recursive_target = "r.AUI2" if upward else "r.AUI1"
+
+        with self._temp_code_ordinals(code_ordinals) as temp:
+            rows = self.con.execute(
+                f"""
+                WITH RECURSIVE
+                base AS (
+                    SELECT i.ordinal, i.code AS source_code, c.STR AS source_name,
+                           c.CUI AS source_cui, c.AUI AS source_aui,
+                           ROW_NUMBER() OVER (
+                               PARTITION BY i.ordinal
+                               ORDER BY
+                                   CASE c.TTY
+                                       WHEN 'PT' THEN 0
+                                       WHEN 'MH' THEN 1
+                                       WHEN 'LN' THEN 2
+                                       ELSE 3
+                                   END,
+                                   c.AUI
+                           ) AS rn
+                    FROM {temp} i
+                    JOIN mrconso c ON c.CODE = i.code
+                    WHERE c.SAB = ?
+                      AND c.SUPPRESS = 'N'
+                ),
+                seed AS (
+                    SELECT ordinal, source_code, source_name, source_cui, source_aui
+                    FROM base
+                    WHERE rn = 1
+                ),
+                walk AS (
+                    SELECT s.ordinal, s.source_code, s.source_name, s.source_cui,
+                           s.source_aui, t.CODE AS target_code, t.STR AS target_name,
+                           t.CUI AS target_cui, t.AUI AS target_aui, r.REL AS rel,
+                           r.RELA AS rela, 1 AS depth,
+                           s.source_aui || '>' || t.AUI AS path
+                    FROM seed s
+                    JOIN mrrel r ON {source_join}
+                    JOIN mrconso t ON t.AUI = {source_target}
+                    WHERE r.REL = 'PAR'
+                      AND t.SAB = ?
+                      AND t.SUPPRESS = 'N'
+
+                    UNION ALL
+
+                    SELECT w.ordinal, w.source_code, w.source_name, w.source_cui,
+                           w.source_aui, t.CODE AS target_code, t.STR AS target_name,
+                           t.CUI AS target_cui, t.AUI AS target_aui, r.REL AS rel,
+                           r.RELA AS rela, w.depth + 1 AS depth,
+                           w.path || '>' || t.AUI AS path
+                    FROM walk w
+                    JOIN mrrel r ON {recursive_join}
+                    JOIN mrconso t ON t.AUI = {recursive_target}
+                    WHERE w.depth < ?
+                      AND r.REL = 'PAR'
+                      AND t.SAB = ?
+                      AND t.SUPPRESS = 'N'
+                      AND strpos('>' || w.path || '>', '>' || t.AUI || '>') = 0
+                ),
+                ranked AS (
+                    SELECT *,
+                           ROW_NUMBER() OVER (
+                               PARTITION BY ordinal, target_code
+                               ORDER BY depth, target_aui
+                           ) AS rn
+                    FROM walk
+                )
+                SELECT ordinal, source_code, source_name, source_cui, source_aui,
+                       target_code, target_name, target_cui, target_aui, rel, rela, depth
+                FROM ranked
+                WHERE rn = 1
+                ORDER BY ordinal, depth, target_code, target_aui
+                """,
+                [source, source, max_depth, source],
+            ).fetchall()
+
+        return [
+            (
+                int(ordinal),
+                CodeRelation(
+                    source=CodeRef(source=source, code=source_code),
+                    target=CodeRef(source=source, code=target_code),
+                    relationship=relationship,
+                    depth=int(depth),
+                    source_display=source_name,
+                    target_display=target_name,
+                    rel=rel,
+                    rela=rela,
+                    source_cui=source_cui,
+                    target_cui=target_cui,
+                    source_aui=source_aui,
+                    target_aui=target_aui,
+                ),
+            )
+            for (
+                ordinal,
+                source_code,
+                source_name,
+                source_cui,
+                source_aui,
+                target_code,
+                target_name,
+                target_cui,
+                target_aui,
+                rel,
+                rela,
+                depth,
+            ) in rows
+        ]
 
     def _resolve_source(self, source: str, codes: Sequence[str], max_depth: int) -> list[_Row]:
         if not codes:
@@ -1369,12 +1551,25 @@ class LocalLiteEngine:
         finally:
             self.con.execute(f"DROP TABLE IF EXISTS {table}")
 
+    @contextmanager
+    def _temp_code_ordinals(self, code_ordinals: Sequence[tuple[int, str]]) -> Iterator[str]:
+        table = f"_mt4ds_codes_{uuid4().hex}"
+        self.con.execute(f"CREATE TEMP TABLE {table} (ordinal INTEGER, code VARCHAR)")
+        try:
+            self.con.executemany(
+                f"INSERT INTO {table} VALUES (?, ?)",
+                [(int(ordinal), str(code)) for ordinal, code in code_ordinals],
+            )
+            yield table
+        finally:
+            self.con.execute(f"DROP TABLE IF EXISTS {table}")
+
 
 def _dedupe(values: Sequence[str]) -> list[str]:
     return list(dict.fromkeys(str(value) for value in values))
 
 
-def _chunks(values: Sequence[str], size: int) -> Iterator[list[str]]:
+def _chunks(values: Sequence[T], size: int) -> Iterator[list[T]]:
     for start in range(0, len(values), size):
         yield list(values[start:start + size])
 

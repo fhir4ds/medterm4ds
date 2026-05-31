@@ -13,6 +13,7 @@ from medterm4ds.core.config import MemoryProfile, local_lite_config
 from medterm4ds.core.models import CodeRef
 from medterm4ds.engines.duckdb import LocalLiteEngine
 from medterm4ds.services.conceptmap import get_concept_map
+from medterm4ds.services.hierarchy import get_code_relations
 from medterm4ds.services.inventory import DEFAULT_INVENTORY_SOURCES, normalize_sources
 from medterm4ds.services.lookup import get_code_infos
 from medterm4ds.services.patient_friendly import get_patient_friendly_names
@@ -133,6 +134,67 @@ class McpRuntime:
         infos = get_code_infos(refs, engine=self._engine())
         return {"results": [info.to_dict() if info else None for info in infos]}
 
+    def code_relations(
+        self,
+        *,
+        codes: Sequence[str],
+        sources: Sequence[str],
+        direction: str,
+        max_depth: int = 5,
+    ) -> dict[str, Any]:
+        refs = _code_refs(codes, sources)
+        relations = get_code_relations(
+            refs,
+            engine=self._engine(),
+            direction=direction,
+            max_depth=max_depth,
+        )
+        return {"results": [relation.to_dict() for relation in relations]}
+
+    def parents(
+        self,
+        *,
+        codes: Sequence[str],
+        sources: Sequence[str],
+    ) -> dict[str, Any]:
+        return self.code_relations(codes=codes, sources=sources, direction="parents", max_depth=1)
+
+    def children(
+        self,
+        *,
+        codes: Sequence[str],
+        sources: Sequence[str],
+    ) -> dict[str, Any]:
+        return self.code_relations(codes=codes, sources=sources, direction="children", max_depth=1)
+
+    def ancestors(
+        self,
+        *,
+        codes: Sequence[str],
+        sources: Sequence[str],
+        max_depth: int = 5,
+    ) -> dict[str, Any]:
+        return self.code_relations(
+            codes=codes,
+            sources=sources,
+            direction="ancestors",
+            max_depth=max_depth,
+        )
+
+    def descendants(
+        self,
+        *,
+        codes: Sequence[str],
+        sources: Sequence[str],
+        max_depth: int = 5,
+    ) -> dict[str, Any]:
+        return self.code_relations(
+            codes=codes,
+            sources=sources,
+            direction="descendants",
+            max_depth=max_depth,
+        )
+
     def patient_friendly_names(
         self,
         *,
@@ -227,6 +289,55 @@ def create_mcp_server(
         `sources` can contain one source for all codes, or one source per code.
         """
         return server_runtime.lookup_codes(codes=codes, sources=sources)
+
+    @mcp.tool()
+    async def code_relations(
+        codes: list[str],
+        sources: list[str],
+        direction: str,
+        max_depth: int = 5,
+    ) -> dict[str, Any]:
+        """Return parent, child, ancestor, or descendant relationships."""
+        return server_runtime.code_relations(
+            codes=codes,
+            sources=sources,
+            direction=direction,
+            max_depth=max_depth,
+        )
+
+    @mcp.tool()
+    async def get_parents(
+        codes: list[str],
+        sources: list[str],
+    ) -> dict[str, Any]:
+        """Return direct parent relationships for clinical codes."""
+        return server_runtime.parents(codes=codes, sources=sources)
+
+    @mcp.tool()
+    async def get_children(
+        codes: list[str],
+        sources: list[str],
+    ) -> dict[str, Any]:
+        """Return direct child relationships for clinical codes."""
+        return server_runtime.children(codes=codes, sources=sources)
+
+    @mcp.tool()
+    async def get_ancestors(
+        codes: list[str],
+        sources: list[str],
+        max_depth: int = 5,
+    ) -> dict[str, Any]:
+        """Return ancestor relationships for clinical codes."""
+        return server_runtime.ancestors(codes=codes, sources=sources, max_depth=max_depth)
+
+    @mcp.tool()
+    async def get_descendants(
+        codes: list[str],
+        sources: list[str],
+        max_depth: int = 5,
+    ) -> dict[str, Any]:
+        """Return descendant relationships for clinical codes."""
+        return server_runtime.descendants(codes=codes, sources=sources, max_depth=max_depth)
 
     @mcp.tool()
     async def patient_friendly_names(

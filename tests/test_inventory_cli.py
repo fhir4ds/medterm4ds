@@ -52,6 +52,51 @@ def _make_duckdb(path: Path) -> None:
         con.close()
 
 
+def _make_hierarchy_duckdb(path: Path) -> None:
+    con = duckdb.connect(str(path))
+    try:
+        con.execute(
+            """
+            CREATE TABLE mrconso (
+                CODE VARCHAR,
+                TTY VARCHAR,
+                STR VARCHAR,
+                AUI VARCHAR,
+                SUPPRESS VARCHAR,
+                SAB VARCHAR,
+                CUI VARCHAR
+            )
+            """
+        )
+        con.execute(
+            """
+            CREATE TABLE mrrel (
+                AUI1 VARCHAR,
+                AUI2 VARCHAR,
+                RELA VARCHAR,
+                REL VARCHAR
+            )
+            """
+        )
+        con.executemany(
+            "INSERT INTO mrconso VALUES (?, ?, ?, ?, ?, ?, ?)",
+            [
+                ("E11.9", "PT", "Type 2 diabetes mellitus", "ICD_E119", "N", "ICD10CM", "C_E119"),
+                ("E11", "PT", "Type 2 diabetes mellitus", "ICD_E11", "N", "ICD10CM", "C_E11"),
+                ("E00-E89", "PT", "Endocrine diseases", "ICD_E00", "N", "ICD10CM", "C_E00"),
+            ],
+        )
+        con.executemany(
+            "INSERT INTO mrrel VALUES (?, ?, ?, ?)",
+            [
+                ("ICD_E119", "ICD_E11", "isa", "PAR"),
+                ("ICD_E11", "ICD_E00", "isa", "PAR"),
+            ],
+        )
+    finally:
+        con.close()
+
+
 def test_memory_profiles_can_be_overridden():
     config = local_lite_config(
         "low",
@@ -259,6 +304,63 @@ def test_cli_lookup_writes_jsonl(tmp_path):
         ("ICD10CM", "E11.9", "Type 2 diabetes mellitus"),
         ("CVX", "208", "COVID-19 vaccine"),
     ]
+
+
+def test_cli_hierarchy_prints_json(tmp_path, capsys):
+    db_path = tmp_path / "umls.duckdb"
+    _make_hierarchy_duckdb(db_path)
+
+    status = main(
+        [
+            "hierarchy",
+            "ancestors",
+            "--db",
+            str(db_path),
+            "--source",
+            "ICD10-CM",
+            "--code",
+            "E11.9",
+            "--max-depth",
+            "2",
+            "--memory-profile",
+            "low",
+        ]
+    )
+
+    assert status == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert [(row["target_code"], row["relationship"], row["depth"]) for row in payload["results"]] == [
+        ("E11", "ancestor", 1),
+        ("E00-E89", "ancestor", 2),
+    ]
+
+
+def test_cli_hierarchy_writes_csv(tmp_path):
+    db_path = tmp_path / "umls.duckdb"
+    output_path = tmp_path / "children.csv"
+    _make_hierarchy_duckdb(db_path)
+
+    status = main(
+        [
+            "hierarchy",
+            "children",
+            "--db",
+            str(db_path),
+            "--source",
+            "ICD10CM",
+            "--code",
+            "E11",
+            "--output",
+            str(output_path),
+        ]
+    )
+
+    assert status == 0
+    with output_path.open(encoding="utf-8", newline="") as file:
+        rows = list(csv.DictReader(file))
+    assert rows[0]["code"] == "E11"
+    assert rows[0]["target_code"] == "E11.9"
+    assert rows[0]["relationship"] == "child"
 
 
 def test_cli_resumes_jsonl_from_existing_output(tmp_path):
