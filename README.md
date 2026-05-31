@@ -163,7 +163,32 @@ medterm4ds map \
 
 Provide one `--source` for all codes, or one `--source` per `--code`. Repeat
 `--target-source` for multiple targets. Mapping output can be JSON, JSONL, or
-CSV.
+CSV. By default mapping is exact active same-CUI only. Use `--max-depth` to
+allow source-ancestor broader mappings, and add `--include-target-ancestors` or
+`--include-target-descendants` when target hierarchy expansion is desired.
+
+For a bulk mapping ConceptMap:
+
+```bash
+medterm4ds conceptmap mapping \
+  --db /mnt/d/medterm/data/umls_local.duckdb \
+  --sources ICD10CM,LNC,CPT,HCPCS \
+  --target-sources SNOMEDCT_US \
+  --output source_to_snomed_conceptmap.jsonl \
+  --memory-profile low \
+  --progress
+```
+
+Mapping ConceptMaps can be written as JSONL, CSV, or FHIR R4 JSON:
+
+```bash
+medterm4ds conceptmap mapping \
+  --db /mnt/d/medterm/data/umls_local.duckdb \
+  --sources ICD10CM \
+  --target-sources SNOMEDCT_US \
+  --output icd10_to_snomed_conceptmap.json \
+  --format fhir-json
+```
 
 For hierarchy traversal:
 
@@ -289,6 +314,16 @@ python3 scripts/run_cli_acceptance.py \
 ```
 
 The acceptance harness checks JSONL resume, CSV output, and FHIR R4 JSON shape.
+
+To smoke-test lookup, mapping, and hierarchy against a real UMLS DuckDB file:
+
+```bash
+python3 scripts/run_real_data_smoke.py \
+  --db /mnt/d/medterm/data/umls_local.duckdb \
+  --source ICD10CM \
+  --target-source SNOMEDCT_US \
+  --output-json real_data_smoke.json
+```
 
 ## API
 

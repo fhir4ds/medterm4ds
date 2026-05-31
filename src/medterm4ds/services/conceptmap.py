@@ -6,7 +6,8 @@ from collections.abc import Iterable, Iterator
 from typing import Literal
 
 from medterm4ds.core.models import CodeRef, ConceptMapRow
-from medterm4ds.engines.base import PatientFriendlyEngine
+from medterm4ds.engines.base import MappingEngine, PatientFriendlyEngine
+from medterm4ds.services.mapping import get_code_mappings
 from medterm4ds.services.patient_friendly import get_patient_friendly_names
 
 ConceptMapTarget = Literal["patient_friendly"]
@@ -51,6 +52,60 @@ def get_concept_map(
             batch_size=batch_size,
             max_depth=max_depth,
             target_source=target_source,
+        )
+    )
+
+
+def iter_mapping_concept_map(
+    codes: Iterable[CodeRef | tuple[str, str]],
+    engine: MappingEngine,
+    *,
+    target_sources: list[str] | tuple[str, ...],
+    batch_size: int = 5000,
+    max_results_per_code: int = 50,
+    max_depth: int = 0,
+    include_target_ancestors: bool = False,
+    include_target_descendants: bool = False,
+) -> Iterator[ConceptMapRow]:
+    """Yield ConceptMap rows for source-to-target code mappings."""
+    if batch_size < 1:
+        raise ValueError("batch_size must be at least 1")
+    for batch in _batched(codes, batch_size):
+        mappings = get_code_mappings(
+            batch,
+            engine=engine,
+            target_sources=target_sources,
+            max_results_per_code=max_results_per_code,
+            max_depth=max_depth,
+            include_target_ancestors=include_target_ancestors,
+            include_target_descendants=include_target_descendants,
+        )
+        for mapping in mappings:
+            yield ConceptMapRow.from_mapping(mapping)
+
+
+def get_mapping_concept_map(
+    codes: Iterable[CodeRef | tuple[str, str]],
+    engine: MappingEngine,
+    *,
+    target_sources: list[str] | tuple[str, ...],
+    batch_size: int = 5000,
+    max_results_per_code: int = 50,
+    max_depth: int = 0,
+    include_target_ancestors: bool = False,
+    include_target_descendants: bool = False,
+) -> list[ConceptMapRow]:
+    """Return ConceptMap rows for source-to-target code mappings."""
+    return list(
+        iter_mapping_concept_map(
+            codes,
+            engine=engine,
+            target_sources=target_sources,
+            batch_size=batch_size,
+            max_results_per_code=max_results_per_code,
+            max_depth=max_depth,
+            include_target_ancestors=include_target_ancestors,
+            include_target_descendants=include_target_descendants,
         )
     )
 

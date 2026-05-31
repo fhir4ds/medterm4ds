@@ -262,6 +262,21 @@ class ConceptMapRow:
             matched_via=result.matched_via,
         )
 
+    @classmethod
+    def from_mapping(cls, mapping: CodeMapping) -> ConceptMapRow:
+        """Build a ConceptMap row from a source-to-target mapping."""
+        return cls(
+            source=mapping.source,
+            source_display=mapping.source_display,
+            target=mapping.target,
+            target_display=mapping.target_display or mapping.target.code,
+            relationship=mapping.relationship,
+            friendly_source=None,
+            match_type=mapping.match_type,
+            match_depth=mapping.match_depth,
+            matched_via=mapping.matched_via,
+        )
+
     def to_dict(self) -> dict[str, Any]:
         return {
             "source": self.source.source,

@@ -18,7 +18,7 @@ from medterm4ds.outputs import (
     write_fhir_concept_map,
     write_jsonl,
 )
-from medterm4ds.services.conceptmap import iter_concept_map
+from medterm4ds.services.conceptmap import iter_concept_map, iter_mapping_concept_map
 from medterm4ds.services.hierarchy import get_code_relations
 from medterm4ds.services.inventory import (
     DEFAULT_INVENTORY_SOURCES,
@@ -50,6 +50,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _add_patient_friendly_args(patient_friendly)
     patient_friendly.set_defaults(func=run_patient_friendly_conceptmap)
+    mapping_conceptmap = conceptmap_subparsers.add_parser(
+        "mapping",
+        help="Generate a source-to-target ConceptMap from terminology mappings.",
+    )
+    _add_mapping_conceptmap_args(mapping_conceptmap)
+    mapping_conceptmap.set_defaults(func=run_mapping_conceptmap)
 
     lookup = subparsers.add_parser("lookup", help="Look up exact terminology codes.")
     _add_lookup_args(lookup)
@@ -142,6 +148,40 @@ def _add_patient_friendly_args(parser: argparse.ArgumentParser) -> None:
     )
 
 
+def _add_bulk_output_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--output", required=True, help="Output file path.")
+    parser.add_argument(
+        "--format",
+        choices=("jsonl", "csv", "fhir-json"),
+        default=None,
+        help="Output format. Defaults to the output file extension.",
+    )
+    parser.add_argument("--batch-size", type=int, default=5000)
+    parser.add_argument("--fetch-size", type=int, default=10_000)
+    parser.add_argument("--limit", type=int, default=None, help="Optional total code limit.")
+    parser.add_argument(
+        "--no-prepare-cache",
+        action="store_true",
+        help="Skip LocalLite temp cache preparation.",
+    )
+    parser.add_argument(
+        "--cache-indexes",
+        action="store_true",
+        help="Create temp cache indexes. Usually slower for this workflow.",
+    )
+    parser.add_argument(
+        "--progress",
+        action="store_true",
+        help="Print progress and throughput to stderr.",
+    )
+    parser.add_argument(
+        "--checkpoint-every",
+        type=int,
+        default=1000,
+        help="Write checkpoint state every N output rows for JSONL/CSV outputs.",
+    )
+
+
 def _add_lookup_args(parser: argparse.ArgumentParser) -> None:
     _add_common_engine_args(parser)
     parser.add_argument("--source", action="append", required=True, help="Source vocabulary.")
@@ -157,6 +197,43 @@ def _add_lookup_args(parser: argparse.ArgumentParser) -> None:
         default=None,
         help="Output format. Defaults to output extension, or JSON for stdout.",
     )
+
+
+def _add_mapping_conceptmap_args(parser: argparse.ArgumentParser) -> None:
+    _add_common_engine_args(parser)
+    parser.add_argument(
+        "--sources",
+        default=",".join(DEFAULT_INVENTORY_SOURCES),
+        help="Comma-separated source vocabularies.",
+    )
+    parser.add_argument(
+        "--target-sources",
+        required=True,
+        help="Comma-separated target vocabularies.",
+    )
+    parser.add_argument(
+        "--max-results-per-code",
+        type=int,
+        default=50,
+        help="Maximum target mappings per input code.",
+    )
+    parser.add_argument(
+        "--max-depth",
+        type=int,
+        default=0,
+        help="Hierarchy fallback depth for broader/narrower mapping. Defaults to exact same-CUI only.",
+    )
+    parser.add_argument(
+        "--include-target-ancestors",
+        action="store_true",
+        help="Also include broader target ancestors from exact same-CUI target mappings.",
+    )
+    parser.add_argument(
+        "--include-target-descendants",
+        action="store_true",
+        help="Also include narrower target descendants from exact same-CUI target mappings.",
+    )
+    _add_bulk_output_args(parser)
 
 
 def _add_hierarchy_args(parser: argparse.ArgumentParser) -> None:
@@ -197,6 +274,22 @@ def _add_mapping_args(parser: argparse.ArgumentParser) -> None:
         type=int,
         default=50,
         help="Maximum target mappings per input code.",
+    )
+    parser.add_argument(
+        "--max-depth",
+        type=int,
+        default=0,
+        help="Hierarchy fallback depth for broader/narrower mapping. Defaults to exact same-CUI only.",
+    )
+    parser.add_argument(
+        "--include-target-ancestors",
+        action="store_true",
+        help="Also include broader target ancestors from exact same-CUI target mappings.",
+    )
+    parser.add_argument(
+        "--include-target-descendants",
+        action="store_true",
+        help="Also include narrower target descendants from exact same-CUI target mappings.",
     )
     parser.add_argument(
         "--output",
@@ -321,6 +414,111 @@ def run_patient_friendly_conceptmap(args: argparse.Namespace) -> int:
     return 0
 
 
+def run_mapping_conceptmap(args: argparse.Namespace) -> int:
+    try:
+        import duckdb
+    except ImportError as exc:
+        raise SystemExit("DuckDB is required. Install medterm4ds[duckdb].") from exc
+
+    db_path = Path(args.db)
+    if not db_path.exists():
+        raise SystemExit(f"Database not found: {db_path}")
+
+    sources = normalize_sources(args.sources)
+    target_sources = normalize_sources(args.target_sources)
+    output_path = Path(args.output)
+    output_format = args.format or _format_from_path(output_path)
+    checkpoint_path = default_checkpoint_path(output_path)
+    config = local_lite_config(
+        args.memory_profile,
+        memory_limit=args.memory_limit,
+        temp_directory=args.temp_dir,
+        threads=args.threads,
+        query_chunk_size=args.query_chunk_size,
+    )
+
+    progress = _Progress(enabled=args.progress)
+    con = duckdb.connect(str(db_path), read_only=True)
+    try:
+        if args.progress:
+            counts = count_source_codes(con, sources)
+            total = sum(counts.values())
+            if args.limit is not None:
+                total = min(total, args.limit)
+            progress.print(
+                f"sources={dict(sorted(counts.items()))} "
+                f"targets={list(target_sources)} total={total:,}"
+            )
+
+        engine = LocalLiteEngine(
+            con,
+            config=config,
+            progress=progress.print if args.progress else None,
+        )
+        if not args.no_prepare_cache:
+            start = time.perf_counter()
+            engine.prepare_cache(
+                [*sources, *target_sources],
+                create_indexes=args.cache_indexes,
+            )
+            progress.print(f"prepared cache in {time.perf_counter() - start:.2f}s")
+
+        codes = iter_source_codes(
+            con,
+            sources,
+            fetch_size=args.fetch_size,
+            limit=args.limit,
+        )
+        rows = iter_mapping_concept_map(
+            codes,
+            engine=engine,
+            target_sources=target_sources,
+            batch_size=args.batch_size,
+            max_results_per_code=args.max_results_per_code,
+            max_depth=args.max_depth,
+            include_target_ancestors=args.include_target_ancestors,
+            include_target_descendants=args.include_target_descendants,
+        )
+        metadata = {
+            "command": "conceptmap mapping",
+            "db": str(db_path),
+            "sources": list(sources),
+            "target_sources": list(target_sources),
+            "memory_profile": args.memory_profile,
+            "limit": args.limit,
+            "max_depth": args.max_depth,
+        }
+        if output_format == "fhir-json":
+            write_fhir_concept_map(
+                progress.count_rows(rows),
+                output_path,
+                id_="medterm4ds-mapping",
+                url="urn:medterm4ds:ConceptMap:mapping",
+                name="Medterm4dsMappingConceptMap",
+                title="medterm4ds Source Mapping ConceptMap",
+            )
+            final_position = OutputPosition(rows=progress.rows)
+        else:
+            final_position = write_checkpointed_rows(
+                rows,
+                output_path,
+                output_format=output_format,
+                checkpoint_path=checkpoint_path,
+                append=False,
+                checkpoint_every=args.checkpoint_every,
+                initial_position=OutputPosition(),
+                metadata=metadata,
+                on_row=progress.record_row,
+            )
+    finally:
+        con.close()
+
+    progress.print(f"wrote {final_position.rows:,} mapping rows to {output_path}")
+    if output_format != "fhir-json":
+        progress.print(f"checkpoint {checkpoint_path}")
+    return 0
+
+
 def run_lookup(args: argparse.Namespace) -> int:
     try:
         import duckdb
@@ -418,6 +616,9 @@ def run_mapping(args: argparse.Namespace) -> int:
             engine=engine,
             target_sources=args.target_source,
             max_results_per_code=args.max_results_per_code,
+            max_depth=args.max_depth,
+            include_target_ancestors=args.include_target_ancestors,
+            include_target_descendants=args.include_target_descendants,
         )
     finally:
         con.close()

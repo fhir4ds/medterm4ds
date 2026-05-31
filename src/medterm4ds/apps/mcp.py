@@ -159,6 +159,9 @@ class McpRuntime:
         sources: Sequence[str],
         target_sources: Sequence[str],
         max_results_per_code: int = 50,
+        max_depth: int = 0,
+        include_target_ancestors: bool = False,
+        include_target_descendants: bool = False,
     ) -> dict[str, Any]:
         refs = _code_refs(codes, sources)
         mappings = get_code_mappings(
@@ -166,6 +169,9 @@ class McpRuntime:
             engine=self._engine(),
             target_sources=target_sources,
             max_results_per_code=max_results_per_code,
+            max_depth=max_depth,
+            include_target_ancestors=include_target_ancestors,
+            include_target_descendants=include_target_descendants,
         )
         return {"results": [mapping.to_dict() for mapping in mappings]}
 
@@ -329,6 +335,9 @@ def create_mcp_server(
         sources: list[str],
         target_sources: list[str],
         max_results_per_code: int = 50,
+        max_depth: int = 0,
+        include_target_ancestors: bool = False,
+        include_target_descendants: bool = False,
     ) -> dict[str, Any]:
         """Map clinical codes to target vocabularies using active same-CUI atoms."""
         return server_runtime.map_codes(
@@ -336,6 +345,9 @@ def create_mcp_server(
             sources=sources,
             target_sources=target_sources,
             max_results_per_code=max_results_per_code,
+            max_depth=max_depth,
+            include_target_ancestors=include_target_ancestors,
+            include_target_descendants=include_target_descendants,
         )
 
     @mcp.tool()

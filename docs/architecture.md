@@ -38,6 +38,10 @@ contract.
 inside DuckDB, uses temp input/cache tables, resolves codes in batches, and
 chunks high-risk recursive query paths internally.
 
+Source-to-source mapping is exact same-CUI by default. Broader/narrower mapping
+is opt-in through bounded hierarchy traversal so high-volume exports do not
+silently expand into noisy mappings.
+
 Memory behavior is controlled through `LocalLiteConfig` and named profiles:
 
 - `fast`: more memory, higher throughput.

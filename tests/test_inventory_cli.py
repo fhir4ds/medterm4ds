@@ -231,6 +231,87 @@ def test_cli_writes_patient_friendly_conceptmap_fhir_json(tmp_path):
     assert "relationship" not in resource["group"][0]["element"][0]["target"][0]
 
 
+def test_cli_writes_mapping_conceptmap_fhir_json(tmp_path):
+    db_path = tmp_path / "umls.duckdb"
+    output_path = tmp_path / "mapping.json"
+    _make_duckdb(db_path)
+
+    status = main(
+        [
+            "conceptmap",
+            "mapping",
+            "--db",
+            str(db_path),
+            "--sources",
+            "ICD10CM,CVX",
+            "--target-sources",
+            "SNOMEDCT_US",
+            "--output",
+            str(output_path),
+            "--format",
+            "fhir-json",
+            "--batch-size",
+            "1",
+        ]
+    )
+
+    assert status == 0
+    resource = json.loads(output_path.read_text(encoding="utf-8"))
+    assert resource["resourceType"] == "ConceptMap"
+    assert resource["url"] == "urn:medterm4ds:ConceptMap:mapping"
+    assert resource["group"][0]["source"] == "http://hl7.org/fhir/sid/icd-10-cm"
+    assert resource["group"][0]["target"] == "http://snomed.info/sct"
+    target = resource["group"][0]["element"][0]["target"][0]
+    assert target["code"] == "44054006"
+    assert target["display"] == "Diabetes mellitus type 2"
+    assert target["equivalence"] == "equivalent"
+    assert any(
+        extension["url"].endswith("/matched-via")
+        for extension in target["extension"]
+    )
+
+
+def test_cli_writes_mapping_conceptmap_jsonl(tmp_path):
+    db_path = tmp_path / "umls.duckdb"
+    output_path = tmp_path / "mapping.jsonl"
+    _make_duckdb(db_path)
+
+    status = main(
+        [
+            "conceptmap",
+            "mapping",
+            "--db",
+            str(db_path),
+            "--sources",
+            "ICD10CM,CVX",
+            "--target-sources",
+            "SNOMEDCT_US",
+            "--output",
+            str(output_path),
+            "--format",
+            "jsonl",
+            "--limit",
+            "2",
+            "--batch-size",
+            "1",
+            "--checkpoint-every",
+            "1",
+        ]
+    )
+
+    assert status == 0
+    rows = [
+        json.loads(line)
+        for line in output_path.read_text(encoding="utf-8").splitlines()
+    ]
+    assert [(row["source"], row["code"], row["target_code"]) for row in rows] == [
+        ("ICD10CM", "E11.9", "44054006")
+    ]
+    checkpoint = json.loads((tmp_path / "mapping.jsonl.checkpoint.json").read_text(encoding="utf-8"))
+    assert checkpoint["complete"] is True
+    assert checkpoint["metadata"]["command"] == "conceptmap mapping"
+
+
 def test_cli_lookup_prints_json(tmp_path, capsys):
     db_path = tmp_path / "umls.duckdb"
     _make_duckdb(db_path)

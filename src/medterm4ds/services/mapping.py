@@ -15,10 +15,15 @@ def get_code_mappings(
     *,
     target_sources: Sequence[str],
     max_results_per_code: int = 50,
+    max_depth: int = 0,
+    include_target_ancestors: bool = False,
+    include_target_descendants: bool = False,
 ) -> list[CodeMapping]:
     """Return same-CUI active target mappings for one or many codes."""
     if max_results_per_code < 1:
         raise ValueError("max_results_per_code must be at least 1")
+    if max_depth < 0:
+        raise ValueError("max_depth must be non-negative")
     normalized_codes = [
         item if isinstance(item, CodeRef) else CodeRef.from_pair(item)
         for item in codes
@@ -30,4 +35,7 @@ def get_code_mappings(
         normalized_codes,
         target_sources=normalized_targets,
         max_results_per_code=max_results_per_code,
+        max_depth=max_depth,
+        include_target_ancestors=include_target_ancestors,
+        include_target_descendants=include_target_descendants,
     )

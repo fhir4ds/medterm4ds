@@ -436,6 +436,9 @@ class LocalLiteEngine:
         *,
         target_sources: Sequence[str],
         max_results_per_code: int = 50,
+        max_depth: int = 0,
+        include_target_ancestors: bool = False,
+        include_target_descendants: bool = False,
     ) -> list[CodeMapping]:
         """Return same-CUI active target mappings for input codes."""
         if not codes:
@@ -444,6 +447,8 @@ class LocalLiteEngine:
             raise ValueError("target_sources must not be empty")
         if max_results_per_code < 1:
             raise ValueError("max_results_per_code must be at least 1")
+        if max_depth < 0:
+            raise ValueError("max_depth must be non-negative")
 
         ordered = [CodeRef(source=code.source, code=code.code) for code in codes]
         grouped: dict[str, list[tuple[int, str]]] = defaultdict(list)
@@ -462,12 +467,46 @@ class LocalLiteEngine:
                         max_results_per_code=max_results_per_code,
                     )
                 )
+                if max_depth > 0:
+                    rows.extend(
+                        self._get_source_ancestor_mappings(
+                            source,
+                            chunk,
+                            target_sources=target_sources,
+                            max_results_per_code=max_results_per_code,
+                            max_depth=max_depth,
+                        )
+                    )
+                    if include_target_ancestors:
+                        rows.extend(
+                            self._get_target_hierarchy_mappings(
+                                source,
+                                chunk,
+                                target_sources=target_sources,
+                                max_results_per_code=max_results_per_code,
+                                max_depth=max_depth,
+                                upward=True,
+                            )
+                        )
+                    if include_target_descendants:
+                        rows.extend(
+                            self._get_target_hierarchy_mappings(
+                                source,
+                                chunk,
+                                target_sources=target_sources,
+                                max_results_per_code=max_results_per_code,
+                                max_depth=max_depth,
+                                upward=False,
+                            )
+                        )
         return [
             mapping
             for _ordinal, mapping in sorted(
                 rows,
                 key=lambda item: (
                     item[0],
+                    item[1].match_depth,
+                    item[1].match_type,
                     item[1].target.source,
                     item[1].target.code,
                     item[1].target_aui or "",
@@ -738,6 +777,439 @@ class LocalLiteEngine:
                 target_cui,
                 target_aui,
                 target_tty,
+            ) in rows
+        ]
+
+    def _get_source_ancestor_mappings(
+        self,
+        source: str,
+        code_ordinals: Sequence[tuple[int, str]],
+        *,
+        target_sources: Sequence[str],
+        max_results_per_code: int,
+        max_depth: int,
+    ) -> list[tuple[int, CodeMapping]]:
+        target_placeholders = ",".join(["?"] * len(target_sources))
+        with self._temp_code_ordinals(code_ordinals) as temp:
+            rows = self.con.execute(
+                f"""
+                WITH RECURSIVE
+                source_atoms AS (
+                    SELECT i.ordinal, i.code AS source_code, c.STR AS source_name,
+                           c.CUI AS source_cui, c.AUI AS source_aui,
+                           ROW_NUMBER() OVER (
+                               PARTITION BY i.ordinal
+                               ORDER BY
+                                   CASE c.TTY
+                                       WHEN 'PT' THEN 0
+                                       WHEN 'MH' THEN 1
+                                       WHEN 'LN' THEN 2
+                                       ELSE 3
+                                   END,
+                                   c.AUI
+                           ) AS rn
+                    FROM {temp} i
+                    JOIN mrconso c ON c.CODE = i.code
+                    WHERE c.SAB = ?
+                      AND c.SUPPRESS = 'N'
+                ),
+                source_seed AS (
+                    SELECT ordinal, source_code, source_name, source_cui, source_aui
+                    FROM source_atoms
+                    WHERE rn = 1
+                ),
+                exact_target_sources AS (
+                    SELECT DISTINCT s.ordinal, t.SAB AS target_source
+                    FROM source_seed s
+                    JOIN mrconso t ON t.CUI = s.source_cui
+                    WHERE t.SAB IN ({target_placeholders})
+                      AND t.SUPPRESS = 'N'
+                ),
+                source_walk AS (
+                    SELECT s.ordinal, s.source_code, s.source_name, s.source_cui,
+                           s.source_aui, p.CODE AS ancestor_code,
+                           p.STR AS ancestor_name, p.CUI AS ancestor_cui,
+                           p.AUI AS ancestor_aui, 1 AS source_depth,
+                           s.source_aui || '>' || p.AUI AS path
+                    FROM source_seed s
+                    JOIN mrrel r ON r.AUI1 = s.source_aui
+                    JOIN mrconso p ON p.AUI = r.AUI2
+                    WHERE r.REL = 'PAR'
+                      AND p.SAB = ?
+                      AND p.SUPPRESS = 'N'
+
+                    UNION ALL
+
+                    SELECT w.ordinal, w.source_code, w.source_name, w.source_cui,
+                           w.source_aui, p.CODE AS ancestor_code,
+                           p.STR AS ancestor_name, p.CUI AS ancestor_cui,
+                           p.AUI AS ancestor_aui, w.source_depth + 1 AS source_depth,
+                           w.path || '>' || p.AUI AS path
+                    FROM source_walk w
+                    JOIN mrrel r ON r.AUI1 = w.ancestor_aui
+                    JOIN mrconso p ON p.AUI = r.AUI2
+                    WHERE w.source_depth < ?
+                      AND r.REL = 'PAR'
+                      AND p.SAB = ?
+                      AND p.SUPPRESS = 'N'
+                      AND strpos('>' || w.path || '>', '>' || p.AUI || '>') = 0
+                ),
+                target_ranked AS (
+                    SELECT w.ordinal, w.source_code, w.source_name, w.source_cui,
+                           w.source_aui, w.ancestor_code, w.ancestor_name,
+                           w.ancestor_cui, w.ancestor_aui, w.source_depth,
+                           t.SAB AS target_source, t.CODE AS target_code,
+                           t.STR AS target_name, t.CUI AS target_cui,
+                           t.AUI AS target_aui, t.TTY AS target_tty,
+                           ROW_NUMBER() OVER (
+                               PARTITION BY w.ordinal, t.SAB, t.CODE
+                               ORDER BY
+                                   w.source_depth,
+                                   CASE t.TTY
+                                       WHEN 'PT' THEN 0
+                                       WHEN 'MH' THEN 1
+                                       WHEN 'LN' THEN 2
+                                       ELSE 3
+                                   END,
+                                   t.AUI
+                           ) AS atom_rn
+                    FROM source_walk w
+                    JOIN mrconso t ON t.CUI = w.ancestor_cui
+                    WHERE t.SAB IN ({target_placeholders})
+                      AND t.SUPPRESS = 'N'
+                      AND NOT EXISTS (
+                          SELECT 1
+                          FROM exact_target_sources e
+                          WHERE e.ordinal = w.ordinal
+                            AND e.target_source = t.SAB
+                      )
+                ),
+                deduped_targets AS (
+                    SELECT *
+                    FROM target_ranked
+                    WHERE atom_rn = 1
+                ),
+                capped_targets AS (
+                    SELECT *,
+                           ROW_NUMBER() OVER (
+                               PARTITION BY ordinal
+                               ORDER BY source_depth, target_source, target_code, target_aui
+                           ) AS result_rn
+                    FROM deduped_targets
+                )
+                SELECT ordinal, source_code, source_name, source_cui, source_aui,
+                       ancestor_code, ancestor_name, ancestor_cui, ancestor_aui,
+                       source_depth, target_source, target_code, target_name,
+                       target_cui, target_aui, target_tty
+                FROM capped_targets
+                WHERE result_rn <= ?
+                ORDER BY ordinal, source_depth, target_source, target_code, target_aui
+                """,
+                [
+                    source,
+                    *target_sources,
+                    source,
+                    max_depth,
+                    source,
+                    *target_sources,
+                    max_results_per_code,
+                ],
+            ).fetchall()
+
+        return [
+            (
+                int(ordinal),
+                CodeMapping(
+                    source=CodeRef(source=source, code=source_code),
+                    target=CodeRef(source=target_source, code=target_code),
+                    source_display=source_name,
+                    target_display=target_name,
+                    relationship="source-is-narrower-than-target",
+                    match_type="source_ancestor_same_cui",
+                    match_depth=int(source_depth),
+                    source_cui=source_cui,
+                    target_cui=target_cui,
+                    source_aui=source_aui,
+                    target_aui=target_aui,
+                    target_tty=target_tty,
+                    matched_via=Provenance.from_steps(
+                        "source_ancestor_same_cui",
+                        [
+                            ProvenanceStep(
+                                op="input_atom",
+                                source=source,
+                                code=source_code,
+                                cui=source_cui,
+                                aui=source_aui,
+                                name=source_name,
+                            ),
+                            ProvenanceStep(
+                                op="source_ancestor",
+                                source=source,
+                                code=ancestor_code,
+                                cui=ancestor_cui,
+                                aui=ancestor_aui,
+                                depth=int(source_depth),
+                                name=ancestor_name,
+                            ),
+                            ProvenanceStep(
+                                op="same_cui",
+                                source=source,
+                                code=ancestor_code,
+                                target_source=target_source,
+                                target_code=target_code,
+                                cui=ancestor_cui,
+                            ),
+                            ProvenanceStep(
+                                op="target_atom",
+                                source=target_source,
+                                code=target_code,
+                                cui=target_cui,
+                                aui=target_aui,
+                                tty=target_tty,
+                                name=target_name,
+                            ),
+                        ],
+                    ),
+                ),
+            )
+            for (
+                ordinal,
+                source_code,
+                source_name,
+                source_cui,
+                source_aui,
+                ancestor_code,
+                ancestor_name,
+                ancestor_cui,
+                ancestor_aui,
+                source_depth,
+                target_source,
+                target_code,
+                target_name,
+                target_cui,
+                target_aui,
+                target_tty,
+            ) in rows
+        ]
+
+    def _get_target_hierarchy_mappings(
+        self,
+        source: str,
+        code_ordinals: Sequence[tuple[int, str]],
+        *,
+        target_sources: Sequence[str],
+        max_results_per_code: int,
+        max_depth: int,
+        upward: bool,
+    ) -> list[tuple[int, CodeMapping]]:
+        target_placeholders = ",".join(["?"] * len(target_sources))
+        direct_join = "r.AUI1 = e.exact_target_aui" if upward else "r.AUI2 = e.exact_target_aui"
+        direct_target = "r.AUI2" if upward else "r.AUI1"
+        recursive_join = "r.AUI1 = w.target_aui" if upward else "r.AUI2 = w.target_aui"
+        recursive_target = "r.AUI2" if upward else "r.AUI1"
+        relationship = "source-is-narrower-than-target" if upward else "source-is-broader-than-target"
+        match_type = "target_ancestor" if upward else "target_descendant"
+        step_op = match_type
+
+        with self._temp_code_ordinals(code_ordinals) as temp:
+            rows = self.con.execute(
+                f"""
+                WITH RECURSIVE
+                source_atoms AS (
+                    SELECT i.ordinal, i.code AS source_code, c.STR AS source_name,
+                           c.CUI AS source_cui, c.AUI AS source_aui,
+                           ROW_NUMBER() OVER (
+                               PARTITION BY i.ordinal
+                               ORDER BY
+                                   CASE c.TTY
+                                       WHEN 'PT' THEN 0
+                                       WHEN 'MH' THEN 1
+                                       WHEN 'LN' THEN 2
+                                       ELSE 3
+                                   END,
+                                   c.AUI
+                           ) AS rn
+                    FROM {temp} i
+                    JOIN mrconso c ON c.CODE = i.code
+                    WHERE c.SAB = ?
+                      AND c.SUPPRESS = 'N'
+                ),
+                source_seed AS (
+                    SELECT ordinal, source_code, source_name, source_cui, source_aui
+                    FROM source_atoms
+                    WHERE rn = 1
+                ),
+                exact_targets AS (
+                    SELECT s.ordinal, s.source_code, s.source_name, s.source_cui,
+                           s.source_aui, t.SAB AS exact_target_source,
+                           t.CODE AS exact_target_code, t.STR AS exact_target_name,
+                           t.CUI AS exact_target_cui, t.AUI AS exact_target_aui,
+                           t.TTY AS exact_target_tty,
+                           ROW_NUMBER() OVER (
+                               PARTITION BY s.ordinal, t.SAB, t.CODE
+                               ORDER BY
+                                   CASE t.TTY
+                                       WHEN 'PT' THEN 0
+                                       WHEN 'MH' THEN 1
+                                       WHEN 'LN' THEN 2
+                                       ELSE 3
+                                   END,
+                                   t.AUI
+                           ) AS atom_rn
+                    FROM source_seed s
+                    JOIN mrconso t ON t.CUI = s.source_cui
+                    WHERE t.SAB IN ({target_placeholders})
+                      AND t.SUPPRESS = 'N'
+                ),
+                exact_seed AS (
+                    SELECT *
+                    FROM exact_targets
+                    WHERE atom_rn = 1
+                ),
+                target_walk AS (
+                    SELECT e.ordinal, e.source_code, e.source_name, e.source_cui,
+                           e.source_aui, e.exact_target_source, e.exact_target_code,
+                           e.exact_target_name, e.exact_target_cui, e.exact_target_aui,
+                           e.exact_target_tty, t.CODE AS target_code,
+                           t.STR AS target_name, t.CUI AS target_cui,
+                           t.AUI AS target_aui, t.TTY AS target_tty,
+                           1 AS target_depth,
+                           e.exact_target_aui || '>' || t.AUI AS path
+                    FROM exact_seed e
+                    JOIN mrrel r ON {direct_join}
+                    JOIN mrconso t ON t.AUI = {direct_target}
+                    WHERE r.REL = 'PAR'
+                      AND t.SAB = e.exact_target_source
+                      AND t.SUPPRESS = 'N'
+
+                    UNION ALL
+
+                    SELECT w.ordinal, w.source_code, w.source_name, w.source_cui,
+                           w.source_aui, w.exact_target_source, w.exact_target_code,
+                           w.exact_target_name, w.exact_target_cui, w.exact_target_aui,
+                           w.exact_target_tty, t.CODE AS target_code,
+                           t.STR AS target_name, t.CUI AS target_cui,
+                           t.AUI AS target_aui, t.TTY AS target_tty,
+                           w.target_depth + 1 AS target_depth,
+                           w.path || '>' || t.AUI AS path
+                    FROM target_walk w
+                    JOIN mrrel r ON {recursive_join}
+                    JOIN mrconso t ON t.AUI = {recursive_target}
+                    WHERE w.target_depth < ?
+                      AND r.REL = 'PAR'
+                      AND t.SAB = w.exact_target_source
+                      AND t.SUPPRESS = 'N'
+                      AND strpos('>' || w.path || '>', '>' || t.AUI || '>') = 0
+                ),
+                ranked AS (
+                    SELECT *,
+                           ROW_NUMBER() OVER (
+                               PARTITION BY ordinal, exact_target_source, target_code
+                               ORDER BY
+                                   target_depth,
+                                   CASE target_tty
+                                       WHEN 'PT' THEN 0
+                                       WHEN 'MH' THEN 1
+                                       WHEN 'LN' THEN 2
+                                       ELSE 3
+                                   END,
+                                   target_aui
+                           ) AS atom_rn
+                    FROM target_walk
+                ),
+                deduped_targets AS (
+                    SELECT *
+                    FROM ranked
+                    WHERE atom_rn = 1
+                ),
+                capped_targets AS (
+                    SELECT *,
+                           ROW_NUMBER() OVER (
+                               PARTITION BY ordinal
+                               ORDER BY target_depth, exact_target_source, target_code, target_aui
+                           ) AS result_rn
+                    FROM deduped_targets
+                )
+                SELECT ordinal, source_code, source_name, source_cui, source_aui,
+                       exact_target_source, exact_target_code, exact_target_name,
+                       exact_target_cui, exact_target_aui, exact_target_tty,
+                       target_code, target_name, target_cui, target_aui,
+                       target_tty, target_depth
+                FROM capped_targets
+                WHERE result_rn <= ?
+                ORDER BY ordinal, target_depth, exact_target_source, target_code, target_aui
+                """,
+                [source, *target_sources, max_depth, max_results_per_code],
+            ).fetchall()
+
+        return [
+            (
+                int(ordinal),
+                CodeMapping(
+                    source=CodeRef(source=source, code=source_code),
+                    target=CodeRef(source=exact_target_source, code=target_code),
+                    source_display=source_name,
+                    target_display=target_name,
+                    relationship=relationship,
+                    match_type=match_type,
+                    match_depth=int(target_depth),
+                    source_cui=source_cui,
+                    target_cui=target_cui,
+                    source_aui=source_aui,
+                    target_aui=target_aui,
+                    target_tty=target_tty,
+                    matched_via=Provenance.from_steps(
+                        match_type,
+                        [
+                            ProvenanceStep(
+                                op="input_atom",
+                                source=source,
+                                code=source_code,
+                                cui=source_cui,
+                                aui=source_aui,
+                                name=source_name,
+                            ),
+                            ProvenanceStep(
+                                op="same_cui",
+                                source=source,
+                                code=source_code,
+                                target_source=exact_target_source,
+                                target_code=exact_target_code,
+                                cui=source_cui,
+                            ),
+                            ProvenanceStep(
+                                op=step_op,
+                                source=exact_target_source,
+                                code=target_code,
+                                cui=target_cui,
+                                aui=target_aui,
+                                depth=int(target_depth),
+                                name=target_name,
+                                metadata={"from_code": exact_target_code},
+                            ),
+                        ],
+                    ),
+                ),
+            )
+            for (
+                ordinal,
+                source_code,
+                source_name,
+                source_cui,
+                source_aui,
+                exact_target_source,
+                exact_target_code,
+                _exact_target_name,
+                _exact_target_cui,
+                _exact_target_aui,
+                _exact_target_tty,
+                target_code,
+                target_name,
+                target_cui,
+                target_aui,
+                target_tty,
+                target_depth,
             ) in rows
         ]
 

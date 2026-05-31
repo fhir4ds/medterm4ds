@@ -11,7 +11,12 @@ from .core.models import (
     Provenance,
     ProvenanceStep,
 )
-from .services.conceptmap import get_concept_map, iter_concept_map
+from .services.conceptmap import (
+    get_concept_map,
+    get_mapping_concept_map,
+    iter_concept_map,
+    iter_mapping_concept_map,
+)
 from .services.hierarchy import (
     get_ancestors,
     get_children,
@@ -38,6 +43,7 @@ __all__ = [
     "get_children",
     "get_code_relations",
     "get_concept_map",
+    "get_mapping_concept_map",
     "get_descendants",
     "get_code_info",
     "get_code_infos",
@@ -45,5 +51,6 @@ __all__ = [
     "get_parents",
     "get_patient_friendly_names",
     "iter_concept_map",
+    "iter_mapping_concept_map",
     "local_lite_config",
 ]

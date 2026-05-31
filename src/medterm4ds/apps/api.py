@@ -85,6 +85,9 @@ class MappingRequest(BaseModel):
     codes: list[CodeInput] = Field(default_factory=list)
     target_sources: list[str] = Field(default_factory=list, min_length=1)
     max_results_per_code: int = Field(default=50, ge=1)
+    max_depth: int = Field(default=0, ge=0)
+    include_target_ancestors: bool = False
+    include_target_descendants: bool = False
 
 
 class ConceptMapRequest(BaseModel):
@@ -193,6 +196,9 @@ def create_app(settings: ApiSettings | None = None) -> FastAPI:
             engine=engine,
             target_sources=payload.target_sources,
             max_results_per_code=payload.max_results_per_code,
+            max_depth=payload.max_depth,
+            include_target_ancestors=payload.include_target_ancestors,
+            include_target_descendants=payload.include_target_descendants,
         )
         return {"results": [result.to_dict() for result in results]}
 

@@ -50,6 +50,9 @@ class MappingEngine(Protocol):
         *,
         target_sources: Sequence[str],
         max_results_per_code: int = 50,
+        max_depth: int = 0,
+        include_target_ancestors: bool = False,
+        include_target_descendants: bool = False,
     ) -> list[CodeMapping]:
         """Return target mappings for input codes."""
         ...
