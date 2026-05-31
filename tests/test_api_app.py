@@ -42,6 +42,7 @@ def _make_duckdb(path: Path) -> None:
             [
                 ("E11.9", "PT", "Type 2 diabetes mellitus", "ICD_E119", "N", "ICD10CM", "C_DIAB"),
                 ("E11", "PT", "Type 2 diabetes mellitus", "ICD_E11", "N", "ICD10CM", "C_E11"),
+                ("44054006", "PT", "Diabetes mellitus type 2", "SNOMED_DIAB", "N", "SNOMEDCT_US", "C_DIAB"),
                 ("D_DIAB", "MH", "Diabetes", "MP_DIAB", "N", "MEDLINEPLUS", "C_DIAB"),
                 ("208", "PT", "COVID-19 vaccine", "CVX_208", "N", "CVX", "C_CVX"),
             ],
@@ -159,6 +160,32 @@ def test_api_hierarchy_endpoint(tmp_path):
     assert row["target_code"] == "E11"
     assert row["relationship"] == "parent"
     assert row["depth"] == 1
+
+
+def test_api_map_endpoint(tmp_path):
+    db_path = tmp_path / "umls.duckdb"
+    _make_duckdb(db_path)
+
+    app = create_app(_settings(db_path, prepare_cache=False))
+    with TestClient(app) as client:
+        response = client.post(
+            "/map",
+            json={
+                "codes": [
+                    {"source": "ICD10-CM", "code": "E11.9"},
+                    {"source": "CVX", "code": "208"},
+                ],
+                "target_sources": ["SNOMED"],
+            },
+        )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert [(row["source"], row["code"], row["target_source"], row["target_code"]) for row in payload["results"]] == [
+        ("ICD10CM", "E11.9", "SNOMEDCT_US", "44054006")
+    ]
+    assert payload["results"][0]["match_type"] == "same_cui"
+    assert payload["results"][0]["matched_via"]["strategy"] == "same_cui"
 
 
 def test_api_conceptmap_endpoint(tmp_path):

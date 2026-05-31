@@ -41,6 +41,7 @@ def _make_duckdb(path: Path) -> None:
             [
                 ("E11.9", "PT", "Type 2 diabetes mellitus", "ICD_E119", "N", "ICD10CM", "C_DIAB"),
                 ("E11", "PT", "Type 2 diabetes mellitus", "ICD_E11", "N", "ICD10CM", "C_E11"),
+                ("44054006", "PT", "Diabetes mellitus type 2", "SNOMED_DIAB", "N", "SNOMEDCT_US", "C_DIAB"),
                 ("D_DIAB", "MH", "Diabetes", "MP_DIAB", "N", "MEDLINEPLUS", "C_DIAB"),
                 ("208", "PT", "COVID-19 vaccine", "CVX_208", "N", "CVX", "C_CVX"),
             ],
@@ -134,6 +135,27 @@ def test_mcp_runtime_concept_map_tool(tmp_path):
     assert rows[0]["relationship"] == "equivalent"
 
 
+def test_mcp_runtime_map_codes_tool(tmp_path):
+    db_path = tmp_path / "umls.duckdb"
+    _make_duckdb(db_path)
+    runtime = McpRuntime(_settings(db_path, prepare_cache=False))
+
+    runtime.open()
+    try:
+        rows = runtime.map_codes(
+            codes=["E11.9", "208"],
+            sources=["ICD10CM", "CVX"],
+            target_sources=["SNOMED"],
+        )["results"]
+    finally:
+        runtime.close()
+
+    assert [(row["source"], row["code"], row["target_source"], row["target_code"]) for row in rows] == [
+        ("ICD10CM", "E11.9", "SNOMEDCT_US", "44054006")
+    ]
+    assert rows[0]["match_type"] == "same_cui"
+
+
 def test_mcp_server_registers_expected_tools(tmp_path):
     db_path = tmp_path / "umls.duckdb"
     _make_duckdb(db_path)
@@ -145,6 +167,7 @@ def test_mcp_server_registers_expected_tools(tmp_path):
         "health",
         "lookup_code",
         "lookup_codes",
+        "map_codes",
         "code_relations",
         "get_ancestors",
         "get_children",

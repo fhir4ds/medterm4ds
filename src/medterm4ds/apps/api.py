@@ -15,6 +15,7 @@ from medterm4ds.services.conceptmap import get_concept_map
 from medterm4ds.services.hierarchy import get_code_relations
 from medterm4ds.services.inventory import DEFAULT_INVENTORY_SOURCES, normalize_sources
 from medterm4ds.services.lookup import get_code_infos
+from medterm4ds.services.mapping import get_code_mappings
 from medterm4ds.services.patient_friendly import get_patient_friendly_names
 
 try:
@@ -78,6 +79,12 @@ class HierarchyRequest(BaseModel):
     codes: list[CodeInput] = Field(default_factory=list)
     direction: Literal["parents", "children", "ancestors", "descendants"]
     max_depth: int = Field(default=5, ge=1)
+
+
+class MappingRequest(BaseModel):
+    codes: list[CodeInput] = Field(default_factory=list)
+    target_sources: list[str] = Field(default_factory=list, min_length=1)
+    max_results_per_code: int = Field(default=50, ge=1)
 
 
 class ConceptMapRequest(BaseModel):
@@ -172,6 +179,20 @@ def create_app(settings: ApiSettings | None = None) -> FastAPI:
             engine=engine,
             direction=payload.direction,
             max_depth=payload.max_depth,
+        )
+        return {"results": [result.to_dict() for result in results]}
+
+    @app.post("/map")
+    async def map_codes(
+        payload: MappingRequest,
+        request: Request,
+    ) -> dict[str, Any]:
+        engine = _engine(request)
+        results = get_code_mappings(
+            [code.to_ref() for code in payload.codes],
+            engine=engine,
+            target_sources=payload.target_sources,
+            max_results_per_code=payload.max_results_per_code,
         )
         return {"results": [result.to_dict() for result in results]}
 

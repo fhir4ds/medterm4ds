@@ -5,7 +5,13 @@ from __future__ import annotations
 from collections.abc import Sequence
 from typing import Literal, Protocol
 
-from medterm4ds.core.models import CodeInfo, CodeRef, CodeRelation, FriendlyNameResult
+from medterm4ds.core.models import (
+    CodeInfo,
+    CodeMapping,
+    CodeRef,
+    CodeRelation,
+    FriendlyNameResult,
+)
 
 HierarchyDirection = Literal["parents", "children", "ancestors", "descendants"]
 
@@ -35,6 +41,20 @@ class HierarchyEngine(Protocol):
         ...
 
 
+class MappingEngine(Protocol):
+    """Batch-first source-to-source mapping engine."""
+
+    def get_code_mappings(
+        self,
+        codes: Sequence[CodeRef],
+        *,
+        target_sources: Sequence[str],
+        max_results_per_code: int = 50,
+    ) -> list[CodeMapping]:
+        """Return target mappings for input codes."""
+        ...
+
+
 class PatientFriendlyEngine(Protocol):
     """Batch-first patient-friendly name engine."""
 
@@ -47,7 +67,13 @@ class PatientFriendlyEngine(Protocol):
         ...
 
 
-class TerminologyEngine(LookupEngine, HierarchyEngine, PatientFriendlyEngine, Protocol):
+class TerminologyEngine(
+    LookupEngine,
+    HierarchyEngine,
+    MappingEngine,
+    PatientFriendlyEngine,
+    Protocol,
+):
     """Shared terminology engine contract for services.
 
     Engines may be local, remote, or test doubles. Service modules should depend

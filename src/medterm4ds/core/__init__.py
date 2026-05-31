@@ -3,6 +3,7 @@
 from .config import LOCAL_LITE_MEMORY_PROFILES, LocalLiteConfig, local_lite_config
 from .models import (
     CodeInfo,
+    CodeMapping,
     CodeRef,
     CodeRelation,
     ConceptMapRow,
@@ -15,6 +16,7 @@ from .normalize import normalize_source
 __all__ = [
     "CodeRef",
     "CodeInfo",
+    "CodeMapping",
     "CodeRelation",
     "ConceptMapRow",
     "FriendlyNameResult",

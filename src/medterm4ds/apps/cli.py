@@ -27,6 +27,7 @@ from medterm4ds.services.inventory import (
     normalize_sources,
 )
 from medterm4ds.services.lookup import get_code_infos
+from medterm4ds.services.mapping import get_code_mappings
 
 _HIERARCHY_DIRECTIONS = ("parents", "children", "ancestors", "descendants")
 
@@ -53,6 +54,10 @@ def build_parser() -> argparse.ArgumentParser:
     lookup = subparsers.add_parser("lookup", help="Look up exact terminology codes.")
     _add_lookup_args(lookup)
     lookup.set_defaults(func=run_lookup)
+
+    mapping = subparsers.add_parser("map", help="Map codes to target vocabularies.")
+    _add_mapping_args(mapping)
+    mapping.set_defaults(func=run_mapping)
 
     hierarchy = subparsers.add_parser("hierarchy", help="Traverse code hierarchies.")
     hierarchy_subparsers = hierarchy.add_subparsers(dest="direction", required=True)
@@ -163,6 +168,35 @@ def _add_hierarchy_args(parser: argparse.ArgumentParser) -> None:
         type=int,
         default=5,
         help="Maximum depth for ancestors or descendants. Parents and children are direct only.",
+    )
+    parser.add_argument(
+        "--output",
+        default=None,
+        help="Optional output path. Defaults to stdout JSON.",
+    )
+    parser.add_argument(
+        "--format",
+        choices=("json", "jsonl", "csv"),
+        default=None,
+        help="Output format. Defaults to output extension, or JSON for stdout.",
+    )
+
+
+def _add_mapping_args(parser: argparse.ArgumentParser) -> None:
+    _add_common_engine_args(parser)
+    parser.add_argument("--source", action="append", required=True, help="Source vocabulary.")
+    parser.add_argument("--code", action="append", required=True, help="Code to map.")
+    parser.add_argument(
+        "--target-source",
+        action="append",
+        required=True,
+        help="Target vocabulary. Repeat for multiple targets.",
+    )
+    parser.add_argument(
+        "--max-results-per-code",
+        type=int,
+        default=50,
+        help="Maximum target mappings per input code.",
     )
     parser.add_argument(
         "--output",
@@ -352,6 +386,44 @@ def run_hierarchy(args: argparse.Namespace) -> int:
 
     _write_record_results(
         [relation.to_dict() for relation in relations],
+        output=args.output,
+        output_format=args.format,
+    )
+    return 0
+
+
+def run_mapping(args: argparse.Namespace) -> int:
+    try:
+        import duckdb
+    except ImportError as exc:
+        raise SystemExit("DuckDB is required. Install medterm4ds[duckdb].") from exc
+
+    db_path = Path(args.db)
+    if not db_path.exists():
+        raise SystemExit(f"Database not found: {db_path}")
+
+    config = local_lite_config(
+        args.memory_profile,
+        memory_limit=args.memory_limit,
+        temp_directory=args.temp_dir,
+        threads=args.threads,
+        query_chunk_size=args.query_chunk_size,
+    )
+    refs = _code_source_pairs(args.code, args.source)
+    con = duckdb.connect(str(db_path), read_only=True)
+    try:
+        engine = LocalLiteEngine(con, config=config)
+        mappings = get_code_mappings(
+            refs,
+            engine=engine,
+            target_sources=args.target_source,
+            max_results_per_code=args.max_results_per_code,
+        )
+    finally:
+        con.close()
+
+    _write_record_results(
+        [mapping.to_dict() for mapping in mappings],
         output=args.output,
         output_format=args.format,
     )

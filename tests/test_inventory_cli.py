@@ -42,6 +42,7 @@ def _make_duckdb(path: Path) -> None:
             "INSERT INTO mrconso VALUES (?, ?, ?, ?, ?, ?, ?)",
             [
                 ("E11.9", "PT", "Type 2 diabetes mellitus", "ICD_E119", "N", "ICD10CM", "C_DIAB"),
+                ("44054006", "PT", "Diabetes mellitus type 2", "SNOMED_DIAB", "N", "SNOMEDCT_US", "C_DIAB"),
                 ("D_DIAB", "MH", "Diabetes", "MP_DIAB", "N", "MEDLINEPLUS", "C_DIAB"),
                 ("208", "PT", "COVID-19 vaccine", "CVX_208", "N", "CVX", "C_CVX"),
                 ("208", "PT", "COVID-19 vaccine duplicate", "CVX_208_B", "N", "CVX", "C_CVX"),
@@ -361,6 +362,68 @@ def test_cli_hierarchy_writes_csv(tmp_path):
     assert rows[0]["code"] == "E11"
     assert rows[0]["target_code"] == "E11.9"
     assert rows[0]["relationship"] == "child"
+
+
+def test_cli_map_prints_json(tmp_path, capsys):
+    db_path = tmp_path / "umls.duckdb"
+    _make_duckdb(db_path)
+
+    status = main(
+        [
+            "map",
+            "--db",
+            str(db_path),
+            "--source",
+            "ICD10-CM",
+            "--code",
+            "E11.9",
+            "--target-source",
+            "SNOMED",
+            "--memory-profile",
+            "low",
+        ]
+    )
+
+    assert status == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert [(row["target_source"], row["target_code"], row["match_type"]) for row in payload["results"]] == [
+        ("SNOMEDCT_US", "44054006", "same_cui")
+    ]
+
+
+def test_cli_map_writes_jsonl(tmp_path):
+    db_path = tmp_path / "umls.duckdb"
+    output_path = tmp_path / "map.jsonl"
+    _make_duckdb(db_path)
+
+    status = main(
+        [
+            "map",
+            "--db",
+            str(db_path),
+            "--source",
+            "ICD10CM",
+            "--code",
+            "E11.9",
+            "--source",
+            "CVX",
+            "--code",
+            "208",
+            "--target-source",
+            "SNOMEDCT_US",
+            "--output",
+            str(output_path),
+        ]
+    )
+
+    assert status == 0
+    rows = [
+        json.loads(line)
+        for line in output_path.read_text(encoding="utf-8").splitlines()
+    ]
+    assert [(row["source"], row["code"], row["target_code"]) for row in rows] == [
+        ("ICD10CM", "E11.9", "44054006")
+    ]
 
 
 def test_cli_resumes_jsonl_from_existing_output(tmp_path):

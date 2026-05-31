@@ -19,6 +19,7 @@ from uuid import uuid4
 from medterm4ds.core.config import LocalLiteConfig
 from medterm4ds.core.models import (
     CodeInfo,
+    CodeMapping,
     CodeRef,
     CodeRelation,
     FriendlyNameResult,
@@ -429,6 +430,51 @@ class LocalLiteEngine:
             )
         ]
 
+    def get_code_mappings(
+        self,
+        codes: Sequence[CodeRef],
+        *,
+        target_sources: Sequence[str],
+        max_results_per_code: int = 50,
+    ) -> list[CodeMapping]:
+        """Return same-CUI active target mappings for input codes."""
+        if not codes:
+            return []
+        if not target_sources:
+            raise ValueError("target_sources must not be empty")
+        if max_results_per_code < 1:
+            raise ValueError("max_results_per_code must be at least 1")
+
+        ordered = [CodeRef(source=code.source, code=code.code) for code in codes]
+        grouped: dict[str, list[tuple[int, str]]] = defaultdict(list)
+        for ordinal, ref in enumerate(ordered):
+            grouped[ref.source].append((ordinal, ref.code))
+
+        target_sources = _dedupe(target_sources)
+        rows: list[tuple[int, CodeMapping]] = []
+        for source, source_codes in grouped.items():
+            for chunk in _chunks(source_codes, self.query_chunk_size):
+                rows.extend(
+                    self._get_source_code_mappings(
+                        source,
+                        chunk,
+                        target_sources=target_sources,
+                        max_results_per_code=max_results_per_code,
+                    )
+                )
+        return [
+            mapping
+            for _ordinal, mapping in sorted(
+                rows,
+                key=lambda item: (
+                    item[0],
+                    item[1].target.source,
+                    item[1].target.code,
+                    item[1].target_aui or "",
+                ),
+            )
+        ]
+
     def _get_source_code_relations(
         self,
         source: str,
@@ -548,6 +594,150 @@ class LocalLiteEngine:
                 rel,
                 rela,
                 depth,
+            ) in rows
+        ]
+
+    def _get_source_code_mappings(
+        self,
+        source: str,
+        code_ordinals: Sequence[tuple[int, str]],
+        *,
+        target_sources: Sequence[str],
+        max_results_per_code: int,
+    ) -> list[tuple[int, CodeMapping]]:
+        target_placeholders = ",".join(["?"] * len(target_sources))
+        with self._temp_code_ordinals(code_ordinals) as temp:
+            rows = self.con.execute(
+                f"""
+                WITH
+                source_atoms AS (
+                    SELECT i.ordinal, i.code AS source_code, c.STR AS source_name,
+                           c.CUI AS source_cui, c.AUI AS source_aui,
+                           ROW_NUMBER() OVER (
+                               PARTITION BY i.ordinal
+                               ORDER BY
+                                   CASE c.TTY
+                                       WHEN 'PT' THEN 0
+                                       WHEN 'MH' THEN 1
+                                       WHEN 'LN' THEN 2
+                                       ELSE 3
+                                   END,
+                                   c.AUI
+                           ) AS rn
+                    FROM {temp} i
+                    JOIN mrconso c ON c.CODE = i.code
+                    WHERE c.SAB = ?
+                      AND c.SUPPRESS = 'N'
+                ),
+                source_seed AS (
+                    SELECT ordinal, source_code, source_name, source_cui, source_aui
+                    FROM source_atoms
+                    WHERE rn = 1
+                ),
+                target_ranked AS (
+                    SELECT s.ordinal, s.source_code, s.source_name, s.source_cui,
+                           s.source_aui, t.SAB AS target_source, t.CODE AS target_code,
+                           t.STR AS target_name, t.CUI AS target_cui, t.AUI AS target_aui,
+                           t.TTY AS target_tty,
+                           ROW_NUMBER() OVER (
+                               PARTITION BY s.ordinal, t.SAB, t.CODE
+                               ORDER BY
+                                   CASE t.TTY
+                                       WHEN 'PT' THEN 0
+                                       WHEN 'MH' THEN 1
+                                       WHEN 'LN' THEN 2
+                                       ELSE 3
+                                   END,
+                                   t.AUI
+                           ) AS atom_rn
+                    FROM source_seed s
+                    JOIN mrconso t ON t.CUI = s.source_cui
+                    WHERE t.SAB IN ({target_placeholders})
+                      AND t.SUPPRESS = 'N'
+                ),
+                deduped_targets AS (
+                    SELECT *
+                    FROM target_ranked
+                    WHERE atom_rn = 1
+                ),
+                capped_targets AS (
+                    SELECT *,
+                           ROW_NUMBER() OVER (
+                               PARTITION BY ordinal
+                               ORDER BY target_source, target_code, target_aui
+                           ) AS result_rn
+                    FROM deduped_targets
+                )
+                SELECT ordinal, source_code, source_name, source_cui, source_aui,
+                       target_source, target_code, target_name, target_cui,
+                       target_aui, target_tty
+                FROM capped_targets
+                WHERE result_rn <= ?
+                ORDER BY ordinal, target_source, target_code, target_aui
+                """,
+                [source, *target_sources, max_results_per_code],
+            ).fetchall()
+
+        return [
+            (
+                int(ordinal),
+                CodeMapping(
+                    source=CodeRef(source=source, code=source_code),
+                    target=CodeRef(source=target_source, code=target_code),
+                    source_display=source_name,
+                    target_display=target_name,
+                    relationship="equivalent",
+                    match_type="same_cui",
+                    match_depth=0,
+                    source_cui=source_cui,
+                    target_cui=target_cui,
+                    source_aui=source_aui,
+                    target_aui=target_aui,
+                    target_tty=target_tty,
+                    matched_via=Provenance.from_steps(
+                        "same_cui",
+                        [
+                            ProvenanceStep(
+                                op="input_atom",
+                                source=source,
+                                code=source_code,
+                                cui=source_cui,
+                                aui=source_aui,
+                                name=source_name,
+                            ),
+                            ProvenanceStep(
+                                op="same_cui",
+                                source=source,
+                                code=source_code,
+                                target_source=target_source,
+                                target_code=target_code,
+                                cui=source_cui,
+                            ),
+                            ProvenanceStep(
+                                op="target_atom",
+                                source=target_source,
+                                code=target_code,
+                                cui=target_cui,
+                                aui=target_aui,
+                                tty=target_tty,
+                                name=target_name,
+                            ),
+                        ],
+                    ),
+                ),
+            )
+            for (
+                ordinal,
+                source_code,
+                source_name,
+                source_cui,
+                source_aui,
+                target_source,
+                target_code,
+                target_name,
+                target_cui,
+                target_aui,
+                target_tty,
             ) in rows
         ]
 

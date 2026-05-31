@@ -15,6 +15,7 @@ from .inventory import (
     normalize_sources,
 )
 from .lookup import get_code_info, get_code_infos
+from .mapping import get_code_mappings
 from .patient_friendly import get_patient_friendly_name, get_patient_friendly_names
 
 __all__ = [
@@ -25,6 +26,7 @@ __all__ = [
     "get_code_relations",
     "get_code_info",
     "get_code_infos",
+    "get_code_mappings",
     "get_concept_map",
     "get_descendants",
     "get_parents",

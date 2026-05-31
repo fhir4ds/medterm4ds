@@ -53,6 +53,44 @@ class CodeInfo:
 
 
 @dataclass(frozen=True)
+class CodeMapping:
+    """One source-to-target terminology mapping."""
+
+    source: CodeRef
+    target: CodeRef
+    relationship: str
+    match_type: str
+    match_depth: int = 0
+    source_display: str | None = None
+    target_display: str | None = None
+    source_cui: str | None = None
+    target_cui: str | None = None
+    source_aui: str | None = None
+    target_aui: str | None = None
+    target_tty: str | None = None
+    matched_via: Provenance | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "source": self.source.source,
+            "code": self.source.code,
+            "source_display": self.source_display,
+            "target_source": self.target.source,
+            "target_code": self.target.code,
+            "target_display": self.target_display,
+            "relationship": self.relationship,
+            "match_type": self.match_type,
+            "match_depth": self.match_depth,
+            "source_cui": self.source_cui,
+            "target_cui": self.target_cui,
+            "source_aui": self.source_aui,
+            "target_aui": self.target_aui,
+            "target_tty": self.target_tty,
+            "matched_via": self.matched_via.to_dict() if self.matched_via else None,
+        }
+
+
+@dataclass(frozen=True)
 class CodeRelation:
     """One hierarchical relationship between terminology codes."""
 

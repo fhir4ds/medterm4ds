@@ -3,6 +3,7 @@
 from .core.config import LOCAL_LITE_MEMORY_PROFILES, LocalLiteConfig, local_lite_config
 from .core.models import (
     CodeInfo,
+    CodeMapping,
     CodeRef,
     CodeRelation,
     ConceptMapRow,
@@ -19,11 +20,13 @@ from .services.hierarchy import (
     get_parents,
 )
 from .services.lookup import get_code_info, get_code_infos
+from .services.mapping import get_code_mappings
 from .services.patient_friendly import get_patient_friendly_names
 
 __all__ = [
     "CodeRef",
     "CodeInfo",
+    "CodeMapping",
     "CodeRelation",
     "ConceptMapRow",
     "FriendlyNameResult",
@@ -38,6 +41,7 @@ __all__ = [
     "get_descendants",
     "get_code_info",
     "get_code_infos",
+    "get_code_mappings",
     "get_parents",
     "get_patient_friendly_names",
     "iter_concept_map",

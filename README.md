@@ -2,12 +2,13 @@
 
 `medterm4ds` is a refactor/prototype for batch-first medical terminology workflows.
 
-The current slice focuses on exact code lookup, hierarchy traversal, and
-patient-friendly names:
+The current slice focuses on exact code lookup, same-CUI source mapping,
+hierarchy traversal, and patient-friendly names:
 
 - typed domain results
 - batch-first service API
 - active atom lookup for one or many codes
+- same-CUI mappings from source codes to target vocabularies
 - same-source parent, child, ancestor, and descendant traversal
 - ConceptMap rows derived from patient-friendly results
 - DuckDB `LocalLiteEngine`
@@ -20,7 +21,7 @@ patient-friendly names:
 
 ```text
 src/medterm4ds/
-  core/                  # CodeRef, CodeInfo, CodeRelation, provenance models
+  core/                  # CodeRef, CodeInfo, CodeMapping, CodeRelation models
   engines/
     duckdb/              # LocalLite DuckDB execution
     medterm_baseline/    # comparison adapter for /mnt/d/medterm
@@ -64,6 +65,20 @@ from medterm4ds import CodeRef, get_code_infos
 infos = get_code_infos(
     [CodeRef("ICD10CM", "E11.9")],
     engine=engine,
+)
+```
+
+The mapping vertical slice is `get_code_mappings(...)`. It returns active
+same-CUI target mappings for one or many source codes, preserving input order
+and using structured provenance to show the selected source atom and target atom.
+
+```python
+from medterm4ds import CodeRef, get_code_mappings
+
+mappings = get_code_mappings(
+    [CodeRef("ICD10CM", "E11.9")],
+    engine=engine,
+    target_sources=["SNOMEDCT_US"],
 )
 ```
 
@@ -135,6 +150,20 @@ medterm4ds lookup \
 
 Provide one `--source` for all codes, or one `--source` per `--code`. Lookup
 output can be JSON, JSONL, or CSV.
+
+For source-to-source mapping:
+
+```bash
+medterm4ds map \
+  --db /mnt/d/medterm/data/umls_local.duckdb \
+  --source ICD10CM \
+  --code E11.9 \
+  --target-source SNOMEDCT_US
+```
+
+Provide one `--source` for all codes, or one `--source` per `--code`. Repeat
+`--target-source` for multiple targets. Mapping output can be JSON, JSONL, or
+CSV.
 
 For hierarchy traversal:
 
@@ -280,6 +309,7 @@ Supported endpoints:
 
 - `GET /health`
 - `POST /lookup`
+- `POST /map`
 - `POST /hierarchy`
 - `POST /patient-friendly`
 - `POST /conceptmap/patient-friendly`
@@ -295,6 +325,20 @@ curl -X POST http://localhost:8000/lookup \
       {"source": "CVX", "code": "208"}
     ]
 }'
+```
+
+Example mapping request:
+
+```bash
+curl -X POST http://localhost:8000/map \
+  -H 'content-type: application/json' \
+  -d '{
+    "codes": [
+      {"source": "ICD10CM", "code": "E11.9"}
+    ],
+    "target_sources": ["SNOMEDCT_US"],
+    "max_results_per_code": 50
+  }'
 ```
 
 Example hierarchy request:
@@ -353,6 +397,7 @@ Registered tools:
 - `health`
 - `lookup_code`
 - `lookup_codes`
+- `map_codes`
 - `code_relations`
 - `get_parents`
 - `get_children`
@@ -364,7 +409,7 @@ Registered tools:
 
 The MCP tools return structured dictionaries/lists rather than ASCII trees, so
 callers can use fields such as `relationship`, `depth`, `match_type`,
-`match_depth`, and `matched_via` directly.
+`match_depth`, source/target atom metadata, and `matched_via` directly.
 
 ## Benchmarking
 

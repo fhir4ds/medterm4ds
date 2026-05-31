@@ -1,5 +1,17 @@
 """Execution engines."""
 
-from .base import HierarchyEngine, LookupEngine, PatientFriendlyEngine, TerminologyEngine
+from .base import (
+    HierarchyEngine,
+    LookupEngine,
+    MappingEngine,
+    PatientFriendlyEngine,
+    TerminologyEngine,
+)
 
-__all__ = ["HierarchyEngine", "LookupEngine", "PatientFriendlyEngine", "TerminologyEngine"]
+__all__ = [
+    "HierarchyEngine",
+    "LookupEngine",
+    "MappingEngine",
+    "PatientFriendlyEngine",
+    "TerminologyEngine",
+]
