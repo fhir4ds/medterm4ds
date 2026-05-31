@@ -1,17 +1,20 @@
 #!/usr/bin/env python3
 """Compare medterm4ds LocalLite patient-friendly output with medterm."""
 
+# ruff: noqa: E402
+
 from __future__ import annotations
 
 import argparse
-from collections import Counter
-from dataclasses import asdict, dataclass
-from datetime import datetime, timezone
 import json
-from pathlib import Path
 import sys
 import time
-from typing import Any, Sequence
+from collections import Counter
+from collections.abc import Sequence
+from dataclasses import asdict, dataclass
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
 SRC = ROOT / "src"
@@ -24,7 +27,6 @@ from medterm4ds.engines.duckdb import LocalLiteEngine
 from medterm4ds.engines.medterm_baseline import MedtermBulkBaselineEngine
 from medterm4ds.services.inventory import DEFAULT_INVENTORY_SOURCES, normalize_sources
 from medterm4ds.services.patient_friendly import get_patient_friendly_names
-
 
 COMPARE_FIELDS = ("name", "friendly_source", "match_type", "match_depth")
 KNOWN_OLD_MEDTERM_CPT_BUG = "medterm_cpt_hcpcs_friendly_name_keyerror"

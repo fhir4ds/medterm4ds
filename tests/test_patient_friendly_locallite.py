@@ -4,11 +4,11 @@ import sys
 from pathlib import Path
 
 import duckdb
+import pytest
 
 from medterm4ds import CodeRef, get_patient_friendly_names
 from medterm4ds.engines.duckdb import LocalLiteEngine
 from medterm4ds.engines.medterm_baseline import MedtermBulkBaselineEngine
-
 
 MEDTERM_SRC = Path("/mnt/d/medterm/src")
 
@@ -119,6 +119,8 @@ def _semantic_rows(results):
 
 
 def test_locallite_matches_medterm_bulk_on_representative_codes(monkeypatch):
+    if not MEDTERM_SRC.exists():
+        pytest.skip("medterm baseline checkout is not available")
     _patch_baseline_cvx(monkeypatch)
     con = duckdb.connect(database=":memory:")
     try:
@@ -146,8 +148,7 @@ def test_locallite_matches_medterm_bulk_on_representative_codes(monkeypatch):
         con.close()
 
 
-def test_locallite_adds_structured_provenance(monkeypatch):
-    _patch_baseline_cvx(monkeypatch)
+def test_locallite_adds_structured_provenance():
     con = duckdb.connect(database=":memory:")
     try:
         _seed_patient_friendly_db(con)

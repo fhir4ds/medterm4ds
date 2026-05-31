@@ -7,6 +7,7 @@ import sys
 from pathlib import Path
 
 import duckdb
+import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -58,6 +59,8 @@ def _env() -> dict[str, str]:
 
 
 def test_parity_script_writes_json_and_markdown(tmp_path):
+    if not Path("/mnt/d/medterm/src").exists():
+        pytest.skip("medterm baseline checkout is not available")
     db_path = tmp_path / "umls.duckdb"
     json_path = tmp_path / "parity.json"
     markdown_path = tmp_path / "parity.md"

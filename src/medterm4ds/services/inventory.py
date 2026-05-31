@@ -7,7 +7,6 @@ from collections.abc import Iterator, Sequence
 from medterm4ds.core.models import CodeRef
 from medterm4ds.core.normalize import normalize_source
 
-
 DEFAULT_INVENTORY_SOURCES = (
     "ICD10CM",
     "ICD10PCS",

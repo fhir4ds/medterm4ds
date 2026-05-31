@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 import csv
+import json
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
 from datetime import datetime, timezone
-import json
 from pathlib import Path
-from typing import Any, Callable, Iterable, Literal, Mapping
+from typing import Any, Literal
 
 from medterm4ds.core.models import CodeRef
 from medterm4ds.outputs.records import ResultLike, to_csv_record, to_record

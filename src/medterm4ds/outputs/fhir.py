@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
-from collections import OrderedDict
-from datetime import datetime, timezone
 import json
+from collections import OrderedDict
+from collections.abc import Iterable, Mapping
+from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Iterable, Mapping
+from typing import Any
 
 from medterm4ds.core.models import ConceptMapRow
 from medterm4ds.core.normalize import normalize_source

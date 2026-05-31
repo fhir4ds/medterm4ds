@@ -5,9 +5,9 @@ This is intentionally a test/comparison adapter, not a production engine.
 
 from __future__ import annotations
 
-from pathlib import Path
 import sys
-from typing import Sequence
+from collections.abc import Sequence
+from pathlib import Path
 
 from medterm4ds.core.models import CodeRef, FriendlyNameResult
 

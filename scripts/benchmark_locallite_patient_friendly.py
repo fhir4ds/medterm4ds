@@ -1,18 +1,20 @@
 #!/usr/bin/env python3
 """Benchmark LocalLite patient-friendly resolution on a real UMLS DuckDB file."""
 
+# ruff: noqa: E402
+
 from __future__ import annotations
 
 import argparse
-from collections import Counter
-from dataclasses import asdict, dataclass
 import json
-from pathlib import Path
 import resource
 import statistics
 import sys
 import time
-from typing import Sequence
+from collections import Counter
+from collections.abc import Sequence
+from dataclasses import asdict, dataclass
+from pathlib import Path
 
 import duckdb
 
@@ -196,7 +198,7 @@ def load_sample(con, allocations: dict[str, int]) -> list[CodeRef]:
 def run_one(con, engine: LocalLiteEngine, size: int, sources: Sequence[str], args) -> BenchmarkResult:
     if args.sample_mode == "balanced":
         per_source = max(1, round(size / len(sources)))
-        source_counts = {source: per_source for source in sources}
+        source_counts = dict.fromkeys(sources, per_source)
     else:
         source_counts = get_source_counts(con, sources)
     allocations = allocate_sample_size(size, source_counts, args.sample_mode)
