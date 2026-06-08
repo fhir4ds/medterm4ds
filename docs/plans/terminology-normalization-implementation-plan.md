@@ -105,10 +105,10 @@ Measured on `data/umls_current.duckdb`:
   1,186,645 codes in 425.4 seconds query time.
 - Setup plus all-code run: about 9.2 minutes.
 
-Decision: defer final `mt4ds.patient_friendly_resolutions` materialization as a
-default runtime requirement until near-instant repeated static lookup/export is
-needed. Keep the materialized path and candidate/path tables for review,
-auditing, strict-runtime deployments, and future serving use.
+Decision: archive the old final `mt4ds.patient_friendly_resolutions`
+materialization path. The canonical path is live prepared runtime resolution;
+future materialization must reuse runtime output or shared SQL relation builders
+so semantics cannot drift.
 
 ## Target Directory Structure
 
@@ -614,9 +614,6 @@ Build normalized `mt4ds` runtime tables from raw UMLS.
 13. `mt4ds.code_replacements`
 14. `mt4ds.snomed_top_level_depth`
 15. `mt4ds.patient_friendly_strategy`
-16. `mt4ds.patient_friendly_candidates`
-17. `mt4ds.patient_friendly_candidate_paths`
-18. `mt4ds.patient_friendly_resolutions`
 
 ### Implementation Details
 
@@ -814,9 +811,10 @@ source, code, name, friendly_source, match_type, match_depth,
 technical_name, selected_candidate_id, policy_version, generated_at
 ```
 
-Runtime patient-friendly lookup should join input codes to
-`mt4ds.patient_friendly_resolutions`. The candidate-generation SQL or Python
-orchestration is a build/review path, not the normal runtime path.
+This was the old materialized-runtime design. It is archived. Runtime patient-
+friendly lookup now uses the live prepared resolver; any future materialized
+table must be generated from runtime-equivalent semantics rather than a second
+resolver implementation.
 
 ### Tests
 
@@ -1160,7 +1158,8 @@ code system with the same semantics.
    - reject known broad MEDLINEPLUS/CHV labels
    - reject bad combination-name CHV candidates with no meaningful token overlap
    - deterministic tie-breakers
-7. Materialize `mt4ds.patient_friendly_resolutions`.
+7. Keep the old materialized final-resolution path archived unless a
+   runtime-equivalent replacement is required for static serving.
 8. Ensure patient-friendly returns:
    - original display fallback
    - `technical_name`
@@ -1215,9 +1214,9 @@ route priority
 This prevents over-walking to a more general MEDLINEPLUS topic when a closer
 acceptable CHV candidate already exists.
 
-The query above describes candidate generation. The runtime API should not run
-that recursive candidate-generation query for normal requests once
-`mt4ds.patient_friendly_resolutions` exists for the requested policy version.
+The query above describes the old candidate-generation design. The active
+runtime API uses the live prepared resolver; future materialization should be
+introduced only if it shares semantics with that runtime path.
 
 ### Required Edge Cases
 
@@ -1257,8 +1256,8 @@ that recursive candidate-generation query for normal requests once
    candidate; MEDLINEPLUS preference is a same-depth tie-breaker, not a license
    to skip hierarchy distance.
 5. Public output schema is unchanged unless deliberately versioned.
-6. Runtime patient-friendly uses `mt4ds.patient_friendly_resolutions` when the
-   table is present and current for the policy version.
+6. Runtime patient-friendly uses the live prepared resolver; the old
+   materialized resolution path is archived.
 7. One-code and source-wide patient-friendly calls use the same prepared
    resolution semantics.
 8. Reviewer confirms patient-friendly contains orchestration, not raw source
@@ -1661,7 +1660,7 @@ failed, or ambiguous, release returns to development.
 | --- | --- |
 | UMLS release drift looks like algorithm regression | Always record DB path, release, and prepared schema version in reports. |
 | RxNorm TTY query still slow | Use bounded path-step CTE first; switch to generated `UNION ALL` paths if profiling proves it faster. |
-| Prepared traversal is still too slow for patient-friendly | Materialize `mt4ds.patient_friendly_candidates` and `mt4ds.patient_friendly_resolutions`; runtime should join resolutions. |
+| Prepared traversal is still too slow for patient-friendly | First profile the live prepared resolver. If static materialization is required, generate it from runtime-equivalent output or shared SQL relation builders. |
 | Prepared tables become too large | Track row counts and indexes; materialize only runtime-critical reductions. |
 | Source rules duplicated in services | Review service code for raw source constants and return to dev if found. |
 | SNOMED fallback gets too broad | Enforce `mt4ds.snomed_top_level_depth >= 4` and block expansion through levels 1-3. |

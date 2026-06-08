@@ -2,6 +2,34 @@
 
 This runbook captures the current operational workflow for validating patient-friendly naming semantics and performance.
 
+## Canonical runtime path
+
+The supported implementation is the runtime resolver used by `get_patient_friendly_names` and `scripts/run_patient_friendly_review.py`. It uses prepared lookup, walk, crosswalk, RxNorm, CVX, and source-specific patient-friendly policy primitives.
+
+For full production-code-system runs, use the `fast` memory profile. The `balanced` profile caps DuckDB around 1GB and can OOM on full ICD10/SNOMED/LNC batches.
+
+```bash
+/usr/bin/time -v env PYTHONPATH=src python3 scripts/run_patient_friendly_review.py \
+  --db data/umls_current.duckdb \
+  --db-role current_candidate \
+  --per-source 0 \
+  --max-depth 5 \
+  --memory-profile fast \
+  --output-csv reports/performance/patient_friendly_runtime_all_sources_fast_2026-06-08.csv \
+  --output-json reports/performance/patient_friendly_runtime_all_sources_fast_2026-06-08.json \
+  --progress \
+  2>&1 | tee reports/performance/patient_friendly_runtime_all_sources_fast_2026-06-08.log
+```
+
+Observed 2026-06-08 runtime result:
+
+```text
+total_codes: 1,127,094
+source_resolution_seconds: 200.27
+wall_time: 3:45.57
+max_rss: about 10.6GB
+```
+
 ## Semantic regression gate
 
 Use the benchmark comparison as the row-level regression gate before and after patient-friendly logic changes.
@@ -20,7 +48,7 @@ PYTHONPATH=src python3 scripts/compare_patient_friendly_benchmark.py \
   --progress
 ```
 
-Compare the new `*_compare.csv` against the latest blessed compare CSV. A logic-preserving change should have `0` unexpected row-level changes.
+A logic-preserving change should have `0` unexpected row-level changes against the latest blessed compare CSV.
 
 Current blessed baseline for cleanup/refactor work:
 
@@ -64,32 +92,14 @@ Focus areas:
 - CVX combination vaccine behavior.
 - Tracked regressions such as `ICD10CM:S43`, `CPT:50580`, and old synthetic-edge jumps.
 
-## All-code materialization performance
+## Archived materialized path
 
-Use materialization to test full-system batch generation, not request-time lookup.
+The old final-resolution materialization path has been archived under `archive/legacy/patient_friendly_materialization/`. It is not an active or recommended path.
 
-Reviewed systems command:
+Reason:
 
-```bash
-/usr/bin/time -v env PYTHONPATH=src python3 scripts/materialize_patient_friendly.py \
-  --db data/umls_current.duckdb \
-  --db-role current_candidate \
-  --sources ICD10CM,ICD10PCS,LNC,CPT,HCPCS,SNOMEDCT_US,RXNORM,CVX \
-  --replace \
-  --chunk-size 5000 \
-  --output-json reports/performance/patient_friendly_all_reviewed_systems_2026-06-08_materialize.json \
-  2>&1 | tee reports/performance/patient_friendly_all_reviewed_systems_2026-06-08_materialize.log
-```
+- It was not validated against the current runtime patient-friendly policy.
+- The scoped reviewed-system materialization attempt did not complete after `1:01:50`.
+- Runtime resolution already handles 1.1M+ reviewed production codes in under four minutes with `--memory-profile fast`.
 
-A broader `--all` run is not the preferred iteration command because it includes every prepared source in the database, not just the reviewed production code systems.
-
-2026-06-08 performance finding:
-
-- Broad `--all` materialization was terminated after `40:56.51` without completing.
-- Scoped reviewed-system materialization was terminated after `1:01:50` without completing.
-- Both logs are saved under `reports/performance/` for review.
-- This means final-resolution materialization should not be treated as solved until the materialization path has source-level progress/timing and the slow phase is identified.
-
-## Operational recommendation
-
-Keep using the runtime prepared primitives plus benchmark regression gate for semantic iteration. Defer final patient-friendly resolution materialization until there is a concrete serving or repeated batch requirement, and first add source-level materialization timing so performance regressions can be localized.
+Future materialization should reuse runtime resolver output directly, or first refactor the runtime resolver into shared SQL relation builders so runtime and materialized semantics cannot drift.

@@ -127,9 +127,6 @@ mt4ds.cvx_metadata
 mt4ds.code_replacements
 mt4ds.snomed_top_level_depth
 mt4ds.patient_friendly_strategy
-mt4ds.patient_friendly_candidates
-mt4ds.patient_friendly_candidate_paths
-mt4ds.patient_friendly_resolutions
 ```
 
 The raw `umls` schema is the source of truth for loaded UMLS data. The `mt4ds`
@@ -540,9 +537,6 @@ Required materialized tables:
 | `mt4ds.code_replacements` | Current-code replacement candidates for obsolete/historical codes. |
 | `mt4ds.snomed_top_level_depth` | SNOMED broadness guard. |
 | `mt4ds.patient_friendly_strategy` | Source policy rows: phases, targets, priority, stop-on-hit behavior. |
-| `mt4ds.patient_friendly_candidates` | Candidate rows generated from exact CUI matches, native hierarchy walks, crosswalks, guarded SNOMED fallback, RxNorm TTY traversal, and source-native enrichment. |
-| `mt4ds.patient_friendly_candidate_paths` | Trace rows showing the lookup, walk, crosswalk, and candidate path used to produce each candidate. |
-| `mt4ds.patient_friendly_resolutions` | Final selected patient-friendly result for fast runtime lookup by `(source, code)`. |
 
 Useful views:
 
@@ -565,24 +559,20 @@ It should not contain raw source graph mechanics. Source-specific graph rules
 must already be encoded in `mt4ds.walk_edges`, `mt4ds.rxnorm_tty_edges`,
 `mt4ds.friendly_atoms`, and source policy rows.
 
-Patient-friendly resolution has three execution modes:
+Patient-friendly resolution has one canonical execution mode today: live
+prepared runtime resolution over prepared primitive tables. It may use
+`mt4ds.walk_closure_limited` for bounded parent walks, but it must not change
+candidate semantics.
 
-1. Build/review mode generates `mt4ds.patient_friendly_candidates`, optional
-   path rows, and `mt4ds.patient_friendly_resolutions` from prepared primitive
-   tables.
-2. Live prepared mode runs the same source-specific policy over prepared
-   primitive tables. It may use `mt4ds.walk_closure_limited` for bounded parent
-   walks, but it must not change candidate semantics.
-3. Runtime/export materialized mode joins input codes to
-   `mt4ds.patient_friendly_resolutions` and falls back to the source display
-   only when a prepared code has no selected resolution.
+The former candidate/path/final-resolution materialization implementation has
+been archived under `archive/legacy/patient_friendly_materialization/`. Future
+materialization must either consume runtime resolver output directly or share
+the same SQL relation builders as runtime resolution.
 
-All modes must share the same policy version. A materialized runtime result
-should be traceable back to candidate/path rows from the same DB build.
-
-Current stabilization decision: defer full final-resolution materialization
-until repeated static serving/export needs it. On the current prepared DB, the
-closure-backed live resolver processed the 5,285-row benchmark in about 21
+Current stabilization decision: use live prepared runtime resolution for batch
+and export. On 2026-06-08 it resolved 1,127,094 reviewed production codes in
+3:45.57 wall time with `memory-profile fast`. On the current prepared DB, the
+benchmark gate still runs in about 25 seconds.
 seconds with no row-level regression against the reviewed baseline, and
 processed 1,186,645 codes across ICD10CM, RXNORM, LNC, CVX, CPT, and
 SNOMEDCT_US in about 7.1 minutes of query time. Building
@@ -752,9 +742,9 @@ in legacy `medterm` and current `medterm4ds` work:
 
 For performance and maintainability, primitive workflows and
 patient-friendly candidate generation should run as batch queries over prepared
-tables. Runtime patient-friendly lookup is simpler: it should join input codes
-to `mt4ds.patient_friendly_resolutions` when the resolution table is current
-for the requested policy version.
+tables. Runtime patient-friendly lookup uses the live prepared resolver. Future
+materialized lookup must be generated from runtime-equivalent semantics and
+should not introduce a second resolver implementation.
 
 Candidate-generation shape:
 
@@ -864,9 +854,8 @@ This is preferable to:
 
 1. All public primitives must support batch input.
 2. Single-code use must call the same batch implementation.
-3. Patient-friendly runtime lookup must use
-   `mt4ds.patient_friendly_resolutions` when the table is present and current
-   for the requested policy version.
+3. Patient-friendly runtime lookup must use the live prepared resolver unless
+   an explicitly validated runtime-equivalent materialized table is added later.
 4. Runtime queries must use prepared tables where expensive raw UMLS joins would
    otherwise be repeated.
 5. Recursive traversal must be bounded by:
@@ -1041,11 +1030,10 @@ Internals to replace:
 4. Should the 2025AB parity DB be rebuilt by medterm4ds, or should we treat
    `/mnt/d/medterm/data/umls_local.duckdb` as the fixed parity fixture?
 5. Which prepared tables are required for 0.0.1 versus later releases?
-6. Should runtime patient-friendly fail closed when
-   `mt4ds.patient_friendly_resolutions` is missing/stale, or should it expose a
-   clearly labeled slow debug fallback?
-7. What policy version and build metadata should be included in every
-   resolution row?
+6. If static serving later requires materialization, should it bulk-insert
+   runtime resolver output or first expose shared SQL relation builders?
+7. What policy version and build metadata should be included in any future
+   materialized resolution row?
 
 These questions should be answered with small real-data examples before the
 full patient-friendly benchmark is rerun.

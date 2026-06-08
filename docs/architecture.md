@@ -93,9 +93,6 @@ mt4ds.cvx_metadata
 mt4ds.code_replacements
 mt4ds.snomed_top_level_depth
 mt4ds.patient_friendly_strategy
-mt4ds.patient_friendly_candidates
-mt4ds.patient_friendly_candidate_paths
-mt4ds.patient_friendly_resolutions
 ```
 
 Source-specific behavior belongs in preparation, not scattered through runtime
@@ -178,14 +175,13 @@ Source-specific patient-friendly policy stays explicit:
   source/original display instead of jumping to an unrelated broad term.
 
 The primitive services still need to be fast and reusable on their own. They
-power hierarchy APIs, mapping, optimize, ConceptMap generation, and candidate
-trace reports. The final patient-friendly API should use
-`mt4ds.patient_friendly_resolutions` when current rows are available. The
-current stabilized live prepared resolver remains acceptable for dynamic
-iteration: with `walk_closure_limited`, the benchmark report runs in about 21
-seconds and all six reviewed code systems, 1,186,645 codes, resolve in about
-7.1 minutes of query time. Building the closure took about 2.1 minutes in the
-current DB, for about 9.2 minutes setup-plus-run.
+power hierarchy APIs, mapping, optimize, ConceptMap generation, and patient-
+friendly exports. The final patient-friendly API uses the live prepared runtime
+resolver as the canonical path. On 2026-06-08, that resolver processed
+1,127,094 reviewed production codes in 3:45.57 wall time with
+`memory-profile fast`. The former final-resolution materialization path was
+archived because it was not validated against current semantics and did not
+complete within the expected performance envelope.
 
 Source-to-source mapping is exact same-CUI by default. Broader/narrower mapping
 is opt-in through bounded hierarchy traversal so high-volume exports do not
@@ -277,14 +273,11 @@ and patient-friendly workflows. CLI bulk commands should compose these iterators
 with inventory streaming and checkpointed writers rather than creating separate
 transform implementations.
 
-Bulk patient-friendly is a lookup/export mode over
-`mt4ds.patient_friendly_resolutions` when that table is available. Source-wide
-exports should stream source inventory through joins against the materialized
-resolution table and write incrementally. Until final resolution materialization
-is required for repeated static serving, the closure-backed live prepared
-resolver is the accepted iteration path. Candidate-generation and path-table
-materialization belong to database preparation, policy review, or explicit
-debug commands.
+Bulk patient-friendly is a lookup/export mode over the canonical live prepared
+resolver. Source-wide exports should stream source inventory through shared
+bulk iterators and write incrementally. If repeated static serving later needs
+materialization, build it from runtime resolver output or shared SQL relation
+builders so materialized and runtime semantics cannot drift.
 
 Real-data validation follows the same rule. `scripts/run_bulk_validation.py`
 streams source inventories through the shared bulk iterators, while

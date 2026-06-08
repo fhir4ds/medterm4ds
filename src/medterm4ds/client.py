@@ -497,7 +497,6 @@ def connect(
     prepare_cache: bool = False,
     cache_sources: Sequence[str] | None = None,
     cache_indexes: bool = True,
-    require_patient_friendly_resolutions: bool = False,
 ) -> Terminology:
     """Connect to a local medterm4ds DuckDB database."""
     try:
@@ -512,7 +511,6 @@ def connect(
         temp_directory=temp_directory,
         threads=threads,
         query_chunk_size=query_chunk_size,
-        require_patient_friendly_resolutions=require_patient_friendly_resolutions,
     )
     engine = LocalDuckDBEngine(con, config=config)
     if prepare_cache:

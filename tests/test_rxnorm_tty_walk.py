@@ -10,9 +10,6 @@ import duckdb
 import pytest
 
 from medterm4ds.core.models import CodeRef
-from medterm4ds.services.patient_friendly_materialized import (
-    materialize_patient_friendly_resolutions,
-)
 from medterm4ds.services.rxnorm_tty_walk import get_rxnorm_patient_friendly
 
 # ---------------------------------------------------------------------------
@@ -493,46 +490,6 @@ class TestActivePreferredOverSuppressed:
         r = results[0]
         assert r.name == "Drug X (active)"
         assert r.match_type == "ingredient"
-
-    def test_materialization_keeps_unselected_rxnorm_tty_candidates(self, con):
-        """Materialized candidate review keeps non-selected RxNorm TTY targets."""
-        _setup_basic_topology(con)
-
-        _insert_best_atoms(con, [
-            ("RXNORM", "1200001", "AUI_SCD3", "C11", "SCD",
-             "Drug X 100 MG Tablet", "N", True, 1),
-            ("RXNORM", "2200001", "AUI_MIN3A", "C12", "MIN",
-             "Drug X (active)", "N", True, 1),
-            ("RXNORM", "2200002", "AUI_MIN3B", "C12", "MIN",
-             "Drug X (suppressed)", "O", False, 2),
-        ])
-        _insert_rxnorm_tty_edges(con, [
-            ("AUI_SCD3", "1200001", "SCD", "Drug X 100 MG Tablet", "N",
-             "AUI_MIN3A", "2200001", "MIN", "Drug X (active)", "N",
-             "RN", "ingredient_of"),
-            ("AUI_SCD3", "1200001", "SCD", "Drug X 100 MG Tablet", "N",
-             "AUI_MIN3B", "2200002", "MIN", "Drug X (suppressed)", "O",
-             "RN", "ingredient_of"),
-        ])
-
-        summary = materialize_patient_friendly_resolutions(
-            [CodeRef(source="RXNORM", code="1200001")],
-            con,
-        )
-
-        assert summary["candidates"] == 2
-        candidates = con.execute(
-            """
-            SELECT candidate_name, candidate_origin, rank_features
-            FROM mt4ds.patient_friendly_candidates
-            WHERE source = 'RXNORM' AND code = '1200001'
-            ORDER BY candidate_name
-            """
-        ).fetchall()
-        assert candidates[0][0:2] == ("Drug X (active)", "rxnorm_tty")
-        assert candidates[1][0:2] == ("Drug X (suppressed)", "rxnorm_tty")
-        assert "target_suppress=O" in candidates[1][2]
-
 
 class TestDeterministicTieBreaking:
     """Test that results are deterministic when multiple equal-rank targets exist."""

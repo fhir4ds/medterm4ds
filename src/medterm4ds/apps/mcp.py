@@ -50,7 +50,6 @@ class McpSettings:
     query_chunk_size: int | None = None
     prepare_cache: bool = True
     cache_indexes: bool = False
-    require_patient_friendly_resolutions: bool = False
 
     @classmethod
     def from_env(cls) -> McpSettings:
@@ -67,10 +66,6 @@ class McpSettings:
             query_chunk_size=_env_int("MEDTERM4DS_QUERY_CHUNK_SIZE"),
             prepare_cache=_env_bool("MEDTERM4DS_PREPARE_CACHE", True),
             cache_indexes=_env_bool("MEDTERM4DS_CACHE_INDEXES", False),
-            require_patient_friendly_resolutions=_env_bool(
-                "MEDTERM4DS_REQUIRE_PATIENT_FRIENDLY_RESOLUTIONS",
-                False,
-            ),
         )
 
 
@@ -98,7 +93,6 @@ class McpRuntime:
             temp_directory=self.settings.temp_directory,
             threads=self.settings.threads,
             query_chunk_size=self.settings.query_chunk_size,
-            require_patient_friendly_resolutions=self.settings.require_patient_friendly_resolutions,
         )
         self.engine = LocalDuckDBEngine(self.con, config=config)
         if self.settings.prepare_cache:

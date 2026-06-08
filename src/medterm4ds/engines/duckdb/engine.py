@@ -211,7 +211,6 @@ class LocalDuckDBEngine:
         query_chunk_size: int | None = None,
         progress: Callable[[str], None] | None = None,
         cvx_groups: Mapping[str, Sequence[str]] | None = None,
-        require_patient_friendly_resolutions: bool | None = None,
     ):
         if config:
             memory_limit = config.memory_limit if memory_limit is None else memory_limit
@@ -220,21 +219,15 @@ class LocalDuckDBEngine:
             if preserve_insertion_order is None:
                 preserve_insertion_order = config.preserve_insertion_order
             query_chunk_size = config.query_chunk_size if query_chunk_size is None else query_chunk_size
-            if require_patient_friendly_resolutions is None:
-                require_patient_friendly_resolutions = config.require_patient_friendly_resolutions
         if preserve_insertion_order is None:
             preserve_insertion_order = False
         if query_chunk_size is None:
             query_chunk_size = 5000
-        if require_patient_friendly_resolutions is None:
-            require_patient_friendly_resolutions = False
-
         self.con = con
         self._cvx_groups_auto = cvx_groups is None
         self.cvx_groups = {str(k): list(v) for k, v in (cvx_groups or {}).items()}
         self.query_chunk_size = max(1, int(query_chunk_size))
         self.progress = progress
-        self.require_patient_friendly_resolutions = bool(require_patient_friendly_resolutions)
         self.cache_prepared = False
         self._snomed_parent_links_cache_prepared = False
         self._prepared_tables_available: bool | None = None
@@ -393,24 +386,10 @@ class LocalDuckDBEngine:
         #   top-level depth >= 4 and does not expand into levels 1-3.
         # - RxNorm and CVX use separate source-native strategies.
         ordered = [CodeRef(source=c.source, code=c.code) for c in codes]
-        materialized = self._get_patient_friendly_names_from_resolutions(ordered)
-        if materialized is not None:
-            return materialized
-        if self.require_patient_friendly_resolutions:
-            raise RuntimeError(
-                "Patient-friendly resolution rows are required, but "
-                "mt4ds.patient_friendly_resolutions does not fully cover the "
-                "request for the current policy version. Run "
-                "scripts/materialize_patient_friendly.py for the requested "
-                "source/code set or disable require_patient_friendly_resolutions "
-                "for explicit debug traversal."
-            )
         if self._has_patient_friendly_prepared_tables({ref.source for ref in ordered}):
             try:
                 return self._get_patient_friendly_names_prepared(ordered, max_depth=max_depth)
             except Exception as exc:
-                if self.require_patient_friendly_resolutions:
-                    raise
                 logger.debug("Falling back to raw patient-friendly path: %s", exc)
 
         grouped: dict[str, list[str]] = defaultdict(list)
@@ -464,16 +443,6 @@ class LocalDuckDBEngine:
         )
         from medterm4ds.services.rxnorm_tty_walk import get_rxnorm_patient_friendly
 
-        materialized = self._get_patient_friendly_names_from_resolutions(codes)
-        if materialized is not None:
-            return materialized
-        if self.require_patient_friendly_resolutions:
-            raise RuntimeError(
-                "Patient-friendly resolution rows are required, but "
-                "mt4ds.patient_friendly_resolutions does not fully cover the "
-                "request for the current policy version."
-            )
-
         rxnorm_items: list[tuple[int, CodeRef]] = []
         other_items: list[tuple[int, CodeRef]] = []
         for index, code in enumerate(codes):
@@ -500,107 +469,6 @@ class LocalDuckDBEngine:
                 by_index[index] = row
 
         return [by_index[index] for index in range(len(codes))]
-
-    def _get_patient_friendly_names_from_resolutions(
-        self,
-        codes: Sequence[CodeRef],
-    ) -> list[FriendlyNameResult] | None:
-        """Return materialized patient-friendly resolutions when fully available."""
-        if not codes:
-            return []
-        try:
-            from medterm4ds.engines.duckdb.prepared import (
-                PATIENT_FRIENDLY_POLICY_VERSION,
-                PREPARED_SCHEMA_VERSION,
-            )
-
-            exists = self.con.execute(
-                """
-                SELECT 1
-                FROM information_schema.tables
-                WHERE table_schema = 'mt4ds'
-                  AND table_name = 'patient_friendly_resolutions'
-                LIMIT 1
-                """
-            ).fetchone()
-            if not exists:
-                return None
-
-            input_values = ",\n                    ".join(
-                f"({_sql_literal(ref.source)}, {_sql_literal(ref.code)}, {index})"
-                for index, ref in enumerate(codes)
-            )
-            rows = self.con.execute(
-                f"""
-                WITH input_codes(source, code, input_order) AS (
-                    VALUES {input_values}
-                ),
-                ranked_resolutions AS (
-                    SELECT i.input_order, i.source, i.code,
-                           r.name, r.friendly_source, r.match_type,
-                           r.match_depth, r.technical_name, r.policy_version,
-                           ROW_NUMBER() OVER (
-                               PARTITION BY i.input_order
-                               ORDER BY r.generated_at DESC NULLS LAST,
-                                        r.selected_candidate_id DESC NULLS LAST
-                           ) AS rn
-                    FROM input_codes i
-                    LEFT JOIN mt4ds.patient_friendly_resolutions r
-                     ON r.source = i.source
-                     AND r.code = i.code
-                     AND r.policy_version = ?
-                     AND r.prepared_schema_version = ?
-                )
-                SELECT input_order, source, code, name, friendly_source,
-                       match_type, match_depth, technical_name, policy_version
-                FROM ranked_resolutions
-                WHERE rn = 1
-                ORDER BY input_order
-                """,
-                [PATIENT_FRIENDLY_POLICY_VERSION, PREPARED_SCHEMA_VERSION],
-            ).fetchall()
-        except Exception as exc:
-            logger.debug("Materialized patient-friendly lookup unavailable: %s", exc)
-            return None
-
-        if len(rows) != len(codes):
-            return None
-        if any(row[3] is None for row in rows):
-            return None
-
-        results: list[FriendlyNameResult] = []
-        for row in rows:
-            source = str(row[1])
-            code = str(row[2])
-            name = str(row[3])
-            friendly_source = str(row[4] or source)
-            match_type = str(row[5] or "original")
-            match_depth = int(row[6] or 0)
-            technical_name = str(row[7]) if row[7] is not None else None
-            policy_version = str(row[8] or "")
-            results.append(
-                FriendlyNameResult(
-                    code=CodeRef(source=source, code=code),
-                    name=name,
-                    friendly_source=friendly_source,
-                    match_type=match_type,
-                    match_depth=match_depth,
-                    technical_name=technical_name,
-                    matched_via=Provenance.from_steps(
-                        "patient_friendly_resolutions",
-                        [
-                            ProvenanceStep(
-                                op="prepared_resolution",
-                                source=source,
-                                code=code,
-                                name=name,
-                                mode=policy_version,
-                            ),
-                        ],
-                    ),
-                )
-            )
-        return results
 
     def get_code_infos(self, codes: Sequence[CodeRef]) -> list[CodeInfo | None]:
         """Return canonical active atom info for input codes."""

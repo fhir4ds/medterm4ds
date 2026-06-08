@@ -40,9 +40,6 @@ _REQUIRED_MT4DS_TABLES = (
     "code_replacements",
     "snomed_top_level_depth",
     "patient_friendly_strategy",
-    "patient_friendly_candidates",
-    "patient_friendly_candidate_paths",
-    "patient_friendly_resolutions",
 )
 
 
@@ -1201,130 +1198,6 @@ def _prepare_patient_friendly_strategy(con, *, replace: bool) -> dict[str, objec
     return {table: {"status": "created", "rows": rows}}
 
 
-def _prepare_patient_friendly_materialized_tables(con, *, replace: bool) -> dict[str, object]:
-    """Create materialized patient-friendly candidate/path/resolution tables."""
-    results: dict[str, object] = {}
-
-    candidate_table = "patient_friendly_candidates"
-    candidate_qualified = f"mt4ds.{candidate_table}"
-    if replace or not _table_exists(con, "mt4ds", candidate_table):
-        con.execute(f"DROP TABLE IF EXISTS {candidate_qualified}")
-        con.execute(
-            f"""
-            CREATE TABLE {candidate_qualified} (
-              candidate_id BIGINT,
-              source VARCHAR,
-              code VARCHAR,
-              candidate_name VARCHAR,
-              candidate_source VARCHAR,
-              match_type VARCHAR,
-              match_depth INTEGER,
-              candidate_origin VARCHAR,
-              walk_source VARCHAR,
-              walk_code VARCHAR,
-              walk_depth INTEGER,
-              target_source VARCHAR,
-              target_code VARCHAR,
-              rank_features VARCHAR,
-              policy_version VARCHAR,
-              created_at TIMESTAMP DEFAULT current_timestamp
-            )
-            """
-        )
-        for ddl in (
-            f"CREATE INDEX idx_mt4ds_pf_candidates_source_code ON "
-            f"{candidate_qualified}(source, code, policy_version)",
-            f"CREATE INDEX idx_mt4ds_pf_candidates_origin ON "
-            f"{candidate_qualified}(candidate_origin)",
-        ):
-            try:
-                con.execute(ddl)
-            except Exception as exc:
-                logger.debug("Skipping index on %s: %s", candidate_qualified, exc)
-        results[candidate_table] = {"status": "created", "rows": 0}
-    else:
-        results[candidate_table] = {
-            "status": "exists",
-            "rows": _row_count(con, candidate_qualified),
-        }
-
-    path_table = "patient_friendly_candidate_paths"
-    path_qualified = f"mt4ds.{path_table}"
-    if replace or not _table_exists(con, "mt4ds", path_table):
-        con.execute(f"DROP TABLE IF EXISTS {path_qualified}")
-        con.execute(
-            f"""
-            CREATE TABLE {path_qualified} (
-              candidate_id BIGINT,
-              step_order INTEGER,
-              op VARCHAR,
-              source VARCHAR,
-              code VARCHAR,
-              aui VARCHAR,
-              cui VARCHAR,
-              target_source VARCHAR,
-              target_code VARCHAR,
-              depth INTEGER,
-              name VARCHAR
-            )
-            """
-        )
-        try:
-            con.execute(
-                f"CREATE INDEX idx_mt4ds_pf_paths_candidate ON "
-                f"{path_qualified}(candidate_id, step_order)"
-            )
-        except Exception as exc:
-            logger.debug("Skipping index on %s: %s", path_qualified, exc)
-        results[path_table] = {"status": "created", "rows": 0}
-    else:
-        results[path_table] = {
-            "status": "exists",
-            "rows": _row_count(con, path_qualified),
-        }
-
-    resolution_table = "patient_friendly_resolutions"
-    resolution_qualified = f"mt4ds.{resolution_table}"
-    if replace or not _table_exists(con, "mt4ds", resolution_table):
-        con.execute(f"DROP TABLE IF EXISTS {resolution_qualified}")
-        con.execute(
-            f"""
-            CREATE TABLE {resolution_qualified} (
-              source VARCHAR,
-              code VARCHAR,
-              name VARCHAR,
-              friendly_source VARCHAR,
-              match_type VARCHAR,
-              match_depth INTEGER,
-              technical_name VARCHAR,
-              selected_candidate_id BIGINT,
-              policy_version VARCHAR,
-              umls_release VARCHAR,
-              prepared_schema_version VARCHAR,
-              generated_at TIMESTAMP DEFAULT current_timestamp
-            )
-            """
-        )
-        for ddl in (
-            f"CREATE INDEX idx_mt4ds_pf_resolutions_source_code ON "
-            f"{resolution_qualified}(source, code, policy_version)",
-            f"CREATE INDEX idx_mt4ds_pf_resolutions_policy ON "
-            f"{resolution_qualified}(policy_version)",
-        ):
-            try:
-                con.execute(ddl)
-            except Exception as exc:
-                logger.debug("Skipping index on %s: %s", resolution_qualified, exc)
-        results[resolution_table] = {"status": "created", "rows": 0}
-    else:
-        results[resolution_table] = {
-            "status": "exists",
-            "rows": _row_count(con, resolution_qualified),
-        }
-
-    return results
-
-
 # ---------------------------------------------------------------------------
 # Ordered list of all builder functions (called by prepare_mt4ds_schema)
 # ---------------------------------------------------------------------------
@@ -1344,7 +1217,6 @@ _TABLE_BUILDERS = [
     _prepare_code_replacements,
     _prepare_snomed_top_level_depth,
     _prepare_patient_friendly_strategy,
-    _prepare_patient_friendly_materialized_tables,
 ]
 
 

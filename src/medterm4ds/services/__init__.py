@@ -49,11 +49,6 @@ from .lookup import (
 )
 from .mapping import get_code_mappings
 from .patient_friendly import get_patient_friendly_name, get_patient_friendly_names
-from .patient_friendly_materialized import (
-    materialize_patient_friendly_resolutions,
-    materialize_patient_friendly_source,
-    materialize_patient_friendly_sources,
-)
 from .schema_reporting import (
     empty_schema_report_metadata,
     missing_prepared_tables,
@@ -109,9 +104,6 @@ __all__ = [
     "iter_mapping_concept_map",
     "iter_patient_friendly_bulk",
     "iter_source_codes",
-    "materialize_patient_friendly_resolutions",
-    "materialize_patient_friendly_source",
-    "materialize_patient_friendly_sources",
     "missing_prepared_tables",
     "normalize_sources",
     "prepare_derived_tables",

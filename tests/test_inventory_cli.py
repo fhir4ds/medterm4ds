@@ -104,13 +104,11 @@ def test_memory_profiles_can_be_overridden():
         memory_limit="768MB",
         threads=2,
         query_chunk_size=250,
-        require_patient_friendly_resolutions=True,
     )
 
     assert config.memory_limit == "768MB"
     assert config.threads == 2
     assert config.query_chunk_size == 250
-    assert config.require_patient_friendly_resolutions is True
 
 
 def test_cli_data_build_duckdb_rejects_ambiguous_umls_local_output(tmp_path, capsys):

@@ -47,7 +47,6 @@ class ApiSettings:
     query_chunk_size: int | None = None
     prepare_cache: bool = True
     cache_indexes: bool = False
-    require_patient_friendly_resolutions: bool = False
 
     @classmethod
     def from_env(cls) -> ApiSettings:
@@ -64,10 +63,6 @@ class ApiSettings:
             query_chunk_size=_env_int("MEDTERM4DS_QUERY_CHUNK_SIZE"),
             prepare_cache=_env_bool("MEDTERM4DS_PREPARE_CACHE", True),
             cache_indexes=_env_bool("MEDTERM4DS_CACHE_INDEXES", False),
-            require_patient_friendly_resolutions=_env_bool(
-                "MEDTERM4DS_REQUIRE_PATIENT_FRIENDLY_RESOLUTIONS",
-                False,
-            ),
         )
 
 
@@ -159,7 +154,6 @@ def create_app(settings: ApiSettings | None = None) -> FastAPI:
             temp_directory=app_settings.temp_directory,
             threads=app_settings.threads,
             query_chunk_size=app_settings.query_chunk_size,
-            require_patient_friendly_resolutions=app_settings.require_patient_friendly_resolutions,
         )
         engine = LocalDuckDBEngine(con, config=config)
         if app_settings.prepare_cache:

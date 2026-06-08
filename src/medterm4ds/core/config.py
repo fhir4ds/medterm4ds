@@ -20,7 +20,6 @@ class LocalDuckDBConfig:
     threads: int | None = None
     preserve_insertion_order: bool = False
     query_chunk_size: int = 5000
-    require_patient_friendly_resolutions: bool = False
 
 
 MemoryProfile = Literal["fast", "balanced", "low"]
@@ -41,7 +40,6 @@ def local_duckdb_config(
     threads: int | None = None,
     preserve_insertion_order: bool | None = None,
     query_chunk_size: int | None = None,
-    require_patient_friendly_resolutions: bool | None = None,
 ) -> LocalDuckDBConfig:
     """Build a local DuckDB config from a named profile plus explicit overrides."""
     try:
@@ -60,11 +58,6 @@ def local_duckdb_config(
             else preserve_insertion_order
         ),
         query_chunk_size=base.query_chunk_size if query_chunk_size is None else query_chunk_size,
-        require_patient_friendly_resolutions=(
-            base.require_patient_friendly_resolutions
-            if require_patient_friendly_resolutions is None
-            else require_patient_friendly_resolutions
-        ),
     )
 
 

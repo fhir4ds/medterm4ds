@@ -188,7 +188,6 @@ def _add_common_engine_args(parser: argparse.ArgumentParser) -> None:
 
 def _add_patient_friendly_args(parser: argparse.ArgumentParser) -> None:
     _add_common_engine_args(parser)
-    _add_patient_friendly_resolution_mode_arg(parser)
     parser.add_argument(
         "--sources",
         default=",".join(DEFAULT_INVENTORY_SOURCES),
@@ -380,19 +379,7 @@ def _add_bulk_hierarchy_args(parser: argparse.ArgumentParser) -> None:
 
 def _add_bulk_patient_friendly_args(parser: argparse.ArgumentParser) -> None:
     _add_bulk_record_args(parser)
-    _add_patient_friendly_resolution_mode_arg(parser)
     parser.add_argument("--max-depth", type=int, default=5)
-
-
-def _add_patient_friendly_resolution_mode_arg(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument(
-        "--require-patient-friendly-resolutions",
-        action="store_true",
-        help=(
-            "Fail closed unless mt4ds.patient_friendly_resolutions fully covers "
-            "the requested codes for the current policy/schema version."
-        ),
-    )
 
 
 def _add_lookup_args(parser: argparse.ArgumentParser) -> None:
@@ -729,7 +716,6 @@ def run_patient_friendly_conceptmap(args: argparse.Namespace) -> int:
         temp_directory=args.temp_dir,
         threads=args.threads,
         query_chunk_size=args.query_chunk_size,
-        require_patient_friendly_resolutions=args.require_patient_friendly_resolutions,
     )
 
     resume_position = (
@@ -787,7 +773,6 @@ def run_patient_friendly_conceptmap(args: argparse.Namespace) -> int:
             "sources": list(sources),
             "memory_profile": args.memory_profile,
             "limit": args.limit,
-            "require_patient_friendly_resolutions": args.require_patient_friendly_resolutions,
         }
         if output_format == "fhir-json":
             write_fhir_concept_map(
@@ -999,7 +984,6 @@ def run_bulk_patient_friendly(args: argparse.Namespace) -> int:
         ),
         metadata={
             "max_depth": args.max_depth,
-            "require_patient_friendly_resolutions": args.require_patient_friendly_resolutions,
         },
     )
 
@@ -1462,11 +1446,6 @@ def _local_duckdb_config_from_args(args: argparse.Namespace):
         temp_directory=args.temp_dir,
         threads=args.threads,
         query_chunk_size=args.query_chunk_size,
-        require_patient_friendly_resolutions=getattr(
-            args,
-            "require_patient_friendly_resolutions",
-            False,
-        ),
     )
 
 

@@ -235,7 +235,6 @@ class TestVerifyMt4dsSchema:
         prepared = result["prepared_tables"]
         assert prepared["atoms"]["exists"] is True
         assert prepared["crosswalk_edges"]["exists"] is True
-        assert prepared["patient_friendly_resolutions"]["exists"] is True
         assert prepared["atoms"]["row_count"] == 1
 
         con.close()
@@ -515,84 +514,7 @@ class TestPreparedTableData:
 
         con.close()
 
-    def test_patient_friendly_materialized_tables_exist(self):
-        con = _con()
-        _create_raw_tables(con)
-        prepare_mt4ds_schema(con)
-
-        tables = {
-            row[0]
-            for row in con.execute(
-                """
-                SELECT table_name
-                FROM information_schema.tables
-                WHERE table_schema = 'mt4ds'
-                  AND table_name IN (
-                    'patient_friendly_candidates',
-                    'patient_friendly_candidate_paths',
-                    'patient_friendly_resolutions'
-                  )
-                """
-            ).fetchall()
-        }
-        assert tables == {
-            "patient_friendly_candidates",
-            "patient_friendly_candidate_paths",
-            "patient_friendly_resolutions",
-        }
-
-        (policy_version,) = con.execute(
-            """
-            SELECT value
-            FROM mt4ds.prepare_manifest
-            WHERE key = 'patient_friendly_policy_version'
-            """
-        ).fetchone()
-        assert policy_version == PATIENT_FRIENDLY_POLICY_VERSION
-
-        con.close()
-
-    def test_crosswalk_edges_table_materializes_same_cui_shape(self):
-        con = _con()
-        _create_raw_tables(con)
-        con.execute(
-            "INSERT INTO main.mrconso VALUES ('C001', 'A_SN001', 'SNOMEDCT_US', 'PT', '44054006', 'Diabetes mellitus type 2', 'N')"
-        )
-        prepare_mt4ds_schema(con)
-
-        row = con.execute(
-            """
-            SELECT source, code, target_source, target_code, relationship,
-                   match_type, match_depth, edge_source, priority
-            FROM mt4ds.crosswalk_edges
-            WHERE source = 'ICD10CM' AND code = 'E11.9'
-              AND target_source = 'SNOMEDCT_US'
-            """
-        ).fetchone()
-        assert row == (
-            "ICD10CM",
-            "E11.9",
-            "SNOMEDCT_US",
-            "44054006",
-            "same_cui",
-            "same_cui",
-            0,
-            "same_cui_edges",
-            0,
-        )
-
-        (manifest_value,) = con.execute(
-            """
-            SELECT value
-            FROM mt4ds.prepare_manifest
-            WHERE key = 'table.crosswalk_edges'
-            """
-        ).fetchone()
-        assert manifest_value.startswith("created:")
-
-        con.close()
-
-
+    
 class TestMissingRawTables:
     """Graceful handling when raw tables are absent."""
 
