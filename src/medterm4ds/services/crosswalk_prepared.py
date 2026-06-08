@@ -15,8 +15,14 @@ from collections.abc import Sequence
 from medterm4ds.core.models import CodeMapping, CodeRef, Provenance, ProvenanceStep
 from medterm4ds.services.prepared_primitives import (
     same_cui_crosswalk_sql as _same_cui_crosswalk_sql,
+)
+from medterm4ds.services.prepared_primitives import (
     source_display_lookup as _source_display_lookup,
+)
+from medterm4ds.services.prepared_primitives import (
     temp_codes as _temp_codes,
+)
+from medterm4ds.services.prepared_primitives import (
     walk_closure_table,
 )
 

@@ -514,7 +514,7 @@ class TestPreparedTableData:
 
         con.close()
 
-    
+
 class TestMissingRawTables:
     """Graceful handling when raw tables are absent."""
 

@@ -10,11 +10,6 @@ from pathlib import Path
 import duckdb
 import pytest
 
-from medterm4ds.engines.duckdb.prepared import (
-    PATIENT_FRIENDLY_POLICY_VERSION,
-    PREPARED_SCHEMA_VERSION,
-)
-
 ROOT = Path(__file__).resolve().parents[1]
 
 

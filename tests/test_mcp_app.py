@@ -43,7 +43,7 @@ def _make_duckdb(path: Path) -> None:
                 ("E11", "PT", "Type 2 diabetes mellitus", "ICD_E11", "N", "ICD10CM", "C_E11"),
                 ("44054006", "PT", "Diabetes mellitus type 2", "SNOMED_DIAB", "N", "SNOMEDCT_US", "C_DIAB"),
                 ("D_DIAB", "MH", "Diabetes", "MP_DIAB", "N", "MEDLINEPLUS", "C_DIAB"),
-                ("208", "PT", "COVID-19 vaccine", "CVX_208", "N", "CVX", "C_CVX"),
+                ("208", "PT", "COVID-19 Vaccine", "CVX_208", "N", "CVX", "C_CVX"),
             ],
         )
         con.executemany(
@@ -86,7 +86,7 @@ def test_mcp_runtime_patient_friendly_tools(tmp_path):
             codes=["E11.9", "208"],
             sources=["ICD10CM", "CVX"],
         )
-        assert [row["name"] for row in batch["results"]] == ["Diabetes", "COVID-19 vaccine"]
+        assert [row["name"] for row in batch["results"]] == ["Diabetes", "COVID-19 Vaccine"]
 
         lookup_batch = runtime.lookup_codes(
             codes=["E11.9", "NOPE"],

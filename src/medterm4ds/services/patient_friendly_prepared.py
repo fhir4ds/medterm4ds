@@ -20,11 +20,13 @@ from medterm4ds.core.models import (
     Provenance,
     ProvenanceStep,
 )
-from medterm4ds.services.rxnorm_tty_walk import get_rxnorm_patient_friendly
 from medterm4ds.services.prepared_primitives import (
     same_cui_crosswalk_sql as _same_cui_crosswalk_sql,
+)
+from medterm4ds.services.prepared_primitives import (
     walk_closure_table as _walk_closure_table,
 )
+from medterm4ds.services.rxnorm_tty_walk import get_rxnorm_patient_friendly
 from medterm4ds.services.selection import is_combo_name_mismatch
 from medterm4ds.sources.snomed import (
     SNOMED_TARGET_PRIORITY,
@@ -554,12 +556,12 @@ def _snomed_fallback(
     )
     SELECT input_order, source_code, source_depth, snomed_code,
            name, friendly_source, match_depth
-	    FROM friendly_hits
-	    ORDER BY input_order, match_depth,
-	             CASE friendly_source WHEN 'MEDLINEPLUS' THEN 0 ELSE 1 END,
-	             {_friendly_tty_order_sql("tty")},
-	             name
-	    """
+        FROM friendly_hits
+        ORDER BY input_order, match_depth,
+                 CASE friendly_source WHEN 'MEDLINEPLUS' THEN 0 ELSE 1 END,
+                 {_friendly_tty_order_sql("tty")},
+                 name
+        """
 
     try:
         rows = con.execute(query).fetchall()
@@ -1032,23 +1034,23 @@ def _resolve_snomed(
                             source="SNOMEDCT_US",
                             code=codes[idx].code,
                         ),
-	                        ProvenanceStep(
-	                            op="snomed_to_target",
-	                            source="SNOMEDCT_US",
-	                            code=route_source_code,
-	                            depth=source_depth,
-	                            target_source=target_ref.source,
-	                            target_code=target_ref.code,
-	                            mode="same_cui",
+                        ProvenanceStep(
+                            op="snomed_to_target",
+                            source="SNOMEDCT_US",
+                            code=route_source_code,
+                            depth=source_depth,
+                            target_source=target_ref.source,
+                            target_code=target_ref.code,
+                            mode="same_cui",
                         ),
                         ProvenanceStep(
                             op=match_type,
-	                            source=target_ref.source,
-	                            code=target_ref.code,
-	                            target_source=target_result.friendly_source,
-	                            depth=int(target_result.match_depth or 0),
-	                            name=target_result.name,
-	                        ),
+                            source=target_ref.source,
+                            code=target_ref.code,
+                            target_source=target_result.friendly_source,
+                            depth=int(target_result.match_depth or 0),
+                            name=target_result.name,
+                        ),
                     ],
                 ),
             )

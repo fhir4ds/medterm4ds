@@ -91,7 +91,7 @@ class TestRxNormTopology:
             "GPCK": ("SCD", "BPCK"),
             "IN": ("SCDC", "MIN", "BN"),
             "MIN": ("SCD", "IN"),
-            "PIN": ("SCDC",),
+            "PIN": ("IN", "SCDC"),
             "DF": ("SCD",),
             "SBDG": ("SBD", "SCDG"),
             "SCDG": ("SCD", "SBDG", "DFG"),

@@ -25,6 +25,7 @@ for path in (SRC, SCRIPTS):
         sys.path.insert(0, str(path))
 
 from synthetic_umls import create_synthetic_umls_db
+
 from medterm4ds.engines.duckdb.prepared import verify_mt4ds_schema
 from medterm4ds.services.schema_reporting import (
     empty_schema_report_metadata,

@@ -48,7 +48,7 @@ def test_raw_patient_friendly_does_not_use_icd10_prefix_parent() -> None:
                 "ICD10CM",
                 "PT",
                 "L76.32",
-                "Postprocedural hematoma of skin and subcutaneous tissue",
+                "Postprocedural Hematoma of Skin and Subcutaneous Tissue",
                 "N",
             ),
             (
@@ -78,7 +78,7 @@ def test_raw_patient_friendly_does_not_use_icd10_prefix_parent() -> None:
         engine=engine,
     )[0]
 
-    assert result.name == "Postprocedural hematoma of skin and subcutaneous tissue"
+    assert result.name == "Postprocedural Hematoma of Skin and Subcutaneous Tissue"
     assert result.friendly_source == "ICD10CM"
     assert result.match_type == "original"
     assert result.match_depth == 0

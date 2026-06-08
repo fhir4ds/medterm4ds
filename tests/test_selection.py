@@ -8,7 +8,6 @@ from medterm4ds.services.selection import (
     select_frontier,
 )
 
-
 FRIENDLY_SOURCE_PRIORITY = ("MEDLINEPLUS", "CHV")
 
 

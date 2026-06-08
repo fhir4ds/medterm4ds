@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+- Stabilized patient-friendly naming around UMLS-only hierarchy traversal and removed synthetic hierarchy edge generation.
+- Archived the old final-resolution materialization path; the live prepared runtime resolver is now the canonical patient-friendly path.
+- Added smart title casing for patient-friendly `name` output while preserving `technical_name` source casing, clinical units, acronyms, mixed-case terms, and systematic chemical names.
+- Added `--ignore-name-case` to the patient-friendly benchmark comparison so semantic regressions can be separated from display-case differences.
+- Recorded the current all-source patient-friendly runtime baseline: 1,127,094 reviewed production codes in 3:47.17 wall time with `--memory-profile fast`.
+- Refreshed CI compatibility by updating stale display expectations and lint issues.
+
 ## 0.0.1 - 2026-06-01
 
 - Added Medical Terminology for Data Science package identity and GPL-3.0-only license metadata.

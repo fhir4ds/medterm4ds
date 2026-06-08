@@ -439,7 +439,7 @@ def prepare_derived_tables(con, *, replace: bool = True) -> dict[str, object]:
     else:
         con.execute("DROP TABLE IF EXISTS cvx_metadata")
         con.execute("CREATE TABLE cvx_metadata (code VARCHAR, group_name VARCHAR, short_name VARCHAR)")
-        
+
         cvx_rows = []
         try:
             import urllib.request
@@ -450,12 +450,12 @@ def prepare_derived_tables(con, *, replace: bool = True) -> dict[str, object]:
                     parts = line.split('|')
                     if len(parts) >= 4:
                         cvx_rows.append((parts[1].strip(), parts[3].strip(), parts[3].strip()))
-            
+
             if cvx_rows:
                 con.executemany("INSERT INTO cvx_metadata VALUES (?, ?, ?)", cvx_rows)
-        except Exception as e:
+        except Exception:
             pass # Silently fail if network is down or CDC file changes
-            
+
         row = con.execute("SELECT COUNT(*) FROM cvx_metadata").fetchone()
         results["cvx_metadata"] = {
             "status": "created",

@@ -10,7 +10,6 @@ from collections import Counter, defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
 
-
 DEFAULT_COMPARE = "reports/quality/patient_friendly_benchmark_shared_primitives_2026-06-08_compare.csv"
 DEFAULT_OUTPUT_PREFIX = "reports/quality/patient_friendly_targeted_review_2026-06-08"
 

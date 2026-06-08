@@ -35,8 +35,14 @@ from medterm4ds.core.models import (
 )
 from medterm4ds.sources.rxnorm import (
     RXNORM_BASE_TTY_PRIORITY as _RXNORM_BASE_TTY_PRIORITY,
+)
+from medterm4ds.sources.rxnorm import (
     RXNORM_GROUP_TTYS as _RXNORM_GROUP_TTYS,
+)
+from medterm4ds.sources.rxnorm import (
     RXNORM_KNOWN_TTYS as _RXNORM_KNOWN_TTYS,
+)
+from medterm4ds.sources.rxnorm import (
     find_tty_path as _rxnorm_find_tty_path,
 )
 
@@ -2619,16 +2625,6 @@ class LocalDuckDBEngine:
         relationship = "source-is-narrower-than-target" if upward else "source-is-broader-than-target"
         match_type = "target_ancestor" if upward else "target_descendant"
         step_op = match_type
-        crosswalk_table = (
-            "mt4ds.crosswalk_edges"
-            if self._table_exists("crosswalk_edges")
-            else "mt4ds.same_cui_edges"
-        )
-        crosswalk_filter = (
-            "AND sce.match_type = 'same_cui'"
-            if crosswalk_table == "mt4ds.crosswalk_edges"
-            else ""
-        )
 
         with self._temp_code_ordinals(code_ordinals) as temp:
             rows = self.con.execute(

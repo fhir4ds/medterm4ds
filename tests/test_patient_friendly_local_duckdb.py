@@ -51,15 +51,15 @@ def _seed_patient_friendly_db(con: duckdb.DuckDBPyConnection) -> None:
             # ICD category display should prefer the heading over expansion terms.
             ("K45", "ET", "sciatic hernia", "ICD_K45_ET1", "N", "ICD10CM", "C_K45_ET1"),
             ("K45", "ET", "obturator hernia", "ICD_K45_ET2", "N", "ICD10CM", "C_K45_ET2"),
-            ("K45", "HT", "Other abdominal hernia", "ICD_K45_HT", "N", "ICD10CM", "C_K45"),
+            ("K45", "HT", "Other Abdominal Hernia", "ICD_K45_HT", "N", "ICD10CM", "C_K45"),
             # ICD parent hierarchy relies on explicit UMLS PAR edges in this fixture.
             ("L30.1", "PT", "Dyshidrosis [pompholyx]", "ICD_L301", "N", "ICD10CM", "C_L301"),
             ("L30", "HT", "Other and unspecified dermatitis", "ICD_L30", "N", "ICD10CM", "C_L30"),
             ("L20-L30", "HT", "Dermatitis and eczema (L20-L30)", "ICD_L20L30", "N", "ICD10CM", "C_L20L30"),
-            ("CHV_DERM", "PT", "dermatitis and eczema", "CHV_DERM_AUI", "N", "CHV", "C_L20L30"),
+            ("CHV_DERM", "PT", "Dermatitis and Eczema", "CHV_DERM_AUI", "N", "CHV", "C_L20L30"),
             ("S37.06", "HT", "Major laceration of kidney", "ICD_S3706", "N", "ICD10CM", "C_KIDNEY_MAJOR"),
             ("S37.0", "HT", "Injury of kidney", "ICD_S370", "N", "ICD10CM", "C_KIDNEY_INJURY"),
-            ("CHV_KIDNEY", "PT", "kidney injury", "CHV_KIDNEY_PT", "N", "CHV", "C_KIDNEY_INJURY"),
+            ("CHV_KIDNEY", "PT", "Kidney Injury", "CHV_KIDNEY_PT", "N", "CHV", "C_KIDNEY_INJURY"),
             ("CHV_KIDNEY", "SY", "injuries kidney", "CHV_KIDNEY_SY", "N", "CHV", "C_KIDNEY_INJURY"),
             # ICD parent can bridge to SNOMED, then a SNOMED ancestor can supply MEDLINEPLUS.
             ("M99.75", "PT", "Connective tissue and disc stenosis of intervertebral foramina of pelvic region", "ICD_M9975", "N", "ICD10CM", "C_M9975"),
@@ -82,7 +82,7 @@ def _seed_patient_friendly_db(con: duckdb.DuckDBPyConnection) -> None:
             # Default source hierarchy frontier: shallow CHV beats deeper MEDLINEPLUS.
             ("B99.9", "PT", "Unspecified infectious disease child", "ICD_B999", "N", "ICD10CM", "C_ICD_FRONTIER"),
             ("B99", "PT", "Infectious disease parent", "ICD_B99", "N", "ICD10CM", "C_ICD_FRONTIER_PARENT"),
-            ("CHV_FRONTIER", "PT", "Shallow CHV infection", "CHV_FRONTIER_AUI", "N", "CHV", "C_ICD_FRONTIER"),
+            ("CHV_FRONTIER", "PT", "Shallow CHV Infection", "CHV_FRONTIER_AUI", "N", "CHV", "C_ICD_FRONTIER"),
             ("MP_FRONTIER_PARENT", "MH", "Deeper MEDLINE infection", "MP_FRONTIER_PARENT_AUI", "N", "MEDLINEPLUS", "C_ICD_FRONTIER_PARENT"),
             ("B98.9", "PT", "Unspecified infectious condition child", "ICD_B989", "N", "ICD10CM", "C_ICD_CHD_CHILD"),
             ("B98", "HT", "Infectious condition parent", "ICD_B98", "N", "ICD10CM", "C_ICD_CHD_PARENT"),
@@ -91,17 +91,17 @@ def _seed_patient_friendly_db(con: duckdb.DuckDBPyConnection) -> None:
             ("44054006", "PT", "Diabetes mellitus type 2", "SN_DIAB", "N", "SNOMEDCT_US", "C_DIAB"),
             # SNOMED original fallback should prefer the preferred term over fully specified names.
             ("900001", "FN", "Clean SNOMED display (qualifier value)", "SN_ORIG_FN", "N", "SNOMEDCT_US", "C_SN_ORIG"),
-            ("900001", "PT", "Clean SNOMED display", "SN_ORIG_PT", "N", "SNOMEDCT_US", "C_SN_ORIG"),
+            ("900001", "PT", "Clean SNOMED Display", "SN_ORIG_PT", "N", "SNOMEDCT_US", "C_SN_ORIG"),
             ("900001", "SY", "SNOMED synonym display", "SN_ORIG_SY", "N", "SNOMEDCT_US", "C_SN_ORIG"),
             # RxNorm group and ingredient paths.
             ("2611787", "SCD", "Child drug product", "RX_SCD", "N", "RXNORM", "C_RX_SCD"),
             ("2611783", "SCDG", "Red Yeast Rice", "RX_SCDG", "N", "RXNORM", "C_RX_SCDG"),
             ("393052", "SCDC", "oxygen 99 %", "RX_SCDC", "N", "RXNORM", "C_RX_SCDC"),
-            ("7806", "IN", "oxygen", "RX_IN", "N", "RXNORM", "C_RX_IN"),
-            ("3939301", "MIN", "oxygen MIN alternate", "RX_MIN", "N", "RXNORM", "C_RX_MIN"),
+            ("7806", "IN", "Oxygen", "RX_IN", "N", "RXNORM", "C_RX_IN"),
+            ("3939301", "MIN", "Oxygen MIN Alternate", "RX_MIN", "N", "RXNORM", "C_RX_MIN"),
             ("990001", "PIN", "oxygen precise ingredient", "RX_PIN", "N", "RXNORM", "C_RX_PIN"),
             ("990010", "SCDF", "example auto-injector", "RX_SCDF_REAL", "N", "RXNORM", "C_RX_SCDF_REAL"),
-            ("990011", "SCDG", "example Injectable Product", "RX_SCDG_REAL", "N", "RXNORM", "C_RX_SCDG_REAL"),
+            ("990011", "SCDG", "Example Injectable Product", "RX_SCDG_REAL", "N", "RXNORM", "C_RX_SCDG_REAL"),
             ("990020", "SBDF", "example branded injection", "RX_SBDF_REAL", "N", "RXNORM", "C_RX_SBDF_REAL"),
             ("200001", "SBD", "Brand clinical tablet", "RX_SBD", "N", "RXNORM", "C_RX_SBD"),
             ("200002", "SCD", "Clinical tablet", "RX_SBD_SCD", "N", "RXNORM", "C_RX_SBD_SCD"),
@@ -132,17 +132,17 @@ def _seed_patient_friendly_db(con: duckdb.DuckDBPyConnection) -> None:
             # CPT exact friendly labels may live on non-display ETCLIN atoms.
             ("88888", "PT", "Generic CPT multi-atom procedure", "CPT_MULTI_PT", "N", "CPT", "C_CPT_MULTI_PT"),
             ("88888", "ETCLIN", "Specific knee injection", "CPT_MULTI_ET", "N", "CPT", "C_CPT_MULTI_ET"),
-            ("CHV_CPT_MULTI", "PT", "knee injection", "CHV_CPT_MULTI_AUI", "N", "CHV", "C_CPT_MULTI_ET"),
+            ("CHV_CPT_MULTI", "PT", "Knee Injection", "CHV_CPT_MULTI_AUI", "N", "CHV", "C_CPT_MULTI_ET"),
             # CPT original fallback should use a deterministic source-specific display.
             ("0009M", "PT", "Long CPT molecular pathology panel description", "CPT_ORIG_PT", "N", "CPT", "C_CPT_ORIG_M"),
             ("0009M", "SY", "CPT MOLECULAR PANEL", "CPT_ORIG_SY", "N", "CPT", "C_CPT_ORIG_M"),
-            ("0009M", "ETCF", "Molecular pathology panel", "CPT_ORIG_ETCF", "N", "CPT", "C_CPT_ORIG_M"),
-            ("90001", "PT", "Long CPT procedure display", "CPT_ORIG2_PT", "N", "CPT", "C_CPT_ORIG_SHORT"),
+            ("0009M", "ETCF", "Molecular Pathology Panel", "CPT_ORIG_ETCF", "N", "CPT", "C_CPT_ORIG_M"),
+            ("90001", "PT", "Long CPT Procedure Display", "CPT_ORIG2_PT", "N", "CPT", "C_CPT_ORIG_SHORT"),
             ("90001", "SY", "CPT SHORT DISPLAY", "CPT_ORIG2_SY", "N", "CPT", "C_CPT_ORIG_SHORT"),
             # CVX original fallback; group behavior is tested separately.
             ("208", "PT", "COVID-19 vaccine", "CVX_208", "N", "CVX", "C_CVX_208"),
             ("11", "AB", "pertussis", "CVX_11_AB", "N", "CVX", "C_CVX_11"),
-            ("11", "PT", "pertussis vaccine", "CVX_11_PT", "N", "CVX", "C_CVX_11"),
+            ("11", "PT", "Pertussis Vaccine", "CVX_11_PT", "N", "CVX", "C_CVX_11"),
         ],
     )
     con.executemany(
@@ -353,12 +353,12 @@ def test_local_duckdb_prefers_source_specific_original_displays():
             engine,
         )
 
-        assert snomed.name == "Clean SNOMED display"
+        assert snomed.name == "Clean SNOMED Display"
         assert snomed.technical_name == "Clean SNOMED display (qualifier value)"
-        assert cpt_m.name == "Molecular pathology panel"
-        assert cpt_short.name == "Long CPT procedure display"
-        assert cvx.name == "pertussis vaccine"
-        assert icd_heading.name == "Other abdominal hernia"
+        assert cpt_m.name == "Molecular Pathology Panel"
+        assert cpt_short.name == "Long CPT Procedure Display"
+        assert cvx.name == "Pertussis Vaccine"
+        assert icd_heading.name == "Other Abdominal Hernia"
     finally:
         con.close()
 
@@ -371,7 +371,7 @@ def test_local_duckdb_uses_icd_umls_parent_hierarchy():
         result = get_patient_friendly_names([CodeRef("ICD10CM", "S37.06")], engine)[0]
 
         assert (result.name, result.friendly_source, result.match_type, result.match_depth) == (
-            "kidney injury",
+            "Kidney Injury",
             "CHV",
             "broader",
             1,
@@ -388,7 +388,7 @@ def test_local_duckdb_uses_icd_parent_range_hierarchy():
         result = get_patient_friendly_names([CodeRef("ICD10CM", "L30.1")], engine)[0]
 
         assert (result.name, result.friendly_source, result.match_type, result.match_depth) == (
-            "dermatitis and eczema",
+            "Dermatitis and Eczema",
             "CHV",
             "broader",
             2,
@@ -456,27 +456,27 @@ def test_local_duckdb_rxnorm_uses_tty_topology_not_isa_only():
             3,
         )
         assert (scdc.name, scdc.match_type, scdc.match_depth) == (
-            "oxygen",
+            "Oxygen",
             "ingredient",
             1,
         )
         assert (ingredient.name, ingredient.match_type, ingredient.match_depth) == (
-            "oxygen",
+            "Oxygen",
             "ingredient",
             0,
         )
         assert (multi_ingredient.name, multi_ingredient.match_type, multi_ingredient.match_depth) == (
-            "oxygen MIN alternate",
+            "Oxygen MIN Alternate",
             "ingredient",
             0,
         )
         assert (precise_ingredient.name, precise_ingredient.match_type, precise_ingredient.match_depth) == (
-            "oxygen",
+            "Oxygen",
             "ingredient",
             2,
         )
         assert (real_style_group.name, real_style_group.match_type, real_style_group.match_depth) == (
-            "example Injectable Product",
+            "Example Injectable Product",
             "group",
             1,
         )
@@ -485,7 +485,7 @@ def test_local_duckdb_rxnorm_uses_tty_topology_not_isa_only():
             real_style_fallback_group.match_type,
             real_style_fallback_group.match_depth,
         ) == (
-            "example Injectable Product",
+            "Example Injectable Product",
             "group",
             2,
         )
@@ -516,7 +516,7 @@ def test_local_duckdb_rxnorm_falls_back_through_suppressed_intermediate_nodes():
         engine = LocalDuckDBEngine(con)
         row = get_patient_friendly_names([CodeRef("RXNORM", "500001")], engine)[0]
         assert (row.name, row.match_type, row.match_depth, row.friendly_source) == (
-            "suppressed-chain product",
+            "Suppressed-Chain Product",
             "group",
             2,
             "RXNORM",
@@ -533,7 +533,7 @@ def test_local_duckdb_rxnorm_follows_incoming_tty_topology_edges():
             "INSERT INTO mrconso VALUES (?, ?, ?, ?, ?, ?, ?)",
             [
                 ("1000083", "SCDC", "alcaftadine 2.5 MG/ML", "RX_ALC_SCDC", "N", "RXNORM", "C_ALC_DOSE"),
-                ("1000082", "IN", "alcaftadine", "RX_ALC_IN", "N", "RXNORM", "C_ALC_IN"),
+                ("1000082", "IN", "Alcaftadine", "RX_ALC_IN", "N", "RXNORM", "C_ALC_IN"),
             ],
         )
         con.execute(
@@ -544,7 +544,7 @@ def test_local_duckdb_rxnorm_follows_incoming_tty_topology_edges():
         row = get_patient_friendly_names([CodeRef("RXNORM", "1000083")], engine)[0]
 
         assert (row.name, row.friendly_source, row.match_type, row.match_depth) == (
-            "alcaftadine",
+            "Alcaftadine",
             "RXNORM",
             "ingredient",
             1,
@@ -576,7 +576,7 @@ def test_local_duckdb_rxnorm_prefers_active_final_target_over_suppressed():
         engine = LocalDuckDBEngine(con)
         row = get_patient_friendly_names([CodeRef("RXNORM", "700000")], engine)[0]
         assert (row.name, row.match_type, row.match_depth, row.friendly_source) == (
-            "active ingredient",
+            "Active Ingredient",
             "ingredient",
             1,
             "RXNORM",
@@ -620,7 +620,7 @@ def test_local_duckdb_does_not_route_snomed_ancestor_to_rxnorm():
         con.executemany(
             "INSERT INTO mrconso VALUES (?, ?, ?, ?, ?, ?, ?)",
             [
-                ("1000001000004108", "PT", "Mismatch repair endonuclease PMS2", "SN_PMS2", "N", "SNOMEDCT_US", "C_PMS2"),
+                ("1000001000004108", "PT", "Mismatch Repair Endonuclease PMS2", "SN_PMS2", "N", "SNOMEDCT_US", "C_PMS2"),
                 ("74628008", "PT", "Hydrolase", "SN_HYDROLASE", "N", "SNOMEDCT_US", "C_HYDROLASE"),
                 ("1156", "IN", "asparaginase", "RX_ASPARAGINASE", "N", "RXNORM", "C_HYDROLASE"),
             ],
@@ -631,7 +631,7 @@ def test_local_duckdb_does_not_route_snomed_ancestor_to_rxnorm():
         row = get_patient_friendly_names([CodeRef("SNOMEDCT_US", "1000001000004108")], engine)[0]
 
         assert (row.name, row.friendly_source, row.match_type) == (
-            "Mismatch repair endonuclease PMS2",
+            "Mismatch Repair Endonuclease PMS2",
             "SNOMEDCT_US",
             "original",
         )
@@ -683,7 +683,7 @@ def test_default_family_frontier_and_snomed_fallback_policy():
         )
 
         assert (icd.name, icd.friendly_source, icd.match_type, icd.match_depth) == (
-            "Shallow CHV infection",
+            "Shallow CHV Infection",
             "CHV",
             "exact",
             0,
@@ -720,7 +720,7 @@ def test_default_family_frontier_and_snomed_fallback_policy():
             cpt_exact_multi_atom.match_type,
             cpt_exact_multi_atom.match_depth,
         ) == (
-            "knee injection",
+            "Knee Injection",
             "CHV",
             "exact",
             0,

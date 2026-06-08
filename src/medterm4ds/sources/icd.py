@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from .base import DefaultStrategy
 
-
 # Kept for compatibility with older imports. Patient-friendly hierarchy must
 # not infer prefix/range edges; ICD hierarchy comes only from normalized UMLS
 # relationships.
