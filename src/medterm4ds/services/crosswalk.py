@@ -6,30 +6,14 @@ compatibility fallback.
 """
 from __future__ import annotations
 
-import logging
 from collections import defaultdict
-from collections.abc import Iterator, Sequence
-from contextlib import contextmanager
-from uuid import uuid4
+from collections.abc import Sequence
 
 from medterm4ds.core.models import CodeMapping, CodeRef
-
-logger = logging.getLogger(__name__)
-
-
-@contextmanager
-def _temp_codes(con, codes: Sequence[str]) -> Iterator[str]:
-    """Create a temp table of codes, yield its name, then drop it."""
-    table = f"_mt4ds_xw_codes_{uuid4().hex}"
-    con.execute(f"CREATE TEMP TABLE {table} (code VARCHAR)")
-    try:
-        con.executemany(
-            f"INSERT INTO {table} VALUES (?)",
-            [(str(code),) for code in codes],
-        )
-        yield table
-    finally:
-        con.execute(f"DROP TABLE IF EXISTS {table}")
+from medterm4ds.services.prepared_primitives import (
+    same_cui_crosswalk_sql,
+    temp_codes,
+)
 
 
 def get_same_cui_mappings(
@@ -66,12 +50,12 @@ def get_same_cui_mappings(
         grouped[code.source].append(code.code)
 
     results: list[CodeMapping] = []
-    edge_table, match_filter = _same_cui_crosswalk_sql(con)
+    edge_table, match_filter = same_cui_crosswalk_sql(con)
 
     for source, source_codes in grouped.items():
         deduped = list(dict.fromkeys(source_codes))
 
-        with _temp_codes(con, deduped) as temp:
+        with temp_codes(con, deduped, prefix="_mt4ds_xw_codes") as temp:
             if target_sources:
                 rows = con.execute(
                     f"""
@@ -118,26 +102,3 @@ def get_same_cui_mappings(
             )
 
     return results
-
-
-def _same_cui_crosswalk_sql(con) -> tuple[str, str]:
-    if _table_exists(con, "crosswalk_edges"):
-        return "mt4ds.crosswalk_edges", "AND sce.match_type = 'same_cui'"
-    return "mt4ds.same_cui_edges", ""
-
-
-def _table_exists(con, table_name: str) -> bool:
-    try:
-        row = con.execute(
-            """
-            SELECT 1
-            FROM information_schema.tables
-            WHERE table_schema = 'mt4ds'
-              AND table_name = ?
-            LIMIT 1
-            """,
-            [table_name],
-        ).fetchone()
-    except Exception:
-        return False
-    return bool(row)

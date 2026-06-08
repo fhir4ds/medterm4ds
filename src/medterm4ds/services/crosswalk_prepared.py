@@ -15,6 +15,12 @@ from contextlib import contextmanager
 from uuid import uuid4
 
 from medterm4ds.core.models import CodeMapping, CodeRef, Provenance, ProvenanceStep
+from medterm4ds.services.prepared_primitives import (
+    same_cui_crosswalk_sql as _same_cui_crosswalk_sql,
+    source_display_lookup as _source_display_lookup,
+    table_exists as _table_exists,
+    walk_closure_table,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -51,44 +57,6 @@ def _temp_source_codes(con, pairs: Sequence[tuple[str, str]]) -> Iterator[str]:
         yield table
     finally:
         con.execute(f"DROP TABLE IF EXISTS {table}")
-
-
-def _source_display_lookup(
-    con,
-    source: str,
-    codes: Sequence[str],
-) -> dict[str, tuple[str, str, str]]:
-    """Return {code: (name, cui, aui)} from mt4ds.best_atoms for a source."""
-    if not codes:
-        return {}
-    with _temp_codes(con, codes) as temp:
-        rows = con.execute(
-            f"""
-            SELECT code, name, cui, aui
-            FROM mt4ds.best_atoms
-            WHERE source = ?
-              AND rank = 1
-              AND code IN (SELECT code FROM {temp})
-            """,
-            [source],
-        ).fetchall()
-    return {str(code): (str(name), str(cui), str(aui)) for code, name, cui, aui in rows}
-
-
-def _table_exists(con, table_name: str) -> bool:
-    try:
-        row = con.execute(
-            """
-            SELECT COUNT(*)
-            FROM information_schema.tables
-            WHERE table_schema = 'mt4ds'
-              AND table_name = ?
-            """,
-            [table_name],
-        ).fetchone()
-        return bool(row and row[0])
-    except Exception:
-        return False
 
 
 # ---------------------------------------------------------------------------
@@ -185,16 +153,7 @@ def _exact_mappings(
             code_to_ordinal[code].append(ord_val)
 
         with _temp_codes(con, deduped_codes) as temp:
-            edge_table = (
-                "mt4ds.crosswalk_edges"
-                if _table_exists(con, "crosswalk_edges")
-                else "mt4ds.same_cui_edges"
-            )
-            match_filter = (
-                "AND sce.match_type = 'same_cui'"
-                if edge_table == "mt4ds.crosswalk_edges"
-                else ""
-            )
+            edge_table, match_filter = _same_cui_crosswalk_sql(con)
             if target_sources:
                 rows = con.execute(
                     f"""
@@ -314,47 +273,69 @@ def _broader_mappings(
         # Source display lookup
         display = _source_display_lookup(con, source, deduped_codes)
 
-        # Walk ancestors via walk_edges
+        # Walk ancestors via shared UMLS parent-walk primitive
         with _temp_codes(con, deduped_codes) as temp:
-            rows = con.execute(
-                f"""
-                WITH RECURSIVE
-                seed AS (
-                    SELECT we.from_code, we.to_code, we.to_cui, we.to_aui,
-                           1 AS depth,
-                           we.from_code || '>' || we.to_code AS path
-                    FROM mt4ds.walk_edges we
-                    WHERE we.source = ?
-                      AND we.direction = 'parent'
-                      AND we.from_code IN (SELECT code FROM {temp})
+            closure_table = walk_closure_table(con, max_depth)
+            if closure_table:
+                rows = con.execute(
+                    f"""
+                    SELECT DISTINCT from_code, to_code, to_cui, to_aui, depth
+                    FROM (
+                        SELECT c.from_code, c.to_code, c.to_cui, c.to_aui, c.depth,
+                               ROW_NUMBER() OVER (
+                                   PARTITION BY c.from_code, c.to_code
+                                   ORDER BY c.depth
+                               ) AS rn
+                        FROM {closure_table} c
+                        WHERE c.source = ?
+                          AND c.depth <= ?
+                          AND c.from_code IN (SELECT code FROM {temp})
+                    )
+                    WHERE rn = 1
+                    ORDER BY from_code, depth, to_code
+                    """,
+                    [source, max_depth],
+                ).fetchall()
+            else:
+                rows = con.execute(
+                    f"""
+                    WITH RECURSIVE
+                    seed AS (
+                        SELECT we.from_code, we.to_code, we.to_cui, we.to_aui,
+                               1 AS depth,
+                               we.from_code || '>' || we.to_code AS path
+                        FROM mt4ds.walk_edges we
+                        WHERE we.source = ?
+                          AND we.direction = 'parent'
+                          AND we.from_code IN (SELECT code FROM {temp})
 
-                    UNION ALL
+                        UNION ALL
 
-                    SELECT w.from_code, we.to_code, we.to_cui, we.to_aui,
-                           w.depth + 1,
-                           w.path || '>' || we.to_code AS path
-                    FROM seed w
-                    JOIN mt4ds.walk_edges we
-                      ON we.source = ?
-                      AND we.direction = 'parent'
-                      AND we.from_code = w.to_code
-                    WHERE w.depth < ?
-                      AND strpos('>' || w.path || '>', '>' || we.to_code || '>') = 0
-                )
-                SELECT DISTINCT from_code, to_code, to_cui, to_aui, depth
-                FROM (
-                    SELECT from_code, to_code, to_cui, to_aui, depth,
-                           ROW_NUMBER() OVER (
-                               PARTITION BY from_code, to_code
-                               ORDER BY depth
-                           ) AS rn
-                    FROM seed
-                )
-                WHERE rn = 1
-                ORDER BY from_code, depth, to_code
-                """,
-                [source, source, max_depth],
-            ).fetchall()
+                        SELECT w.from_code, we.to_code, we.to_cui, we.to_aui,
+                               w.depth + 1,
+                               w.path || '>' || we.to_code AS path
+                        FROM seed w
+                        JOIN mt4ds.walk_edges we
+                          ON we.source = ?
+                          AND we.direction = 'parent'
+                          AND we.from_code = w.to_code
+                        WHERE w.depth < ?
+                          AND strpos('>' || w.path || '>', '>' || we.to_code || '>') = 0
+                    )
+                    SELECT DISTINCT from_code, to_code, to_cui, to_aui, depth
+                    FROM (
+                        SELECT from_code, to_code, to_cui, to_aui, depth,
+                               ROW_NUMBER() OVER (
+                                   PARTITION BY from_code, to_code
+                                   ORDER BY depth
+                               ) AS rn
+                        FROM seed
+                    )
+                    WHERE rn = 1
+                    ORDER BY from_code, depth, to_code
+                    """,
+                    [source, source, max_depth],
+                ).fetchall()
 
         if not rows:
             continue
@@ -365,16 +346,7 @@ def _broader_mappings(
 
         # Same-CUI mappings from ancestor codes to target sources
         with _temp_codes(con, ancestor_codes) as temp:
-            edge_table = (
-                "mt4ds.crosswalk_edges"
-                if _table_exists(con, "crosswalk_edges")
-                else "mt4ds.same_cui_edges"
-            )
-            match_filter = (
-                "AND sce.match_type = 'same_cui'"
-                if edge_table == "mt4ds.crosswalk_edges"
-                else ""
-            )
+            edge_table, match_filter = _same_cui_crosswalk_sql(con)
             if target_sources:
                 target_rows = con.execute(
                     f"""

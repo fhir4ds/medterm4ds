@@ -41,7 +41,12 @@ from .inventory import (
     iter_source_codes,
     normalize_sources,
 )
-from .lookup import get_code_info, get_code_infos
+from .lookup import (
+    get_code_info,
+    get_code_info_prepared,
+    get_code_infos,
+    get_code_infos_prepared,
+)
 from .mapping import get_code_mappings
 from .patient_friendly import get_patient_friendly_name, get_patient_friendly_names
 from .patient_friendly_materialized import (
@@ -82,7 +87,9 @@ __all__ = [
     "get_code_relations",
     "get_code_ttys",
     "get_code_info",
+    "get_code_info_prepared",
     "get_code_infos",
+    "get_code_infos_prepared",
     "get_code_mappings",
     "get_concept_map",
     "get_crosswalk_mappings",

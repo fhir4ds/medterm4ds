@@ -7,28 +7,17 @@ from __future__ import annotations
 
 import logging
 from collections import defaultdict, deque
-from collections.abc import Iterator, Sequence
-from contextlib import contextmanager
-from uuid import uuid4
+from collections.abc import Sequence
 
 from medterm4ds.core.models import CodeRef, CodeRelation
+from medterm4ds.services.prepared_primitives import (
+    dedupe_values,
+    group_codes_by_source,
+    temp_codes,
+    walk_closure_table,
+)
 
 logger = logging.getLogger(__name__)
-
-
-@contextmanager
-def _temp_codes(con, codes: Sequence[str]) -> Iterator[str]:
-    """Create a temp table of codes, yield its name, then drop it."""
-    table = f"_mt4ds_walk_codes_{uuid4().hex}"
-    con.execute(f"CREATE TEMP TABLE {table} (code VARCHAR)")
-    try:
-        con.executemany(
-            f"INSERT INTO {table} VALUES (?)",
-            [(str(code),) for code in codes],
-        )
-        yield table
-    finally:
-        con.execute(f"DROP TABLE IF EXISTS {table}")
 
 
 def get_parents_prepared(
@@ -53,8 +42,8 @@ def get_parents_prepared(
         return []
 
     results: list[CodeRelation] = []
-    for source, source_codes in _group_codes_by_source(codes).items():
-        with _temp_codes(con, _dedupe_values(source_codes)) as temp:
+    for source, source_codes in group_codes_by_source(codes).items():
+        with temp_codes(con, dedupe_values(source_codes), prefix="_mt4ds_walk_codes") as temp:
             rows = con.execute(
                 f"""
                 SELECT we.from_code, we.to_code, we.from_cui, we.to_cui,
@@ -94,8 +83,8 @@ def get_children_prepared(
         return []
 
     results: list[CodeRelation] = []
-    for source, source_codes in _group_codes_by_source(codes).items():
-        with _temp_codes(con, _dedupe_values(source_codes)) as temp:
+    for source, source_codes in group_codes_by_source(codes).items():
+        with temp_codes(con, dedupe_values(source_codes), prefix="_mt4ds_walk_codes") as temp:
             rows = con.execute(
                 f"""
                 SELECT we.from_code, we.to_code, we.from_cui, we.to_cui,
@@ -153,11 +142,11 @@ def get_ancestors_prepared(
 
     results: list[CodeRelation] = []
 
-    for source, source_codes in _group_codes_by_source(codes).items():
+    for source, source_codes in group_codes_by_source(codes).items():
         results.extend(
             _walk_transitive(
                 source=source,
-                seed_codes=_dedupe_values(source_codes),
+                seed_codes=dedupe_values(source_codes),
                 con=con,
                 max_depth=max_depth,
                 upward=True,
@@ -178,11 +167,11 @@ def get_descendants_prepared(
         return []
 
     results: list[CodeRelation] = []
-    for source, source_codes in _group_codes_by_source(codes).items():
+    for source, source_codes in group_codes_by_source(codes).items():
         results.extend(
             _walk_transitive(
                 source=source,
-                seed_codes=_dedupe_values(source_codes),
+                seed_codes=dedupe_values(source_codes),
                 con=con,
                 max_depth=max_depth,
                 upward=False,
@@ -199,6 +188,17 @@ def _walk_transitive(
     max_depth: int,
     upward: bool,
 ) -> list[CodeRelation]:
+    closure_table = walk_closure_table(con, max_depth)
+    if closure_table:
+        return _walk_transitive_closure(
+            source=source,
+            seed_codes=seed_codes,
+            con=con,
+            max_depth=max_depth,
+            upward=upward,
+            closure_table=closure_table,
+        )
+
     visited: set[str] = set(seed_codes)
     queue: deque[tuple[str, int]] = deque((code, 1) for code in seed_codes)
     results: list[CodeRelation] = []
@@ -218,7 +218,7 @@ def _walk_transitive(
             break
 
         for depth, codes_at_depth in batch.items():
-            with _temp_codes(con, _dedupe_values(codes_at_depth)) as temp:
+            with temp_codes(con, dedupe_values(codes_at_depth), prefix="_mt4ds_walk_codes") as temp:
                 if upward:
                     rows = con.execute(
                         f"""
@@ -287,6 +287,82 @@ def _walk_transitive(
             for next_code in next_frontier:
                 queue.append((next_code, depth + 1))
 
+    return results
+
+
+def _walk_transitive_closure(
+    *,
+    source: str,
+    seed_codes: Sequence[str],
+    con,
+    max_depth: int,
+    upward: bool,
+    closure_table: str,
+) -> list[CodeRelation]:
+    with temp_codes(con, dedupe_values(seed_codes), prefix="_mt4ds_walk_codes") as temp:
+        if upward:
+            rows = con.execute(
+                f"""
+                SELECT c.from_code, c.to_code, c.from_cui, c.to_cui,
+                       c.from_aui, c.to_aui, c.depth
+                FROM {closure_table} c
+                WHERE c.source = ?
+                  AND c.depth <= ?
+                  AND c.from_code IN (SELECT code FROM {temp})
+                ORDER BY c.from_code, c.depth, c.to_code, c.from_aui, c.to_aui
+                """,
+                [source, max_depth],
+            ).fetchall()
+        else:
+            rows = con.execute(
+                f"""
+                SELECT c.from_code, c.to_code, c.from_cui, c.to_cui,
+                       c.from_aui, c.to_aui, c.depth
+                FROM {closure_table} c
+                WHERE c.source = ?
+                  AND c.depth <= ?
+                  AND c.to_code IN (SELECT code FROM {temp})
+                ORDER BY c.to_code, c.depth, c.from_code, c.to_aui, c.from_aui
+                """,
+                [source, max_depth],
+            ).fetchall()
+
+    results: list[CodeRelation] = []
+    seen: set[tuple[str, str, int, str | None, str | None]] = set()
+    for from_code, to_code, from_cui, to_cui, from_aui, to_aui, depth in rows:
+        if upward:
+            source_code = from_code
+            target_code = to_code
+            source_cui = from_cui
+            target_cui = to_cui
+            source_aui = from_aui
+            target_aui = to_aui
+            relationship = "ancestor"
+        else:
+            source_code = to_code
+            target_code = from_code
+            source_cui = to_cui
+            target_cui = from_cui
+            source_aui = to_aui
+            target_aui = from_aui
+            relationship = "descendant"
+        key = (str(source_code), str(target_code), int(depth), source_aui, target_aui)
+        if key in seen:
+            continue
+        seen.add(key)
+        results.append(
+            CodeRelation(
+                source=CodeRef(source=source, code=source_code),
+                target=CodeRef(source=source, code=target_code),
+                relationship=relationship,
+                depth=int(depth),
+                source_cui=source_cui,
+                target_cui=target_cui,
+                source_aui=source_aui,
+                target_aui=target_aui,
+                rel="isa",
+            )
+        )
     return results
 
 
