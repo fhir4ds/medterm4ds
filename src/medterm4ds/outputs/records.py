@@ -39,7 +39,8 @@ def to_pandas(rows: Iterable[ResultLike]):
         import pandas as pd
     except ImportError as exc:
         raise ImportError("Install pandas to use to_pandas() or to_dataframe().") from exc
-    return pd.DataFrame(to_records(rows))
+    frame = pd.DataFrame(to_records(rows), dtype=object)
+    return frame.where(pd.notna(frame), None)
 
 
 def to_polars(rows: Iterable[ResultLike]):
