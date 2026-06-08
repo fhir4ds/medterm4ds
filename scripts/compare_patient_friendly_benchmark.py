@@ -36,6 +36,7 @@ FIELDNAMES = [
     "code",
     "status",
     "mismatch_fields",
+    "name_case_only_difference",
     "benchmark_original_name",
     "benchmark_original_umls_name",
     "benchmark_name",
@@ -77,6 +78,14 @@ def parse_args() -> argparse.Namespace:
         help=(
             "Optional CSV with source,code,classification,classification_reason "
             "columns used to classify mismatch rows."
+        ),
+    )
+    parser.add_argument(
+        "--ignore-name-case",
+        action="store_true",
+        help=(
+            "Compare benchmark and medterm4ds names case-insensitively. "
+            "Case-only display differences are reported separately."
         ),
     )
     parser.add_argument("--progress", action=argparse.BooleanOptionalAction, default=True)
@@ -137,6 +146,7 @@ def main() -> int:
                     engine=engine,
                     max_depth=args.max_depth,
                     classifications=classifications,
+                    ignore_name_case=args.ignore_name_case,
                 )
                 for result_row in result_rows:
                     full_writer.writerow(result_row)
@@ -176,10 +186,12 @@ def main() -> int:
         "query_chunk_size": args.query_chunk_size,
         "max_depth": args.max_depth,
         "compared_fields": ["name", "friendly_source", "match_type"],
+        "ignore_name_case": args.ignore_name_case,
         "total": summary.total,
         "matches": summary.matches,
         "mismatches": summary.mismatches,
         "missing_local": summary.missing_local,
+        "name_case_only_differences": summary.name_case_only_differences,
         "classifications": dict(sorted(summary.classifications.items())),
         "match_rate": round(summary.matches / summary.total, 4) if summary.total else 0,
         "elapsed_seconds": round(time.perf_counter() - started, 3),
@@ -200,6 +212,7 @@ def main() -> int:
                     "matches",
                     "mismatches",
                     "missing_local",
+                    "name_case_only_differences",
                     "classifications",
                     "match_rate",
                     "elapsed_seconds",
@@ -256,6 +269,7 @@ def _compare_chunk(
     engine: LocalDuckDBEngine,
     max_depth: int,
     classifications: dict[tuple[str, str], dict[str, str]],
+    ignore_name_case: bool,
 ) -> list[dict[str, str]]:
     codes = [CodeRef(source=row["source"], code=row["code"]) for row in rows]
     try:
@@ -271,12 +285,14 @@ def _compare_chunk(
                 engine=engine,
                 max_depth=max_depth,
                 classifications=classifications,
+                ignore_name_case=ignore_name_case,
             ),
             *_compare_chunk(
                 rows[midpoint:],
                 engine=engine,
                 max_depth=max_depth,
                 classifications=classifications,
+                ignore_name_case=ignore_name_case,
             ),
         ]
     lookup = {(result.code.source, result.code.code): result for result in results}
@@ -287,6 +303,7 @@ def _compare_chunk(
             lookup.get((row["source"], row["code"])),
             info_lookup.get((row["source"], row["code"]), ""),
             classifications=classifications,
+            ignore_name_case=ignore_name_case,
         )
         for row in rows
     ]
@@ -298,17 +315,24 @@ def _report_row(
     original_name: str,
     *,
     classifications: dict[tuple[str, str], dict[str, str]],
+    ignore_name_case: bool,
 ) -> dict[str, str]:
     local = result.to_dict() if result is not None else {}
+    name_case_only = False
     if result is None:
         status = "missing_local"
         mismatch_fields = ["missing_local"]
     else:
+        expected_name = row["friendly_name"]
+        actual_name = str(local.get("name", ""))
         comparisons = {
-            "name": (row["friendly_name"], local.get("name")),
             "friendly_source": (row["friendly_source"], local.get("friendly_source")),
             "match_type": (row["match_type"], local.get("match_type")),
         }
+        if ignore_name_case and expected_name.casefold() == actual_name.casefold():
+            name_case_only = expected_name != actual_name
+        else:
+            comparisons["name"] = (expected_name, actual_name)
         mismatch_fields = [field for field, (expected, actual) in comparisons.items() if expected != actual]
         status = "match" if not mismatch_fields else "mismatch"
     classification = {"classification": "", "classification_reason": "", "classification_key": ""}
@@ -323,6 +347,7 @@ def _report_row(
         "code": row["code"],
         "status": status,
         "mismatch_fields": ",".join(mismatch_fields),
+        "name_case_only_difference": "true" if name_case_only else "false",
         "benchmark_original_name": row.get("original_name", ""),
         "benchmark_original_umls_name": str(original_name),
         "benchmark_name": row.get("friendly_name", ""),
@@ -346,6 +371,7 @@ class _EmptySummary:
         self.matches = 0
         self.mismatches = 0
         self.missing_local = 0
+        self.name_case_only_differences = 0
         self.by_source: dict[str, Counter[str]] = defaultdict(Counter)
         self.pairs: dict[str, Counter[str]] = defaultdict(Counter)
         self.classifications: Counter[str] = Counter()
@@ -362,8 +388,12 @@ class _EmptySummary:
             self.mismatches += 1
         if row.get("classification"):
             self.classifications[row["classification"]] += 1
+        if row.get("name_case_only_difference") == "true":
+            self.name_case_only_differences += 1
         self.by_source[source]["total"] += 1
         self.by_source[source][status] += 1
+        if row.get("name_case_only_difference") == "true":
+            self.by_source[source]["name_case_only_differences"] += 1
         for field in row["mismatch_fields"].split(","):
             if field:
                 self.by_source[source][field + "_differences"] += 1
@@ -384,6 +414,7 @@ class _EmptySummary:
                     "mismatches": int(counts["mismatch"]),
                     "match_rate": round(matches / total, 4) if total else 0,
                     "name_differences": int(counts["name_differences"]),
+                    "name_case_only_differences": int(counts["name_case_only_differences"]),
                     "friendly_source_differences": int(counts["friendly_source_differences"]),
                     "match_type_differences": int(counts["match_type_differences"]),
                     "missing_local": int(counts["missing_local"]),

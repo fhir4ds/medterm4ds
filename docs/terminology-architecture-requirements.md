@@ -557,7 +557,9 @@ at runtime, make it a materialized table.
 Patient-friendly naming is a workflow over primitives.
 It should not contain raw source graph mechanics. Source-specific graph rules
 must already be encoded in `mt4ds.walk_edges`, `mt4ds.rxnorm_tty_edges`,
-`mt4ds.friendly_atoms`, and source policy rows.
+`mt4ds.friendly_atoms`, and source policy rows. Selected patient-friendly
+`name` values are display-normalized with conservative title casing;
+`technical_name` values preserve source/original casing.
 
 Patient-friendly resolution has one canonical execution mode today: live
 prepared runtime resolution over prepared primitive tables. It may use

@@ -18,6 +18,19 @@ def test_patient_friendly_name_preserves_units_acronyms_and_mixed_case():
     )
 
 
+def test_patient_friendly_name_keeps_small_words_lowercase():
+    assert (
+        format_patient_friendly_name(
+            "removal of cancer skin growth of face, accessed through the skin"
+        )
+        == "Removal of Cancer Skin Growth of Face, Accessed Through the Skin"
+    )
+    assert (
+        format_patient_friendly_name("non-antibody testing for syphilis")
+        == "Non-Antibody Testing for Syphilis"
+    )
+
+
 def test_patient_friendly_name_preserves_systematic_chemical_strings():
     name = "5-hydroxymethyl(methyleneoxy)-1-aza-3,7-dioxabicyclo(3,3,0)octane"
     assert format_patient_friendly_name(name) == name

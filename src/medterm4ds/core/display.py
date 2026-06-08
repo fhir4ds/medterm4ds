@@ -53,23 +53,64 @@ _CHEMICAL_MORPHEMES = (
     "propyl",
 )
 
+_SMALL_WORDS = frozenset({
+    "a",
+    "an",
+    "and",
+    "as",
+    "at",
+    "but",
+    "by",
+    "for",
+    "from",
+    "in",
+    "into",
+    "nor",
+    "of",
+    "on",
+    "or",
+    "per",
+    "the",
+    "to",
+    "via",
+    "vs",
+    "with",
+    "without",
+})
+
+_STRONG_BOUNDARIES = frozenset({":", ";", ".", "?", "!", ",", "(", "[", "{"})
+
 
 def format_patient_friendly_name(name: str) -> str:
-    """Return a conservative title-cased patient-friendly display name.
+    """Return a conservative smart-title-cased patient-friendly display name.
 
     Every punctuation or whitespace boundary starts a new word, but existing
-    mixed-case terms, acronyms, and common clinical units are preserved. Mostly
-    systematic chemical strings are left unchanged because mechanical title
-    casing makes them less readable.
+    mixed-case terms, acronyms, and common clinical units are preserved. Short
+    articles, prepositions, and conjunctions stay lowercase unless they start
+    the label or follow a strong phrase boundary. Mostly systematic chemical
+    strings are left unchanged because mechanical title casing makes them less
+    readable.
     """
     if not name:
         return name
     if _looks_like_systematic_chemical_name(name):
         return name
-    return _WORD_RE.sub(lambda match: _format_word(match.group(0)), name)
+
+    pieces: list[str] = []
+    last_end = 0
+    seen_word = False
+    for match in _WORD_RE.finditer(name):
+        delimiter = name[last_end:match.start()]
+        pieces.append(delimiter)
+        capitalize_small_word = not seen_word or any(ch in _STRONG_BOUNDARIES for ch in delimiter)
+        pieces.append(_format_word(match.group(0), capitalize_small_word=capitalize_small_word))
+        seen_word = True
+        last_end = match.end()
+    pieces.append(name[last_end:])
+    return "".join(pieces)
 
 
-def _format_word(word: str) -> str:
+def _format_word(word: str, *, capitalize_small_word: bool) -> str:
     lower = word.lower()
     if lower in _UNIT_CANONICAL:
         return _UNIT_CANONICAL[lower]
@@ -83,6 +124,8 @@ def _format_word(word: str) -> str:
         return word
     if any(ch.isupper() for ch in word):
         return word
+    if lower in _SMALL_WORDS and not capitalize_small_word:
+        return lower
     return word[:1].upper() + word[1:]
 
 

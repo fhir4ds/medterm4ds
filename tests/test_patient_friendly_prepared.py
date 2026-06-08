@@ -314,7 +314,7 @@ def test_icd10cm_returns_original_when_no_friendly(con: duckdb.DuckDBPyConnectio
         "INSERT INTO mt4ds.best_atoms VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
         [
             ("ICD10CM", "Z99.9", "A_Z999", "C_UNKNOWN", "PT",
-             "Dependence On Enabling Machines", "N", True, 1),
+             "Dependence on Enabling Machines", "N", True, 1),
         ],
     )
     # No walk edges, no friendly atoms for this CUI
@@ -325,7 +325,7 @@ def test_icd10cm_returns_original_when_no_friendly(con: duckdb.DuckDBPyConnectio
     assert len(results) == 1
     r = results[0]
     assert r.match_type == "original"
-    assert r.name == "Dependence On Enabling Machines"
+    assert r.name == "Dependence on Enabling Machines"
     assert r.friendly_source == "ICD10CM"
 
 
@@ -570,7 +570,7 @@ def test_medlineplus_preferred_over_chv_same_depth(con: duckdb.DuckDBPyConnectio
             ("C_URTI", "MEDLINEPLUS", "MP_URTI", "A_MP_URTI", "MH",
              "Upper Respiratory Infections", "MEDLINEPLUS", False, False),
             ("C_URTI", "CHV", "CHV_URTI", "A_CHV_URTI", "PT",
-             "Cold And Flu", "CHV", False, False),
+             "Cold and Flu", "CHV", False, False),
         ],
     )
 
@@ -611,7 +611,7 @@ def test_closest_frontier_beats_farther_medlineplus(con: duckdb.DuckDBPyConnecti
         "INSERT INTO mt4ds.friendly_atoms VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
         [
             ("C_URTI", "CHV", "CHV_URTI", "A_CHV_URTI", "PT",
-             "Cold And Flu", "CHV", False, False),
+             "Cold and Flu", "CHV", False, False),
             ("C_RESP", "MEDLINEPLUS", "MP_RESP", "A_MP_RESP", "MH",
              "Respiratory Diseases", "MEDLINEPLUS", False, False),
         ],
@@ -622,7 +622,7 @@ def test_closest_frontier_beats_farther_medlineplus(con: duckdb.DuckDBPyConnecti
     )
     assert len(results) == 1
     r = results[0]
-    assert r.name == "Cold And Flu"
+    assert r.name == "Cold and Flu"
     assert r.friendly_source == "CHV"
     assert r.match_depth == 1
 
@@ -969,7 +969,7 @@ def test_cpt_generic_operation_candidate_is_blocked(
         "INSERT INTO mt4ds.best_atoms VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
         [
             ("CPT", "11644", "A_CPT_11644", "C0038894", "PT",
-             "Removal Of Cancer Skin Growth Of Face, 3.1-4.0 cm", "N", True, 1),
+             "Removal of Cancer Skin Growth of Face, 3.1-4.0 cm", "N", True, 1),
         ],
     )
     con.executemany(
@@ -985,7 +985,7 @@ def test_cpt_generic_operation_candidate_is_blocked(
         con,
     )[0]
 
-    assert result.name == "Removal Of Cancer Skin Growth Of Face, 3.1-4.0 cm"
+    assert result.name == "Removal of Cancer Skin Growth of Face, 3.1-4.0 cm"
     assert result.friendly_source == "CPT"
     assert result.match_type == "original"
 

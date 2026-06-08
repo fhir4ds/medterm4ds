@@ -45,24 +45,27 @@ PYTHONPATH=src python3 scripts/compare_patient_friendly_benchmark.py \
   --threads 32 \
   --memory-limit 64GB \
   --temp-dir /tmp \
+  --ignore-name-case \
   --progress
 ```
 
-A logic-preserving change should have `0` unexpected row-level changes against the latest blessed compare CSV.
+A logic-preserving change should have `0` unexpected row-level semantic changes against the latest blessed compare CSV. Patient-friendly `name` is display-normalized to conservative title case, so benchmark comparisons should use `--ignore-name-case` unless the change is specifically testing display formatting.
 
-Current blessed baseline for cleanup/refactor work:
+Current title-case-aware baseline:
 
 ```text
-reports/quality/patient_friendly_benchmark_cleanup_regression_2026-06-08_compare.csv
+reports/quality/patient_friendly_benchmark_title_case_ci_2026-06-08_compare.csv
 ```
 
-Observed cleanup/refactor gate on 2026-06-08:
+Observed title-case-aware gate on 2026-06-08:
 
 ```text
 rows: 5285
-changed_rows_vs_previous_blessed: 0
-match_rate: 0.5313
-elapsed_seconds: 25.336
+matches: 2810
+mismatches: 2475
+match_rate: 0.5317
+name_case_only_differences: 2231
+elapsed_seconds: 27.516
 ```
 
 ## Targeted semantic review
@@ -71,7 +74,7 @@ Build a focused review file from the benchmark compare output.
 
 ```bash
 PYTHONPATH=src python3 scripts/build_patient_friendly_targeted_review.py \
-  --compare-csv reports/quality/patient_friendly_benchmark_cleanup_regression_2026-06-08_compare.csv \
+  --compare-csv reports/quality/patient_friendly_benchmark_title_case_ci_2026-06-08_compare.csv \
   --output-prefix reports/quality/patient_friendly_targeted_review_2026-06-08 \
   --max-per-focus 100
 ```

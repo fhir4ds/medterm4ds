@@ -173,6 +173,8 @@ Source-specific patient-friendly policy stays explicit:
   TTY topology rather than MEDLINEPLUS/CHV hierarchy selection.
 - If no defensible friendly candidate exists, patient-friendly returns the
   source/original display instead of jumping to an unrelated broad term.
+- Patient-friendly `name` is display-normalized with conservative title casing
+  after selection. `technical_name` preserves source/original casing for audit.
 
 The primitive services still need to be fast and reusable on their own. They
 power hierarchy APIs, mapping, optimize, ConceptMap generation, and patient-
