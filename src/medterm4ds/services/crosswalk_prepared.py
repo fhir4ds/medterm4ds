@@ -10,53 +10,17 @@ from __future__ import annotations
 
 import logging
 from collections import defaultdict
-from collections.abc import Iterator, Sequence
-from contextlib import contextmanager
-from uuid import uuid4
+from collections.abc import Sequence
 
 from medterm4ds.core.models import CodeMapping, CodeRef, Provenance, ProvenanceStep
 from medterm4ds.services.prepared_primitives import (
     same_cui_crosswalk_sql as _same_cui_crosswalk_sql,
     source_display_lookup as _source_display_lookup,
-    table_exists as _table_exists,
+    temp_codes as _temp_codes,
     walk_closure_table,
 )
 
 logger = logging.getLogger(__name__)
-
-
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
-@contextmanager
-def _temp_codes(con, codes: Sequence[str]) -> Iterator[str]:
-    """Create a temp table of codes, yield its name, then drop it."""
-    table = f"_mt4ds_xwp_codes_{uuid4().hex}"
-    con.execute(f"CREATE TEMP TABLE {table} (code VARCHAR)")
-    try:
-        con.executemany(
-            f"INSERT INTO {table} VALUES (?)",
-            [(str(code),) for code in codes],
-        )
-        yield table
-    finally:
-        con.execute(f"DROP TABLE IF EXISTS {table}")
-
-
-@contextmanager
-def _temp_source_codes(con, pairs: Sequence[tuple[str, str]]) -> Iterator[str]:
-    """Create a temp table of (source, code) pairs, yield its name, then drop it."""
-    table = f"_mt4ds_xwp_pairs_{uuid4().hex}"
-    con.execute(f"CREATE TEMP TABLE {table} (source VARCHAR, code VARCHAR)")
-    try:
-        con.executemany(
-            f"INSERT INTO {table} VALUES (?, ?)",
-            [(str(s), str(c)) for s, c in pairs],
-        )
-        yield table
-    finally:
-        con.execute(f"DROP TABLE IF EXISTS {table}")
 
 
 # ---------------------------------------------------------------------------

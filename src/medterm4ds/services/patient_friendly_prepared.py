@@ -23,7 +23,6 @@ from medterm4ds.core.models import (
 from medterm4ds.services.rxnorm_tty_walk import get_rxnorm_patient_friendly
 from medterm4ds.services.prepared_primitives import (
     same_cui_crosswalk_sql as _same_cui_crosswalk_sql,
-    table_exists as _table_exists,
     walk_closure_table as _walk_closure_table,
 )
 from medterm4ds.services.selection import is_combo_name_mismatch

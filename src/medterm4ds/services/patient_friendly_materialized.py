@@ -13,6 +13,10 @@ from medterm4ds.engines.duckdb.prepared import (
 from medterm4ds.services.patient_friendly_prepared import (
     get_non_rxnorm_patient_friendly,
 )
+from medterm4ds.services.prepared_primitives import (
+    same_cui_crosswalk_sql as _same_cui_crosswalk_sql,
+    table_exists as _table_exists,
+)
 from medterm4ds.services.rxnorm_tty_walk import get_rxnorm_patient_friendly
 from medterm4ds.sources.snomed import SNOMED_TOP_LEVEL_GUARD_DEPTH
 
@@ -1030,29 +1034,6 @@ def _sql_literal(value: object) -> str:
     if isinstance(value, int):
         return str(value)
     return "'" + str(value).replace("'", "''") + "'"
-
-
-def _table_exists(con, table_name: str) -> bool:
-    try:
-        row = con.execute(
-            """
-            SELECT 1
-            FROM information_schema.tables
-            WHERE table_schema = 'mt4ds'
-              AND table_name = ?
-            LIMIT 1
-            """,
-            [table_name],
-        ).fetchone()
-    except Exception:
-        return False
-    return bool(row)
-
-
-def _same_cui_crosswalk_sql(con) -> tuple[str, str]:
-    if _table_exists(con, "crosswalk_edges"):
-        return "mt4ds.crosswalk_edges", "AND sce.match_type = 'same_cui'"
-    return "mt4ds.same_cui_edges", ""
 
 
 def _next_candidate_id(con) -> int:

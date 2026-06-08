@@ -20,7 +20,6 @@ from medterm4ds.core.models import (
     Provenance,
     ProvenanceStep,
 )
-from medterm4ds.sources.rxnorm import RXNORM_GROUP_TTYS
 
 logger = logging.getLogger(__name__)
 
@@ -63,7 +62,6 @@ def get_rxnorm_patient_friendly(
     input_values = ",\n    ".join(
         f"({_sql_literal(c.code)}, {i})" for i, c in enumerate(codes)
     )
-    group_tty_values = ", ".join(_sql_literal(tty) for tty in sorted(RXNORM_GROUP_TTYS))
 
     query = f"""
     WITH RECURSIVE
@@ -88,8 +86,6 @@ def get_rxnorm_patient_friendly(
         FROM base b
         JOIN mt4ds.rxnorm_tty_paths p ON p.start_tty = b.tty
         JOIN strategy s ON s.target_tty = p.target_tty AND s.match_type = p.match_type
-        WHERE b.tty NOT IN ({group_tty_values})
-           OR p.match_type = 'group'
     ),
     walk(input_order, input_code, technical_name, path_id, target_tty,
          match_type, target_order, step, aui, target_code, target_name,

@@ -12,11 +12,17 @@ venv/
 
 # Data
 *.duckdb
+*.duckdb.wal
+*.duckdb.tmp
+*.duckdb.tmp/
 data/
 benchmark_*.json
 parity_*.json
 parity_*.md
 parity_*.csv
+patient_friendly_benchmark*.csv
+patient_friendly_review*.csv
+patient_friendly_review*.json
 acceptance_*.json
 real_data_smoke*.json
 notebook_smoke*.json
@@ -27,6 +33,7 @@ mapping_quality*.csv
 mapping_review_cases*.csv
 validation_outputs/
 reports/
+archive/reports/
 
 # Environment
 .env
