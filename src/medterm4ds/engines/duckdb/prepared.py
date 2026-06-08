@@ -534,6 +534,114 @@ def _prepare_walk_edges(con, *, replace: bool) -> dict[str, object]:
     return {table: {"status": "created", "rows": rows}}
 
 
+def _prepare_walk_closure_limited(
+    con,
+    *,
+    replace: bool,
+    max_depth: int = 5,
+) -> dict[str, object]:
+    """Build mt4ds.walk_closure_limited -- bounded UMLS-only parent walk closure.
+
+    This is an acceleration table for the existing parent-walk resolver. It is
+    derived only from mt4ds.walk_edges and does not introduce synthetic edges.
+    """
+    table = "walk_closure_limited"
+    qualified = f"mt4ds.{table}"
+    if not replace and _table_exists(con, "mt4ds", table):
+        return {table: {"status": "exists", "rows": _row_count(con, qualified)}}
+
+    depth = max(1, int(max_depth))
+    logger.info("Building %s to depth %s", qualified, depth)
+    con.execute(f"DROP TABLE IF EXISTS {qualified}")
+    con.execute(
+        f"""
+        CREATE TABLE {qualified} AS
+        WITH RECURSIVE closure(
+            source,
+            from_code,
+            from_aui,
+            from_cui,
+            from_tty,
+            to_code,
+            to_aui,
+            to_cui,
+            to_tty,
+            depth
+        ) AS (
+            SELECT DISTINCT
+              source,
+              from_code,
+              from_aui,
+              from_cui,
+              from_tty,
+              to_code,
+              to_aui,
+              to_cui,
+              to_tty,
+              1 AS depth
+            FROM mt4ds.walk_edges
+            WHERE direction = 'parent'
+              AND source IN ('ICD10CM', 'ICD10PCS', 'HCPCS', 'CPT', 'LNC', 'SNOMEDCT_US')
+
+            UNION
+
+            SELECT
+              c.source,
+              c.from_code,
+              c.from_aui,
+              c.from_cui,
+              c.from_tty,
+              e.to_code,
+              e.to_aui,
+              e.to_cui,
+              e.to_tty,
+              c.depth + 1 AS depth
+            FROM closure c
+            JOIN mt4ds.walk_edges e
+              ON e.source = c.source
+             AND e.from_aui = c.to_aui
+             AND e.direction = 'parent'
+            WHERE c.depth < {depth}
+        )
+        SELECT
+          source,
+          from_code,
+          from_aui,
+          from_cui,
+          from_tty,
+          to_code,
+          to_aui,
+          to_cui,
+          to_tty,
+          MIN(depth) AS depth
+        FROM closure
+        GROUP BY
+          source,
+          from_code,
+          from_aui,
+          from_cui,
+          from_tty,
+          to_code,
+          to_aui,
+          to_cui,
+          to_tty
+        """
+    )
+    for ddl in (
+        f"CREATE INDEX idx_mt4ds_walk_closure_from ON {qualified}(source, from_aui, depth)",
+        f"CREATE INDEX idx_mt4ds_walk_closure_to ON {qualified}(source, to_aui)",
+        f"CREATE INDEX idx_mt4ds_walk_closure_code ON {qualified}(source, from_code)",
+    ):
+        try:
+            con.execute(ddl)
+        except Exception as exc:
+            logger.debug("Skipping index on %s: %s", qualified, exc)
+
+    rows = _row_count(con, qualified)
+    logger.info("Built %s: %s rows", qualified, rows)
+    return {table: {"status": "created", "rows": rows, "max_depth": depth}}
+
+
 def _prepare_same_cui_edges(con, *, replace: bool) -> dict[str, object]:
     """Build mt4ds.same_cui_edges -- cross-source CUI links between active atoms.
 
@@ -1226,6 +1334,7 @@ _TABLE_BUILDERS = [
     _prepare_best_atoms,
     _prepare_hierarchy_edges,
     _prepare_walk_edges,
+    _prepare_walk_closure_limited,
     _prepare_same_cui_edges,
     _prepare_crosswalk_edges,
     _prepare_friendly_atoms,

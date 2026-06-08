@@ -33,6 +33,7 @@ _STRATEGY = "non_rxnorm_prepared"
 
 # Maximum depth for native parent walks
 _MAX_WALK_DEPTH = 5
+_WALK_CLOSURE_MAX_DEPTH = 5
 
 # Sources that use hierarchy walk -> friendly candidate workflow
 _HIERARCHY_SOURCES = frozenset({"ICD10CM", "ICD10PCS", "HCPCS", "CPT"})
@@ -124,6 +125,12 @@ def _table_exists(con, table_name: str) -> bool:
     except Exception:
         return False
     return bool(row)
+
+
+def _walk_closure_table(con, max_depth: int) -> str | None:
+    if max_depth <= _WALK_CLOSURE_MAX_DEPTH and _table_exists(con, "walk_closure_limited"):
+        return "mt4ds.walk_closure_limited"
+    return None
 
 
 def _same_cui_crosswalk_sql(con) -> tuple[str, str]:
@@ -225,6 +232,38 @@ def _resolve_hierarchy_sources(
         f"({_sql_literal(c.code)}, {_sql_literal(source)}, {i})" for i, c in enumerate(codes)
     )
 
+    closure_table = _walk_closure_table(con, walk_depth)
+    if closure_table:
+        native_walk_cte = f"""
+    native_walk(input_order, source, code, aui, cui, tty, depth) AS (
+        SELECT input_order, source, code, aui, cui, tty, 0
+        FROM lookup
+        WHERE aui IS NOT NULL
+        UNION ALL
+        SELECT l.input_order, l.source, c.to_code, c.to_aui,
+               c.to_cui, c.to_tty, c.depth
+        FROM lookup l
+        JOIN {closure_table} c
+          ON c.source = l.source
+         AND c.from_aui = l.aui
+         AND c.depth <= {walk_depth}
+        WHERE l.aui IS NOT NULL
+    ),"""
+    else:
+        native_walk_cte = f"""
+    native_walk(input_order, source, code, aui, cui, tty, depth) AS (
+        SELECT input_order, source, code, aui, cui, tty, 0
+        FROM lookup
+        WHERE aui IS NOT NULL
+        UNION ALL
+        SELECT w.input_order, w.source, e.to_code, e.to_aui,
+               e.to_cui, e.to_tty, w.depth + 1
+        FROM native_walk w
+        JOIN mt4ds.walk_edges e
+          ON e.source = w.source AND e.from_aui = w.aui AND e.direction = 'parent'
+        WHERE w.depth < {walk_depth}
+    ),"""
+
     query = f"""
     WITH RECURSIVE
     input_codes(code, source, input_order) AS (
@@ -269,18 +308,7 @@ def _resolve_hierarchy_sources(
         LEFT JOIN anchor_candidates a
           ON a.input_order = d.input_order AND a.rn = 1
     ),
-    native_walk(input_order, source, code, aui, cui, tty, depth) AS (
-        SELECT input_order, source, code, aui, cui, tty, 0
-        FROM lookup
-        WHERE aui IS NOT NULL
-        UNION ALL
-        SELECT w.input_order, w.source, e.to_code, e.to_aui,
-               e.to_cui, e.to_tty, w.depth + 1
-        FROM native_walk w
-        JOIN mt4ds.walk_edges e
-          ON e.source = w.source AND e.from_aui = w.aui AND e.direction = 'parent'
-        WHERE w.depth < {walk_depth}
-    ),
+    {native_walk_cte}
     friendly_hits AS (
         SELECT w.input_order, w.depth, f.name, f.friendly_source, f.tty
         FROM native_walk w
@@ -432,17 +460,40 @@ def _snomed_fallback(
         f"({_sql_literal(cr.code)}, {_sql_literal(cr.source)}, {idx})" for idx, cr in items
     )
 
-    query = f"""
-    WITH RECURSIVE
-    input_codes(code, source, input_order) AS (
-        VALUES {input_values}
-    ),
-    lookup AS (
-        SELECT i.input_order, i.source, i.code, a.aui, a.cui, a.tty
-        FROM input_codes i
-        LEFT JOIN mt4ds.best_atoms a
-          ON a.source = i.source AND a.code = i.code AND a.rank = 1
-    ),
+    closure_table = _walk_closure_table(con, walk_depth)
+    if closure_table:
+        native_walk_cte = f"""
+    native_walk(input_order, source, source_code, source_depth, aui, cui, tty, depth) AS (
+        SELECT l.input_order, l.source, l.code, 0 AS source_depth, l.aui, l.cui, l.tty, 0
+        FROM lookup l
+        WHERE l.aui IS NOT NULL
+        UNION ALL
+        SELECT l.input_order, l.source, c.to_code, c.depth AS source_depth, c.to_aui,
+               c.to_cui, c.to_tty, c.depth AS depth
+        FROM lookup l
+        JOIN {closure_table} c
+          ON c.source = l.source
+         AND c.from_aui = l.aui
+         AND c.depth <= {walk_depth}
+        WHERE l.aui IS NOT NULL
+    ),"""
+        snomed_walk_cte = f"""
+    snomed_walk(
+        input_order, source, source_code, source_depth, snomed_code, walk_code, aui, cui, snomed_depth
+    ) AS (
+        SELECT input_order, source, source_code, source_depth, snomed_code, snomed_code, aui, cui, 0
+        FROM snomed_base
+        UNION ALL
+        SELECT b.input_order, b.source, b.source_code, b.source_depth,
+               b.snomed_code, c.to_code, c.to_aui, c.to_cui, c.depth AS snomed_depth
+        FROM snomed_base b
+        JOIN {closure_table} c
+          ON c.source = 'SNOMEDCT_US'
+         AND c.from_aui = b.aui
+         AND c.depth <= {walk_depth}
+    ),"""
+    else:
+        native_walk_cte = f"""
     native_walk(input_order, source, source_code, source_depth, aui, cui, tty, depth) AS (
         SELECT l.input_order, l.source, l.code, 0 AS source_depth, l.aui, l.cui, l.tty, 0
         FROM lookup l
@@ -454,7 +505,34 @@ def _snomed_fallback(
         JOIN mt4ds.walk_edges e
           ON e.source = w.source AND e.from_aui = w.aui AND e.direction = 'parent'
         WHERE w.depth < {walk_depth}
+    ),"""
+        snomed_walk_cte = f"""
+    snomed_walk(
+        input_order, source, source_code, source_depth, snomed_code, walk_code, aui, cui, snomed_depth
+    ) AS (
+        SELECT input_order, source, source_code, source_depth, snomed_code, snomed_code, aui, cui, 0
+        FROM snomed_base
+        UNION ALL
+        SELECT w.input_order, w.source, w.source_code, w.source_depth,
+               w.snomed_code, e.to_code, e.to_aui, e.to_cui, w.snomed_depth + 1
+        FROM snomed_walk w
+        JOIN mt4ds.walk_edges e
+          ON e.source = 'SNOMEDCT_US' AND e.from_aui = w.aui AND e.direction = 'parent'
+        WHERE w.snomed_depth < {walk_depth}
+    ),"""
+
+    query = f"""
+    WITH RECURSIVE
+    input_codes(code, source, input_order) AS (
+        VALUES {input_values}
     ),
+    lookup AS (
+        SELECT i.input_order, i.source, i.code, a.aui, a.cui, a.tty
+        FROM input_codes i
+        LEFT JOIN mt4ds.best_atoms a
+          ON a.source = i.source AND a.code = i.code AND a.rank = 1
+    ),
+    {native_walk_cte}
     snomed_crosswalk AS (
         SELECT w.input_order, w.source, w.source_code,
                w.source_depth, sce.target_code AS snomed_code
@@ -472,19 +550,7 @@ def _snomed_fallback(
         JOIN mt4ds.best_atoms ba
           ON ba.source = 'SNOMEDCT_US' AND ba.code = s.snomed_code AND ba.rank = 1
     ),
-    snomed_walk(
-        input_order, source, source_code, source_depth, snomed_code, walk_code, aui, cui, snomed_depth
-    ) AS (
-        SELECT input_order, source, source_code, source_depth, snomed_code, snomed_code, aui, cui, 0
-        FROM snomed_base
-        UNION ALL
-        SELECT w.input_order, w.source, w.source_code, w.source_depth,
-               w.snomed_code, e.to_code, e.to_aui, e.to_cui, w.snomed_depth + 1
-        FROM snomed_walk w
-        JOIN mt4ds.walk_edges e
-          ON e.source = 'SNOMEDCT_US' AND e.from_aui = w.aui AND e.direction = 'parent'
-        WHERE w.snomed_depth < {walk_depth}
-    ),
+    {snomed_walk_cte}
     guarded_walk AS (
         SELECT w.*
         FROM snomed_walk w
@@ -823,6 +889,37 @@ def _resolve_snomed(
     ]
     target_case_sql = "CASE target_source " + " ".join(target_case_parts) + " END"
     crosswalk_table, crosswalk_filter = _same_cui_crosswalk_sql(con)
+    closure_table = _walk_closure_table(con, walk_depth)
+    if closure_table:
+        snomed_walk_cte = f"""
+    snomed_walk(input_order, code, technical_name, walk_code, aui, depth) AS (
+        SELECT input_order, code, technical_name, code, aui, 0
+        FROM lookup
+        WHERE aui IS NOT NULL
+        UNION ALL
+        SELECT l.input_order, l.code, l.technical_name, c.to_code, c.to_aui, c.depth
+        FROM lookup l
+        JOIN {closure_table} c
+          ON c.source = 'SNOMEDCT_US'
+         AND c.from_aui = l.aui
+         AND c.depth <= {walk_depth}
+        WHERE l.aui IS NOT NULL
+    ),"""
+    else:
+        snomed_walk_cte = f"""
+    snomed_walk(input_order, code, technical_name, walk_code, aui, depth) AS (
+        SELECT input_order, code, technical_name, code, aui, 0
+        FROM lookup
+        WHERE aui IS NOT NULL
+        UNION ALL
+        SELECT w.input_order, w.code, w.technical_name, e.to_code, e.to_aui, w.depth + 1
+        FROM snomed_walk w
+        JOIN mt4ds.walk_edges e
+          ON e.source = 'SNOMEDCT_US'
+         AND e.from_aui = w.aui
+         AND e.direction = 'parent'
+        WHERE w.depth < {walk_depth}
+    ),"""
 
     crosswalk_query = f"""
     WITH RECURSIVE
@@ -837,19 +934,7 @@ def _resolve_snomed(
         LEFT JOIN mt4ds.best_atoms a
           ON a.source = 'SNOMEDCT_US' AND a.code = i.code AND a.rank = 1
     ),
-    snomed_walk(input_order, code, technical_name, walk_code, aui, depth) AS (
-        SELECT input_order, code, technical_name, code, aui, 0
-        FROM lookup
-        WHERE aui IS NOT NULL
-        UNION ALL
-        SELECT w.input_order, w.code, w.technical_name, e.to_code, e.to_aui, w.depth + 1
-        FROM snomed_walk w
-        JOIN mt4ds.walk_edges e
-          ON e.source = 'SNOMEDCT_US'
-         AND e.from_aui = w.aui
-         AND e.direction = 'parent'
-        WHERE w.depth < {walk_depth}
-    ),
+    {snomed_walk_cte}
     crosswalk AS (
         SELECT l.input_order, l.code, l.technical_name,
                l.code AS route_source_code,
@@ -1146,6 +1231,36 @@ def _guarded_snomed_walk(
         f"({_sql_literal(cr.code)}, {idx})" for idx, cr in indices.items()
     )
 
+    closure_table = _walk_closure_table(con, walk_depth)
+    if closure_table:
+        snomed_walk_cte = f"""
+    snomed_walk(input_order, code, walk_code, aui, cui, depth) AS (
+        SELECT input_order, code, code, aui, cui, 0
+        FROM base
+        WHERE aui IS NOT NULL
+        UNION ALL
+        SELECT b.input_order, b.code, c.to_code, c.to_aui, c.to_cui, c.depth
+        FROM base b
+        JOIN {closure_table} c
+          ON c.source = 'SNOMEDCT_US'
+         AND c.from_aui = b.aui
+         AND c.depth <= {walk_depth}
+        WHERE b.aui IS NOT NULL
+    ),"""
+    else:
+        snomed_walk_cte = f"""
+    snomed_walk(input_order, code, walk_code, aui, cui, depth) AS (
+        SELECT input_order, code, code, aui, cui, 0
+        FROM base
+        WHERE aui IS NOT NULL
+        UNION ALL
+        SELECT w.input_order, w.code, e.to_code, e.to_aui, e.to_cui, w.depth + 1
+        FROM snomed_walk w
+        JOIN mt4ds.walk_edges e
+          ON e.source = 'SNOMEDCT_US' AND e.from_aui = w.aui AND e.direction = 'parent'
+        WHERE w.depth < {walk_depth}
+    ),"""
+
     query = f"""
     WITH RECURSIVE
     input_codes(code, input_order) AS (
@@ -1157,17 +1272,7 @@ def _guarded_snomed_walk(
         LEFT JOIN mt4ds.best_atoms a
           ON a.source = 'SNOMEDCT_US' AND a.code = i.code AND a.rank = 1
     ),
-    snomed_walk(input_order, code, walk_code, aui, cui, depth) AS (
-        SELECT input_order, code, code, aui, cui, 0
-        FROM base
-        WHERE aui IS NOT NULL
-        UNION ALL
-        SELECT w.input_order, w.code, e.to_code, e.to_aui, e.to_cui, w.depth + 1
-        FROM snomed_walk w
-        JOIN mt4ds.walk_edges e
-          ON e.source = 'SNOMEDCT_US' AND e.from_aui = w.aui AND e.direction = 'parent'
-        WHERE w.depth < {walk_depth}
-    ),
+    {snomed_walk_cte}
     guarded_walk AS (
         SELECT sw.*
         FROM snomed_walk sw
@@ -1268,11 +1373,22 @@ def _resolve_cvx(
         LEFT JOIN mt4ds.best_atoms a
           ON a.source = 'CVX' AND a.code = i.code AND a.rank = 1
     ),
+    metadata_agg AS (
+        SELECT code,
+               string_agg(group_name, ' / ' ORDER BY group_name) AS group_name,
+               string_agg(short_name, ' / ' ORDER BY short_name) AS short_name
+        FROM (
+            SELECT DISTINCT code, group_name, short_name
+            FROM mt4ds.cvx_metadata
+            WHERE group_name IS NOT NULL OR short_name IS NOT NULL
+        ) cm
+        GROUP BY code
+    ),
     enrichment AS (
         SELECT l.input_order, l.code, l.technical_name,
                cm.group_name, cm.short_name
         FROM lookup l
-        LEFT JOIN mt4ds.cvx_metadata cm ON cm.code = l.code
+        LEFT JOIN metadata_agg cm ON cm.code = l.code
     )
     SELECT input_order, code, technical_name, group_name, short_name
     FROM enrichment
