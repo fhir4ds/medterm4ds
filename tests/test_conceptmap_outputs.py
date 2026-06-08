@@ -5,9 +5,13 @@ import json
 
 import pytest
 
-from medterm4ds import CodeRef, FriendlyNameResult, Provenance, ProvenanceStep
+from medterm4ds import CodeMapping, CodeRef, FriendlyNameResult, Provenance, ProvenanceStep
 from medterm4ds.outputs import to_records, write_csv, write_jsonl
-from medterm4ds.services.conceptmap import get_concept_map, iter_concept_map
+from medterm4ds.services.conceptmap import (
+    get_concept_map,
+    get_mapping_concept_map,
+    iter_concept_map,
+)
 
 
 class StaticEngine:
@@ -22,6 +26,29 @@ class StaticEngine:
     ) -> list[FriendlyNameResult]:
         self.calls.append(list(codes))
         return [self.results[(code.source, code.code)] for code in codes]
+
+
+class StaticMappingEngine:
+    def __init__(self, mappings: list[CodeMapping]):
+        self.mappings = mappings
+        self.calls: list[list[CodeRef]] = []
+
+    def get_code_mappings(
+        self,
+        codes: list[CodeRef],
+        *,
+        target_sources: list[str] | tuple[str, ...],
+        max_results_per_code: int = 50,
+        max_depth: int = 0,
+        include_target_ancestors: bool = False,
+        include_target_descendants: bool = False,
+    ) -> list[CodeMapping]:
+        self.calls.append(list(codes))
+        requested = {(code.source, code.code) for code in codes}
+        return [
+            mapping for mapping in self.mappings
+            if (mapping.source.source, mapping.source.code) in requested
+        ]
 
 
 def _friendly(
@@ -91,6 +118,45 @@ def test_iter_concept_map_validates_options():
 
     with pytest.raises(ValueError, match="batch_size"):
         list(iter_concept_map([], engine=engine, batch_size=0))
+
+
+def test_mapping_concept_map_preserves_mapping_provenance():
+    mapping = CodeMapping(
+        source=CodeRef("ICD10CM", "E11.9"),
+        target=CodeRef("SNOMEDCT_US", "44054006"),
+        relationship="equivalent",
+        source_display="Type 2 diabetes mellitus",
+        target_display="Diabetes mellitus type 2",
+        match_type="same_cui",
+        match_depth=0,
+        matched_via=Provenance.from_steps(
+            "same_cui",
+            [
+                ProvenanceStep(op="input_atom", source="ICD10CM", code="E11.9"),
+                ProvenanceStep(
+                    op="same_cui",
+                    source="ICD10CM",
+                    code="E11.9",
+                    target_source="SNOMEDCT_US",
+                    target_code="44054006",
+                    cui="C_DIAB",
+                ),
+            ],
+        ),
+    )
+    engine = StaticMappingEngine([mapping])
+
+    rows = get_mapping_concept_map(
+        [CodeRef("ICD10CM", "E11.9")],
+        engine=engine,
+        target_sources=["SNOMEDCT_US"],
+    )
+
+    assert rows[0].source == CodeRef("ICD10CM", "E11.9")
+    assert rows[0].target == CodeRef("SNOMEDCT_US", "44054006")
+    assert rows[0].match_type == "same_cui"
+    assert rows[0].match_depth == 0
+    assert rows[0].matched_via.to_dict()["steps"][1]["op"] == "same_cui"
 
 
 def test_output_helpers_write_concept_map_records(tmp_path):

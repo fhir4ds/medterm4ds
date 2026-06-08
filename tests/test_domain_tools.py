@@ -19,7 +19,7 @@ from medterm4ds.domains import (
     vaccine_codes,
 )
 from medterm4ds.domains.evidence import HttpResponse, OpenFDALabelClient, PubMedGuidelineClient
-from medterm4ds.engines.duckdb import LocalLiteEngine
+from medterm4ds.engines.duckdb import LocalDuckDBEngine
 
 
 def _make_duckdb(path: Path) -> None:
@@ -76,7 +76,7 @@ def test_domain_search_wrappers_and_cross_reference(tmp_path):
     _make_duckdb(db_path)
     con = duckdb.connect(str(db_path), read_only=True)
     try:
-        engine = LocalLiteEngine(con)
+        engine = LocalDuckDBEngine(con)
 
         diagnosis = diagnosis_codes("diabetes", engine=engine)
         labs = lab_codes("a1c", engine=engine)
@@ -169,7 +169,7 @@ def test_external_evidence_tools_use_pubmed_client(tmp_path):
     _make_duckdb(db_path)
     con = duckdb.connect(str(db_path), read_only=True)
     try:
-        engine = LocalLiteEngine(con)
+        engine = LocalDuckDBEngine(con)
         search = guideline_search("diabetes", client=client)
         fulltext = guideline_fulltext("111", client=client)
         by_code = guidelines_for_code("E11.9", "ICD10CM", engine=engine, client=client)

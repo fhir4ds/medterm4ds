@@ -21,14 +21,20 @@ SRC = ROOT / "src"
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
-from medterm4ds.core.config import local_lite_config
-from medterm4ds.engines.duckdb import LocalLiteEngine
+from medterm4ds.core.config import local_duckdb_config
+from medterm4ds.engines.duckdb import LocalDuckDBEngine
+from medterm4ds.engines.duckdb.prepared import verify_mt4ds_schema
 from medterm4ds.outputs import default_checkpoint_path, write_checkpointed_rows
 from medterm4ds.services.bulk import (
     iter_mapping_bulk,
     iter_patient_friendly_bulk,
 )
 from medterm4ds.services.inventory import count_source_codes, iter_source_codes, normalize_sources
+from medterm4ds.services.schema_reporting import (
+    empty_schema_report_metadata,
+    report_db_role_metadata,
+    schema_report_metadata,
+)
 
 DEFAULT_FRIENDLY_SOURCES = (
     "ICD10CM",
@@ -67,7 +73,8 @@ class BulkTrial:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--db", default="/mnt/d/medterm/data/umls_local.duckdb")
+    parser.add_argument("--db", default="/mnt/d/medterm4ds/data/umls_current.duckdb")
+    parser.add_argument("--db-role", default="unknown")
     parser.add_argument("--work-dir", default="validation_outputs")
     parser.add_argument("--output-json", default="bulk_validation_report.json")
     parser.add_argument("--limit", type=int, default=1000, help="Input code limit per workflow.")
@@ -111,13 +118,30 @@ def main() -> int:
         for name, sources, targets in DEFAULT_MAPPING_WORKFLOWS
     ]
     trials.append(_run_patient_friendly_trial(db_path, work_dir, args))
+    db_metadata = _db_metadata(db_path)
+    db_role_metadata = report_db_role_metadata(args.db_role, db_metadata)
 
     report = {
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "db": str(db_path),
+        "db_role": db_role_metadata["db_role"],
+        "db_role_source": db_role_metadata["db_role_source"],
+        "manifest_db_role": db_metadata.get("manifest_db_role"),
+        "source_archive": db_metadata.get("source_archive"),
+        "umls_release": db_metadata.get("umls_release"),
+        "prepared_schema_version": db_metadata.get("prepared_schema_version"),
+        "patient_friendly_policy_version": db_metadata.get("patient_friendly_policy_version"),
+        "prepared_tables": db_metadata.get("prepared_tables"),
+        "missing_prepared_tables": db_metadata.get("missing_prepared_tables"),
+        "schema_errors": db_metadata.get("schema_errors"),
         "full": bool(args.full),
         "limit": None if args.full else args.limit,
         "batch_size": args.batch_size,
+        "fetch_size": args.fetch_size,
+        "memory_profile": args.memory_profile,
+        "memory_limit": args.memory_limit,
+        "threads": args.threads,
+        "query_chunk_size": args.query_chunk_size or 5000,
         "max_depth": args.max_depth,
         "trials": [asdict(trial) for trial in trials],
     }
@@ -125,6 +149,20 @@ def main() -> int:
         Path(args.output_json).write_text(json.dumps(report, indent=2, sort_keys=True), encoding="utf-8")
     print(json.dumps({trial.name: trial.status for trial in trials}, sort_keys=True))
     return 0 if all(trial.status == "pass" for trial in trials) else 1
+
+
+def _db_metadata(db_path: Path) -> dict[str, object]:
+    import duckdb
+
+    try:
+        con = duckdb.connect(str(db_path), read_only=True)
+        try:
+            report = verify_mt4ds_schema(con)
+        finally:
+            con.close()
+    except Exception:
+        return empty_schema_report_metadata()
+    return schema_report_metadata(report)
 
 
 def _run_mapping_trial(db_path: Path, work_dir: Path, args, name, sources, targets) -> BulkTrial:
@@ -138,14 +176,14 @@ def _run_mapping_trial(db_path: Path, work_dir: Path, args, name, sources, targe
     con = duckdb.connect(str(db_path), read_only=True)
     try:
         available = sum(count_source_codes(con, normalized_sources).values())
-        config = local_lite_config(
+        config = local_duckdb_config(
             args.memory_profile,
             memory_limit=args.memory_limit,
             temp_directory=args.temp_dir,
             threads=args.threads,
             query_chunk_size=args.query_chunk_size,
         )
-        engine = LocalLiteEngine(con, config=config, progress=print if args.progress else None)
+        engine = LocalDuckDBEngine(con, config=config, progress=print if args.progress else None)
         if args.prepare_cache:
             engine.prepare_cache(
                 [*normalized_sources, *normalized_targets],
@@ -223,14 +261,14 @@ def _run_patient_friendly_trial(db_path: Path, work_dir: Path, args) -> BulkTria
     con = duckdb.connect(str(db_path), read_only=True)
     try:
         available = sum(count_source_codes(con, sources).values())
-        config = local_lite_config(
+        config = local_duckdb_config(
             args.memory_profile,
             memory_limit=args.memory_limit,
             temp_directory=args.temp_dir,
             threads=args.threads,
             query_chunk_size=args.query_chunk_size,
         )
-        engine = LocalLiteEngine(con, config=config, progress=print if args.progress else None)
+        engine = LocalDuckDBEngine(con, config=config, progress=print if args.progress else None)
         if args.prepare_cache:
             engine.prepare_cache(sources, create_indexes=args.cache_indexes)
         codes = iter_source_codes(con, sources, fetch_size=args.fetch_size, limit=limit)

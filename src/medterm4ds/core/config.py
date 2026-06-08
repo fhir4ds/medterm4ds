@@ -8,8 +8,8 @@ from typing import Literal
 
 
 @dataclass(frozen=True)
-class LocalLiteConfig:
-    """DuckDB LocalLite execution settings.
+class LocalDuckDBConfig:
+    """Local DuckDB execution settings.
 
     DuckDB's memory limit is not a strict process RSS cap. Use `threads=1` and
     smaller `query_chunk_size` values for constrained machines.
@@ -20,19 +20,20 @@ class LocalLiteConfig:
     threads: int | None = None
     preserve_insertion_order: bool = False
     query_chunk_size: int = 5000
+    require_patient_friendly_resolutions: bool = False
 
 
 MemoryProfile = Literal["fast", "balanced", "low"]
 
 
-LOCAL_LITE_MEMORY_PROFILES: dict[str, LocalLiteConfig] = {
-    "fast": LocalLiteConfig(memory_limit="4GB", threads=None, query_chunk_size=5000),
-    "balanced": LocalLiteConfig(memory_limit="1GB", threads=None, query_chunk_size=5000),
-    "low": LocalLiteConfig(memory_limit="512MB", threads=1, query_chunk_size=1000),
+LOCAL_DUCKDB_MEMORY_PROFILES: dict[str, LocalDuckDBConfig] = {
+    "fast": LocalDuckDBConfig(memory_limit="4GB", threads=None, query_chunk_size=5000),
+    "balanced": LocalDuckDBConfig(memory_limit="1GB", threads=None, query_chunk_size=5000),
+    "low": LocalDuckDBConfig(memory_limit="512MB", threads=1, query_chunk_size=1000),
 }
 
 
-def local_lite_config(
+def local_duckdb_config(
     profile: MemoryProfile = "balanced",
     *,
     memory_limit: str | None = None,
@@ -40,15 +41,16 @@ def local_lite_config(
     threads: int | None = None,
     preserve_insertion_order: bool | None = None,
     query_chunk_size: int | None = None,
-) -> LocalLiteConfig:
-    """Build a LocalLite config from a named profile plus explicit overrides."""
+    require_patient_friendly_resolutions: bool | None = None,
+) -> LocalDuckDBConfig:
+    """Build a local DuckDB config from a named profile plus explicit overrides."""
     try:
-        base = LOCAL_LITE_MEMORY_PROFILES[profile]
+        base = LOCAL_DUCKDB_MEMORY_PROFILES[profile]
     except KeyError as exc:
-        choices = ", ".join(sorted(LOCAL_LITE_MEMORY_PROFILES))
-        raise ValueError(f"Unknown LocalLite memory profile {profile!r}. Use one of: {choices}.") from exc
+        choices = ", ".join(sorted(LOCAL_DUCKDB_MEMORY_PROFILES))
+        raise ValueError(f"Unknown local DuckDB memory profile {profile!r}. Use one of: {choices}.") from exc
 
-    return LocalLiteConfig(
+    return LocalDuckDBConfig(
         memory_limit=base.memory_limit if memory_limit is None else memory_limit,
         temp_directory=base.temp_directory if temp_directory is None else temp_directory,
         threads=base.threads if threads is None else threads,
@@ -58,4 +60,15 @@ def local_lite_config(
             else preserve_insertion_order
         ),
         query_chunk_size=base.query_chunk_size if query_chunk_size is None else query_chunk_size,
+        require_patient_friendly_resolutions=(
+            base.require_patient_friendly_resolutions
+            if require_patient_friendly_resolutions is None
+            else require_patient_friendly_resolutions
+        ),
     )
+
+
+# Backward-compatible aliases for pre-0.0.1 naming.
+LocalLiteConfig = LocalDuckDBConfig
+LOCAL_LITE_MEMORY_PROFILES = LOCAL_DUCKDB_MEMORY_PROFILES
+local_lite_config = local_duckdb_config

@@ -7,9 +7,9 @@ import sys
 import time
 from pathlib import Path
 
-from medterm4ds.core.config import LOCAL_LITE_MEMORY_PROFILES, local_lite_config
+from medterm4ds.core.config import LOCAL_DUCKDB_MEMORY_PROFILES, local_duckdb_config
 from medterm4ds.core.models import CodeRef
-from medterm4ds.engines.duckdb import LocalLiteEngine
+from medterm4ds.engines.duckdb import LocalDuckDBEngine
 from medterm4ds.outputs import (
     OutputPosition,
     default_checkpoint_path,
@@ -29,8 +29,11 @@ from medterm4ds.services.bulk import (
 )
 from medterm4ds.services.conceptmap import iter_concept_map, iter_mapping_concept_map
 from medterm4ds.services.data_setup import (
+    DEFAULT_UMLS_RELEASE_TYPE,
+    annotate_umls_duckdb,
     build_duckdb_from_rrf,
     download_release,
+    prepare_umls_duckdb,
     verify_duckdb,
 )
 from medterm4ds.services.discovery import (
@@ -151,10 +154,13 @@ def build_parser() -> argparse.ArgumentParser:
     data_download = data_subparsers.add_parser("download", help="Download a UTS release zip.")
     _add_data_download_args(data_download)
     data_download.set_defaults(func=run_data_download)
-    data_build = data_subparsers.add_parser("build-duckdb", help="Build the LocalLite DuckDB database from RRF files.")
+    data_build = data_subparsers.add_parser("build-duckdb", help="Build the local DuckDB database from RRF files.")
     _add_data_build_args(data_build)
     data_build.set_defaults(func=run_data_build_duckdb)
-    data_verify = data_subparsers.add_parser("verify", help="Verify a LocalLite DuckDB database.")
+    data_prepare = data_subparsers.add_parser("prepare-derived", help="Create derived local DuckDB guardrail tables.")
+    _add_data_prepare_derived_args(data_prepare)
+    data_prepare.set_defaults(func=run_data_prepare_derived)
+    data_verify = data_subparsers.add_parser("verify", help="Verify a local DuckDB database.")
     _add_data_verify_args(data_verify)
     data_verify.set_defaults(func=run_data_verify)
 
@@ -165,9 +171,9 @@ def _add_common_engine_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--db", required=True, help="Path to the UMLS DuckDB database.")
     parser.add_argument(
         "--memory-profile",
-        choices=tuple(sorted(LOCAL_LITE_MEMORY_PROFILES)),
+        choices=tuple(sorted(LOCAL_DUCKDB_MEMORY_PROFILES)),
         default="balanced",
-        help="Named LocalLite memory profile.",
+        help="Named local DuckDB memory profile.",
     )
     parser.add_argument("--memory-limit", default=None, help="Override DuckDB memory limit.")
     parser.add_argument("--temp-dir", default=None, help="DuckDB temporary directory.")
@@ -176,12 +182,13 @@ def _add_common_engine_args(parser: argparse.ArgumentParser) -> None:
         "--query-chunk-size",
         type=int,
         default=None,
-        help="Override LocalLite internal query chunk size.",
+        help="Override local DuckDB internal query chunk size.",
     )
 
 
 def _add_patient_friendly_args(parser: argparse.ArgumentParser) -> None:
     _add_common_engine_args(parser)
+    _add_patient_friendly_resolution_mode_arg(parser)
     parser.add_argument(
         "--sources",
         default=",".join(DEFAULT_INVENTORY_SOURCES),
@@ -201,7 +208,7 @@ def _add_patient_friendly_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--no-prepare-cache",
         action="store_true",
-        help="Skip LocalLite temp cache preparation.",
+        help="Skip local DuckDB temp cache preparation.",
     )
     parser.add_argument(
         "--cache-indexes",
@@ -245,7 +252,7 @@ def _add_bulk_output_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--no-prepare-cache",
         action="store_true",
-        help="Skip LocalLite temp cache preparation.",
+        help="Skip local DuckDB temp cache preparation.",
     )
     parser.add_argument(
         "--cache-indexes",
@@ -285,7 +292,7 @@ def _add_bulk_record_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--no-prepare-cache",
         action="store_true",
-        help="Skip LocalLite temp cache preparation.",
+        help="Skip local DuckDB temp cache preparation.",
     )
     parser.add_argument(
         "--cache-indexes",
@@ -373,7 +380,19 @@ def _add_bulk_hierarchy_args(parser: argparse.ArgumentParser) -> None:
 
 def _add_bulk_patient_friendly_args(parser: argparse.ArgumentParser) -> None:
     _add_bulk_record_args(parser)
+    _add_patient_friendly_resolution_mode_arg(parser)
     parser.add_argument("--max-depth", type=int, default=5)
+
+
+def _add_patient_friendly_resolution_mode_arg(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--require-patient-friendly-resolutions",
+        action="store_true",
+        help=(
+            "Fail closed unless mt4ds.patient_friendly_resolutions fully covers "
+            "the requested codes for the current policy/schema version."
+        ),
+    )
 
 
 def _add_lookup_args(parser: argparse.ArgumentParser) -> None:
@@ -639,19 +658,44 @@ def _add_data_download_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--api-key", default=None, help="UMLS/UTS API key. Defaults to UMLS_API_KEY.")
     parser.add_argument(
         "--release-type",
-        default="umls-full-release",
-        help="UTS releaseType, for example umls-full-release or rxnorm-full-monthly-release.",
+        default=DEFAULT_UMLS_RELEASE_TYPE,
+        help="UTS releaseType. Defaults to umls-metathesaurus-full-subset.",
     )
-    parser.add_argument("--current", action=argparse.BooleanOptionalAction, default=True)
-    parser.add_argument("--output-dir", required=True, help="Directory for downloaded files.")
+    parser.add_argument(
+        "--release-version",
+        default=None,
+        help="Optional release version such as 2025AB. When omitted, the first UTS result is used.",
+    )
+    parser.add_argument(
+        "--current",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Filter UTS release metadata to current=true/false. Omitted by default.",
+    )
+    parser.add_argument("--output-dir", default="data/umls", help="Directory for downloaded raw release files.")
     parser.add_argument("--extract", action="store_true", help="Extract the downloaded zip.")
 
 
 def _add_data_build_args(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument("--rrf-dir", required=True, help="Directory containing MRCONSO.RRF, MRREL.RRF, and MRSAT.RRF.")
+    parser.add_argument(
+        "--rrf-dir",
+        required=True,
+        help="Directory containing flat RRF files, RRF.gz shards, or extracted UMLS .nlm release archives.",
+    )
     parser.add_argument("--output-db", required=True, help="DuckDB database path to create.")
+    parser.add_argument("--db-role", default=None, help="DB role to record in mt4ds.prepare_manifest.")
+    parser.add_argument("--release-version", default=None, help="Optional UMLS release version to record in mt4ds.prepare_manifest.")
+    parser.add_argument("--source-archive", default=None, help="Optional source archive path to record in mt4ds.prepare_manifest.")
     parser.add_argument("--replace", action="store_true", help="Replace output database if it exists.")
-    parser.add_argument("--batch-size", type=int, default=100_000)
+    parser.add_argument("--batch-size", type=int, default=100_000, help="Deprecated; native DuckDB ingest ignores this.")
+
+
+def _add_data_prepare_derived_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--db", required=True, help="DuckDB database path to update.")
+    parser.add_argument("--replace", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument("--db-role", default=None, help="Optional DB role to record in mt4ds.prepare_manifest.")
+    parser.add_argument("--release-version", default=None, help="Optional UMLS release version to record in mt4ds.prepare_manifest.")
+    parser.add_argument("--source-archive", default=None, help="Optional source archive path to record in mt4ds.prepare_manifest.")
 
 
 def _add_data_verify_args(parser: argparse.ArgumentParser) -> None:
@@ -679,12 +723,13 @@ def run_patient_friendly_conceptmap(args: argparse.Namespace) -> int:
     if args.resume and output_format == "fhir-json":
         raise SystemExit("FHIR JSON output is not resumable. Use JSONL or CSV for resumable bulk exports.")
     checkpoint_path = Path(args.checkpoint) if args.checkpoint else default_checkpoint_path(output_path)
-    config = local_lite_config(
+    config = local_duckdb_config(
         args.memory_profile,
         memory_limit=args.memory_limit,
         temp_directory=args.temp_dir,
         threads=args.threads,
         query_chunk_size=args.query_chunk_size,
+        require_patient_friendly_resolutions=args.require_patient_friendly_resolutions,
     )
 
     resume_position = (
@@ -713,7 +758,7 @@ def run_patient_friendly_conceptmap(args: argparse.Namespace) -> int:
                     f"({resume_position.rows:,} existing rows)"
                 )
 
-        engine = LocalLiteEngine(
+        engine = LocalDuckDBEngine(
             con,
             config=config,
             progress=progress.print if args.progress else None,
@@ -742,6 +787,7 @@ def run_patient_friendly_conceptmap(args: argparse.Namespace) -> int:
             "sources": list(sources),
             "memory_profile": args.memory_profile,
             "limit": args.limit,
+            "require_patient_friendly_resolutions": args.require_patient_friendly_resolutions,
         }
         if output_format == "fhir-json":
             write_fhir_concept_map(
@@ -788,7 +834,7 @@ def run_mapping_conceptmap(args: argparse.Namespace) -> int:
     output_path = Path(args.output)
     output_format = args.format or _format_from_path(output_path)
     checkpoint_path = default_checkpoint_path(output_path)
-    config = local_lite_config(
+    config = local_duckdb_config(
         args.memory_profile,
         memory_limit=args.memory_limit,
         temp_directory=args.temp_dir,
@@ -809,7 +855,7 @@ def run_mapping_conceptmap(args: argparse.Namespace) -> int:
                 f"targets={list(target_sources)} total={total:,}"
             )
 
-        engine = LocalLiteEngine(
+        engine = LocalDuckDBEngine(
             con,
             config=config,
             progress=progress.print if args.progress else None,
@@ -951,7 +997,10 @@ def run_bulk_patient_friendly(args: argparse.Namespace) -> int:
             batch_size=args.batch_size,
             max_depth=args.max_depth,
         ),
-        metadata={"max_depth": args.max_depth},
+        metadata={
+            "max_depth": args.max_depth,
+            "require_patient_friendly_resolutions": args.require_patient_friendly_resolutions,
+        },
     )
 
 
@@ -965,7 +1014,7 @@ def run_lookup(args: argparse.Namespace) -> int:
     if not db_path.exists():
         raise SystemExit(f"Database not found: {db_path}")
 
-    config = local_lite_config(
+    config = local_duckdb_config(
         args.memory_profile,
         memory_limit=args.memory_limit,
         temp_directory=args.temp_dir,
@@ -975,7 +1024,7 @@ def run_lookup(args: argparse.Namespace) -> int:
     refs = _code_source_pairs(args.code, args.source)
     con = duckdb.connect(str(db_path), read_only=True)
     try:
-        engine = LocalLiteEngine(con, config=config)
+        engine = LocalDuckDBEngine(con, config=config)
         infos = get_code_infos(refs, engine=engine, resolve_mode=args.resolve_mode)
     finally:
         con.close()
@@ -1001,7 +1050,7 @@ def run_resolve(args: argparse.Namespace) -> int:
     refs = _code_source_pairs(args.code, args.source)
     con = duckdb.connect(str(db_path), read_only=True)
     try:
-        engine = LocalLiteEngine(con, config=_local_lite_config_from_args(args))
+        engine = LocalDuckDBEngine(con, config=_local_duckdb_config_from_args(args))
         rows = [
             resolution.to_dict()
             for resolution in resolve_codes(refs, engine=engine)
@@ -1026,7 +1075,7 @@ def run_optimize(args: argparse.Namespace) -> int:
     refs = [CodeRef(source=args.source, code=code) for code in args.code]
     con = duckdb.connect(str(db_path), read_only=True)
     try:
-        engine = LocalLiteEngine(con, config=_local_lite_config_from_args(args))
+        engine = LocalDuckDBEngine(con, config=_local_duckdb_config_from_args(args))
         result = optimize_codes(
             refs,
             engine=engine,
@@ -1056,7 +1105,7 @@ def run_hierarchy(args: argparse.Namespace) -> int:
     if not db_path.exists():
         raise SystemExit(f"Database not found: {db_path}")
 
-    config = local_lite_config(
+    config = local_duckdb_config(
         args.memory_profile,
         memory_limit=args.memory_limit,
         temp_directory=args.temp_dir,
@@ -1066,7 +1115,7 @@ def run_hierarchy(args: argparse.Namespace) -> int:
     refs = _code_source_pairs(args.code, args.source)
     con = duckdb.connect(str(db_path), read_only=True)
     try:
-        engine = LocalLiteEngine(con, config=config)
+        engine = LocalDuckDBEngine(con, config=config)
         relations = get_code_relations(
             refs,
             engine=engine,
@@ -1094,7 +1143,7 @@ def run_mapping(args: argparse.Namespace) -> int:
     if not db_path.exists():
         raise SystemExit(f"Database not found: {db_path}")
 
-    config = local_lite_config(
+    config = local_duckdb_config(
         args.memory_profile,
         memory_limit=args.memory_limit,
         temp_directory=args.temp_dir,
@@ -1104,7 +1153,7 @@ def run_mapping(args: argparse.Namespace) -> int:
     refs = _code_source_pairs(args.code, args.source)
     con = duckdb.connect(str(db_path), read_only=True)
     try:
-        engine = LocalLiteEngine(con, config=config)
+        engine = LocalDuckDBEngine(con, config=config)
         mappings = get_code_mappings(
             refs,
             engine=engine,
@@ -1136,10 +1185,10 @@ def run_source_stats(args: argparse.Namespace) -> int:
     if not db_path.exists():
         raise SystemExit(f"Database not found: {db_path}")
 
-    config = _local_lite_config_from_args(args)
+    config = _local_duckdb_config_from_args(args)
     con = duckdb.connect(str(db_path), read_only=True)
     try:
-        engine = LocalLiteEngine(con, config=config)
+        engine = LocalDuckDBEngine(con, config=config)
         stats = get_source_stats(engine=engine, sources=args.sources)
     finally:
         con.close()
@@ -1162,10 +1211,10 @@ def run_sample_codes(args: argparse.Namespace) -> int:
     if not db_path.exists():
         raise SystemExit(f"Database not found: {db_path}")
 
-    config = _local_lite_config_from_args(args)
+    config = _local_duckdb_config_from_args(args)
     con = duckdb.connect(str(db_path), read_only=True)
     try:
-        engine = LocalLiteEngine(con, config=config)
+        engine = LocalDuckDBEngine(con, config=config)
         codes = sample_source_codes(
             engine=engine,
             sources=args.sources,
@@ -1192,11 +1241,11 @@ def run_code_ttys(args: argparse.Namespace) -> int:
     if not db_path.exists():
         raise SystemExit(f"Database not found: {db_path}")
 
-    config = _local_lite_config_from_args(args)
+    config = _local_duckdb_config_from_args(args)
     refs = _code_source_pairs(args.code, args.source)
     con = duckdb.connect(str(db_path), read_only=True)
     try:
-        engine = LocalLiteEngine(con, config=config)
+        engine = LocalDuckDBEngine(con, config=config)
         infos = get_code_ttys(refs, engine=engine)
     finally:
         con.close()
@@ -1219,10 +1268,10 @@ def run_search_names(args: argparse.Namespace) -> int:
     if not db_path.exists():
         raise SystemExit(f"Database not found: {db_path}")
 
-    config = _local_lite_config_from_args(args)
+    config = _local_duckdb_config_from_args(args)
     con = duckdb.connect(str(db_path), read_only=True)
     try:
-        engine = LocalLiteEngine(con, config=config)
+        engine = LocalDuckDBEngine(con, config=config)
         results = search_names(
             args.query,
             engine=engine,
@@ -1246,6 +1295,7 @@ def run_data_download(args: argparse.Namespace) -> int:
         output_dir=args.output_dir,
         api_key=args.api_key,
         release_type=args.release_type,
+        release_version=args.release_version,
         current=args.current,
         extract=args.extract,
     )
@@ -1254,13 +1304,45 @@ def run_data_download(args: argparse.Namespace) -> int:
 
 
 def run_data_build_duckdb(args: argparse.Namespace) -> int:
+    if not args.db_role:
+        print("--db-role is required when building a DuckDB database.", file=sys.stderr)
+        return 2
+    if Path(args.output_db).name == "umls_local.duckdb":
+        print(
+            "Refusing ambiguous output DB name 'umls_local.duckdb'. "
+            "Use a role/release-specific path such as data/umls_current.duckdb "
+            "or data/umls_2025ab.duckdb.",
+            file=sys.stderr,
+        )
+        return 2
     path = build_duckdb_from_rrf(
         rrf_dir=args.rrf_dir,
         output_db=args.output_db,
         replace=args.replace,
         batch_size=args.batch_size,
+        db_role=args.db_role,
+        release_version=args.release_version,
+        source_archive=args.source_archive,
     )
-    print(_json_dumps({"db": str(path), "status": "ok"}), file=sys.stdout)
+    annotations = annotate_umls_duckdb(
+        path,
+        db_role=args.db_role,
+        release_version=args.release_version,
+        source_archive=args.source_archive,
+    )
+    print(_json_dumps({"db": str(path), "status": "ok", "annotations": annotations}), file=sys.stdout)
+    return 0
+
+
+def run_data_prepare_derived(args: argparse.Namespace) -> int:
+    report = prepare_umls_duckdb(
+        args.db,
+        replace=args.replace,
+        db_role=args.db_role,
+        release_version=args.release_version,
+        source_archive=args.source_archive,
+    )
+    print(_json_dumps({"db": str(args.db), "status": "ok", "derived": report}), file=sys.stdout)
     return 0
 
 
@@ -1300,7 +1382,7 @@ def _run_bulk_record_export(
     output_path = Path(args.output)
     output_format = args.format or _bulk_record_format_from_path(output_path)
     checkpoint_path = Path(args.checkpoint) if args.checkpoint else default_checkpoint_path(output_path)
-    config = _local_lite_config_from_args(args)
+    config = _local_duckdb_config_from_args(args)
 
     resume_position = (
         read_output_position(output_path, output_format)
@@ -1328,7 +1410,7 @@ def _run_bulk_record_export(
                     f"({resume_position.rows:,} existing rows)"
                 )
 
-        engine = LocalLiteEngine(
+        engine = LocalDuckDBEngine(
             con,
             config=config,
             progress=progress.print if args.progress else None,
@@ -1373,13 +1455,18 @@ def _run_bulk_record_export(
     return 0
 
 
-def _local_lite_config_from_args(args: argparse.Namespace):
-    return local_lite_config(
+def _local_duckdb_config_from_args(args: argparse.Namespace):
+    return local_duckdb_config(
         args.memory_profile,
         memory_limit=args.memory_limit,
         temp_directory=args.temp_dir,
         threads=args.threads,
         query_chunk_size=args.query_chunk_size,
+        require_patient_friendly_resolutions=getattr(
+            args,
+            "require_patient_friendly_resolutions",
+            False,
+        ),
     )
 
 

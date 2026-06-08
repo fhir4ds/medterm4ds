@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Benchmark LocalLite patient-friendly resolution on a real UMLS DuckDB file."""
+"""Benchmark local DuckDB patient-friendly resolution on a real UMLS DuckDB file."""
 
 # ruff: noqa: E402
 
@@ -14,6 +14,7 @@ import time
 from collections import Counter
 from collections.abc import Sequence
 from dataclasses import asdict, dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 
 import duckdb
@@ -24,7 +25,13 @@ if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
 from medterm4ds import CodeRef, get_patient_friendly_names
-from medterm4ds.engines.duckdb import LocalLiteEngine
+from medterm4ds.engines.duckdb import LocalDuckDBEngine
+from medterm4ds.engines.duckdb.prepared import verify_mt4ds_schema
+from medterm4ds.services.schema_reporting import (
+    empty_schema_report_metadata,
+    report_db_role_metadata,
+    schema_report_metadata,
+)
 
 DEFAULT_SOURCES = (
     "ICD10CM",
@@ -55,9 +62,10 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--db",
-        default="/mnt/d/medterm/data/umls_local.duckdb",
+        default="/mnt/d/medterm4ds/data/umls_current.duckdb",
         help="Path to UMLS DuckDB database.",
     )
+    parser.add_argument("--db-role", default="unknown")
     parser.add_argument(
         "--sizes",
         default="100,1000,10000",
@@ -84,7 +92,7 @@ def parse_args() -> argparse.Namespace:
         "--query-chunk-size",
         type=int,
         default=5000,
-        help="Maximum code count per internal LocalLite query chunk.",
+        help="Maximum code count per internal local DuckDB query chunk.",
     )
     parser.add_argument("--temp-dir", default=None)
     parser.add_argument(
@@ -105,7 +113,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--progress",
         action="store_true",
-        help="Print source/chunk progress during LocalLite resolution.",
+        help="Print source/chunk progress during local DuckDB resolution.",
     )
     parser.add_argument(
         "--no-cache-indexes",
@@ -113,6 +121,14 @@ def parse_args() -> argparse.Namespace:
         help="Skip indexes when --prepare-cache is used.",
     )
     return parser.parse_args()
+
+
+def schema_metadata(con) -> dict[str, str | None]:
+    try:
+        report = verify_mt4ds_schema(con)
+    except Exception:
+        return empty_schema_report_metadata()
+    return schema_report_metadata(report)
 
 
 def rss_mb() -> float:
@@ -195,7 +211,7 @@ def load_sample(con, allocations: dict[str, int]) -> list[CodeRef]:
     return codes
 
 
-def run_one(con, engine: LocalLiteEngine, size: int, sources: Sequence[str], args) -> BenchmarkResult:
+def run_one(con, engine: LocalDuckDBEngine, size: int, sources: Sequence[str], args) -> BenchmarkResult:
     if args.sample_mode == "balanced":
         per_source = max(1, round(size / len(sources)))
         source_counts = dict.fromkeys(sources, per_source)
@@ -264,7 +280,7 @@ def main() -> int:
 
     con = duckdb.connect(str(db_path), read_only=True)
     try:
-        engine = LocalLiteEngine(
+        engine = LocalDuckDBEngine(
             con,
             memory_limit=args.memory_limit or None,
             temp_directory=args.temp_dir,
@@ -290,6 +306,7 @@ def main() -> int:
             result = run_one(con, engine, size, sources, args)
             results.append(result)
             print_result(result)
+        db_metadata = schema_metadata(con)
     finally:
         con.close()
 
@@ -301,8 +318,33 @@ def main() -> int:
 
     if args.output_json:
         output_path = Path(args.output_json)
+        db_role_metadata = report_db_role_metadata(args.db_role, db_metadata)
+        report = {
+            "generated_at": datetime.now(timezone.utc).isoformat(),
+            "db_path": str(db_path),
+            "db_role": db_role_metadata["db_role"],
+            "db_role_source": db_role_metadata["db_role_source"],
+            "manifest_db_role": db_metadata.get("manifest_db_role"),
+            "source_archive": db_metadata.get("source_archive"),
+            "umls_release": db_metadata.get("umls_release"),
+            "prepared_schema_version": db_metadata.get("prepared_schema_version"),
+            "patient_friendly_policy_version": db_metadata.get("patient_friendly_policy_version"),
+            "prepared_tables": db_metadata.get("prepared_tables"),
+            "missing_prepared_tables": db_metadata.get("missing_prepared_tables"),
+            "schema_errors": db_metadata.get("schema_errors"),
+            "sources": list(sources),
+            "sizes": sizes,
+            "max_depth": args.max_depth,
+            "threads": args.threads,
+            "memory_limit": args.memory_limit or None,
+            "query_chunk_size": args.query_chunk_size,
+            "sample_mode": args.sample_mode,
+            "prepare_cache": args.prepare_cache,
+            "no_cache_indexes": args.no_cache_indexes,
+            "results": [asdict(result) for result in results],
+        }
         output_path.write_text(
-            json.dumps([asdict(result) for result in results], indent=2),
+            json.dumps(report, indent=2),
             encoding="utf-8",
         )
         print(f"wrote {output_path}")

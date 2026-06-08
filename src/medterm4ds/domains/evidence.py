@@ -50,7 +50,7 @@ class EvidenceHttpClient:
         headers: Mapping[str, str] | None = None,
     ):
         self.timeout = timeout
-        self.headers = {"user-agent": "medterm4ds/0.1"}
+        self.headers = {"user-agent": "medterm4ds/0.0.1"}
         self.headers.update(dict(headers or {}))
 
     def get(self, url: str, params: Mapping[str, Any]) -> HttpResponse:

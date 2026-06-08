@@ -1,6 +1,13 @@
 """Core domain models for medterm4ds."""
 
-from .config import LOCAL_LITE_MEMORY_PROFILES, LocalLiteConfig, local_lite_config
+from .config import (
+    LOCAL_DUCKDB_MEMORY_PROFILES,
+    LOCAL_LITE_MEMORY_PROFILES,
+    LocalDuckDBConfig,
+    LocalLiteConfig,
+    local_duckdb_config,
+    local_lite_config,
+)
 from .models import (
     CodeInfo,
     CodeMapping,
@@ -30,7 +37,9 @@ __all__ = [
     "ConceptMapRow",
     "FriendlyNameResult",
     "NameSearchResult",
+    "LOCAL_DUCKDB_MEMORY_PROFILES",
     "LOCAL_LITE_MEMORY_PROFILES",
+    "LocalDuckDBConfig",
     "LocalLiteConfig",
     "OUTPUT_SCHEMA_VERSION",
     "OutputField",
@@ -40,6 +49,7 @@ __all__ = [
     "SourceStats",
     "get_output_schema",
     "list_output_schemas",
+    "local_duckdb_config",
     "local_lite_config",
     "normalize_source",
 ]

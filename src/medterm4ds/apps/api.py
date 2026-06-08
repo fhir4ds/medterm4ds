@@ -8,9 +8,9 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
 
-from medterm4ds.core.config import MemoryProfile, local_lite_config
+from medterm4ds.core.config import MemoryProfile, local_duckdb_config
 from medterm4ds.core.models import CodeRef
-from medterm4ds.engines.duckdb import LocalLiteEngine
+from medterm4ds.engines.duckdb import LocalDuckDBEngine
 from medterm4ds.services.conceptmap import get_concept_map
 from medterm4ds.services.discovery import (
     get_code_ttys,
@@ -47,6 +47,7 @@ class ApiSettings:
     query_chunk_size: int | None = None
     prepare_cache: bool = True
     cache_indexes: bool = False
+    require_patient_friendly_resolutions: bool = False
 
     @classmethod
     def from_env(cls) -> ApiSettings:
@@ -63,6 +64,10 @@ class ApiSettings:
             query_chunk_size=_env_int("MEDTERM4DS_QUERY_CHUNK_SIZE"),
             prepare_cache=_env_bool("MEDTERM4DS_PREPARE_CACHE", True),
             cache_indexes=_env_bool("MEDTERM4DS_CACHE_INDEXES", False),
+            require_patient_friendly_resolutions=_env_bool(
+                "MEDTERM4DS_REQUIRE_PATIENT_FRIENDLY_RESOLUTIONS",
+                False,
+            ),
         )
 
 
@@ -148,14 +153,15 @@ def create_app(settings: ApiSettings | None = None) -> FastAPI:
             raise RuntimeError(f"Database not found: {app_settings.db_path}")
 
         con = duckdb.connect(str(app_settings.db_path), read_only=True)
-        config = local_lite_config(
+        config = local_duckdb_config(
             app_settings.memory_profile,
             memory_limit=app_settings.memory_limit,
             temp_directory=app_settings.temp_directory,
             threads=app_settings.threads,
             query_chunk_size=app_settings.query_chunk_size,
+            require_patient_friendly_resolutions=app_settings.require_patient_friendly_resolutions,
         )
-        engine = LocalLiteEngine(con, config=config)
+        engine = LocalDuckDBEngine(con, config=config)
         if app_settings.prepare_cache:
             engine.prepare_cache(app_settings.sources, create_indexes=app_settings.cache_indexes)
 
@@ -171,7 +177,7 @@ def create_app(settings: ApiSettings | None = None) -> FastAPI:
 
     app = FastAPI(
         title="medterm4ds",
-        version="0.1.0",
+        version="0.0.1",
         lifespan=lifespan,
     )
 
@@ -343,7 +349,7 @@ def create_app(settings: ApiSettings | None = None) -> FastAPI:
     return app
 
 
-def _engine(request: Request) -> LocalLiteEngine:
+def _engine(request: Request) -> LocalDuckDBEngine:
     engine = getattr(request.app.state, "engine", None)
     if engine is None:
         raise HTTPException(status_code=503, detail="Terminology engine is not ready.")

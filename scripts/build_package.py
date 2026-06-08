@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build and optionally publish medterm4ds distributions."""
+"""Build and optionally publish medterm4ds distributions with Hatch."""
 
 from __future__ import annotations
 
@@ -17,7 +17,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--skip-verify", action="store_true", help="Skip make verify before building.")
     parser.add_argument("--clean", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--publish", choices=("none", "testpypi", "pypi"), default="none")
-    parser.add_argument("--repository-url", default=None, help="Explicit twine repository URL.")
+    parser.add_argument("--repository", default=None, help="Explicit Hatch repository name.")
     return parser.parse_args()
 
 
@@ -28,18 +28,18 @@ def main() -> int:
     if args.clean:
         shutil.rmtree(ROOT / "dist", ignore_errors=True)
         shutil.rmtree(ROOT / "build", ignore_errors=True)
-    _run([sys.executable, "-m", "build"])
+    _run(["hatch", "build"])
     dist_files = sorted(str(path) for path in (ROOT / "dist").glob("*"))
     if not dist_files:
         raise RuntimeError("No distribution files were built.")
     _run([sys.executable, "-m", "twine", "check", *dist_files])
     if args.publish != "none":
-        command = [sys.executable, "-m", "twine", "upload"]
-        if args.repository_url:
-            command.extend(["--repository-url", args.repository_url])
+        command = ["hatch", "publish"]
+        if args.repository:
+            command.extend(["--repo", args.repository])
         elif args.publish == "testpypi":
-            command.extend(["--repository", "testpypi"])
-        command.extend(dist_files)
+            command.extend(["--repo", "testpypi"])
+        command.extend(["--no-prompt", *dist_files])
         _run(command)
     return 0
 

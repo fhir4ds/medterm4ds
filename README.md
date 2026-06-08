@@ -1,6 +1,8 @@
-# medterm4ds
+# Medical Terminology for Data Science
 
-`medterm4ds` is a refactor/prototype for batch-first medical terminology workflows.
+`medterm4ds` is the Python package and CLI for Medical Terminology for Data
+Science: UMLS-backed terminology lookup, mapping, patient-friendly names,
+value set optimization, and interoperability workflows.
 
 The current slice focuses on exact code lookup, source inventory/search,
 same-CUI plus bounded hierarchy source mapping, hierarchy traversal, and
@@ -13,7 +15,7 @@ patient-friendly names:
 - same-CUI mappings from source codes to target vocabularies
 - same-source parent, child, ancestor, and descendant traversal
 - ConceptMap rows derived from patient-friendly results
-- DuckDB `LocalLiteEngine`
+- local DuckDB engine
 - dirty-working-tree parity adapter for `/mnt/d/medterm`
 - output helpers for records, JSONL, CSV, FHIR ConceptMap JSON, and optional
   pandas or Polars DataFrames
@@ -23,13 +25,30 @@ patient-friendly names:
 - optional openFDA label and PubMed guideline evidence adapters for MCP/domain
   compatibility tools
 
+## Notebook Quickstart
+
+```python
+import medterm4ds as mt
+
+terms = mt.connect("/mnt/d/medterm4ds/data/umls_current.duckdb", memory_profile="low")
+
+info = terms.lookup("ICD10CM", "E11.9")
+friendly = terms.patient_friendly("ICD10CM", "E11.9")
+mappings = terms.map("ICD10CM", "E11.9", target_sources=["SNOMEDCT_US"])
+
+df = terms.patient_friendly_df("ICD10CM", ["E11.9", "E11.40", "E11.42"])
+```
+
+Use the CLI for automation, validation, and bulk file exports. Use the service
+functions and engines directly when you need lower-level control.
+
 ## Layout
 
 ```text
 src/medterm4ds/
   core/                  # CodeRef, CodeInfo, CodeMapping, CodeRelation models
   engines/
-    duckdb/              # LocalLite DuckDB execution
+    duckdb/              # local DuckDB execution
     medterm_baseline/    # comparison adapter for /mnt/d/medterm
   services/              # public batch-first service functions
   ds.py                  # DataFrame-friendly service wrappers
@@ -48,11 +67,13 @@ Common commands are captured in the `Makefile`:
 make test
 make compile
 make verify
+make notebook-smoke
 make parity-smoke
 make acceptance-smoke
 make bulk-validation-smoke
 make mapping-quality-smoke
 make build
+make wheel-install-smoke
 ```
 
 Install extras as needed:
@@ -67,17 +88,17 @@ pip install -e '.[dev]'
 
 ## Current Scope
 
-The lookup vertical slice is `get_code_infos(...)`. It returns one active UMLS
-atom row per input code, preserving input order and returning `None` for missing
-or suppressed-only codes.
+For notebooks, prefer the `Terminology` facade created by `connect(...)` or
+`connect_remote(...)`. The lookup vertical slice is also available directly as
+`get_code_infos(...)`. It returns one active UMLS atom row per input code,
+preserving input order and returning `None` for missing or suppressed-only
+codes.
 
 ```python
-from medterm4ds import CodeRef, get_code_infos
+import medterm4ds as mt
 
-infos = get_code_infos(
-    [CodeRef("ICD10CM", "E11.9")],
-    engine=engine,
-)
+terms = mt.connect("/mnt/d/medterm4ds/data/umls_current.duckdb")
+info = terms.lookup("ICD10CM", "E11.9")
 ```
 
 Historical, obsolete, and NDC inputs are handled by `resolve_codes(...)`.
@@ -85,12 +106,10 @@ Resolution is explicit for normal code systems and automatic for `source="NDC"`
 when a service receives an NDC input.
 
 ```python
-from medterm4ds import CodeRef, resolve_codes
+import medterm4ds as mt
 
-rows = resolve_codes(
-    [CodeRef("NDC", "0002-0821-01")],
-    engine=engine,
-)
+terms = mt.connect("/mnt/d/medterm4ds/data/umls_current.duckdb")
+row = terms.resolve("NDC", "0002-0821-01")
 ```
 
 Resolution rows preserve the input, the current/effective code when one is
@@ -102,15 +121,10 @@ explicit.
 The discovery vertical slice exposes inventory and search helpers:
 
 ```python
-from medterm4ds import search_names
+import medterm4ds as mt
 
-results = search_names(
-    "diabetes",
-    engine=engine,
-    sources=["ICD10CM", "SNOMEDCT_US"],
-    tty_filters=["PT"],
-    limit=25,
-)
+terms = mt.connect("/mnt/d/medterm4ds/data/umls_current.duckdb")
+results = terms.search("diabetes", sources=["ICD10CM", "SNOMEDCT_US"], limit=25)
 ```
 
 The mapping vertical slice is `get_code_mappings(...)`. It returns active
@@ -118,13 +132,10 @@ same-CUI target mappings for one or many source codes, preserving input order
 and using structured provenance to show the selected source atom and target atom.
 
 ```python
-from medterm4ds import CodeRef, get_code_mappings
+import medterm4ds as mt
 
-mappings = get_code_mappings(
-    [CodeRef("ICD10CM", "E11.9")],
-    engine=engine,
-    target_sources=["SNOMEDCT_US"],
-)
+terms = mt.connect("/mnt/d/medterm4ds/data/umls_current.duckdb")
+mappings = terms.map("ICD10CM", "E11.9", target_sources=["SNOMEDCT_US"])
 ```
 
 The valueset optimization slice is `optimize_codes(...)`. It uses same-source
@@ -132,12 +143,10 @@ hierarchy relationships to compact a list of leaf codes into include/exclude
 rules.
 
 ```python
-from medterm4ds import CodeRef, optimize_codes
+import medterm4ds as mt
 
-result = optimize_codes(
-    [CodeRef("ICD10CM", "E11.40"), CodeRef("ICD10CM", "E11.41")],
-    engine=engine,
-)
+terms = mt.connect("/mnt/d/medterm4ds/data/umls_current.duckdb")
+result = terms.optimize("ICD10CM", ["E11.40", "E11.41"])
 ```
 
 The hierarchy vertical slice is `get_code_relations(...)`. It returns flat
@@ -145,13 +154,10 @@ The hierarchy vertical slice is `get_code_relations(...)`. It returns flat
 relationships.
 
 ```python
-from medterm4ds import CodeRef, get_ancestors
+import medterm4ds as mt
 
-relations = get_ancestors(
-    [CodeRef("ICD10CM", "E11.9")],
-    engine=engine,
-    max_depth=3,
-)
+terms = mt.connect("/mnt/d/medterm4ds/data/umls_current.duckdb")
+relations = terms.ancestors("ICD10CM", "E11.9", max_depth=3)
 ```
 
 The patient-friendly vertical slice is `get_patient_friendly_names(...)`. It
@@ -165,31 +171,30 @@ covers:
 - CVX
 - CPT and HCPCS
 
-The LocalLite engine is DuckDB-only and avoids loading a full in-memory graph.
-It uses temporary input tables and set-based SQL for source grouping,
-cross-reference, hierarchy fallback, and source-specific strategies.
+The local DuckDB engine avoids loading a full in-memory graph. It uses
+temporary input tables and set-based SQL for source grouping, cross-reference,
+hierarchy fallback, and source-specific strategies.
 
 ## DataFrames and Schemas
 
-`medterm4ds.outputs.to_dataframe(...)` converts service rows to pandas by
-default, or Polars with `backend="polars"` when Polars is installed. The
-`medterm4ds.ds` module adds notebook-friendly wrappers over the same service
-layer:
+The `Terminology` facade exposes `_df` methods for notebooks. They return
+pandas by default, or Polars with `backend="polars"` when Polars is installed.
 
 ```python
-from medterm4ds import CodeRef, lookup_dataframe, map_dataframe
+import medterm4ds as mt
 
-lookup_df = lookup_dataframe(
-    [CodeRef("ICD10CM", "E11.9")],
-    engine=engine,
-)
+terms = mt.connect("/mnt/d/medterm4ds/data/umls_current.duckdb")
 
-mapping_df = map_dataframe(
-    [CodeRef("ICD10CM", "E11.9")],
-    engine=engine,
+lookup_df = terms.lookup_df("ICD10CM", ["E11.9", "E11.40"])
+mapping_df = terms.map_df(
+    "ICD10CM",
+    ["E11.9", "E11.40"],
     target_sources=["SNOMEDCT_US"],
 )
 ```
+
+`medterm4ds.outputs.to_dataframe(...)` and the `medterm4ds.ds` module remain
+available for lower-level service rows.
 
 Stable result shapes are exposed through versioned schemas:
 
@@ -207,12 +212,10 @@ support chunked iteration for bulk exports without introducing a separate bulk
 transform implementation.
 
 ```python
-from medterm4ds import CodeRef, get_concept_map
+import medterm4ds as mt
 
-rows = get_concept_map(
-    [CodeRef("ICD10CM", "E11.9")],
-    engine=engine,
-)
+terms = mt.connect("/mnt/d/medterm4ds/data/umls_current.duckdb")
+rows = terms.conceptmap("ICD10CM", ["E11.9"])
 ```
 
 For streaming export:
@@ -233,24 +236,24 @@ patient-friendly services and write JSONL or CSV with checkpoint sidecars:
 
 ```bash
 medterm4ds bulk lookup \
-  --db /mnt/d/medterm/data/umls_local.duckdb \
+  --db /mnt/d/medterm4ds/data/umls_current.duckdb \
   --sources ICD10CM,CVX \
   --output lookup.jsonl
 
 medterm4ds bulk map \
-  --db /mnt/d/medterm/data/umls_local.duckdb \
+  --db /mnt/d/medterm4ds/data/umls_current.duckdb \
   --sources ICD10CM,LNC,CPT,HCPCS \
   --target-sources SNOMEDCT_US \
   --output source_to_snomed.jsonl
 
 medterm4ds bulk hierarchy \
-  --db /mnt/d/medterm/data/umls_local.duckdb \
+  --db /mnt/d/medterm4ds/data/umls_current.duckdb \
   --sources ICD10CM \
   --direction parents \
   --output icd10_parents.jsonl
 
 medterm4ds bulk patient-friendly \
-  --db /mnt/d/medterm/data/umls_local.duckdb \
+  --db /mnt/d/medterm4ds/data/umls_current.duckdb \
   --sources ICD10CM,RXNORM,LNC,CVX \
   --output friendly_names.csv
 ```
@@ -261,7 +264,7 @@ For exact active atom lookup:
 
 ```bash
 medterm4ds lookup \
-  --db /mnt/d/medterm/data/umls_local.duckdb \
+  --db /mnt/d/medterm4ds/data/umls_current.duckdb \
   --source ICD10CM \
   --code E11.9
 ```
@@ -273,7 +276,7 @@ For source-to-source mapping:
 
 ```bash
 medterm4ds map \
-  --db /mnt/d/medterm/data/umls_local.duckdb \
+  --db /mnt/d/medterm4ds/data/umls_current.duckdb \
   --source ICD10CM \
   --code E11.9 \
   --target-source SNOMEDCT_US
@@ -289,7 +292,7 @@ For a bulk mapping ConceptMap:
 
 ```bash
 medterm4ds conceptmap mapping \
-  --db /mnt/d/medterm/data/umls_local.duckdb \
+  --db /mnt/d/medterm4ds/data/umls_current.duckdb \
   --sources ICD10CM,LNC,CPT,HCPCS \
   --target-sources SNOMEDCT_US \
   --output source_to_snomed_conceptmap.jsonl \
@@ -301,7 +304,7 @@ Mapping ConceptMaps can be written as JSONL, CSV, or FHIR R4 JSON:
 
 ```bash
 medterm4ds conceptmap mapping \
-  --db /mnt/d/medterm/data/umls_local.duckdb \
+  --db /mnt/d/medterm4ds/data/umls_current.duckdb \
   --sources ICD10CM \
   --target-sources SNOMEDCT_US \
   --output icd10_to_snomed_conceptmap.json \
@@ -312,7 +315,7 @@ For historical/obsolete input resolution:
 
 ```bash
 medterm4ds resolve \
-  --db /mnt/d/medterm/data/umls_local.duckdb \
+  --db /mnt/d/medterm4ds/data/umls_current.duckdb \
   --source NDC \
   --code 0002-0821-01 \
   --format table
@@ -322,7 +325,7 @@ For valueset optimization:
 
 ```bash
 medterm4ds optimize \
-  --db /mnt/d/medterm/data/umls_local.duckdb \
+  --db /mnt/d/medterm4ds/data/umls_current.duckdb \
   --source ICD10CM \
   --code E11.40 \
   --code E11.41 \
@@ -336,21 +339,21 @@ For terminology discovery:
 
 ```bash
 medterm4ds sources \
-  --db /mnt/d/medterm/data/umls_local.duckdb \
+  --db /mnt/d/medterm4ds/data/umls_current.duckdb \
   --sources ICD10CM,LNC,SNOMEDCT_US
 
 medterm4ds sample-codes \
-  --db /mnt/d/medterm/data/umls_local.duckdb \
+  --db /mnt/d/medterm4ds/data/umls_current.duckdb \
   --sources ICD10CM,CVX \
   --per-source 10
 
 medterm4ds code-ttys \
-  --db /mnt/d/medterm/data/umls_local.duckdb \
+  --db /mnt/d/medterm4ds/data/umls_current.duckdb \
   --source ICD10CM \
   --code E11.9
 
 medterm4ds search-names \
-  --db /mnt/d/medterm/data/umls_local.duckdb \
+  --db /mnt/d/medterm4ds/data/umls_current.duckdb \
   --query diabetes \
   --sources ICD10CM,SNOMEDCT_US \
   --tty PT \
@@ -361,7 +364,7 @@ For hierarchy traversal:
 
 ```bash
 medterm4ds hierarchy ancestors \
-  --db /mnt/d/medterm/data/umls_local.duckdb \
+  --db /mnt/d/medterm4ds/data/umls_current.duckdb \
   --source ICD10CM \
   --code E11.9 \
   --max-depth 3
@@ -375,7 +378,7 @@ DuckDB UMLS database:
 
 ```bash
 medterm4ds conceptmap patient-friendly \
-  --db /mnt/d/medterm/data/umls_local.duckdb \
+  --db /mnt/d/medterm4ds/data/umls_current.duckdb \
   --sources ICD10CM,ICD10PCS,SNOMEDCT_US,RXNORM,LNC,CVX,CPT,HCPCS \
   --output patient_friendly_conceptmap.jsonl \
   --memory-profile balanced \
@@ -386,7 +389,7 @@ Output can be JSONL or CSV:
 
 ```bash
 medterm4ds conceptmap patient-friendly \
-  --db /mnt/d/medterm/data/umls_local.duckdb \
+  --db /mnt/d/medterm4ds/data/umls_current.duckdb \
   --sources ICD10CM,RXNORM,LNC \
   --output patient_friendly_conceptmap.csv \
   --format csv
@@ -396,7 +399,7 @@ For a FHIR R4 ConceptMap JSON resource:
 
 ```bash
 medterm4ds conceptmap patient-friendly \
-  --db /mnt/d/medterm/data/umls_local.duckdb \
+  --db /mnt/d/medterm4ds/data/umls_current.duckdb \
   --sources ICD10CM,RXNORM,LNC \
   --output patient_friendly_conceptmap.json \
   --format fhir-json
@@ -416,7 +419,7 @@ Named memory profiles:
 - `low`: `512MB`, one DuckDB thread, 1,000-code internal chunks.
 
 Any profile setting can be overridden with `--memory-limit`, `--threads`,
-`--query-chunk-size`, or `--temp-dir`. The CLI prepares LocalLite temp caches by
+`--query-chunk-size`, or `--temp-dir`. The CLI prepares local DuckDB temp caches by
 default; use `--no-prepare-cache` for small smoke tests or debugging.
 
 Long exports write a checkpoint sidecar by default:
@@ -429,7 +432,7 @@ To resume an interrupted run, rerun the same command with `--resume`:
 
 ```bash
 medterm4ds conceptmap patient-friendly \
-  --db /mnt/d/medterm/data/umls_local.duckdb \
+  --db /mnt/d/medterm4ds/data/umls_current.duckdb \
   --sources ICD10CM,ICD10PCS,SNOMEDCT_US,RXNORM,LNC,CVX,CPT,HCPCS \
   --output patient_friendly_conceptmap.jsonl \
   --memory-profile low \
@@ -448,32 +451,54 @@ a custom checkpoint path and `--checkpoint-every` to control update frequency.
 Tests compare semantic fields against the dirty `/mnt/d/medterm` working tree
 where the exported bulk implementation is usable. The current medterm bulk path
 raises a `KeyError: 'friendly_name'` for one CPT-to-HCPCS fallback branch, so
-that specific branch is covered as a LocalLite behavior test instead of a parity
+that specific branch is covered as a local DuckDB behavior test instead of a parity
 test.
 
 For replacement-readiness checks, run the parity harness:
 
 ```bash
 python3 scripts/compare_patient_friendly_parity.py \
-  --db /mnt/d/medterm/data/umls_local.duckdb \
+  --db /mnt/d/medterm4ds/data/umls_current.duckdb \
   --medterm-path /mnt/d/medterm \
   --sources ICD10CM,ICD10PCS,HCPCS,SNOMEDCT_US,RXNORM,LNC,CVX,CPT \
   --per-source 25 \
+  --sample-mode tty \
+  --per-tty 3 \
+  --compare-batch-size 25 \
   --output-json parity_patient_friendly.json \
   --output-md parity_patient_friendly.md \
+  --output-csv parity_patient_friendly.csv \
   --progress
 ```
 
 The report compares `name`, `friendly_source`, `match_type`, and `match_depth`
-against dirty `medterm`. Known old-medterm CPT fallback failures are marked as
-`baseline_error_known` with the issue id
+against dirty `medterm`. `--sample-mode tty` spreads samples across source TTYs,
+which is especially useful for RxNorm topology coverage. Known old-medterm CPT
+fallback failures are marked as `baseline_error_known` with the issue id
 `medterm_cpt_hcpcs_friendly_name_keyerror`.
+
+For a practical source-by-source review, use the matrix runner. It writes one
+JSON/Markdown/CSV report per source plus `index.json`, `index.md`, and
+`index.csv` in the work directory.
+
+```bash
+python3 scripts/run_patient_friendly_parity_matrix.py \
+  --db /mnt/d/medterm4ds/data/umls_current.duckdb \
+  --medterm-path /mnt/d/medterm \
+  --sources ICD10CM,ICD10PCS,HCPCS,SNOMEDCT_US,RXNORM,LNC,CVX,CPT \
+  --per-source 5 \
+  --rxnorm-per-source 20 \
+  --compare-batch-size 10 \
+  --timeout-seconds 180 \
+  --work-dir reports/quality/patient_friendly_parity \
+  --no-prepare-cache
+```
 
 To smoke-test the CLI workflow end to end:
 
 ```bash
 python3 scripts/run_cli_acceptance.py \
-  --db /mnt/d/medterm/data/umls_local.duckdb \
+  --db /mnt/d/medterm4ds/data/umls_current.duckdb \
   --sources ICD10CM,CVX \
   --limit 20 \
   --work-dir acceptance_outputs \
@@ -486,7 +511,7 @@ To smoke-test lookup, mapping, and hierarchy against a real UMLS DuckDB file:
 
 ```bash
 python3 scripts/run_real_data_smoke.py \
-  --db /mnt/d/medterm/data/umls_local.duckdb \
+  --db /mnt/d/medterm4ds/data/umls_current.duckdb \
   --source ICD10CM \
   --target-source SNOMEDCT_US \
   --output-json real_data_smoke.json
@@ -496,7 +521,7 @@ To run bounded real-data bulk workflow validation:
 
 ```bash
 python3 scripts/run_bulk_validation.py \
-  --db /mnt/d/medterm/data/umls_local.duckdb \
+  --db /mnt/d/medterm4ds/data/umls_current.duckdb \
   --work-dir validation_outputs \
   --output-json bulk_validation_report.json \
   --limit 1000 \
@@ -514,40 +539,91 @@ To sample crosswalk quality and flag rows for review:
 
 ```bash
 python3 scripts/review_mapping_quality.py \
-  --db /mnt/d/medterm/data/umls_local.duckdb \
+  --db /mnt/d/medterm4ds/data/umls_current.duckdb \
   --pairs ICD10CM:SNOMEDCT_US,LNC:SNOMEDCT_US,CPT:SNOMEDCT_US,HCPCS:SNOMEDCT_US \
   --per-source 250 \
-  --output-json mapping_quality_report.json
+  --output-json reports/quality/mapping_quality_report.json \
+  --output-csv reports/quality/mapping_review_cases.csv
 ```
 
 The mapping quality report counts `match_type`, `relationship`, and review
 flags such as hierarchy fallback, many targets for one source code, broad target
-display names, and low source/target name overlap. It is a triage aid, not a
-clinical validation substitute.
+display names, and low source/target name overlap. The CSV writes one flagged
+case per row with filterable flag columns and a blank `review_notes` column for
+spreadsheet review. It is a triage aid, not a clinical validation substitute.
 
 ## Data Setup
 
-The CLI can download UTS release files with a UMLS API key and build the
-minimal LocalLite DuckDB schema:
+Python helpers can download UTS release files with a UMLS API key and build the
+compact local DuckDB schema:
 
-```bash
-export UMLS_API_KEY=...
+```python
+import os
+import medterm4ds as mt
 
-medterm4ds data download \
-  --output-dir data/downloads \
-  --release-type umls-full-release \
-  --extract
+archive = mt.download_umls_release(
+    output_dir="data/umls",
+    api_key=os.environ["UMLS_API_KEY"],
+    release_version="2025AB",  # optional; omit to use the latest returned release
+    extract=True,
+)
 
-medterm4ds data build-duckdb \
-  --rrf-dir data/downloads/<extracted-release>/META \
-  --output-db data/umls_local.duckdb
+db_path = mt.build_umls_duckdb(
+    rrf_dir="data/umls/<extracted-release>/2025AB/META",
+    output_db="data/umls_current.duckdb",
+)
+mt.annotate_umls_duckdb(
+    db_path,
+    db_role="current_candidate",
+    release_version="2025AB",
+    source_archive=archive,
+)
 
-medterm4ds data verify \
-  --db data/umls_local.duckdb
+report = mt.verify_umls_duckdb(db_path)
 ```
 
 The builder loads `MRCONSO.RRF`, `MRREL.RRF`, and `MRSAT.RRF` into the compact
-tables used by LocalLite. `MRSAT.RRF` is needed for NDC to RxCUI resolution.
+tables used by local DuckDB workflows. It accepts flat `MR*.RRF` files,
+`MR*.RRF.gz` files, or `.nlm` archives containing `MR*.RRF.*.gz` shards. The
+default downloader uses the UMLS Metathesaurus Full Subset release type and
+saves raw files under `data/umls` unless you choose another directory.
+`MRSAT.RRF` is needed for NDC to RxCUI resolution. Builds also create derived
+guardrail tables, including `snomed_top_level_depth`, which is used to suppress
+overly broad non-exact SNOMED cross-reference targets.
+
+For an existing database, refresh derived tables without rebuilding from RRF:
+
+```python
+mt.prepare_umls_duckdb("data/umls_current.duckdb", replace=True)
+```
+
+The CLI provides equivalent operational commands under `medterm4ds data`.
+The repo also includes a setup script that stores raw downloads under `data/umls`
+by default:
+
+```bash
+python3 scripts/download_umls_release.py \
+  --release-version 2025AB \
+  --output-dir data/umls \
+  --extract \
+  --build \
+  --db-role current_candidate \
+  --output-db data/umls_current.duckdb \
+  --replace
+```
+
+To build a fixed 2025AB parity fixture from an existing archive:
+
+```bash
+python3 scripts/download_umls_release.py \
+  --archive /mnt/d/medterm/data/umls-2025AB-metathesaurus-full.zip \
+  --output-dir data/umls \
+  --extract \
+  --build \
+  --db-role medterm4ds_2025ab_fixture \
+  --output-db data/umls_2025ab.duckdb \
+  --replace
+```
 
 ## API
 
@@ -556,7 +632,7 @@ as one DuckDB database per process, so the engine can be opened once and reused
 across requests.
 
 ```bash
-export MEDTERM4DS_DB=/mnt/d/medterm/data/umls_local.duckdb
+export MEDTERM4DS_DB=/mnt/d/medterm4ds/data/umls_current.duckdb
 export MEDTERM4DS_SOURCES=ICD10CM,ICD10PCS,SNOMEDCT_US,RXNORM,LNC,CVX,CPT,HCPCS
 export MEDTERM4DS_MEMORY_PROFILE=balanced
 export MEDTERM4DS_PREPARE_CACHE=true
@@ -664,7 +740,7 @@ API environment variables:
 The MCP server uses the same single-database process model as the API:
 
 ```bash
-export MEDTERM4DS_DB=/mnt/d/medterm/data/umls_local.duckdb
+export MEDTERM4DS_DB=/mnt/d/medterm4ds/data/umls_current.duckdb
 export MEDTERM4DS_SOURCES=ICD10CM,ICD10PCS,SNOMEDCT_US,RXNORM,LNC,CVX,CPT,HCPCS
 export MEDTERM4DS_MEMORY_PROFILE=balanced
 export MEDTERM4DS_PREPARE_CACHE=true
@@ -740,12 +816,12 @@ documents E-utilities at https://www.ncbi.nlm.nih.gov/books/NBK25499/.
 
 ## Benchmarking
 
-The benchmark script exercises the LocalLite patient-friendly path against a
+The benchmark script exercises the local DuckDB patient-friendly path against a
 real UMLS DuckDB file:
 
 ```bash
-python3 scripts/benchmark_locallite_patient_friendly.py \
-  --db /mnt/d/medterm/data/umls_local.duckdb \
+python3 scripts/benchmark_local_duckdb_patient_friendly.py \
+  --db /mnt/d/medterm4ds/data/umls_current.duckdb \
   --prepare-cache \
   --no-cache-indexes \
   --memory-limit 1GB \
@@ -755,7 +831,7 @@ python3 scripts/benchmark_locallite_patient_friendly.py \
   --progress
 ```
 
-Measured profiles on `/mnt/d/medterm/data/umls_local.duckdb`:
+Measured profiles on `/mnt/d/medterm4ds/data/umls_current.duckdb`:
 
 - Fast low-memory-ish: `--memory-limit 1GB`, default DuckDB threads, 83,212
   balanced codes in 100.62s, 827 codes/s, peak RSS 2.55 GB.
@@ -780,3 +856,10 @@ Publish targets are available once credentials are configured for Twine:
 make publish-test
 make publish
 ```
+
+## License
+
+Medical Terminology for Data Science is licensed under the GNU General Public
+License version 3.0 only (`GPL-3.0-only`). UMLS and source terminology data are
+licensed separately and require users to follow the applicable UMLS/source
+vocabulary terms.

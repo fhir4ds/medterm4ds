@@ -38,6 +38,23 @@ def count_source_codes(con, sources: Sequence[str] | str | None = None) -> dict[
         return {}
 
     placeholders = ",".join(["?"] * len(normalized_sources))
+    if _has_prepared_best_atoms(con):
+        rows = con.execute(
+            f"""
+            SELECT source, COUNT(DISTINCT code)
+            FROM mt4ds.best_atoms
+            WHERE is_active = true
+              AND rank = 1
+              AND code IS NOT NULL
+              AND code != ''
+              AND source IN ({placeholders})
+            GROUP BY source
+            ORDER BY source
+            """,
+            list(normalized_sources),
+        ).fetchall()
+        return {source: int(count) for source, count in rows}
+
     rows = con.execute(
         f"""
         SELECT SAB, COUNT(DISTINCT CODE)
@@ -88,22 +105,36 @@ def iter_source_codes(
         if remaining is not None and remaining <= 0:
             return
 
-        sql = """
-            SELECT CODE
-            FROM mrconso
-            WHERE SUPPRESS = 'N'
-              AND CODE IS NOT NULL
-              AND CODE != ''
-              AND SAB = ?
-        """
+        if _has_prepared_best_atoms(con):
+            sql = """
+                SELECT code
+                FROM mt4ds.best_atoms
+                WHERE is_active = true
+                  AND rank = 1
+                  AND code IS NOT NULL
+                  AND code != ''
+                  AND source = ?
+            """
+            code_column = "code"
+        else:
+            sql = """
+                SELECT CODE
+                FROM mrconso
+                WHERE SUPPRESS = 'N'
+                  AND CODE IS NOT NULL
+                  AND CODE != ''
+                  AND SAB = ?
+            """
+            code_column = "CODE"
         params: list[object] = [source]
         if resume_after and source == resume_after.source:
-            sql += " AND CODE > ?"
+            sql += f" AND {code_column} > ?"
             params.append(resume_after.code)
         sql += """
-            GROUP BY CODE
-            ORDER BY CODE
+            GROUP BY {code_column}
+            ORDER BY {code_column}
         """
+        sql = sql.format(code_column=code_column)
         if remaining is not None:
             sql += " LIMIT ?"
             params.append(remaining)
@@ -116,3 +147,19 @@ def iter_source_codes(
             for (code,) in rows:
                 yield CodeRef(source=source, code=code)
                 yielded += 1
+
+
+def _has_prepared_best_atoms(con) -> bool:
+    try:
+        row = con.execute(
+            """
+            SELECT 1
+            FROM information_schema.tables
+            WHERE table_schema = 'mt4ds'
+              AND table_name = 'best_atoms'
+            LIMIT 1
+            """
+        ).fetchone()
+    except Exception:
+        return False
+    return bool(row)

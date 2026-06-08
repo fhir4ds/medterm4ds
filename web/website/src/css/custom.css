@@ -1,0 +1,102 @@
+/**
+ * medterm4ds technical documentation theme.
+ * Related to the fhir4ds dark documentation style, but tuned for terminology
+ * operations: calm slate, mint accents, and dense code-first pages.
+ */
+
+:root {
+  --ifm-color-primary: #54c6ff;
+  --ifm-color-primary-dark: #24b5ff;
+  --ifm-color-primary-darker: #0aa8f5;
+  --ifm-color-primary-darkest: #087fc0;
+  --ifm-color-primary-light: #81d6ff;
+  --ifm-color-primary-lighter: #a6e2ff;
+  --ifm-color-primary-lightest: #d5f2ff;
+  --ifm-code-font-size: 94%;
+  --ifm-font-family-base: Inter, system-ui, -apple-system, sans-serif;
+  --ifm-heading-font-weight: 750;
+  --docusaurus-highlighted-code-line-bg: rgba(84, 198, 255, 0.12);
+}
+
+[data-theme='dark'] {
+  --ifm-color-primary: #54c6ff;
+  --ifm-color-primary-dark: #24b5ff;
+  --ifm-color-primary-darker: #0aa8f5;
+  --ifm-color-primary-darkest: #087fc0;
+  --ifm-color-primary-light: #81d6ff;
+  --ifm-color-primary-lighter: #a6e2ff;
+  --ifm-color-primary-lightest: #d5f2ff;
+  --ifm-background-color: #08111f;
+  --ifm-background-surface-color: #111d2d;
+  --ifm-navbar-background-color: #08111f;
+  --ifm-footer-background-color: #030915;
+  --ifm-toc-border-color: rgba(84, 198, 255, 0.16);
+  --ifm-table-border-color: rgba(84, 198, 255, 0.16);
+  --docusaurus-highlighted-code-line-bg: rgba(84, 198, 255, 0.12);
+}
+
+.navbar {
+  border-bottom: 1px solid rgba(84, 198, 255, 0.16);
+  box-shadow: 0 1px 8px rgba(0, 0, 0, 0.35);
+}
+
+.navbar__title {
+  color: #8ee6c1;
+  font-size: 0.98rem;
+  font-weight: 850;
+  white-space: normal;
+}
+
+.navbar-github-link {
+  width: 24px;
+  height: 24px;
+  margin-left: 0.75rem;
+  padding: 0;
+}
+
+.navbar-github-link::before {
+  content: '';
+  display: block;
+  width: 24px;
+  height: 24px;
+  background-color: var(--ifm-navbar-link-color);
+  mask: url('/img/github.svg') no-repeat center / contain;
+  -webkit-mask: url('/img/github.svg') no-repeat center / contain;
+}
+
+.navbar-github-link:hover::before {
+  background-color: #8ee6c1;
+}
+
+.footer {
+  border-top: 1px solid rgba(84, 198, 255, 0.14);
+}
+
+.theme-doc-sidebar-container {
+  border-right-color: rgba(84, 198, 255, 0.12) !important;
+}
+
+.menu__link {
+  border-radius: 6px;
+}
+
+.menu__link--active {
+  color: #8ee6c1;
+  background: rgba(142, 230, 193, 0.08);
+}
+
+.theme-code-block {
+  border: 1px solid rgba(84, 198, 255, 0.16);
+}
+
+table {
+  border: 1px solid rgba(84, 198, 255, 0.16);
+}
+
+thead {
+  background: rgba(84, 198, 255, 0.08);
+}
+
+.theme-admonition {
+  border-radius: 8px;
+}

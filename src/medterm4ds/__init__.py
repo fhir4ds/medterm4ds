@@ -1,6 +1,16 @@
-"""Batch-first medical terminology utilities."""
+"""Medical Terminology for Data Science."""
 
-from .core.config import LOCAL_LITE_MEMORY_PROFILES, LocalLiteConfig, local_lite_config
+__version__ = "0.0.1"
+
+from .client import Terminology, connect, connect_remote
+from .core.config import (
+    LOCAL_DUCKDB_MEMORY_PROFILES,
+    LOCAL_LITE_MEMORY_PROFILES,
+    LocalDuckDBConfig,
+    LocalLiteConfig,
+    local_duckdb_config,
+    local_lite_config,
+)
 from .core.models import (
     CodeInfo,
     CodeMapping,
@@ -55,6 +65,7 @@ from .ds import (
     source_stats_dataframe,
 )
 from .engines.api import RemoteApiEngine
+from .engines.duckdb import LocalDuckDBEngine, LocalLiteEngine
 from .services.bulk import (
     iter_batches,
     iter_hierarchy_bulk,
@@ -67,6 +78,15 @@ from .services.conceptmap import (
     get_mapping_concept_map,
     iter_concept_map,
     iter_mapping_concept_map,
+)
+from .services.data_setup import (
+    DEFAULT_UMLS_RELEASE_TYPE,
+    DEFAULT_UMLS_VERIFY_SOURCES,
+    annotate_umls_duckdb,
+    build_umls_duckdb,
+    download_umls_release,
+    prepare_umls_duckdb,
+    verify_umls_duckdb,
 )
 from .services.discovery import get_code_ttys, get_source_stats, sample_source_codes, search_names
 from .services.hierarchy import (
@@ -83,30 +103,43 @@ from .services.patient_friendly import get_patient_friendly_names
 from .services.resolution import resolve_codes
 
 __all__ = [
+    "__version__",
     "CodeRef",
     "CodeInfo",
     "CodeMapping",
     "CodeRelation",
     "CodeResolution",
     "ConceptMapRow",
+    "DEFAULT_UMLS_VERIFY_SOURCES",
     "FriendlyNameResult",
     "NameSearchResult",
     "OptimizeResult",
     "OptimizeRule",
+    "LOCAL_DUCKDB_MEMORY_PROFILES",
     "LOCAL_LITE_MEMORY_PROFILES",
+    "LocalDuckDBConfig",
+    "LocalDuckDBEngine",
     "LocalLiteConfig",
+    "LocalLiteEngine",
     "OUTPUT_SCHEMA_VERSION",
     "OutputField",
     "OutputSchema",
     "Provenance",
     "ProvenanceStep",
     "RemoteApiEngine",
+    "DEFAULT_UMLS_RELEASE_TYPE",
     "SourceStats",
+    "Terminology",
+    "annotate_umls_duckdb",
+    "build_umls_duckdb",
     "code_ttys_dataframe",
     "conceptmap_dataframe",
+    "connect",
+    "connect_remote",
     "cross_reference",
     "diagnosis_codes",
     "discover",
+    "download_umls_release",
     "drugs_by_class",
     "drugs_for_indication",
     "fda_label_by_rxcui",
@@ -140,12 +173,14 @@ __all__ = [
     "mapping_conceptmap_dataframe",
     "patient_friendly_dataframe",
     "procedure_codes",
+    "prepare_umls_duckdb",
     "sample_codes_dataframe",
     "search_drug",
     "search_names_dataframe",
     "search_names",
     "source_stats_dataframe",
     "vaccine_codes",
+    "verify_umls_duckdb",
     "iter_batches",
     "iter_concept_map",
     "iter_hierarchy_bulk",
@@ -154,6 +189,7 @@ __all__ = [
     "iter_mapping_concept_map",
     "iter_patient_friendly_bulk",
     "list_output_schemas",
+    "local_duckdb_config",
     "local_lite_config",
     "resolve_codes",
 ]

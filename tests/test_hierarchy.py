@@ -3,7 +3,7 @@ from __future__ import annotations
 import duckdb
 
 from medterm4ds import CodeRef, get_ancestors, get_children, get_descendants, get_parents
-from medterm4ds.engines.duckdb import LocalLiteEngine
+from medterm4ds.engines.duckdb import LocalDuckDBEngine
 from medterm4ds.services.hierarchy import get_code_relations
 
 
@@ -39,6 +39,10 @@ def _make_hierarchy_db(con: duckdb.DuckDBPyConnection) -> None:
             ("E00-E89", "PT", "Endocrine diseases", "ICD_E00", "N", "ICD10CM", "C_E00"),
             ("208", "PT", "COVID-19 vaccine", "CVX_208", "N", "CVX", "C_CVX"),
             ("200", "PT", "Vaccine group", "CVX_200", "N", "CVX", "C_CVX_PARENT"),
+            ("S37.06", "HT", "Major laceration of kidney", "ICD_S3706", "N", "ICD10CM", "C_S3706"),
+            ("S37.0", "HT", "Injury of kidney", "ICD_S370", "N", "ICD10CM", "C_S370"),
+            ("0010U", "PT", "Specific CPT procedure", "CPT_0010U", "N", "CPT", "C_CPT_CHILD"),
+            ("0010", "PT", "CPT procedure parent", "CPT_0010", "N", "CPT", "C_CPT_PARENT"),
             ("E11.9", "PT", "Suppressed duplicate", "ICD_SUP", "Y", "ICD10CM", "C_SUP"),
         ],
     )
@@ -48,6 +52,8 @@ def _make_hierarchy_db(con: duckdb.DuckDBPyConnection) -> None:
             ("ICD_E119", "ICD_E11", "isa", "PAR"),
             ("ICD_E11", "ICD_E00", "isa", "PAR"),
             ("CVX_208", "CVX_200", "isa", "PAR"),
+            ("ICD_S3706", "ICD_S370", "isa", "PAR"),
+            ("CPT_0010U", "CPT_0010", "isa", "AUI"),
         ],
     )
 
@@ -56,7 +62,7 @@ def test_direct_parents_and_children():
     con = duckdb.connect(database=":memory:")
     try:
         _make_hierarchy_db(con)
-        engine = LocalLiteEngine(con)
+        engine = LocalDuckDBEngine(con)
 
         parents = get_parents([("E11.9", "ICD10-CM")], engine=engine)
         children = get_children([CodeRef("ICD10CM", "E11")], engine=engine)
@@ -90,7 +96,7 @@ def test_ancestors_descendants_and_missing_values():
     con = duckdb.connect(database=":memory:")
     try:
         _make_hierarchy_db(con)
-        engine = LocalLiteEngine(con)
+        engine = LocalDuckDBEngine(con)
 
         ancestors = get_ancestors([CodeRef("ICD10CM", "E11.9")], engine=engine, max_depth=2)
         descendants = get_descendants([CodeRef("ICD10CM", "E00-E89")], engine=engine, max_depth=2)
@@ -118,7 +124,7 @@ def test_relations_preserve_mixed_source_input_order():
     con = duckdb.connect(database=":memory:")
     try:
         _make_hierarchy_db(con)
-        engine = LocalLiteEngine(con)
+        engine = LocalDuckDBEngine(con)
 
         parents = get_parents(
             [
@@ -135,4 +141,23 @@ def test_relations_preserve_mixed_source_input_order():
         ("ICD10CM", "E11.9", "E11"),
         ("CVX", "208", "200"),
         ("ICD10CM", "E11", "E00-E89"),
+    ]
+
+
+def test_hierarchy_uses_source_specific_relationship_rules_and_icd_umls_parent_relation():
+    con = duckdb.connect(database=":memory:")
+    try:
+        _make_hierarchy_db(con)
+        engine = LocalDuckDBEngine(con)
+
+        icd_parent = get_parents([CodeRef("ICD10CM", "S37.06")], engine=engine)
+        cpt_parent = get_parents([CodeRef("CPT", "0010U")], engine=engine)
+    finally:
+        con.close()
+
+    assert [(row.target.code, row.rel, row.rela, row.depth) for row in icd_parent] == [
+        ("S37.0", "PAR", "isa", 1)
+    ]
+    assert [(row.target.code, row.rel, row.rela, row.depth) for row in cpt_parent] == [
+        ("0010", "AUI", "isa", 1)
     ]

@@ -4,11 +4,11 @@ build-backend = "hatchling.build"
 
 [project]
 name = "medterm4ds"
-version = "0.1.0"
-description = "Batch-first medical terminology utilities for data science workflows"
+version = "0.0.1"
+description = "Medical terminology utilities for data science workflows"
 readme = "README.md"
 requires-python = ">=3.10"
-license = "MIT"
+license = "GPL-3.0-only"
 authors = [
     { name = "medterm4ds contributors" }
 ]
@@ -48,6 +48,7 @@ dev = [
     "duckdb>=0.9.0",
     "fastapi>=0.110.0",
     "fastmcp>=2.0.0",
+    "hatch>=1.14.0",
     "httpx>=0.27.0",
     "pandas>=2.0.0",
     "polars>=0.20.0",
@@ -60,6 +61,19 @@ dev = [
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/medterm4ds"]
+
+[tool.hatch.build.targets.sdist]
+include = [
+    "/LICENSE",
+    "/Makefile",
+    "/README.md",
+    "/docs",
+    "/notebooks",
+    "/pyproject.toml",
+    "/scripts",
+    "/src",
+    "/tests",
+]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

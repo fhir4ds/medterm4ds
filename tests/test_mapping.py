@@ -4,7 +4,7 @@ import duckdb
 import pytest
 
 from medterm4ds import CodeRef, get_code_mappings
-from medterm4ds.engines.duckdb import LocalLiteEngine
+from medterm4ds.engines.duckdb import LocalDuckDBEngine
 
 
 def _make_mapping_db(con: duckdb.DuckDBPyConnection) -> None:
@@ -48,6 +48,17 @@ def _make_mapping_db(con: duckdb.DuckDBPyConnection) -> None:
             ("208", "PT", "COVID-19 vaccine", "CVX_208", "N", "CVX", "C_CVX"),
             ("840539006", "PT", "COVID-19 vaccine product", "SNOMED_CVX", "N", "SNOMEDCT_US", "C_CVX"),
             ("2345-7", "LN", "Glucose [Mass/volume] in Serum or Plasma", "LNC_GLU", "N", "LNC", "C_GLU"),
+            (
+                "0010U",
+                "PT",
+                "Infectious disease bacterial strain typing by sequencing",
+                "CPT_0010U_PT",
+                "N",
+                "CPT",
+                "C_CPT_0010U_PT",
+            ),
+            ("0010U", "ETCF", "Typing of bacterial strain", "CPT_0010U_ETCF", "N", "CPT", "C_BACTERIAL_TYPING"),
+            ("76208001", "PT", "Bacterial strain typing", "SNOMED_BACTERIAL", "N", "SNOMEDCT_US", "C_BACTERIAL_TYPING"),
             ("S1", "PT", "Suppressed only", "ICD_SUP_ONLY", "Y", "ICD10CM", "C_ONLY_SUP"),
         ],
     )
@@ -61,11 +72,16 @@ def _make_mapping_db(con: duckdb.DuckDBPyConnection) -> None:
     )
 
 
+def _add_snomed_depths(con: duckdb.DuckDBPyConnection, rows: list[tuple[str, int]]) -> None:
+    con.execute("CREATE TABLE snomed_top_level_depth (code VARCHAR, min_top_depth INTEGER)")
+    con.executemany("INSERT INTO snomed_top_level_depth VALUES (?, ?)", rows)
+
+
 def test_get_code_mappings_returns_same_cui_active_targets_in_input_order():
     con = duckdb.connect(database=":memory:")
     try:
         _make_mapping_db(con)
-        engine = LocalLiteEngine(con)
+        engine = LocalDuckDBEngine(con)
 
         rows = get_code_mappings(
             [
@@ -137,7 +153,7 @@ def test_get_code_mappings_caps_results_and_validates_args():
     con = duckdb.connect(database=":memory:")
     try:
         _make_mapping_db(con)
-        engine = LocalLiteEngine(con)
+        engine = LocalDuckDBEngine(con)
 
         rows = get_code_mappings(
             [CodeRef("ICD10CM", "E11.9")],
@@ -170,11 +186,31 @@ def test_get_code_mappings_caps_results_and_validates_args():
         )
 
 
+def test_get_code_mappings_considers_all_active_source_cuis():
+    con = duckdb.connect(database=":memory:")
+    try:
+        _make_mapping_db(con)
+        engine = LocalDuckDBEngine(con)
+
+        rows = get_code_mappings(
+            [CodeRef("CPT", "0010U")],
+            engine=engine,
+            target_sources=["SNOMEDCT_US"],
+        )
+    finally:
+        con.close()
+
+    assert [(row.target.code, row.source_display, row.source_cui) for row in rows] == [
+        ("76208001", "Typing of bacterial strain", "C_BACTERIAL_TYPING")
+    ]
+    assert rows[0].matched_via.steps[0].aui == "CPT_0010U_ETCF"
+
+
 def test_get_code_mappings_can_use_source_ancestor_fallback():
     con = duckdb.connect(database=":memory:")
     try:
         _make_mapping_db(con)
-        engine = LocalLiteEngine(con)
+        engine = LocalDuckDBEngine(con)
 
         rows = get_code_mappings(
             [CodeRef("ICD10CM", "A1")],
@@ -197,11 +233,51 @@ def test_get_code_mappings_can_use_source_ancestor_fallback():
     ]
 
 
+def test_get_code_mappings_filters_top_level_snomed_source_ancestor_fallback():
+    con = duckdb.connect(database=":memory:")
+    try:
+        _make_mapping_db(con)
+        _add_snomed_depths(con, [("999000", 3)])
+        engine = LocalDuckDBEngine(con)
+
+        rows = get_code_mappings(
+            [CodeRef("ICD10CM", "A1")],
+            engine=engine,
+            target_sources=["SNOMEDCT_US"],
+            max_depth=1,
+        )
+    finally:
+        con.close()
+
+    assert rows == []
+
+
+def test_get_code_mappings_keeps_deeper_snomed_source_ancestor_fallback():
+    con = duckdb.connect(database=":memory:")
+    try:
+        _make_mapping_db(con)
+        _add_snomed_depths(con, [("999000", 4)])
+        engine = LocalDuckDBEngine(con)
+
+        rows = get_code_mappings(
+            [CodeRef("ICD10CM", "A1")],
+            engine=engine,
+            target_sources=["SNOMEDCT_US"],
+            max_depth=1,
+        )
+    finally:
+        con.close()
+
+    assert [(row.target.code, row.match_type) for row in rows] == [
+        ("999000", "source_ancestor_same_cui")
+    ]
+
+
 def test_get_code_mappings_can_include_target_hierarchy():
     con = duckdb.connect(database=":memory:")
     try:
         _make_mapping_db(con)
-        engine = LocalLiteEngine(con)
+        engine = LocalDuckDBEngine(con)
 
         rows = get_code_mappings(
             [CodeRef("ICD10CM", "E11.9")],
@@ -221,3 +297,30 @@ def test_get_code_mappings_can_include_target_hierarchy():
     assert ("44054006", "equivalent", "same_cui", 0) in selected
     assert ("111111", "source-is-narrower-than-target", "target_ancestor", 1) in selected
     assert ("222222", "source-is-broader-than-target", "target_descendant", 1) in selected
+
+
+def test_get_code_mappings_filters_top_level_snomed_target_hierarchy():
+    con = duckdb.connect(database=":memory:")
+    try:
+        _make_mapping_db(con)
+        _add_snomed_depths(con, [("44054006", 4), ("111111", 3), ("222222", 3)])
+        engine = LocalDuckDBEngine(con)
+
+        rows = get_code_mappings(
+            [CodeRef("ICD10CM", "E11.9")],
+            engine=engine,
+            target_sources=["SNOMEDCT_US"],
+            max_depth=1,
+            include_target_ancestors=True,
+            include_target_descendants=True,
+        )
+    finally:
+        con.close()
+
+    selected = {
+        (row.target.code, row.relationship, row.match_type, row.match_depth)
+        for row in rows
+    }
+    assert ("44054006", "equivalent", "same_cui", 0) in selected
+    assert ("111111", "source-is-narrower-than-target", "target_ancestor", 1) not in selected
+    assert ("222222", "source-is-broader-than-target", "target_descendant", 1) not in selected

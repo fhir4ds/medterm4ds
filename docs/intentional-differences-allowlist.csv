@@ -1,0 +1,2 @@
+source,code,classification,classification_reason,classification_key
+*,*,unclassified,Use specific source/code rows for accepted mismatches; wildcard rows are documentation only,wildcard-template

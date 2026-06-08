@@ -32,5 +32,54 @@ jobs:
       - name: Test
         run: pytest -q
 
+      - name: Notebook smoke
+        run: python scripts/run_notebook_smoke.py
+
       - name: Compile
         run: python -m py_compile $(find src scripts tests -name '*.py' -print)
+
+  package:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install build dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[dev]"
+
+      - name: Build and check package
+        run: python scripts/build_package.py --skip-verify
+
+      - name: Wheel install smoke
+        run: python scripts/test_wheel_install.py
+
+  docs:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: web/website/package-lock.json
+
+      - name: Install website dependencies
+        working-directory: web/website
+        run: npm ci
+
+      - name: Typecheck website
+        working-directory: web/website
+        run: npm run typecheck
+
+      - name: Build website
+        working-directory: web/website
+        run: npm run build

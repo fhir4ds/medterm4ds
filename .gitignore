@@ -16,12 +16,17 @@ data/
 benchmark_*.json
 parity_*.json
 parity_*.md
+parity_*.csv
 acceptance_*.json
 real_data_smoke*.json
+notebook_smoke*.json
 acceptance_outputs/
 bulk_validation*.json
 mapping_quality*.json
+mapping_quality*.csv
+mapping_review_cases*.csv
 validation_outputs/
+reports/
 
 # Environment
 .env

@@ -1,11 +1,15 @@
 from __future__ import annotations
 
+import gzip
+import zipfile
 from pathlib import Path
 
 import duckdb
+import pytest
 
 from medterm4ds import CodeRef, optimize_codes, resolve_codes
-from medterm4ds.engines.duckdb import LocalLiteEngine
+from medterm4ds.engines.duckdb import LocalDuckDBEngine
+from medterm4ds.engines.duckdb.prepared import prepare_mt4ds_schema
 from medterm4ds.outputs import render_table, render_tree
 from medterm4ds.services.data_setup import build_duckdb_from_rrf, verify_duckdb
 from medterm4ds.services.lookup import get_code_info
@@ -83,7 +87,7 @@ def test_resolve_codes_handles_obsolete_and_ndc(tmp_path):
     _make_db(db_path)
     con = duckdb.connect(str(db_path), read_only=True)
     try:
-        engine = LocalLiteEngine(con)
+        engine = LocalDuckDBEngine(con)
         obsolete, ndc = resolve_codes(
             [CodeRef("ICD10CM", "OLD"), CodeRef("NDC", "0002-0821-01")],
             engine=engine,
@@ -101,12 +105,33 @@ def test_resolve_codes_handles_obsolete_and_ndc(tmp_path):
     assert friendly.code == CodeRef("RXNORM", "12345")
 
 
+def test_resolve_codes_uses_prepared_code_replacements_without_raw_mrrel(tmp_path):
+    db_path = tmp_path / "umls.duckdb"
+    _make_db(db_path)
+    con = duckdb.connect(str(db_path))
+    try:
+        prepare_mt4ds_schema(con)
+        con.execute("DROP TABLE mrrel")
+        con.execute("DROP TABLE mrconso")
+        engine = LocalDuckDBEngine(con)
+        (obsolete,) = resolve_codes(
+            [CodeRef("ICD10CM", "OLD")],
+            engine=engine,
+        )
+    finally:
+        con.close()
+
+    assert obsolete.status == "replaced"
+    assert obsolete.resolved == CodeRef("ICD10CM", "NEW")
+    assert obsolete.replacement_relationship == "replaced_by"
+
+
 def test_optimize_codes_compacts_hierarchy(tmp_path):
     db_path = tmp_path / "umls.duckdb"
     _make_db(db_path)
     con = duckdb.connect(str(db_path), read_only=True)
     try:
-        engine = LocalLiteEngine(con)
+        engine = LocalDuckDBEngine(con)
         result = optimize_codes(
             [
                 CodeRef("ICD10CM", "E11.40"),
@@ -124,6 +149,81 @@ def test_optimize_codes_compacts_hierarchy(tmp_path):
     assert result.original_count == 5
     assert result.rules[0].include == CodeRef("ICD10CM", "E11")
     assert result.rules[0].exclude == (CodeRef("ICD10CM", "E11.49"),)
+
+
+def test_optimize_codes_uses_prepared_walk_edges_for_icd10cm() -> None:
+    con = duckdb.connect(":memory:")
+    try:
+        con.execute("CREATE SCHEMA mt4ds")
+        con.execute(
+            """
+            CREATE TABLE mt4ds.walk_edges (
+                source VARCHAR,
+                from_code VARCHAR,
+                from_aui VARCHAR,
+                from_cui VARCHAR,
+                from_tty VARCHAR,
+                to_code VARCHAR,
+                to_aui VARCHAR,
+                to_cui VARCHAR,
+                to_tty VARCHAR,
+                relationship VARCHAR,
+                direction VARCHAR,
+                edge_source VARCHAR
+            )
+            """
+        )
+        con.executemany(
+            "INSERT INTO mt4ds.walk_edges VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            [
+                ("ICD10CM", "E11.40", "A_E1140", "C_E1140", "PT", "E11", "A_E11", "C_E11", "PT", "isa", "parent", "umls_mrrel"),
+                ("ICD10CM", "E11.41", "A_E1141", "C_E1141", "PT", "E11", "A_E11", "C_E11", "PT", "isa", "parent", "umls_mrrel"),
+                ("ICD10CM", "E11.42", "A_E1142", "C_E1142", "PT", "E11", "A_E11", "C_E11", "PT", "isa", "parent", "umls_mrrel"),
+                ("ICD10CM", "E11.43", "A_E1143", "C_E1143", "PT", "E11", "A_E11", "C_E11", "PT", "isa", "parent", "umls_mrrel"),
+                ("ICD10CM", "E11.44", "A_E1144", "C_E1144", "PT", "E11", "A_E11", "C_E11", "PT", "isa", "parent", "umls_mrrel"),
+                ("ICD10CM", "E11.49", "A_E1149", "C_E1149", "PT", "E11", "A_E11", "C_E11", "PT", "isa", "parent", "umls_mrrel"),
+            ],
+        )
+        engine = LocalDuckDBEngine(con)
+        result = optimize_codes(
+            [
+                CodeRef("ICD10CM", "E11.40"),
+                CodeRef("ICD10CM", "E11.41"),
+                CodeRef("ICD10CM", "E11.42"),
+                CodeRef("ICD10CM", "E11.43"),
+                CodeRef("ICD10CM", "E11.44"),
+            ],
+            engine=engine,
+            include_codes=True,
+        )
+    finally:
+        con.close()
+
+    assert result.rules[0].include == CodeRef("ICD10CM", "E11")
+    assert result.rules[0].exclude == (CodeRef("ICD10CM", "E11.49"),)
+
+
+def test_optimize_codes_rejects_explicit_prefix_mode(tmp_path):
+    db_path = tmp_path / "umls.duckdb"
+    _make_db(db_path)
+    con = duckdb.connect(str(db_path), read_only=True)
+    try:
+        engine = LocalDuckDBEngine(con)
+        with pytest.raises(ValueError, match="prefix optimize is not supported"):
+            optimize_codes(
+                [
+                    CodeRef("ICD10CM", "E11.40"),
+                    CodeRef("ICD10CM", "E11.41"),
+                    CodeRef("ICD10CM", "E11.42"),
+                    CodeRef("ICD10CM", "E11.43"),
+                    CodeRef("ICD10CM", "E11.44"),
+                ],
+                engine=engine,
+                relationship="prefix",
+                include_codes=True,
+            )
+    finally:
+        con.close()
 
 
 def test_renderers_are_compact():
@@ -152,6 +252,33 @@ def test_build_duckdb_from_rrf_and_verify(tmp_path):
     )
 
     db_path = build_duckdb_from_rrf(rrf_dir=rrf_dir, output_db=tmp_path / "built.duckdb")
+    report = verify_duckdb(db_path, sources=["ICD10CM"])
+
+    assert report["has_required_tables"] is True
+    assert report["source_counts"] == {"ICD10CM": 1}
+
+
+def test_build_duckdb_from_extracted_umls_nlm_archives(tmp_path):
+    release_dir = tmp_path / "2026AA-full"
+    release_dir.mkdir()
+    with zipfile.ZipFile(release_dir / "2026aa-1-meta.nlm", "w") as archive:
+        archive.writestr(
+            "2026AA/META/MRCONSO.RRF.aa.gz",
+            gzip.compress(
+                b"C1|ENG|P|L1|PF|S1|Y|A1||||ICD10CM|PT|E11.9|Type 2 diabetes mellitus|0|N|\n"
+            ),
+        )
+    with zipfile.ZipFile(release_dir / "2026aa-2-meta.nlm", "w") as archive:
+        archive.writestr(
+            "2026AA/META/MRREL.RRF.aa.gz",
+            gzip.compress(b"C1|A1|AUI|PAR|C2|A2|AUI|isa|R1||ICD10CM|ICD10CM|||N|\n"),
+        )
+        archive.writestr(
+            "2026AA/META/MRSAT.RRF.aa.gz",
+            gzip.compress(b"C3|||A3|CODE|12345|||NDC|RXNORM|00002082101|N|\n"),
+        )
+
+    db_path = build_duckdb_from_rrf(rrf_dir=release_dir, output_db=tmp_path / "built-nlm.duckdb")
     report = verify_duckdb(db_path, sources=["ICD10CM"])
 
     assert report["has_required_tables"] is True

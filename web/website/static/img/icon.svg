@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" role="img" aria-label="medterm4ds">
+  <rect width="128" height="128" rx="26" fill="#08111f"/>
+  <path d="M27 78V35h13l24 31 24-31h13v58H87V58L66 85h-5L41 58v35H27V78Z" fill="#8ee6c1"/>
+  <path d="M24 101h80" stroke="#54c6ff" stroke-width="8" stroke-linecap="round"/>
+  <path d="M35 101c10-18 21-27 33-27s22 9 25 27" fill="none" stroke="#54c6ff" stroke-width="6" stroke-linecap="round"/>
+</svg>

@@ -9,11 +9,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from medterm4ds.core.config import MemoryProfile, local_lite_config
+from medterm4ds.core.config import MemoryProfile, local_duckdb_config
 from medterm4ds.core.models import CodeRef
 from medterm4ds.domains import evidence as evidence_domain
 from medterm4ds.domains import terminology as terminology_domain
-from medterm4ds.engines.duckdb import LocalLiteEngine
+from medterm4ds.engines.duckdb import LocalDuckDBEngine
 from medterm4ds.outputs import render_output
 from medterm4ds.services.conceptmap import get_concept_map
 from medterm4ds.services.discovery import (
@@ -50,6 +50,7 @@ class McpSettings:
     query_chunk_size: int | None = None
     prepare_cache: bool = True
     cache_indexes: bool = False
+    require_patient_friendly_resolutions: bool = False
 
     @classmethod
     def from_env(cls) -> McpSettings:
@@ -66,16 +67,20 @@ class McpSettings:
             query_chunk_size=_env_int("MEDTERM4DS_QUERY_CHUNK_SIZE"),
             prepare_cache=_env_bool("MEDTERM4DS_PREPARE_CACHE", True),
             cache_indexes=_env_bool("MEDTERM4DS_CACHE_INDEXES", False),
+            require_patient_friendly_resolutions=_env_bool(
+                "MEDTERM4DS_REQUIRE_PATIENT_FRIENDLY_RESOLUTIONS",
+                False,
+            ),
         )
 
 
 class McpRuntime:
-    """Owns the configured DuckDB connection and LocalLite engine."""
+    """Owns the configured DuckDB connection and local DuckDB engine."""
 
     def __init__(self, settings: McpSettings):
         self.settings = settings
         self.con = None
-        self.engine: LocalLiteEngine | None = None
+        self.engine: LocalDuckDBEngine | None = None
 
     @property
     def ready(self) -> bool:
@@ -87,14 +92,15 @@ class McpRuntime:
         if not self.settings.db_path.exists():
             raise RuntimeError(f"Database not found: {self.settings.db_path}")
         self.con = duckdb.connect(str(self.settings.db_path), read_only=True)
-        config = local_lite_config(
+        config = local_duckdb_config(
             self.settings.memory_profile,
             memory_limit=self.settings.memory_limit,
             temp_directory=self.settings.temp_directory,
             threads=self.settings.threads,
             query_chunk_size=self.settings.query_chunk_size,
+            require_patient_friendly_resolutions=self.settings.require_patient_friendly_resolutions,
         )
-        self.engine = LocalLiteEngine(self.con, config=config)
+        self.engine = LocalDuckDBEngine(self.con, config=config)
         if self.settings.prepare_cache:
             self.engine.prepare_cache(self.settings.sources, create_indexes=self.settings.cache_indexes)
 
@@ -493,7 +499,7 @@ class McpRuntime:
         )
         return {"results": [row.to_dict() for row in rows]}
 
-    def _engine(self) -> LocalLiteEngine:
+    def _engine(self) -> LocalDuckDBEngine:
         if self.engine is None:
             raise RuntimeError("Terminology engine is not ready.")
         return self.engine
@@ -517,7 +523,7 @@ def create_mcp_server(
 
     mcp = FastMCP(
         "medterm4ds",
-        instructions="Batch-first medical terminology tools backed by medterm4ds LocalLite.",
+        instructions="Batch-first medical terminology tools backed by medterm4ds local DuckDB.",
         lifespan=lifespan,
     )
 

@@ -7,7 +7,7 @@ from pathlib import Path
 import duckdb
 
 from medterm4ds.apps.cli import main
-from medterm4ds.core.config import local_lite_config
+from medterm4ds.core.config import local_duckdb_config
 from medterm4ds.core.models import CodeRef
 from medterm4ds.services.inventory import count_source_codes, iter_source_codes, normalize_sources
 
@@ -99,16 +99,36 @@ def _make_hierarchy_duckdb(path: Path) -> None:
 
 
 def test_memory_profiles_can_be_overridden():
-    config = local_lite_config(
+    config = local_duckdb_config(
         "low",
         memory_limit="768MB",
         threads=2,
         query_chunk_size=250,
+        require_patient_friendly_resolutions=True,
     )
 
     assert config.memory_limit == "768MB"
     assert config.threads == 2
     assert config.query_chunk_size == 250
+    assert config.require_patient_friendly_resolutions is True
+
+
+def test_cli_data_build_duckdb_rejects_ambiguous_umls_local_output(tmp_path, capsys):
+    status = main(
+        [
+            "data",
+            "build-duckdb",
+            "--rrf-dir",
+            str(tmp_path),
+            "--output-db",
+            str(tmp_path / "umls_local.duckdb"),
+            "--db-role",
+            "current_candidate",
+        ]
+    )
+
+    assert status == 2
+    assert "Refusing ambiguous output DB name" in capsys.readouterr().err
 
 
 def test_inventory_counts_and_streams_distinct_codes(tmp_path):
@@ -136,6 +156,48 @@ def test_inventory_counts_and_streams_distinct_codes(tmp_path):
         ("CVX", "208"),
     ]
     assert [(code.source, code.code) for code in resumed] == [("CVX", "208")]
+
+
+def test_inventory_uses_prepared_best_atoms_active_only():
+    con = duckdb.connect(database=":memory:")
+    try:
+        con.execute("CREATE SCHEMA mt4ds")
+        con.execute(
+            """
+            CREATE TABLE mt4ds.best_atoms (
+                source VARCHAR,
+                code VARCHAR,
+                aui VARCHAR,
+                cui VARCHAR,
+                tty VARCHAR,
+                name VARCHAR,
+                suppress VARCHAR,
+                is_active BOOLEAN,
+                rank INTEGER
+            )
+            """
+        )
+        con.executemany(
+            "INSERT INTO mt4ds.best_atoms VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            [
+                ("ICD10CM", "E11.9", "ICD_PT", "C_DIAB", "PT", "Type 2 diabetes mellitus", "N", True, 1),
+                ("ICD10CM", "S1", "ICD_SUP", "C_SUP", "PT", "Suppressed only", "Y", False, 1),
+                ("CVX", "208", "CVX_208", "C_CVX", "PT", "COVID-19 vaccine", "N", True, 1),
+            ],
+        )
+
+        counts = count_source_codes(con, ["ICD10CM", "CVX"])
+        codes = list(iter_source_codes(con, ["ICD10CM", "CVX"], fetch_size=1))
+        limited = list(iter_source_codes(con, ["ICD10CM", "CVX"], limit=1))
+    finally:
+        con.close()
+
+    assert counts == {"CVX": 1, "ICD10CM": 1}
+    assert [(code.source, code.code) for code in codes] == [
+        ("ICD10CM", "E11.9"),
+        ("CVX", "208"),
+    ]
+    assert [(code.source, code.code) for code in limited] == [("ICD10CM", "E11.9")]
 
 
 def test_cli_writes_patient_friendly_conceptmap_jsonl(tmp_path):

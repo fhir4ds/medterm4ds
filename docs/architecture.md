@@ -8,8 +8,9 @@ call the same service layer.
 
 ```text
 core/       Typed records, normalization, and configuration.
-engines/    Execution backends implementing service protocols.
-services/   Batch-first terminology workflows.
+sources/    Source-specific preparation rules and policy metadata.
+engines/    Execution backends and DuckDB prepared-schema support.
+services/   Batch-first lookup, walk, crosswalk, selection, and workflows.
 outputs/    Serialization and export helpers.
 ds.py       Notebook/DataFrame-friendly wrappers over services.
 domains/    Diagnosis, lab, procedure, drug, vaccine, and compatibility helpers.
@@ -36,7 +37,7 @@ The core domain records are:
 - `Provenance` and `ProvenanceStep`: structured path showing how a result was
   selected.
 
-Services depend on protocols, not concrete engines. `LocalLiteEngine`, the
+Services depend on protocols, not concrete engines. `LocalDuckDBEngine`, the
 remote `RemoteApiEngine`, or a test double should be able to implement the same
 service contract.
 
@@ -47,13 +48,128 @@ the schema version.
 
 ## Execution Model
 
-`LocalLiteEngine` is the default local engine. It keeps large terminology data
-inside DuckDB, uses temp input/cache tables, resolves codes in batches, and
-chunks high-risk recursive query paths internally.
+`LocalDuckDBEngine` is the default local engine. It keeps large terminology data
+inside DuckDB and resolves codes in batches. The target runtime path queries
+prepared `mt4ds` tables rather than repeatedly joining raw UMLS `mrconso`,
+`mrrel`, and `mrsat` tables.
+
+Patient-friendly naming has an additional scale requirement: one code, an
+arbitrary list of codes, and a whole code system export must use the same
+semantics and must have reasonable performance. For that workflow, prepared
+walk/crosswalk tables are necessary but not sufficient. The target production
+path reads materialized patient-friendly resolutions for the prepared UMLS
+release and policy version, while trace/debug tools can inspect the candidate
+and path rows used to build those resolutions.
 
 `RemoteApiEngine` implements the same protocols by POSTing to the FastAPI
 surface. Python code can therefore switch from local DuckDB execution to a
 remote terminology process without changing service calls.
+
+## Normalized Terminology Data
+
+Raw UMLS files are build inputs. Runtime terminology services should use
+normalized, same-shaped tables that hide source-specific graph mechanics.
+
+The target local DuckDB layout is:
+
+```text
+umls.mrconso
+umls.mrrel
+umls.mrsat
+
+mt4ds.atoms
+mt4ds.best_atoms
+mt4ds.hierarchy_edges
+mt4ds.walk_edges
+mt4ds.same_cui_edges        # build/source compatibility layer
+mt4ds.crosswalk_edges       # canonical runtime crosswalk table
+mt4ds.friendly_atoms
+mt4ds.rxnorm_allowed_tty_edges
+mt4ds.rxnorm_tty_paths
+mt4ds.rxnorm_tty_path_steps
+mt4ds.rxnorm_tty_edges
+mt4ds.cvx_metadata
+mt4ds.code_replacements
+mt4ds.snomed_top_level_depth
+mt4ds.patient_friendly_strategy
+mt4ds.patient_friendly_candidates
+mt4ds.patient_friendly_candidate_paths
+mt4ds.patient_friendly_resolutions
+```
+
+Source-specific behavior belongs in preparation, not scattered through runtime
+workflows:
+
+- ICD10CM, ICD10PCS, HCPCS, and LNC `REL='PAR'` hierarchy becomes normalized
+  parent edges.
+- SNOMED `isa` hierarchy and top-level guard metadata become normalized walk
+  edges plus `mt4ds.snomed_top_level_depth`.
+- RxNorm TTY topology becomes prepared TTY path and edge tables.
+- CVX group metadata becomes lookup enrichment metadata.
+- MEDLINEPLUS/CHV candidates become prepared friendly atom rows with broad-name
+  flags.
+- Patient-friendly candidates and final resolutions become materialized rows
+  keyed by `(source, code, release, policy_version)` so runtime lookup is a
+  join instead of live graph traversal.
+- Patient-friendly policy changes must bump the policy version so stale
+  materialized resolution rows are not silently reused.
+- Patient-friendly hierarchy selection uses closest acceptable frontier first.
+  MEDLINEPLUS is preferred over CHV only within the same frontier/depth.
+
+The `sources/` package defines these source preparation rules and policy
+metadata. It is not a public service layer. Public workflows live in
+`services/`.
+
+Prepared hierarchy edges must be derived from UMLS relationship data or an
+explicit source-owned non-hierarchy topology such as RxNorm TTY adjacency. Do
+not infer clinical hierarchy edges from code prefixes for patient-friendly
+fallback. If UMLS does not provide a defensible path to a friendly candidate,
+the selected result should remain the original/source display rather than jump
+to an unrelated broad term.
+
+## Primitive Services
+
+The target service layer is built from four reusable primitives:
+
+- `lookup`: source/code to canonical atom metadata.
+- `walk`: source graph traversal, including RxNorm TTY traversal as a
+  source-specific walk.
+- `crosswalk`: source-to-target mappings through same-CUI and bounded fallback.
+- `select`: deterministic candidate ranking and frontier selection.
+
+Patient-friendly naming, optimize, ConceptMap export, MCP tools, CLI commands,
+and notebook helpers should compose these primitives. Patient-friendly naming
+should not contain raw source graph mechanics.
+
+Patient-friendly naming is the most complex workflow and should be treated as a
+policy layer over the primitives:
+
+```text
+lookup / walk / crosswalk / friendly atoms
+  -> patient-friendly candidate materialization
+  -> shared filtering and ranking
+  -> patient-friendly resolution materialization
+  -> runtime lookup by source/code
+```
+
+Source-specific patient-friendly policy stays explicit:
+
+- ICD10CM, ICD10PCS, LNC, CPT, and HCPCS walk their source hierarchy first,
+  then fallback crosswalk to SNOMEDCT_US and walk SNOMED only under guarded
+  policy.
+- SNOMEDCT_US routes through ICD10CM, ICD10PCS, LNC, CPT, and HCPCS first,
+  walks those target source hierarchies, and only then uses target-to-SNOMED or
+  direct guarded SNOMED fallback.
+- RxNorm remains source-native for patient-friendly output and uses explicit
+  TTY topology rather than MEDLINEPLUS/CHV hierarchy selection.
+- If no defensible friendly candidate exists, patient-friendly returns the
+  source/original display instead of jumping to an unrelated broad term.
+
+The primitive services still need to be fast and reusable on their own. They
+power hierarchy APIs, mapping, optimize, ConceptMap generation, and candidate
+trace reports. The final patient-friendly API should not rediscover all
+candidates for every request when the database already contains a prepared
+resolution table.
 
 Source-to-source mapping is exact same-CUI by default. Broader/narrower mapping
 is opt-in through bounded hierarchy traversal so high-volume exports do not
@@ -65,7 +181,7 @@ obsolete or suppressed inputs to current replacements when the source data makes
 that appropriate. NDC inputs are always normalized and resolved through RxNorm
 `MRSAT` NDC attributes before downstream RxNorm workflows.
 
-Memory behavior is controlled through `LocalLiteConfig` and named profiles:
+Memory behavior is controlled through `LocalDuckDBConfig` and named profiles:
 
 - `fast`: more memory, higher throughput.
 - `balanced`: default for typical local runs.
@@ -95,10 +211,23 @@ Current services:
 - `get_concept_map(...)`
 - `iter_concept_map(...)`
 - `optimize_codes(...)`
+- `get_crosswalk_mappings(...)` -- cross-source mapping over prepared tables
 - source inventory helpers for DuckDB-backed code lists
+
+Prepared-table services (over `mt4ds.*` normalized tables):
+
+- `rxnorm_tty_walk.get_rxnorm_patient_friendly(...)` -- RxNorm TTY path traversal
+- `patient_friendly_prepared.get_non_rxnorm_patient_friendly(...)` -- non-RxNorm friendly
+- `crosswalk_prepared.get_crosswalk_mappings(...)` -- prepared crosswalk
+- `walk.get_parents_prepared(...)` / `walk.get_ancestors_prepared(...)` -- prepared hierarchy
+- `selection.rank_candidates(...)` / `selection.select_frontier(...)` -- candidate ranking
 
 These functions are batch-first. Single-code workflows should call the same
 batch contract with one code.
+
+Future/refactored services should preserve these public entry points while
+moving internals to normalized primitives. Public models and output schemas
+remain stable unless deliberately versioned.
 
 `medterm4ds.ds` wraps these services for pandas or Polars use. DataFrame helpers
 must not add terminology rules; they convert service outputs to tabular records
@@ -129,16 +258,40 @@ and patient-friendly workflows. CLI bulk commands should compose these iterators
 with inventory streaming and checkpointed writers rather than creating separate
 transform implementations.
 
+Bulk patient-friendly is a lookup/export mode over
+`mt4ds.patient_friendly_resolutions` when that table is available. Source-wide
+exports should stream source inventory through joins against the materialized
+resolution table and write incrementally. The slower candidate-generation
+pipeline belongs to database preparation, policy review, or explicit debug
+commands.
+
 Real-data validation follows the same rule. `scripts/run_bulk_validation.py`
 streams source inventories through the shared bulk iterators, while
 `scripts/review_mapping_quality.py` samples source-to-target mappings and flags
-rows that need domain review. These scripts are quality gates around the public
-services, not an alternate mapping engine.
+rows that need domain review. It writes a compact JSON summary and an optional
+CSV with one flagged mapping per row for spreadsheet review. These scripts are
+quality gates around the public services, not an alternate mapping engine.
 
 Data setup lives in `services.data_setup` and the CLI `data` namespace. It
-downloads UTS release artifacts, builds the compact DuckDB tables from RRF
-files, and verifies required tables/source counts. Runtime terminology services
-should not know how files were downloaded or built.
+downloads UTS Metathesaurus Full Subset release artifacts, builds the compact
+DuckDB tables from flat RRF files, `.RRF.gz` files, or UMLS `.nlm` release
+archives, prepares the `mt4ds` runtime schema, and verifies required
+tables/source counts. Runtime terminology services should not know how files
+were downloaded or built.
+
+Database role must be explicit in reports and release artifacts:
+
+- `/mnt/d/medterm/data/umls_local.duckdb`: legacy 2025AB parity fixture,
+  read-only.
+- `/mnt/d/medterm4ds/data/umls_current.duckdb`: current medterm4ds production
+  candidate after the new prepared schema is implemented.
+- `/mnt/d/medterm4ds/data/umls_2025ab.duckdb`: optional medterm4ds-built 2025AB
+  algorithm fixture.
+- `/mnt/d/medterm4ds/data/umls_local.duckdb`: historical artifact unless
+  explicitly promoted by review.
+
+Reports should include DB path, DB role, UMLS release, and prepared schema
+version.
 
 ## Interfaces
 
@@ -165,8 +318,19 @@ features:
 
 1. Add or extend core result models only if the service needs a stable record.
 2. Add service functions that operate on batches.
-3. Implement the engine method in `LocalLiteEngine` or a new engine.
-4. Add output helpers only if there is a new export shape.
-5. Expose the behavior through CLI/API/MCP as adapters.
+3. Add or update source preparation rules in `sources/` when code-system
+   specific behavior is required.
+4. Implement the engine method in `LocalDuckDBEngine` or a new engine.
+5. Add output helpers only if there is a new export shape.
+6. Expose the behavior through CLI/API/MCP as adapters.
 
 Avoid duplicating terminology logic in `apps/`, `outputs/`, or scripts.
+
+For the detailed target requirements around lookup, source-specific hierarchy
+walking, crosswalk composition, RxNorm TTY topology, patient-friendly naming,
+prepared SQL tables, and performance constraints, see
+[`terminology-architecture-requirements.md`](terminology-architecture-requirements.md).
+
+For the implementation phases, review gates, archive policy, database role
+policy, tests, and acceptance criteria, see
+[`plans/terminology-normalization-implementation-plan.md`](plans/terminology-normalization-implementation-plan.md).

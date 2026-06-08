@@ -27,10 +27,16 @@ from medterm4ds import (
     get_source_stats,
     search_names,
 )
-from medterm4ds.core.config import local_lite_config
-from medterm4ds.engines.duckdb import LocalLiteEngine
+from medterm4ds.core.config import local_duckdb_config
+from medterm4ds.engines.duckdb import LocalDuckDBEngine
+from medterm4ds.engines.duckdb.prepared import verify_mt4ds_schema
 from medterm4ds.services.hierarchy import get_code_relations
 from medterm4ds.services.inventory import normalize_sources
+from medterm4ds.services.schema_reporting import (
+    empty_schema_report_metadata,
+    report_db_role_metadata,
+    schema_report_metadata,
+)
 
 
 @dataclass(frozen=True)
@@ -43,7 +49,8 @@ class SmokeCheck:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--db", default="/mnt/d/medterm/data/umls_local.duckdb")
+    parser.add_argument("--db", default="/mnt/d/medterm4ds/data/umls_current.duckdb")
+    parser.add_argument("--db-role", default="unknown")
     parser.add_argument("--source", default="ICD10CM")
     parser.add_argument("--target-source", default="SNOMEDCT_US")
     parser.add_argument("--memory-profile", default="low")
@@ -68,7 +75,8 @@ def main() -> int:
     target_source = normalize_sources(args.target_source)[0]
     con = duckdb.connect(str(db_path), read_only=True)
     try:
-        engine = LocalLiteEngine(con, config=local_lite_config(args.memory_profile))
+        db_metadata = _schema_metadata(con)
+        engine = LocalDuckDBEngine(con, config=local_duckdb_config(args.memory_profile))
         checks = [
             _check_lookup(con, engine, source),
             _check_source_stats(engine, source),
@@ -80,9 +88,20 @@ def main() -> int:
     finally:
         con.close()
 
+    db_role_metadata = report_db_role_metadata(args.db_role, db_metadata)
     report = {
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "db": str(db_path),
+        "db_role": db_role_metadata["db_role"],
+        "db_role_source": db_role_metadata["db_role_source"],
+        "manifest_db_role": db_metadata.get("manifest_db_role"),
+        "source_archive": db_metadata.get("source_archive"),
+        "umls_release": db_metadata.get("umls_release"),
+        "prepared_schema_version": db_metadata.get("prepared_schema_version"),
+        "patient_friendly_policy_version": db_metadata.get("patient_friendly_policy_version"),
+        "prepared_tables": db_metadata.get("prepared_tables"),
+        "missing_prepared_tables": db_metadata.get("missing_prepared_tables"),
+        "schema_errors": db_metadata.get("schema_errors"),
         "source": source,
         "target_source": target_source,
         "checks": [asdict(check) for check in checks],
@@ -93,7 +112,15 @@ def main() -> int:
     return 0 if all(check.status == "pass" for check in checks) else 1
 
 
-def _check_lookup(con, engine: LocalLiteEngine, source: str) -> SmokeCheck:
+def _schema_metadata(con) -> dict[str, object]:
+    try:
+        report = verify_mt4ds_schema(con)
+    except Exception:
+        return empty_schema_report_metadata()
+    return schema_report_metadata(report)
+
+
+def _check_lookup(con, engine: LocalDuckDBEngine, source: str) -> SmokeCheck:
     start = time.perf_counter()
     code = _first_active_code(con, source)
     if not code:
@@ -110,7 +137,7 @@ def _check_lookup(con, engine: LocalLiteEngine, source: str) -> SmokeCheck:
 
 def _check_mapping(
     con,
-    engine: LocalLiteEngine,
+    engine: LocalDuckDBEngine,
     source: str,
     target_source: str,
 ) -> SmokeCheck:
@@ -144,7 +171,7 @@ def _check_mapping(
     )
 
 
-def _check_source_stats(engine: LocalLiteEngine, source: str) -> SmokeCheck:
+def _check_source_stats(engine: LocalDuckDBEngine, source: str) -> SmokeCheck:
     start = time.perf_counter()
     rows = get_source_stats(engine=engine, sources=[source])
     status = "pass" if rows and rows[0].code_count > 0 and rows[0].atom_count > 0 else "fail"
@@ -156,7 +183,7 @@ def _check_source_stats(engine: LocalLiteEngine, source: str) -> SmokeCheck:
     )
 
 
-def _check_code_ttys(con, engine: LocalLiteEngine, source: str) -> SmokeCheck:
+def _check_code_ttys(con, engine: LocalDuckDBEngine, source: str) -> SmokeCheck:
     start = time.perf_counter()
     code = _first_active_code(con, source)
     if not code:
@@ -176,7 +203,7 @@ def _check_code_ttys(con, engine: LocalLiteEngine, source: str) -> SmokeCheck:
     )
 
 
-def _check_search_names(con, engine: LocalLiteEngine, source: str) -> SmokeCheck:
+def _check_search_names(con, engine: LocalDuckDBEngine, source: str) -> SmokeCheck:
     start = time.perf_counter()
     sample = _first_active_code_name(con, source)
     if not sample:
@@ -192,7 +219,7 @@ def _check_search_names(con, engine: LocalLiteEngine, source: str) -> SmokeCheck
     )
 
 
-def _check_hierarchy(con, engine: LocalLiteEngine, source: str) -> SmokeCheck:
+def _check_hierarchy(con, engine: LocalDuckDBEngine, source: str) -> SmokeCheck:
     start = time.perf_counter()
     code = _first_child_code(con, source)
     if not code:

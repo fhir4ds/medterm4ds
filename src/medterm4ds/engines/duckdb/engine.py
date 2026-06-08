@@ -1,4 +1,4 @@
-"""DuckDB-only LocalLite patient-friendly engine.
+"""Local DuckDB terminology engine.
 
 The engine is batch-first and keeps large data in DuckDB. It uses temp input
 tables instead of large Python-side object graphs.
@@ -7,7 +7,9 @@ tables instead of large Python-side object graphs.
 from __future__ import annotations
 
 import logging
+import os
 import re
+import urllib.request
 from collections import defaultdict
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
@@ -16,7 +18,7 @@ from pathlib import Path
 from typing import TypeVar
 from uuid import uuid4
 
-from medterm4ds.core.config import LocalLiteConfig
+from medterm4ds.core.config import LocalDuckDBConfig
 from medterm4ds.core.models import (
     CodeInfo,
     CodeMapping,
@@ -31,14 +33,31 @@ from medterm4ds.core.models import (
     ProvenanceStep,
     SourceStats,
 )
+from medterm4ds.sources.rxnorm import (
+    RXNORM_BASE_TTY_PRIORITY as _RXNORM_BASE_TTY_PRIORITY,
+    RXNORM_GROUP_TTYS as _RXNORM_GROUP_TTYS,
+    RXNORM_KNOWN_TTYS as _RXNORM_KNOWN_TTYS,
+    find_tty_path as _rxnorm_find_tty_path,
+)
 
 logger = logging.getLogger(__name__)
 T = TypeVar("T")
 
-_SNOMED_FALLBACK_SOURCES = {"ICD10CM", "ICD10PCS", "LNC"}
-_SNOMED_TARGET_PRIORITY = {"ICD10CM": 0, "RXNORM": 1, "LNC": 2, "CPT": 3}
+_SNOMED_FALLBACK_SOURCES = {"ICD10CM", "ICD10PCS", "LNC", "HCPCS", "CPT"}
+_SNOMED_TARGET_PRIORITY = {
+    "ICD10CM": 0,
+    "ICD10PCS": 1,
+    "LNC": 2,
+    "CPT": 3,
+    "HCPCS": 4,
+}
 _CPT_TARGET_PRIORITY = {"HCPCS": 0, "ICD10CM": 1, "SNOMEDCT_US": 2}
 _SNOMED_TOP_LEVEL_GUARD_DEPTH = 3
+_SNOMED_TOP_LEVEL_GUARD_EXEMPT_MATCH_TYPES = {"same_cui"}
+_SNOMED_PARENT_LINKS_CACHE_TABLE = "_mt4ds_snomed_parent_links"
+_SNOMED_FALLBACK_QUERY_CHUNK_SIZE = 25
+_CVX_GROUP_URL = "https://www2.cdc.gov/vaccines/iis/iisstandards/downloads/VG.txt"
+_CVX_GROUP_CACHE: dict[str, list[str]] | None = None
 _HIERARCHY_RELATIONSHIPS = {
     "parents": "parent",
     "children": "child",
@@ -58,21 +77,31 @@ _DEFAULT_OPTIMIZE_REL = {
     "SNOMEDCT_US": "isa",
     "ATC": "isa",
 }
+_PAR_HIERARCHY_SOURCES = frozenset({"ICD10CM", "ICD10PCS", "HCPCS", "LNC"})
+_RELA_ISA_HIERARCHY_SOURCES = frozenset({"ATC", "CPT", "MSH", "RXNORM"})
+# UMLS-only hierarchy traversal policy: never infer parent/child relationships
+# from code strings or ranges. Hierarchy comes only from source data normalized
+# into mt4ds.walk_edges / mt4ds.hierarchy_edges.
 
 _BROAD_CHV_NAMES = {
     "clinical findings",
     "clinical investigation",
     "cpt",
+    "hydrolase",
+    "hydrolases",
     "operation",
     "operations",
     "sign and symptom",
     "signs and symptoms",
     "symptoms and signs",
+    "service",
+    "services",
     "finding",
     "findings",
     "symptom",
     "symptoms",
 }
+_BROAD_CHV_NAME_SQL = ", ".join(f"'{name}'" for name in sorted(_BROAD_CHV_NAMES))
 _BROAD_MEDLINEPLUS_NAMES = {
     "anatomy",
     "body structure",
@@ -84,6 +113,7 @@ _BROAD_MEDLINEPLUS_NAMES = {
     "physical finding",
     "procedure",
 }
+_BROAD_MEDLINEPLUS_NAME_SQL = ", ".join(f"'{name}'" for name in sorted(_BROAD_MEDLINEPLUS_NAMES))
 _BLACKLIST_LOINC = frozenset({
     "I",
     "A",
@@ -132,20 +162,6 @@ _COMBO_TERM_STOPWORDS = {
     "l",
     "meq",
 }
-_RXNORM_GROUP_TTYS = {
-    "SCD",
-    "SBD",
-    "SCDF",
-    "SBDF",
-    "GPCK",
-    "BPCK",
-    "SBDG",
-    "SCDG",
-    "SBDC",
-    "DFG",
-}
-
-
 @dataclass
 class _Row:
     code: str
@@ -180,14 +196,14 @@ class _ReplacementCandidate:
     relationship: str | None
 
 
-class LocalLiteEngine:
+class LocalDuckDBEngine:
     """Low-memory DuckDB engine for patient-friendly batch resolution."""
 
     def __init__(
         self,
         con,
         *,
-        config: LocalLiteConfig | None = None,
+        config: LocalDuckDBConfig | None = None,
         memory_limit: str | None = None,
         temp_directory: str | Path | None = None,
         threads: int | None = None,
@@ -195,6 +211,7 @@ class LocalLiteEngine:
         query_chunk_size: int | None = None,
         progress: Callable[[str], None] | None = None,
         cvx_groups: Mapping[str, Sequence[str]] | None = None,
+        require_patient_friendly_resolutions: bool | None = None,
     ):
         if config:
             memory_limit = config.memory_limit if memory_limit is None else memory_limit
@@ -203,16 +220,25 @@ class LocalLiteEngine:
             if preserve_insertion_order is None:
                 preserve_insertion_order = config.preserve_insertion_order
             query_chunk_size = config.query_chunk_size if query_chunk_size is None else query_chunk_size
+            if require_patient_friendly_resolutions is None:
+                require_patient_friendly_resolutions = config.require_patient_friendly_resolutions
         if preserve_insertion_order is None:
             preserve_insertion_order = False
         if query_chunk_size is None:
             query_chunk_size = 5000
+        if require_patient_friendly_resolutions is None:
+            require_patient_friendly_resolutions = False
 
         self.con = con
+        self._cvx_groups_auto = cvx_groups is None
         self.cvx_groups = {str(k): list(v) for k, v in (cvx_groups or {}).items()}
         self.query_chunk_size = max(1, int(query_chunk_size))
         self.progress = progress
+        self.require_patient_friendly_resolutions = bool(require_patient_friendly_resolutions)
         self.cache_prepared = False
+        self._snomed_parent_links_cache_prepared = False
+        self._prepared_tables_available: bool | None = None
+        self._active_source_code_cache: dict[str, set[str]] = {}
         self.con.execute(f"SET preserve_insertion_order={str(preserve_insertion_order).lower()}")
         if threads:
             self.con.execute(f"PRAGMA threads={int(threads)}")
@@ -236,7 +262,7 @@ class LocalLiteEngine:
         *,
         create_indexes: bool = True,
     ) -> None:
-        """Prepare low-memory temp tables for repeated LocalLite queries.
+        """Prepare low-memory temp tables for repeated local DuckDB queries.
 
         The temp tables intentionally shadow `mrconso` and `mrrel` so the rest
         of the engine can keep using the same SQL. The original database tables
@@ -265,20 +291,15 @@ class LocalLiteEngine:
         )
         self.con.execute("CREATE TEMP TABLE mt4ds_cache_aui AS SELECT AUI FROM mrconso WHERE AUI IS NOT NULL")
         self.con.execute("CREATE TEMP TABLE mrrel (AUI1 VARCHAR, AUI2 VARCHAR, RELA VARCHAR, REL VARCHAR)")
-        for predicate in (
-            "r.REL = 'PAR'",
-            "COALESCE(r.REL, '') != 'PAR' AND r.RELA IN ('isa', 'component_of', 'measured_by', 'mapped_from')",
-        ):
-            self.con.execute(
-                f"""
-                INSERT INTO mrrel
-                SELECT r.AUI1, r.AUI2, r.RELA, r.REL
-                FROM {base_rel} r
-                WHERE {predicate}
-                  AND r.AUI1 IN (SELECT AUI FROM mt4ds_cache_aui)
-                  AND r.AUI2 IN (SELECT AUI FROM mt4ds_cache_aui)
-                """
-            )
+        self.con.execute(
+            f"""
+            INSERT INTO mrrel
+            SELECT r.AUI1, r.AUI2, r.RELA, r.REL
+            FROM {base_rel} r
+            WHERE r.AUI1 IN (SELECT AUI FROM mt4ds_cache_aui)
+              AND r.AUI2 IN (SELECT AUI FROM mt4ds_cache_aui)
+            """
+        )
         self.con.execute("DROP TABLE mt4ds_cache_aui")
 
         if create_indexes:
@@ -292,9 +313,55 @@ class LocalLiteEngine:
                 try:
                     self.con.execute(ddl)
                 except Exception as exc:
-                    logger.debug("Skipping LocalLite cache index %s: %s", ddl, exc)
+                    logger.debug("Skipping local DuckDB cache index %s: %s", ddl, exc)
 
         self.cache_prepared = True
+
+    def _ensure_snomed_parent_links_cache(self) -> str | None:
+        """Create a per-connection temp table for SNOMED child->parent edges."""
+        if self._snomed_parent_links_cache_prepared:
+            return _SNOMED_PARENT_LINKS_CACHE_TABLE
+        try:
+            self.con.execute(
+                f"""
+                CREATE TEMP TABLE IF NOT EXISTS {_SNOMED_PARENT_LINKS_CACHE_TABLE} AS
+                SELECT DISTINCT r.AUI1 AS child_aui, r.AUI2 AS parent_aui
+                FROM mrrel r
+                JOIN mrconso child ON child.AUI = r.AUI1
+                JOIN mrconso parent ON parent.AUI = r.AUI2
+                WHERE r.REL = 'PAR'
+                  AND COALESCE(r.RELA, 'isa') IN ('isa', 'inverse_isa')
+                  AND child.SAB = 'SNOMEDCT_US'
+                  AND parent.SAB = 'SNOMEDCT_US'
+                  AND child.SUPPRESS = 'N'
+                  AND parent.SUPPRESS = 'N'
+                UNION
+                SELECT DISTINCT r.AUI2 AS child_aui, r.AUI1 AS parent_aui
+                FROM mrrel r
+                JOIN mrconso parent ON parent.AUI = r.AUI1
+                JOIN mrconso child ON child.AUI = r.AUI2
+                WHERE r.REL = 'CHD'
+                  AND COALESCE(r.RELA, 'isa') IN ('isa', 'inverse_isa')
+                  AND child.SAB = 'SNOMEDCT_US'
+                  AND parent.SAB = 'SNOMEDCT_US'
+                  AND child.SUPPRESS = 'N'
+                  AND parent.SUPPRESS = 'N'
+                """
+            )
+            try:
+                self.con.execute(
+                    f"""
+                    CREATE INDEX IF NOT EXISTS idx_{_SNOMED_PARENT_LINKS_CACHE_TABLE}_child
+                    ON {_SNOMED_PARENT_LINKS_CACHE_TABLE}(child_aui)
+                    """
+                )
+            except Exception as exc:
+                logger.debug("Skipping SNOMED parent link cache index: %s", exc)
+            self._snomed_parent_links_cache_prepared = True
+            return _SNOMED_PARENT_LINKS_CACHE_TABLE
+        except Exception as exc:
+            logger.debug("Failed to create SNOMED parent link cache: %s", exc)
+            return None
 
     def _base_catalog_name(self) -> str:
         rows = self.con.execute("PRAGMA database_list").fetchall()
@@ -315,7 +382,37 @@ class LocalLiteEngine:
         if not codes:
             return []
 
+        # Patient-friendly hierarchy policy:
+        # - ICD/CPT/HCPCS-like sources walk their own hierarchy first and
+        #   stop at the first depth with a non-heading MEDLINEPLUS/CHV atom,
+        #   preferring MEDLINEPLUS only within that depth frontier.
+        # - LOINC keeps its source-native component/axis/common-name tiers, then
+        #   participates in SNOMED fallback if those tiers miss.
+        # - If source-native hierarchy misses, fall back through SNOMED and use
+        #   the same first-frontier rule. SNOMED fallback accepts nodes at
+        #   top-level depth >= 4 and does not expand into levels 1-3.
+        # - RxNorm and CVX use separate source-native strategies.
         ordered = [CodeRef(source=c.source, code=c.code) for c in codes]
+        materialized = self._get_patient_friendly_names_from_resolutions(ordered)
+        if materialized is not None:
+            return materialized
+        if self.require_patient_friendly_resolutions:
+            raise RuntimeError(
+                "Patient-friendly resolution rows are required, but "
+                "mt4ds.patient_friendly_resolutions does not fully cover the "
+                "request for the current policy version. Run "
+                "scripts/materialize_patient_friendly.py for the requested "
+                "source/code set or disable require_patient_friendly_resolutions "
+                "for explicit debug traversal."
+            )
+        if self._has_patient_friendly_prepared_tables({ref.source for ref in ordered}):
+            try:
+                return self._get_patient_friendly_names_prepared(ordered, max_depth=max_depth)
+            except Exception as exc:
+                if self.require_patient_friendly_resolutions:
+                    raise
+                logger.debug("Falling back to raw patient-friendly path: %s", exc)
+
         grouped: dict[str, list[str]] = defaultdict(list)
         for ref in ordered:
             grouped[ref.source].append(ref.code)
@@ -356,6 +453,155 @@ class LocalLiteEngine:
             output.append(row.result())
         return output
 
+    def _get_patient_friendly_names_prepared(
+        self,
+        codes: Sequence[CodeRef],
+        *,
+        max_depth: int,
+    ) -> list[FriendlyNameResult]:
+        from medterm4ds.services.patient_friendly_prepared import (
+            get_non_rxnorm_patient_friendly,
+        )
+        from medterm4ds.services.rxnorm_tty_walk import get_rxnorm_patient_friendly
+
+        materialized = self._get_patient_friendly_names_from_resolutions(codes)
+        if materialized is not None:
+            return materialized
+        if self.require_patient_friendly_resolutions:
+            raise RuntimeError(
+                "Patient-friendly resolution rows are required, but "
+                "mt4ds.patient_friendly_resolutions does not fully cover the "
+                "request for the current policy version."
+            )
+
+        rxnorm_items: list[tuple[int, CodeRef]] = []
+        other_items: list[tuple[int, CodeRef]] = []
+        for index, code in enumerate(codes):
+            if code.source == "RXNORM":
+                rxnorm_items.append((index, code))
+            else:
+                other_items.append((index, code))
+
+        by_index: dict[int, FriendlyNameResult] = {}
+        if rxnorm_items:
+            rxnorm_rows = get_rxnorm_patient_friendly(
+                [code for _index, code in rxnorm_items],
+                self.con,
+            )
+            for (index, _code), row in zip(rxnorm_items, rxnorm_rows, strict=True):
+                by_index[index] = row
+        if other_items:
+            other_rows = get_non_rxnorm_patient_friendly(
+                [code for _index, code in other_items],
+                self.con,
+                max_depth=max_depth,
+            )
+            for (index, _code), row in zip(other_items, other_rows, strict=True):
+                by_index[index] = row
+
+        return [by_index[index] for index in range(len(codes))]
+
+    def _get_patient_friendly_names_from_resolutions(
+        self,
+        codes: Sequence[CodeRef],
+    ) -> list[FriendlyNameResult] | None:
+        """Return materialized patient-friendly resolutions when fully available."""
+        if not codes:
+            return []
+        try:
+            from medterm4ds.engines.duckdb.prepared import (
+                PATIENT_FRIENDLY_POLICY_VERSION,
+                PREPARED_SCHEMA_VERSION,
+            )
+
+            exists = self.con.execute(
+                """
+                SELECT 1
+                FROM information_schema.tables
+                WHERE table_schema = 'mt4ds'
+                  AND table_name = 'patient_friendly_resolutions'
+                LIMIT 1
+                """
+            ).fetchone()
+            if not exists:
+                return None
+
+            input_values = ",\n                    ".join(
+                f"({_sql_literal(ref.source)}, {_sql_literal(ref.code)}, {index})"
+                for index, ref in enumerate(codes)
+            )
+            rows = self.con.execute(
+                f"""
+                WITH input_codes(source, code, input_order) AS (
+                    VALUES {input_values}
+                ),
+                ranked_resolutions AS (
+                    SELECT i.input_order, i.source, i.code,
+                           r.name, r.friendly_source, r.match_type,
+                           r.match_depth, r.technical_name, r.policy_version,
+                           ROW_NUMBER() OVER (
+                               PARTITION BY i.input_order
+                               ORDER BY r.generated_at DESC NULLS LAST,
+                                        r.selected_candidate_id DESC NULLS LAST
+                           ) AS rn
+                    FROM input_codes i
+                    LEFT JOIN mt4ds.patient_friendly_resolutions r
+                     ON r.source = i.source
+                     AND r.code = i.code
+                     AND r.policy_version = ?
+                     AND r.prepared_schema_version = ?
+                )
+                SELECT input_order, source, code, name, friendly_source,
+                       match_type, match_depth, technical_name, policy_version
+                FROM ranked_resolutions
+                WHERE rn = 1
+                ORDER BY input_order
+                """,
+                [PATIENT_FRIENDLY_POLICY_VERSION, PREPARED_SCHEMA_VERSION],
+            ).fetchall()
+        except Exception as exc:
+            logger.debug("Materialized patient-friendly lookup unavailable: %s", exc)
+            return None
+
+        if len(rows) != len(codes):
+            return None
+        if any(row[3] is None for row in rows):
+            return None
+
+        results: list[FriendlyNameResult] = []
+        for row in rows:
+            source = str(row[1])
+            code = str(row[2])
+            name = str(row[3])
+            friendly_source = str(row[4] or source)
+            match_type = str(row[5] or "original")
+            match_depth = int(row[6] or 0)
+            technical_name = str(row[7]) if row[7] is not None else None
+            policy_version = str(row[8] or "")
+            results.append(
+                FriendlyNameResult(
+                    code=CodeRef(source=source, code=code),
+                    name=name,
+                    friendly_source=friendly_source,
+                    match_type=match_type,
+                    match_depth=match_depth,
+                    technical_name=technical_name,
+                    matched_via=Provenance.from_steps(
+                        "patient_friendly_resolutions",
+                        [
+                            ProvenanceStep(
+                                op="prepared_resolution",
+                                source=source,
+                                code=code,
+                                name=name,
+                                mode=policy_version,
+                            ),
+                        ],
+                    ),
+                )
+            )
+        return results
+
     def get_code_infos(self, codes: Sequence[CodeRef]) -> list[CodeInfo | None]:
         """Return canonical active atom info for input codes."""
         if not codes:
@@ -366,36 +612,51 @@ class LocalLiteEngine:
         for ref in ordered:
             grouped[ref.source].append(ref.code)
 
+        use_prepared = self._has_prepared_tables()
+
         lookup: dict[tuple[str, str], CodeInfo] = {}
         for source, source_codes in grouped.items():
             with self._temp_codes(source_codes) as temp:
-                rows = self.con.execute(
-                    f"""
-                    WITH ranked AS (
-                        SELECT CODE, STR, CUI, AUI, TTY, SUPPRESS,
-                               ROW_NUMBER() OVER (
-                                   PARTITION BY CODE
-                                   ORDER BY
-                                       CASE WHEN SUPPRESS = 'N' THEN 0 ELSE 1 END,
-                                       CASE TTY
-                                           WHEN 'PT' THEN 0
-                                           WHEN 'MH' THEN 1
-                                           WHEN 'LN' THEN 2
-                                           ELSE 3
-                                       END,
-                                       AUI
-                               ) AS rn
-                        FROM mrconso
-                        WHERE SAB = ?
-                          AND SUPPRESS = 'N'
-                          AND CODE IN (SELECT code FROM {temp})
-                    )
-                    SELECT CODE, STR, CUI, AUI, TTY, SUPPRESS
-                    FROM ranked
-                    WHERE rn = 1
-                    """,
-                    [source],
-                ).fetchall()
+                if use_prepared:
+                    rows = self.con.execute(
+                        f"""
+                        SELECT code, name, cui, aui, tty, suppress
+                        FROM mt4ds.best_atoms
+                        WHERE source = ?
+                          AND rank = 1
+                          AND is_active = true
+                          AND code IN (SELECT code FROM {temp})
+                        """,
+                        [source],
+                    ).fetchall()
+                else:
+                    rows = self.con.execute(
+                        f"""
+                        WITH ranked AS (
+                            SELECT CODE, STR, CUI, AUI, TTY, SUPPRESS,
+                                   ROW_NUMBER() OVER (
+                                       PARTITION BY CODE
+                                       ORDER BY
+                                           CASE WHEN SUPPRESS = 'N' THEN 0 ELSE 1 END,
+                                           CASE TTY
+                                               WHEN 'PT' THEN 0
+                                               WHEN 'MH' THEN 1
+                                               WHEN 'LN' THEN 2
+                                               ELSE 3
+                                           END,
+                                           AUI
+                                   ) AS rn
+                            FROM mrconso
+                            WHERE SAB = ?
+                              AND SUPPRESS = 'N'
+                              AND CODE IN (SELECT code FROM {temp})
+                        )
+                        SELECT CODE, STR, CUI, AUI, TTY, SUPPRESS
+                        FROM ranked
+                        WHERE rn = 1
+                        """,
+                        [source],
+                    ).fetchall()
             for code, name, cui, aui, tty, suppress in rows:
                 lookup[(source, code)] = CodeInfo(
                     code=CodeRef(source=source, code=code),
@@ -438,12 +699,8 @@ class LocalLiteEngine:
             raise ValueError("optimize_codes requires all codes to use the same source")
         source = refs[0].source
         rel = relationship or _DEFAULT_OPTIMIZE_REL.get(source, "isa")
-        if source in {"ICD10CM", "ICD10PCS"}:
-            return self._optimize_prefix_codes(
-                refs,
-                relationship=rel,
-                output_format=output_format,
-            )
+        if str(rel).lower() == "prefix":
+            raise ValueError("prefix optimize is not supported; use UMLS hierarchy relationships")
 
         leaves = self._normalize_optimize_input(refs, rel)
         remaining = set(leaves)
@@ -543,80 +800,6 @@ class LocalLiteEngine:
             reduction=reduction,
         )
 
-    def _optimize_prefix_codes(
-        self,
-        refs: Sequence[CodeRef],
-        *,
-        relationship: str,
-        output_format: str,
-    ) -> OptimizeResult:
-        source = refs[0].source
-        active_codes = self._active_source_code_set(source)
-        input_codes = {ref.code for ref in refs}
-        leaves: set[str] = set()
-        for code in input_codes:
-            descendant_leaves = _prefix_leaf_descendants(code, active_codes)
-            leaves.update(descendant_leaves or {code})
-        remaining = set(leaves)
-        ancestor_cache = {
-            code: _prefix_ancestors(code, active_codes)
-            for code in remaining
-        }
-        candidate_set = set(remaining)
-        for ancestors in ancestor_cache.values():
-            candidate_set.update(ancestors)
-        leaf_cache = {
-            candidate: _prefix_leaf_descendants(candidate, active_codes)
-            for candidate in candidate_set
-        }
-        rules: list[OptimizeRule] = []
-        while remaining:
-            best_code: str | None = None
-            best_covered: set[str] = set()
-            best_excluded: set[str] = set()
-            best_score = -1.0
-            candidates = set(remaining)
-            for code in remaining:
-                candidates.update(ancestor_cache.get(code, set()))
-            for candidate in sorted(candidates):
-                descendant_leaves = leaf_cache.get(candidate) or {candidate}
-                covered = descendant_leaves & remaining
-                if not covered:
-                    continue
-                excluded = descendant_leaves - remaining
-                score = len(covered) / (1 + len(excluded))
-                if score > best_score or (score == best_score and len(excluded) < len(best_excluded)):
-                    best_code = candidate
-                    best_covered = covered
-                    best_excluded = excluded
-                    best_score = score
-            if best_code is None:
-                best_code = min(remaining)
-                best_covered = {best_code}
-                best_excluded = set()
-            if output_format == "flat":
-                rules.append(OptimizeRule(include=CodeRef(source, best_code)))
-                rules.extend(OptimizeRule(include=CodeRef(source, code)) for code in sorted(best_excluded))
-            else:
-                rules.append(
-                    OptimizeRule(
-                        include=CodeRef(source, best_code),
-                        exclude=tuple(CodeRef(source, code) for code in sorted(best_excluded)),
-                        covered_codes=tuple(CodeRef(source, code) for code in sorted(best_covered)),
-                        excluded_codes=tuple(CodeRef(source, code) for code in sorted(best_excluded)),
-                    )
-                )
-            remaining -= best_covered
-        reduction = round((1 - (len(rules) / len(refs))) * 100, 2) if refs else 0.0
-        return OptimizeResult(
-            source=source,
-            relationship=relationship,
-            rules=tuple(rules),
-            original_count=len(refs),
-            optimized_count=len(rules),
-            reduction=reduction,
-        )
-
     def get_source_stats(self, sources: Sequence[str] | None = None) -> list[SourceStats]:
         """Return active code and atom counts by source."""
         params: list[object] = []
@@ -626,19 +809,36 @@ class LocalLiteEngine:
             placeholders = ",".join(["?"] * len(normalized_sources))
             source_filter = f"AND SAB IN ({placeholders})"
             params.extend(normalized_sources)
-        rows = self.con.execute(
-            f"""
-            SELECT SAB, COUNT(DISTINCT CODE) AS code_count, COUNT(*) AS atom_count
-            FROM mrconso
-            WHERE SUPPRESS = 'N'
-              AND CODE IS NOT NULL
-              AND CODE != ''
-              {source_filter}
-            GROUP BY SAB
-            ORDER BY SAB
-            """,
-            params,
-        ).fetchall()
+        if self._table_exists("atoms"):
+            if sources:
+                source_filter = f"AND source IN ({placeholders})"
+            rows = self.con.execute(
+                f"""
+                SELECT source, COUNT(DISTINCT code) AS code_count, COUNT(*) AS atom_count
+                FROM mt4ds.atoms
+                WHERE is_active = true
+                  AND code IS NOT NULL
+                  AND code != ''
+                  {source_filter}
+                GROUP BY source
+                ORDER BY source
+                """,
+                params,
+            ).fetchall()
+        else:
+            rows = self.con.execute(
+                f"""
+                SELECT SAB, COUNT(DISTINCT CODE) AS code_count, COUNT(*) AS atom_count
+                FROM mrconso
+                WHERE SUPPRESS = 'N'
+                  AND CODE IS NOT NULL
+                  AND CODE != ''
+                  {source_filter}
+                GROUP BY SAB
+                ORDER BY SAB
+                """,
+                params,
+            ).fetchall()
         return [
             SourceStats(source=source, code_count=int(code_count), atom_count=int(atom_count))
             for source, code_count, atom_count in rows
@@ -657,28 +857,53 @@ class LocalLiteEngine:
             return []
         normalized_sources = _dedupe(sources)
         placeholders = ",".join(["?"] * len(normalized_sources))
-        rows = self.con.execute(
-            f"""
-            WITH ranked AS (
-                SELECT SAB, CODE,
-                       ROW_NUMBER() OVER (PARTITION BY SAB ORDER BY CODE) AS rn
-                FROM (
-                    SELECT SAB, CODE
-                    FROM mrconso
-                    WHERE SUPPRESS = 'N'
-                      AND CODE IS NOT NULL
-                      AND CODE != ''
-                      AND SAB IN ({placeholders})
-                    GROUP BY SAB, CODE
+        if self._table_exists("best_atoms"):
+            rows = self.con.execute(
+                f"""
+                WITH ranked AS (
+                    SELECT source, code,
+                           ROW_NUMBER() OVER (PARTITION BY source ORDER BY code) AS rn
+                    FROM (
+                        SELECT source, code
+                        FROM mt4ds.best_atoms
+                        WHERE is_active = true
+                          AND rank = 1
+                          AND code IS NOT NULL
+                          AND code != ''
+                          AND source IN ({placeholders})
+                        GROUP BY source, code
+                    )
                 )
-            )
-            SELECT SAB, CODE
-            FROM ranked
-            WHERE rn <= ?
-            ORDER BY SAB, CODE
-            """,
-            [*normalized_sources, per_source],
-        ).fetchall()
+                SELECT source, code
+                FROM ranked
+                WHERE rn <= ?
+                ORDER BY source, code
+                """,
+                [*normalized_sources, per_source],
+            ).fetchall()
+        else:
+            rows = self.con.execute(
+                f"""
+                WITH ranked AS (
+                    SELECT SAB, CODE,
+                           ROW_NUMBER() OVER (PARTITION BY SAB ORDER BY CODE) AS rn
+                    FROM (
+                        SELECT SAB, CODE
+                        FROM mrconso
+                        WHERE SUPPRESS = 'N'
+                          AND CODE IS NOT NULL
+                          AND CODE != ''
+                          AND SAB IN ({placeholders})
+                        GROUP BY SAB, CODE
+                    )
+                )
+                SELECT SAB, CODE
+                FROM ranked
+                WHERE rn <= ?
+                ORDER BY SAB, CODE
+                """,
+                [*normalized_sources, per_source],
+            ).fetchall()
         return [CodeRef(source=source, code=code) for source, code in rows]
 
     def get_code_ttys(self, codes: Sequence[CodeRef]) -> list[CodeInfo]:
@@ -693,25 +918,46 @@ class LocalLiteEngine:
         rows: list[tuple[int, CodeInfo]] = []
         for source, code_ordinals in grouped.items():
             with self._temp_code_ordinals(code_ordinals) as temp:
-                source_rows = self.con.execute(
-                    f"""
-                    SELECT i.ordinal, c.CODE, c.STR, c.CUI, c.AUI, c.TTY, c.SUPPRESS
-                    FROM {temp} i
-                    JOIN mrconso c ON c.CODE = i.code
-                    WHERE c.SAB = ?
-                      AND c.SUPPRESS = 'N'
-                    ORDER BY i.ordinal,
-                             CASE c.TTY
-                                 WHEN 'PT' THEN 0
-                                 WHEN 'MH' THEN 1
-                                 WHEN 'LN' THEN 2
-                                 ELSE 3
-                             END,
-                             c.TTY,
-                             c.AUI
-                    """,
-                    [source],
-                ).fetchall()
+                if self._table_exists("atoms"):
+                    source_rows = self.con.execute(
+                        f"""
+                        SELECT i.ordinal, a.code, a.name, a.cui, a.aui, a.tty, a.suppress
+                        FROM {temp} i
+                        JOIN mt4ds.atoms a ON a.code = i.code
+                        WHERE a.source = ?
+                          AND a.is_active = true
+                        ORDER BY i.ordinal,
+                                 CASE a.tty
+                                     WHEN 'PT' THEN 0
+                                     WHEN 'MH' THEN 1
+                                     WHEN 'LN' THEN 2
+                                     ELSE 3
+                                 END,
+                                 a.tty,
+                                 a.aui
+                        """,
+                        [source],
+                    ).fetchall()
+                else:
+                    source_rows = self.con.execute(
+                        f"""
+                        SELECT i.ordinal, c.CODE, c.STR, c.CUI, c.AUI, c.TTY, c.SUPPRESS
+                        FROM {temp} i
+                        JOIN mrconso c ON c.CODE = i.code
+                        WHERE c.SAB = ?
+                          AND c.SUPPRESS = 'N'
+                        ORDER BY i.ordinal,
+                                 CASE c.TTY
+                                     WHEN 'PT' THEN 0
+                                     WHEN 'MH' THEN 1
+                                     WHEN 'LN' THEN 2
+                                     ELSE 3
+                                 END,
+                                 c.TTY,
+                                 c.AUI
+                        """,
+                        [source],
+                    ).fetchall()
             rows.extend(
                 (
                     int(ordinal),
@@ -743,15 +989,38 @@ class LocalLiteEngine:
         if limit < 1:
             raise ValueError("limit must be at least 1")
 
-        filters = ["SUPPRESS = 'N'", "CODE IS NOT NULL", "CODE != ''", "STR IS NOT NULL"]
+        use_prepared_atoms = self._table_exists("atoms")
+        if use_prepared_atoms:
+            table_name = "mt4ds.atoms"
+            source_col = "source"
+            code_col = "code"
+            name_col = "name"
+            cui_col = "cui"
+            aui_col = "aui"
+            tty_col = "tty"
+            filters = [
+                "is_active = true",
+                "code IS NOT NULL",
+                "code != ''",
+                "name IS NOT NULL",
+            ]
+        else:
+            table_name = "mrconso"
+            source_col = "SAB"
+            code_col = "CODE"
+            name_col = "STR"
+            cui_col = "CUI"
+            aui_col = "AUI"
+            tty_col = "TTY"
+            filters = ["SUPPRESS = 'N'", "CODE IS NOT NULL", "CODE != ''", "STR IS NOT NULL"]
         filter_params: list[object] = []
         if sources:
             normalized_sources = _dedupe(sources)
-            filters.append(f"SAB IN ({','.join(['?'] * len(normalized_sources))})")
+            filters.append(f"{source_col} IN ({','.join(['?'] * len(normalized_sources))})")
             filter_params.extend(normalized_sources)
         if tty_filters:
             normalized_ttys = _dedupe([tty.upper() for tty in tty_filters])
-            filters.append(f"TTY IN ({','.join(['?'] * len(normalized_ttys))})")
+            filters.append(f"{tty_col} IN ({','.join(['?'] * len(normalized_ttys))})")
             filter_params.extend(normalized_ttys)
 
         lowered_query = stripped_query.lower()
@@ -761,32 +1030,34 @@ class LocalLiteEngine:
         rows = self.con.execute(
             f"""
             WITH ranked AS (
-                SELECT SAB, CODE, STR, CUI, AUI, TTY,
+                SELECT {source_col} AS SAB, {code_col} AS CODE,
+                       {name_col} AS STR, {cui_col} AS CUI,
+                       {aui_col} AS AUI, {tty_col} AS TTY,
                        CASE
-                           WHEN LOWER(STR) = ? THEN 'exact'
-                           WHEN LOWER(STR) LIKE ? THEN 'prefix'
+                           WHEN LOWER({name_col}) = ? THEN 'exact'
+                           WHEN LOWER({name_col}) LIKE ? THEN 'prefix'
                            ELSE 'contains'
                        END AS match_type,
                        ROW_NUMBER() OVER (
-                           PARTITION BY SAB, CODE
+                           PARTITION BY {source_col}, {code_col}
                            ORDER BY
                                CASE
-                                   WHEN LOWER(STR) = ? THEN 0
-                                   WHEN LOWER(STR) LIKE ? THEN 1
+                                   WHEN LOWER({name_col}) = ? THEN 0
+                                   WHEN LOWER({name_col}) LIKE ? THEN 1
                                    ELSE 2
                                END,
-                               CASE TTY
+                               CASE {tty_col}
                                    WHEN 'PT' THEN 0
                                    WHEN 'MH' THEN 1
                                    WHEN 'LN' THEN 2
                                    ELSE 3
                                END,
-                               LENGTH(STR),
-                               AUI
+                               LENGTH({name_col}),
+                               {aui_col}
                        ) AS atom_rn
-                FROM mrconso
+                FROM {table_name}
                 WHERE {' AND '.join(filters)}
-                  AND LOWER(STR) LIKE ?
+                  AND LOWER({name_col}) LIKE ?
             ),
             deduped AS (
                 SELECT *
@@ -900,11 +1171,45 @@ class LocalLiteEngine:
             raise ValueError("max_depth must be non-negative")
 
         ordered = [CodeRef(source=code.source, code=code.code) for code in codes]
+        target_sources = _dedupe(target_sources)
+        if (
+            not include_target_ancestors
+            and not include_target_descendants
+            and (
+                self._table_exists("crosswalk_edges")
+                or self._table_exists("same_cui_edges")
+            )
+            and self._table_exists("best_atoms")
+            and (max_depth == 0 or self._table_exists("walk_edges"))
+        ):
+            from medterm4ds.services.crosswalk_prepared import get_crosswalk_mappings
+
+            unique_ordered: list[CodeRef] = []
+            seen_refs: set[tuple[str, str]] = set()
+            for ref in ordered:
+                key = (ref.source, ref.code)
+                if key not in seen_refs:
+                    seen_refs.add(key)
+                    unique_ordered.append(ref)
+            prepared_mappings = get_crosswalk_mappings(
+                unique_ordered,
+                self.con,
+                target_sources=target_sources,
+                max_depth=max_depth,
+            )
+            prepared_rows = [
+                (index, mapping)
+                for index, ref in enumerate(ordered)
+                for mapping in prepared_mappings
+                if mapping.source.source == ref.source and mapping.source.code == ref.code
+            ]
+            prepared_rows = self._filter_snomed_top_level_mappings(prepared_rows)
+            return _cap_mappings_per_input(prepared_rows, max_results_per_code)
+
         grouped: dict[str, list[tuple[int, str]]] = defaultdict(list)
         for ordinal, ref in enumerate(ordered):
             grouped[ref.source].append((ordinal, ref.code))
 
-        target_sources = _dedupe(target_sources)
         rows: list[tuple[int, CodeMapping]] = []
         for source, source_codes in grouped.items():
             for chunk in _chunks(source_codes, self.query_chunk_size):
@@ -927,27 +1232,30 @@ class LocalLiteEngine:
                         )
                     )
                     if include_target_ancestors:
-                        rows.extend(
-                            self._get_target_hierarchy_mappings(
-                                source,
-                                chunk,
-                                target_sources=target_sources,
-                                max_results_per_code=max_results_per_code,
-                                max_depth=max_depth,
-                                upward=True,
+                        for target_source in target_sources:
+                            rows.extend(
+                                self._get_target_hierarchy_mappings(
+                                    source,
+                                    chunk,
+                                    target_sources=[target_source],
+                                    max_results_per_code=max_results_per_code,
+                                    max_depth=max_depth,
+                                    upward=True,
+                                )
                             )
-                        )
                     if include_target_descendants:
-                        rows.extend(
-                            self._get_target_hierarchy_mappings(
-                                source,
-                                chunk,
-                                target_sources=target_sources,
-                                max_results_per_code=max_results_per_code,
-                                max_depth=max_depth,
-                                upward=False,
+                        for target_source in target_sources:
+                            rows.extend(
+                                self._get_target_hierarchy_mappings(
+                                    source,
+                                    chunk,
+                                    target_sources=[target_source],
+                                    max_results_per_code=max_results_per_code,
+                                    max_depth=max_depth,
+                                    upward=False,
+                                )
                             )
-                        )
+        rows = self._filter_snomed_top_level_mappings(rows)
         return [
             mapping
             for _ordinal, mapping in sorted(
@@ -960,6 +1268,34 @@ class LocalLiteEngine:
                     item[1].target.code,
                     item[1].target_aui or "",
                 ),
+            )
+        ]
+
+    def _filter_snomed_top_level_mappings(
+        self,
+        rows: list[tuple[int, CodeMapping]],
+    ) -> list[tuple[int, CodeMapping]]:
+        """Suppress broad non-exact SNOMED targets when the derived depth table exists."""
+        snomed_codes = sorted(
+            {
+                mapping.target.code
+                for _ordinal, mapping in rows
+                if mapping.target.source == "SNOMEDCT_US"
+                and mapping.match_type not in _SNOMED_TOP_LEVEL_GUARD_EXEMPT_MATCH_TYPES
+            }
+        )
+        if not snomed_codes:
+            return rows
+        depth_lookup = self._snomed_top_level_depths(snomed_codes)
+        if not depth_lookup:
+            return rows
+        return [
+            (ordinal, mapping)
+            for ordinal, mapping in rows
+            if not (
+                mapping.target.source == "SNOMEDCT_US"
+                and mapping.match_type not in _SNOMED_TOP_LEVEL_GUARD_EXEMPT_MATCH_TYPES
+                and depth_lookup.get(mapping.target.code, 999) <= _SNOMED_TOP_LEVEL_GUARD_DEPTH
             )
         ]
 
@@ -1118,6 +1454,9 @@ class LocalLiteEngine:
         )
 
     def _active_source_code_set(self, source: str) -> set[str]:
+        cached = self._active_source_code_cache.get(source)
+        if cached is not None:
+            return cached
         rows = self.con.execute(
             """
             SELECT DISTINCT CODE
@@ -1129,7 +1468,9 @@ class LocalLiteEngine:
             """,
             [source],
         ).fetchall()
-        return {str(row[0]) for row in rows}
+        active_codes = {str(row[0]) for row in rows}
+        self._active_source_code_cache[source] = active_codes
+        return active_codes
 
     def _resolve_ndc(self, ref: CodeRef) -> CodeResolution:
         candidates = _ndc_candidates(ref.code)
@@ -1268,6 +1609,42 @@ class LocalLiteEngine:
         )
 
     def _lookup_any_code(self, ref: CodeRef) -> CodeInfo | None:
+        if self._table_exists("atoms"):
+            rows = self.con.execute(
+                """
+                SELECT code, name, cui, aui, tty, suppress
+                FROM mt4ds.atoms
+                WHERE source = ?
+                  AND code = ?
+                ORDER BY
+                    CASE suppress
+                        WHEN 'N' THEN 0
+                        WHEN 'O' THEN 1
+                        WHEN 'E' THEN 2
+                        ELSE 3
+                    END,
+                    CASE tty
+                        WHEN 'PT' THEN 0
+                        WHEN 'MH' THEN 1
+                        WHEN 'LN' THEN 2
+                        ELSE 3
+                    END,
+                    aui
+                LIMIT 1
+                """,
+                [ref.source, ref.code],
+            ).fetchone()
+            if rows is not None:
+                code, name, cui, aui, tty, suppress = rows
+                return CodeInfo(
+                    code=CodeRef(ref.source, code),
+                    name=name,
+                    cui=cui,
+                    aui=aui,
+                    tty=tty,
+                    suppress=suppress,
+                )
+
         rows = self.con.execute(
             """
             SELECT CODE, STR, CUI, AUI, TTY, SUPPRESS
@@ -1305,6 +1682,41 @@ class LocalLiteEngine:
         )
 
     def _replacement_candidates(self, historical: CodeInfo) -> list[_ReplacementCandidate]:
+        if self._table_exists("code_replacements") and self._table_exists("best_atoms"):
+            rows = self.con.execute(
+                """
+                SELECT b.code, b.name, b.cui, b.aui, b.tty, b.suppress, r.rela
+                FROM mt4ds.code_replacements r
+                JOIN mt4ds.best_atoms b
+                  ON b.source = r.source
+                 AND b.code = r.new_code
+                WHERE r.source = ?
+                  AND r.old_code = ?
+                  AND b.is_active
+                ORDER BY
+                    CASE r.rela
+                        WHEN 'same_as' THEN 0
+                        WHEN 'replaced_by' THEN 1
+                        ELSE 2
+                    END,
+                    b.code
+                LIMIT 25
+                """,
+                [historical.code.source, historical.code.code],
+            ).fetchall()
+            return [
+                _ReplacementCandidate(
+                    code=CodeRef(historical.code.source, code),
+                    name=name,
+                    cui=cui,
+                    aui=aui,
+                    tty=tty,
+                    suppress=suppress,
+                    relationship=rela,
+                )
+                for code, name, cui, aui, tty, suppress, rela in rows
+            ]
+
         if not historical.aui:
             return []
         rela_placeholders = ",".join(["?"] * len(_REPLACEMENT_RELAS))
@@ -1464,10 +1876,48 @@ class LocalLiteEngine:
     ) -> dict[str, set[str]]:
         if not codes:
             return {}
-        rel_values = _relationship_values(relationship)
-        rel_placeholders = ",".join(["?"] * len(rel_values))
-        source_join = "r.AUI1 = c.AUI" if upward else "r.AUI2 = c.AUI"
-        source_target = "r.AUI2" if upward else "r.AUI1"
+        if _is_isa_relationship(relationship) and self._table_exists("walk_edges"):
+            output = {str(code): set() for code in codes}
+            for chunk in _chunks([str(code) for code in codes], self.query_chunk_size):
+                code_placeholders = ",".join(["?"] * len(chunk))
+                if upward:
+                    source_code_sql = "from_code"
+                    target_code_sql = "to_code"
+                    filter_code_sql = "from_code"
+                else:
+                    source_code_sql = "to_code"
+                    target_code_sql = "from_code"
+                    filter_code_sql = "to_code"
+                rows = self.con.execute(
+                    f"""
+                    SELECT DISTINCT {source_code_sql} AS source_code,
+                           {target_code_sql} AS target_code
+                    FROM mt4ds.walk_edges
+                    WHERE source = ?
+                      AND direction = 'parent'
+                      AND {filter_code_sql} IN ({code_placeholders})
+                    """,
+                    [source, *chunk],
+                ).fetchall()
+                for source_code, target_code in rows:
+                    output.setdefault(str(source_code), set()).add(str(target_code))
+            return output
+
+        if _is_isa_relationship(relationship):
+            source_join, source_target = _source_hierarchy_join_sql(
+                source,
+                "c.AUI",
+                upward=upward,
+            )
+            rel_filter_sql = ""
+            rel_params: list[str] = []
+        else:
+            rel_values = _relationship_values(relationship)
+            rel_placeholders = ",".join(["?"] * len(rel_values))
+            source_join = "r.AUI1 = c.AUI" if upward else "r.AUI2 = c.AUI"
+            source_target = "r.AUI2" if upward else "r.AUI1"
+            rel_filter_sql = f"AND (r.RELA IN ({rel_placeholders}) OR r.REL IN ({rel_placeholders}))"
+            rel_params = [*rel_values, *rel_values]
         output = {str(code): set() for code in codes}
         for chunk in _chunks([str(code) for code in codes], self.query_chunk_size):
             code_placeholders = ",".join(["?"] * len(chunk))
@@ -1482,14 +1932,13 @@ class LocalLiteEngine:
                   AND c.CODE IN ({code_placeholders})
                   AND t.SAB = ?
                   AND t.SUPPRESS = 'N'
-                  AND (r.RELA IN ({rel_placeholders}) OR r.REL IN ({rel_placeholders}))
+                  {rel_filter_sql}
                 """,
                 [
                     source,
                     *chunk,
                     source,
-                    *rel_values,
-                    *rel_values,
+                    *rel_params,
                 ],
             ).fetchall()
             for source_code, target_code in rows:
@@ -1505,10 +1954,25 @@ class LocalLiteEngine:
         upward: bool,
         max_depth: int,
     ) -> list[tuple[int, CodeRelation]]:
-        source_join = "r.AUI1 = s.source_aui" if upward else "r.AUI2 = s.source_aui"
-        source_target = "r.AUI2" if upward else "r.AUI1"
-        recursive_join = "r.AUI1 = w.target_aui" if upward else "r.AUI2 = w.target_aui"
-        recursive_target = "r.AUI2" if upward else "r.AUI1"
+        if self._table_exists("walk_edges") and self._table_exists("best_atoms"):
+            return self._get_source_code_relations_prepared(
+                source,
+                code_ordinals,
+                relationship=relationship,
+                upward=upward,
+                max_depth=max_depth,
+            )
+
+        source_join, source_target = _source_hierarchy_join_sql(
+            source,
+            "s.source_aui",
+            upward=upward,
+        )
+        recursive_join, recursive_target = _source_hierarchy_join_sql(
+            source,
+            "w.target_aui",
+            upward=upward,
+        )
 
         with self._temp_code_ordinals(code_ordinals) as temp:
             rows = self.con.execute(
@@ -1547,8 +2011,7 @@ class LocalLiteEngine:
                     FROM seed s
                     JOIN mrrel r ON {source_join}
                     JOIN mrconso t ON t.AUI = {source_target}
-                    WHERE r.REL = 'PAR'
-                      AND t.SAB = ?
+                    WHERE t.SAB = ?
                       AND t.SUPPRESS = 'N'
 
                     UNION ALL
@@ -1562,7 +2025,6 @@ class LocalLiteEngine:
                     JOIN mrrel r ON {recursive_join}
                     JOIN mrconso t ON t.AUI = {recursive_target}
                     WHERE w.depth < ?
-                      AND r.REL = 'PAR'
                       AND t.SAB = ?
                       AND t.SUPPRESS = 'N'
                       AND strpos('>' || w.path || '>', '>' || t.AUI || '>') = 0
@@ -1584,7 +2046,7 @@ class LocalLiteEngine:
                 [source, source, max_depth, source],
             ).fetchall()
 
-        return [
+        relations = [
             (
                 int(ordinal),
                 CodeRelation(
@@ -1617,6 +2079,175 @@ class LocalLiteEngine:
                 depth,
             ) in rows
         ]
+        return _dedupe_relation_rows(relations)
+
+    def _get_source_code_relations_prepared(
+        self,
+        source: str,
+        code_ordinals: Sequence[tuple[int, str]],
+        *,
+        relationship: str,
+        upward: bool,
+        max_depth: int,
+    ) -> list[tuple[int, CodeRelation]]:
+        if upward:
+            first_join = "e.from_aui = s.source_aui"
+            recursive_join = "e.from_aui = w.target_aui"
+            target_code = "e.to_code"
+            target_aui = "e.to_aui"
+            target_cui = "e.to_cui"
+        else:
+            first_join = "e.to_aui = s.source_aui"
+            recursive_join = "e.to_aui = w.target_aui"
+            target_code = "e.from_code"
+            target_aui = "e.from_aui"
+            target_cui = "e.from_cui"
+
+        with self._temp_code_ordinals(code_ordinals) as temp:
+            rows = self.con.execute(
+                f"""
+                WITH RECURSIVE
+                seed AS (
+                    SELECT i.ordinal, i.code AS source_code,
+                           b.name AS source_name, b.cui AS source_cui,
+                           b.aui AS source_aui
+                    FROM {temp} i
+                    JOIN mt4ds.best_atoms b
+                      ON b.source = ?
+                     AND b.code = i.code
+                     AND b.rank = 1
+                ),
+                walk AS (
+                    SELECT s.ordinal, s.source_code, s.source_name,
+                           s.source_cui, s.source_aui,
+                           {target_code} AS target_code,
+                           {target_cui} AS target_cui,
+                           {target_aui} AS target_aui,
+                           e.relationship AS rel,
+                           1 AS depth,
+                           s.source_aui || '>' || {target_aui} AS path
+                    FROM seed s
+                    JOIN mt4ds.walk_edges e
+                      ON e.source = ?
+                     AND e.direction = 'parent'
+                     AND {first_join}
+
+                    UNION ALL
+
+                    SELECT w.ordinal, w.source_code, w.source_name,
+                           w.source_cui, w.source_aui,
+                           {target_code} AS target_code,
+                           {target_cui} AS target_cui,
+                           {target_aui} AS target_aui,
+                           e.relationship AS rel,
+                           w.depth + 1 AS depth,
+                           w.path || '>' || {target_aui} AS path
+                    FROM walk w
+                    JOIN mt4ds.walk_edges e
+                      ON e.source = ?
+                     AND e.direction = 'parent'
+                     AND {recursive_join}
+                    WHERE w.depth < ?
+                      AND strpos('>' || w.path || '>', '>' || {target_aui} || '>') = 0
+                ),
+                ranked AS (
+                    SELECT *,
+                           ROW_NUMBER() OVER (
+                               PARTITION BY ordinal, target_code
+                               ORDER BY depth, target_aui
+                           ) AS rn
+                    FROM walk
+                )
+                SELECT r.ordinal, r.source_code, r.source_name, r.source_cui,
+                       r.source_aui, r.target_code,
+                       COALESCE(t.name, r.target_code) AS target_name,
+                       r.target_cui, r.target_aui, r.rel, r.depth
+                FROM ranked r
+                LEFT JOIN mt4ds.best_atoms t
+                  ON t.source = ?
+                 AND t.code = r.target_code
+                 AND t.rank = 1
+                WHERE r.rn = 1
+                ORDER BY r.ordinal, r.depth, r.target_code, r.target_aui
+                """,
+                [source, source, source, max_depth, source],
+            ).fetchall()
+
+        return [
+            (
+                int(ordinal),
+                CodeRelation(
+                    source=CodeRef(source=source, code=source_code),
+                    target=CodeRef(source=source, code=target_code),
+                    relationship=relationship,
+                    depth=int(depth),
+                    source_display=source_name,
+                    target_display=target_name,
+                    rel=rel,
+                    rela=None,
+                    source_cui=source_cui,
+                    target_cui=target_cui,
+                    source_aui=source_aui,
+                    target_aui=target_aui,
+                ),
+            )
+            for (
+                ordinal,
+                source_code,
+                source_name,
+                source_cui,
+                source_aui,
+                target_code,
+                target_name,
+                target_cui,
+                target_aui,
+                rel,
+                depth,
+            ) in rows
+        ]
+
+    def _source_display_lookup(
+        self,
+        source: str,
+        codes: Sequence[str],
+    ) -> dict[str, tuple[str, str, str]]:
+        if not codes:
+            return {}
+        with self._temp_codes(codes) as temp:
+            if self._table_exists("best_atoms"):
+                rows = self.con.execute(
+                    f"""
+                    SELECT code, name, cui, aui
+                    FROM mt4ds.best_atoms
+                    WHERE source = ?
+                      AND rank = 1
+                      AND is_active = true
+                      AND code IN (SELECT code FROM {temp})
+                    """,
+                    [source],
+                ).fetchall()
+            else:
+                atom_order_sql = _source_atom_order_sql(source)
+                rows = self.con.execute(
+                    f"""
+                    WITH ranked AS (
+                        SELECT CODE, STR, CUI, AUI,
+                               ROW_NUMBER() OVER (
+                                   PARTITION BY CODE
+                                   ORDER BY {atom_order_sql}
+                               ) AS rn
+                        FROM mrconso
+                        WHERE SAB = ?
+                          AND SUPPRESS = 'N'
+                          AND CODE IN (SELECT code FROM {temp})
+                    )
+                    SELECT CODE, STR, CUI, AUI
+                    FROM ranked
+                    WHERE rn = 1
+                    """,
+                    [source],
+                ).fetchall()
+        return {str(code): (str(name), str(cui), str(aui)) for code, name, cui, aui in rows}
 
     def _get_source_code_mappings(
         self,
@@ -1626,6 +2257,20 @@ class LocalLiteEngine:
         target_sources: Sequence[str],
         max_results_per_code: int,
     ) -> list[tuple[int, CodeMapping]]:
+        if (
+            self._table_exists("best_atoms")
+            and (
+                self._table_exists("crosswalk_edges")
+                or self._table_exists("same_cui_edges")
+            )
+        ):
+            return self._get_source_code_mappings_prepared(
+                source,
+                code_ordinals,
+                target_sources=target_sources,
+                max_results_per_code=max_results_per_code,
+            )
+
         target_placeholders = ",".join(["?"] * len(target_sources))
         with self._temp_code_ordinals(code_ordinals) as temp:
             rows = self.con.execute(
@@ -1634,26 +2279,21 @@ class LocalLiteEngine:
                 source_atoms AS (
                     SELECT i.ordinal, i.code AS source_code, c.STR AS source_name,
                            c.CUI AS source_cui, c.AUI AS source_aui,
-                           ROW_NUMBER() OVER (
-                               PARTITION BY i.ordinal
-                               ORDER BY
-                                   CASE c.TTY
-                                       WHEN 'PT' THEN 0
-                                       WHEN 'MH' THEN 1
-                                       WHEN 'LN' THEN 2
-                                       ELSE 3
-                                   END,
-                                   c.AUI
-                           ) AS rn
+                           CASE c.TTY
+                               WHEN 'PT' THEN 0
+                               WHEN 'MH' THEN 1
+                               WHEN 'LN' THEN 2
+                               ELSE 3
+                           END AS source_atom_rank
                     FROM {temp} i
                     JOIN mrconso c ON c.CODE = i.code
                     WHERE c.SAB = ?
                       AND c.SUPPRESS = 'N'
                 ),
                 source_seed AS (
-                    SELECT ordinal, source_code, source_name, source_cui, source_aui
+                    SELECT ordinal, source_code, source_name, source_cui, source_aui,
+                           source_atom_rank
                     FROM source_atoms
-                    WHERE rn = 1
                 ),
                 target_ranked AS (
                     SELECT s.ordinal, s.source_code, s.source_name, s.source_cui,
@@ -1663,6 +2303,8 @@ class LocalLiteEngine:
                            ROW_NUMBER() OVER (
                                PARTITION BY s.ordinal, t.SAB, t.CODE
                                ORDER BY
+                                   s.source_atom_rank,
+                                   s.source_aui,
                                    CASE t.TTY
                                        WHEN 'PT' THEN 0
                                        WHEN 'MH' THEN 1
@@ -1762,6 +2404,37 @@ class LocalLiteEngine:
             ) in rows
         ]
 
+    def _get_source_code_mappings_prepared(
+        self,
+        source: str,
+        code_ordinals: Sequence[tuple[int, str]],
+        *,
+        target_sources: Sequence[str],
+        max_results_per_code: int,
+    ) -> list[tuple[int, CodeMapping]]:
+        from medterm4ds.services.crosswalk_prepared import get_crosswalk_mappings
+
+        unique_codes = _dedupe([code for _ordinal, code in code_ordinals])
+        prepared_mappings = [
+            mapping
+            for mapping in get_crosswalk_mappings(
+                [CodeRef(source=source, code=code) for code in unique_codes],
+                self.con,
+                target_sources=target_sources,
+                max_depth=0,
+            )
+            if mapping.match_type == "same_cui"
+        ]
+        mappings_by_code: dict[str, list[CodeMapping]] = defaultdict(list)
+        for mapping in prepared_mappings:
+            mappings_by_code[mapping.source.code].append(mapping)
+
+        rows: list[tuple[int, CodeMapping]] = []
+        for ordinal, code in code_ordinals:
+            for mapping in mappings_by_code.get(code, [])[:max_results_per_code]:
+                rows.append((int(ordinal), mapping))
+        return rows
+
     def _get_source_ancestor_mappings(
         self,
         source: str,
@@ -1771,7 +2444,33 @@ class LocalLiteEngine:
         max_results_per_code: int,
         max_depth: int,
     ) -> list[tuple[int, CodeMapping]]:
+        if (
+            (
+                self._table_exists("crosswalk_edges")
+                or self._table_exists("same_cui_edges")
+            )
+            and self._table_exists("best_atoms")
+            and self._table_exists("walk_edges")
+        ):
+            return self._get_source_ancestor_mappings_prepared(
+                source,
+                code_ordinals,
+                target_sources=target_sources,
+                max_results_per_code=max_results_per_code,
+                max_depth=max_depth,
+            )
+
         target_placeholders = ",".join(["?"] * len(target_sources))
+        source_join, source_target = _source_hierarchy_join_sql(
+            source,
+            "s.source_aui",
+            upward=True,
+        )
+        recursive_join, recursive_target = _source_hierarchy_join_sql(
+            source,
+            "w.ancestor_aui",
+            upward=True,
+        )
         with self._temp_code_ordinals(code_ordinals) as temp:
             rows = self.con.execute(
                 f"""
@@ -1779,26 +2478,21 @@ class LocalLiteEngine:
                 source_atoms AS (
                     SELECT i.ordinal, i.code AS source_code, c.STR AS source_name,
                            c.CUI AS source_cui, c.AUI AS source_aui,
-                           ROW_NUMBER() OVER (
-                               PARTITION BY i.ordinal
-                               ORDER BY
-                                   CASE c.TTY
-                                       WHEN 'PT' THEN 0
-                                       WHEN 'MH' THEN 1
-                                       WHEN 'LN' THEN 2
-                                       ELSE 3
-                                   END,
-                                   c.AUI
-                           ) AS rn
+                           CASE c.TTY
+                               WHEN 'PT' THEN 0
+                               WHEN 'MH' THEN 1
+                               WHEN 'LN' THEN 2
+                               ELSE 3
+                           END AS source_atom_rank
                     FROM {temp} i
                     JOIN mrconso c ON c.CODE = i.code
                     WHERE c.SAB = ?
                       AND c.SUPPRESS = 'N'
                 ),
                 source_seed AS (
-                    SELECT ordinal, source_code, source_name, source_cui, source_aui
+                    SELECT ordinal, source_code, source_name, source_cui, source_aui,
+                           source_atom_rank
                     FROM source_atoms
-                    WHERE rn = 1
                 ),
                 exact_target_sources AS (
                     SELECT DISTINCT s.ordinal, t.SAB AS target_source
@@ -1812,12 +2506,12 @@ class LocalLiteEngine:
                            s.source_aui, p.CODE AS ancestor_code,
                            p.STR AS ancestor_name, p.CUI AS ancestor_cui,
                            p.AUI AS ancestor_aui, 1 AS source_depth,
+                           s.source_atom_rank,
                            s.source_aui || '>' || p.AUI AS path
                     FROM source_seed s
-                    JOIN mrrel r ON r.AUI1 = s.source_aui
-                    JOIN mrconso p ON p.AUI = r.AUI2
-                    WHERE r.REL = 'PAR'
-                      AND p.SAB = ?
+                    JOIN mrrel r ON {source_join}
+                    JOIN mrconso p ON p.AUI = {source_target}
+                    WHERE p.SAB = ?
                       AND p.SUPPRESS = 'N'
 
                     UNION ALL
@@ -1826,12 +2520,12 @@ class LocalLiteEngine:
                            w.source_aui, p.CODE AS ancestor_code,
                            p.STR AS ancestor_name, p.CUI AS ancestor_cui,
                            p.AUI AS ancestor_aui, w.source_depth + 1 AS source_depth,
+                           w.source_atom_rank,
                            w.path || '>' || p.AUI AS path
                     FROM source_walk w
-                    JOIN mrrel r ON r.AUI1 = w.ancestor_aui
-                    JOIN mrconso p ON p.AUI = r.AUI2
+                    JOIN mrrel r ON {recursive_join}
+                    JOIN mrconso p ON p.AUI = {recursive_target}
                     WHERE w.source_depth < ?
-                      AND r.REL = 'PAR'
                       AND p.SAB = ?
                       AND p.SUPPRESS = 'N'
                       AND strpos('>' || w.path || '>', '>' || p.AUI || '>') = 0
@@ -1847,6 +2541,8 @@ class LocalLiteEngine:
                                PARTITION BY w.ordinal, t.SAB, t.CODE
                                ORDER BY
                                    w.source_depth,
+                                   w.source_atom_rank,
+                                   w.ancestor_aui,
                                    CASE t.TTY
                                        WHEN 'PT' THEN 0
                                        WHEN 'MH' THEN 1
@@ -1975,6 +2671,38 @@ class LocalLiteEngine:
             ) in rows
         ]
 
+    def _get_source_ancestor_mappings_prepared(
+        self,
+        source: str,
+        code_ordinals: Sequence[tuple[int, str]],
+        *,
+        target_sources: Sequence[str],
+        max_results_per_code: int,
+        max_depth: int,
+    ) -> list[tuple[int, CodeMapping]]:
+        from medterm4ds.services.crosswalk_prepared import get_crosswalk_mappings
+
+        unique_codes = _dedupe([code for _ordinal, code in code_ordinals])
+        prepared_mappings = [
+            mapping
+            for mapping in get_crosswalk_mappings(
+                [CodeRef(source=source, code=code) for code in unique_codes],
+                self.con,
+                target_sources=target_sources,
+                max_depth=max_depth,
+            )
+            if mapping.match_type == "source_ancestor_same_cui"
+        ]
+        mappings_by_code: dict[str, list[CodeMapping]] = defaultdict(list)
+        for mapping in prepared_mappings:
+            mappings_by_code[mapping.source.code].append(mapping)
+
+        rows: list[tuple[int, CodeMapping]] = []
+        for ordinal, code in code_ordinals:
+            for mapping in mappings_by_code.get(code, [])[:max_results_per_code]:
+                rows.append((int(ordinal), mapping))
+        return rows
+
     def _get_target_hierarchy_mappings(
         self,
         source: str,
@@ -1985,14 +2713,54 @@ class LocalLiteEngine:
         max_depth: int,
         upward: bool,
     ) -> list[tuple[int, CodeMapping]]:
+        if (
+            (
+                self._table_exists("crosswalk_edges")
+                or self._table_exists("same_cui_edges")
+            )
+            and self._table_exists("best_atoms")
+            and self._table_exists("walk_edges")
+        ):
+            return self._get_target_hierarchy_mappings_prepared(
+                source,
+                code_ordinals,
+                target_sources=target_sources,
+                max_results_per_code=max_results_per_code,
+                max_depth=max_depth,
+                upward=upward,
+            )
+
+        target_source = target_sources[0] if len(target_sources) == 1 else None
         target_placeholders = ",".join(["?"] * len(target_sources))
-        direct_join = "r.AUI1 = e.exact_target_aui" if upward else "r.AUI2 = e.exact_target_aui"
-        direct_target = "r.AUI2" if upward else "r.AUI1"
-        recursive_join = "r.AUI1 = w.target_aui" if upward else "r.AUI2 = w.target_aui"
-        recursive_target = "r.AUI2" if upward else "r.AUI1"
+        if target_source:
+            direct_join, direct_target = _source_hierarchy_join_sql(
+                target_source,
+                "e.exact_target_aui",
+                upward=upward,
+            )
+            recursive_join, recursive_target = _source_hierarchy_join_sql(
+                target_source,
+                "w.target_aui",
+                upward=upward,
+            )
+        else:
+            direct_join = "r.AUI1 = e.exact_target_aui" if upward else "r.AUI2 = e.exact_target_aui"
+            direct_target = "r.AUI2" if upward else "r.AUI1"
+            recursive_join = "r.AUI1 = w.target_aui" if upward else "r.AUI2 = w.target_aui"
+            recursive_target = "r.AUI2" if upward else "r.AUI1"
         relationship = "source-is-narrower-than-target" if upward else "source-is-broader-than-target"
         match_type = "target_ancestor" if upward else "target_descendant"
         step_op = match_type
+        crosswalk_table = (
+            "mt4ds.crosswalk_edges"
+            if self._table_exists("crosswalk_edges")
+            else "mt4ds.same_cui_edges"
+        )
+        crosswalk_filter = (
+            "AND sce.match_type = 'same_cui'"
+            if crosswalk_table == "mt4ds.crosswalk_edges"
+            else ""
+        )
 
         with self._temp_code_ordinals(code_ordinals) as temp:
             rows = self.con.execute(
@@ -2001,36 +2769,33 @@ class LocalLiteEngine:
                 source_atoms AS (
                     SELECT i.ordinal, i.code AS source_code, c.STR AS source_name,
                            c.CUI AS source_cui, c.AUI AS source_aui,
-                           ROW_NUMBER() OVER (
-                               PARTITION BY i.ordinal
-                               ORDER BY
-                                   CASE c.TTY
-                                       WHEN 'PT' THEN 0
-                                       WHEN 'MH' THEN 1
-                                       WHEN 'LN' THEN 2
-                                       ELSE 3
-                                   END,
-                                   c.AUI
-                           ) AS rn
+                           CASE c.TTY
+                               WHEN 'PT' THEN 0
+                               WHEN 'MH' THEN 1
+                               WHEN 'LN' THEN 2
+                               ELSE 3
+                           END AS source_atom_rank
                     FROM {temp} i
                     JOIN mrconso c ON c.CODE = i.code
                     WHERE c.SAB = ?
                       AND c.SUPPRESS = 'N'
                 ),
                 source_seed AS (
-                    SELECT ordinal, source_code, source_name, source_cui, source_aui
+                    SELECT ordinal, source_code, source_name, source_cui, source_aui,
+                           source_atom_rank
                     FROM source_atoms
-                    WHERE rn = 1
                 ),
                 exact_targets AS (
                     SELECT s.ordinal, s.source_code, s.source_name, s.source_cui,
-                           s.source_aui, t.SAB AS exact_target_source,
+                           s.source_aui, s.source_atom_rank, t.SAB AS exact_target_source,
                            t.CODE AS exact_target_code, t.STR AS exact_target_name,
                            t.CUI AS exact_target_cui, t.AUI AS exact_target_aui,
                            t.TTY AS exact_target_tty,
                            ROW_NUMBER() OVER (
                                PARTITION BY s.ordinal, t.SAB, t.CODE
                                ORDER BY
+                                   s.source_atom_rank,
+                                   s.source_aui,
                                    CASE t.TTY
                                        WHEN 'PT' THEN 0
                                        WHEN 'MH' THEN 1
@@ -2057,12 +2822,12 @@ class LocalLiteEngine:
                            t.STR AS target_name, t.CUI AS target_cui,
                            t.AUI AS target_aui, t.TTY AS target_tty,
                            1 AS target_depth,
+                           e.source_atom_rank,
                            e.exact_target_aui || '>' || t.AUI AS path
                     FROM exact_seed e
                     JOIN mrrel r ON {direct_join}
                     JOIN mrconso t ON t.AUI = {direct_target}
-                    WHERE r.REL = 'PAR'
-                      AND t.SAB = e.exact_target_source
+                    WHERE t.SAB = e.exact_target_source
                       AND t.SUPPRESS = 'N'
 
                     UNION ALL
@@ -2074,12 +2839,12 @@ class LocalLiteEngine:
                            t.STR AS target_name, t.CUI AS target_cui,
                            t.AUI AS target_aui, t.TTY AS target_tty,
                            w.target_depth + 1 AS target_depth,
+                           w.source_atom_rank,
                            w.path || '>' || t.AUI AS path
                     FROM target_walk w
                     JOIN mrrel r ON {recursive_join}
                     JOIN mrconso t ON t.AUI = {recursive_target}
                     WHERE w.target_depth < ?
-                      AND r.REL = 'PAR'
                       AND t.SAB = w.exact_target_source
                       AND t.SUPPRESS = 'N'
                       AND strpos('>' || w.path || '>', '>' || t.AUI || '>') = 0
@@ -2090,6 +2855,8 @@ class LocalLiteEngine:
                                PARTITION BY ordinal, exact_target_source, target_code
                                ORDER BY
                                    target_depth,
+                                   source_atom_rank,
+                                   source_aui,
                                    CASE target_tty
                                        WHEN 'PT' THEN 0
                                        WHEN 'MH' THEN 1
@@ -2195,6 +2962,218 @@ class LocalLiteEngine:
             ) in rows
         ]
 
+    def _get_target_hierarchy_mappings_prepared(
+        self,
+        source: str,
+        code_ordinals: Sequence[tuple[int, str]],
+        *,
+        target_sources: Sequence[str],
+        max_results_per_code: int,
+        max_depth: int,
+        upward: bool,
+    ) -> list[tuple[int, CodeMapping]]:
+        if upward:
+            direct_join = "we.from_aui = e.exact_target_aui"
+            recursive_join = "we.from_aui = w.target_aui"
+            target_code = "we.to_code"
+            target_cui = "we.to_cui"
+            target_aui = "we.to_aui"
+        else:
+            direct_join = "we.to_aui = e.exact_target_aui"
+            recursive_join = "we.to_aui = w.target_aui"
+            target_code = "we.from_code"
+            target_cui = "we.from_cui"
+            target_aui = "we.from_aui"
+
+        relationship = "source-is-narrower-than-target" if upward else "source-is-broader-than-target"
+        match_type = "target_ancestor" if upward else "target_descendant"
+        step_op = match_type
+        crosswalk_table = (
+            "mt4ds.crosswalk_edges"
+            if self._table_exists("crosswalk_edges")
+            else "mt4ds.same_cui_edges"
+        )
+        crosswalk_filter = (
+            "AND sce.match_type = 'same_cui'"
+            if crosswalk_table == "mt4ds.crosswalk_edges"
+            else ""
+        )
+
+        with self._temp_code_ordinals(code_ordinals) as temp:
+            rows = self.con.execute(
+                f"""
+                WITH RECURSIVE
+                source_seed AS (
+                    SELECT i.ordinal, i.code AS source_code,
+                           b.name AS source_name, b.cui AS source_cui,
+                           b.aui AS source_aui
+                    FROM {temp} i
+                    JOIN mt4ds.best_atoms b
+                      ON b.source = ?
+                     AND b.code = i.code
+                     AND b.rank = 1
+                ),
+                exact_targets AS (
+                    SELECT s.ordinal, s.source_code, s.source_name,
+                           s.source_cui, s.source_aui,
+                           sce.target_source AS exact_target_source,
+                           sce.target_code AS exact_target_code,
+                           et.name AS exact_target_name,
+                           sce.target_cui AS exact_target_cui,
+                           sce.target_aui AS exact_target_aui,
+                           sce.target_tty AS exact_target_tty
+                    FROM source_seed s
+                    JOIN {crosswalk_table} sce
+                      ON sce.source = ?
+                     AND sce.code = s.source_code
+                    JOIN mt4ds.best_atoms et
+                      ON et.source = sce.target_source
+                     AND et.code = sce.target_code
+                     AND et.rank = 1
+                    WHERE sce.target_source IN (SELECT unnest(?))
+                      {crosswalk_filter}
+                ),
+                target_walk AS (
+                    SELECT e.ordinal, e.source_code, e.source_name,
+                           e.source_cui, e.source_aui,
+                           e.exact_target_source, e.exact_target_code,
+                           e.exact_target_name, e.exact_target_cui,
+                           e.exact_target_aui, e.exact_target_tty,
+                           {target_code} AS target_code,
+                           {target_cui} AS target_cui,
+                           {target_aui} AS target_aui,
+                           1 AS target_depth,
+                           e.exact_target_aui || '>' || {target_aui} AS path
+                    FROM exact_targets e
+                    JOIN mt4ds.walk_edges we
+                      ON we.source = e.exact_target_source
+                     AND we.direction = 'parent'
+                     AND {direct_join}
+
+                    UNION ALL
+
+                    SELECT w.ordinal, w.source_code, w.source_name,
+                           w.source_cui, w.source_aui,
+                           w.exact_target_source, w.exact_target_code,
+                           w.exact_target_name, w.exact_target_cui,
+                           w.exact_target_aui, w.exact_target_tty,
+                           {target_code} AS target_code,
+                           {target_cui} AS target_cui,
+                           {target_aui} AS target_aui,
+                           w.target_depth + 1 AS target_depth,
+                           w.path || '>' || {target_aui} AS path
+                    FROM target_walk w
+                    JOIN mt4ds.walk_edges we
+                      ON we.source = w.exact_target_source
+                     AND we.direction = 'parent'
+                     AND {recursive_join}
+                    WHERE w.target_depth < ?
+                      AND strpos('>' || w.path || '>', '>' || {target_aui} || '>') = 0
+                ),
+                ranked AS (
+                    SELECT *,
+                           ROW_NUMBER() OVER (
+                               PARTITION BY ordinal, exact_target_source, target_code
+                               ORDER BY target_depth, target_aui
+                           ) AS atom_rn
+                    FROM target_walk
+                ),
+                capped_targets AS (
+                    SELECT r.*, t.name AS target_name, t.tty AS target_tty,
+                           ROW_NUMBER() OVER (
+                               PARTITION BY r.ordinal
+                               ORDER BY r.target_depth, r.exact_target_source,
+                                        r.target_code, r.target_aui
+                           ) AS result_rn
+                    FROM ranked r
+                    LEFT JOIN mt4ds.best_atoms t
+                      ON t.source = r.exact_target_source
+                     AND t.code = r.target_code
+                     AND t.rank = 1
+                    WHERE r.atom_rn = 1
+                )
+                SELECT ordinal, source_code, source_name, source_cui, source_aui,
+                       exact_target_source, exact_target_code, exact_target_name,
+                       exact_target_cui, exact_target_aui, exact_target_tty,
+                       target_code, COALESCE(target_name, target_code) AS target_name,
+                       target_cui, target_aui, target_tty, target_depth
+                FROM capped_targets
+                WHERE result_rn <= ?
+                ORDER BY ordinal, target_depth, exact_target_source, target_code, target_aui
+                """,
+                [source, source, list(target_sources), max_depth, max_results_per_code],
+            ).fetchall()
+
+        return [
+            (
+                int(ordinal),
+                CodeMapping(
+                    source=CodeRef(source=source, code=source_code),
+                    target=CodeRef(source=exact_target_source, code=target_code),
+                    source_display=source_name,
+                    target_display=target_name,
+                    relationship=relationship,
+                    match_type=match_type,
+                    match_depth=int(target_depth),
+                    source_cui=source_cui,
+                    target_cui=target_cui,
+                    source_aui=source_aui,
+                    target_aui=target_aui,
+                    target_tty=target_tty,
+                    matched_via=Provenance.from_steps(
+                        match_type,
+                        [
+                            ProvenanceStep(
+                                op="input_atom",
+                                source=source,
+                                code=source_code,
+                                cui=source_cui,
+                                aui=source_aui,
+                                name=source_name,
+                            ),
+                            ProvenanceStep(
+                                op="same_cui",
+                                source=source,
+                                code=source_code,
+                                target_source=exact_target_source,
+                                target_code=exact_target_code,
+                                cui=source_cui,
+                            ),
+                            ProvenanceStep(
+                                op=step_op,
+                                source=exact_target_source,
+                                code=target_code,
+                                cui=target_cui,
+                                aui=target_aui,
+                                depth=int(target_depth),
+                                name=target_name,
+                                metadata={"from_code": exact_target_code},
+                            ),
+                        ],
+                    ),
+                ),
+            )
+            for (
+                ordinal,
+                source_code,
+                source_name,
+                source_cui,
+                source_aui,
+                exact_target_source,
+                exact_target_code,
+                _exact_target_name,
+                _exact_target_cui,
+                _exact_target_aui,
+                _exact_target_tty,
+                target_code,
+                target_name,
+                target_cui,
+                target_aui,
+                target_tty,
+                target_depth,
+            ) in rows
+        ]
+
     def _resolve_source(self, source: str, codes: Sequence[str], max_depth: int) -> list[_Row]:
         if not codes:
             return []
@@ -2208,71 +3187,117 @@ class LocalLiteEngine:
             return self._resolve_cvx(codes)
         return self._resolve_default(codes, source, max_depth)
 
-    def _resolve_default(self, codes: Sequence[str], source: str, max_depth: int) -> list[_Row]:
+    def _resolve_default(
+        self,
+        codes: Sequence[str],
+        source: str,
+        max_depth: int,
+        *,
+        filter_broad: bool = False,
+    ) -> list[_Row]:
+        atom_order_sql = _source_atom_order_sql(source)
+        hierarchy_atom_order_sql = _source_hierarchy_atom_order_sql(source)
+        hierarchy_join, hierarchy_target = _source_hierarchy_join_sql(
+            source,
+            "w.AUI",
+            upward=True,
+        )
         with self._temp_codes(codes) as temp:
             rows = self.con.execute(
                 f"""
                 WITH RECURSIVE
                 base AS (
-                    SELECT CODE, CUI, AUI, STR AS orig_name,
-                           ROW_NUMBER() OVER (PARTITION BY CODE ORDER BY AUI) AS rn
+                    SELECT CODE, CUI, STR AS orig_name, AUI,
+                           ROW_NUMBER() OVER (PARTITION BY CODE ORDER BY {hierarchy_atom_order_sql}) AS rn
                     FROM mrconso
                     WHERE SAB = ? AND SUPPRESS = 'N'
                       AND CODE IN (SELECT code FROM {temp})
                 ),
+                preferred AS (
+                    SELECT CODE, orig_name
+                    FROM (
+                        SELECT CODE, STR AS orig_name,
+                               ROW_NUMBER() OVER (PARTITION BY CODE ORDER BY {atom_order_sql}) AS rn
+                        FROM mrconso
+                        WHERE SAB = ? AND SUPPRESS = 'N'
+                          AND CODE IN (SELECT code FROM {temp})
+                    ) p
+                    WHERE rn = 1
+                ),
                 seed AS (
                     SELECT CODE, CUI, AUI, orig_name, 0 AS depth
-                    FROM base WHERE rn = 1
+                    FROM base
+                    WHERE rn = 1
                 ),
                 walk AS (
                     SELECT CODE, CUI, AUI, orig_name, depth
                     FROM seed
-                    UNION
+                    UNION ALL
                     SELECT w.CODE, p.CUI, p.AUI, w.orig_name, w.depth + 1
                     FROM walk w
-                    JOIN mrrel r ON r.AUI1 = w.AUI AND r.REL = 'PAR'
-                    JOIN mrconso p ON p.AUI = r.AUI2
+                    JOIN mrrel r ON {hierarchy_join}
+                    JOIN mrconso p ON p.AUI = {hierarchy_target}
                     WHERE w.depth < ?
                       AND p.SAB = ? AND p.SUPPRESS = 'N'
                 ),
-                friendly AS (
-                    SELECT w.CODE, w.orig_name, w.depth, mp.STR AS friendly_name,
-                           'MEDLINEPLUS' AS friendly_source, 0 AS source_priority,
-                           mp.TTY AS tty, w.CUI AS matched_cui
+                checked AS (
+                    SELECT w.CODE, w.orig_name, w.depth,
+                           mp.STR AS mp_name, chv.STR AS chv_name,
+                           mp.TTY AS mp_tty, chv.TTY AS chv_tty,
+                           mp.CUI AS mp_cui, chv.CUI AS chv_cui
                     FROM walk w
-                    JOIN mrconso mp ON mp.CUI = w.CUI
-                    WHERE mp.SAB = 'MEDLINEPLUS' AND mp.SUPPRESS = 'N' AND mp.TTY != 'HT'
-                    UNION ALL
-                    SELECT w.CODE, w.orig_name, w.depth, chv.STR AS friendly_name,
-                           'CHV' AS friendly_source, 1 AS source_priority,
-                           chv.TTY AS tty, w.CUI AS matched_cui
-                    FROM walk w
-                    JOIN mrconso chv ON chv.CUI = w.CUI
-                    WHERE chv.SAB = 'CHV' AND chv.SUPPRESS = 'N' AND chv.TTY != 'HT'
+                    LEFT JOIN mrconso mp
+                        ON w.CUI = mp.CUI AND mp.SAB = 'MEDLINEPLUS'
+                        AND mp.SUPPRESS = 'N' AND mp.TTY != 'HT'
+                    LEFT JOIN mrconso chv
+                        ON w.CUI = chv.CUI AND chv.SAB = 'CHV'
+                        AND chv.SUPPRESS = 'N' AND chv.TTY != 'HT'
                 ),
                 ranked AS (
                     SELECT *,
-                           ROW_NUMBER() OVER (
-                               PARTITION BY CODE
-                               ORDER BY depth, source_priority, LOWER(friendly_name)
+                            ROW_NUMBER() OVER (
+                                PARTITION BY CODE
+                                ORDER BY CASE WHEN mp_name IS NOT NULL OR chv_name IS NOT NULL THEN 0 ELSE 1 END,
+                                         depth,
+                                         CASE WHEN mp_name IS NOT NULL THEN 0 ELSE 1 END,
+                                         CASE upper(CASE WHEN mp_name IS NOT NULL THEN mp_tty ELSE chv_tty END)
+                                             WHEN 'PT' THEN 0
+                                             WHEN 'MH' THEN 1
+                                             WHEN 'SY' THEN 2
+                                             ELSE 3
+                                         END,
+                                         lower(COALESCE(mp_name, chv_name, ''))
                            ) AS rn
-                    FROM friendly
+                    FROM checked
                 )
-                SELECT b.CODE, b.orig_name, r.friendly_name, r.friendly_source,
-                       CASE WHEN r.depth = 0 THEN 'exact'
-                            WHEN r.depth IS NOT NULL THEN 'broader'
-                            ELSE 'original' END AS match_type,
+                SELECT p.CODE, p.orig_name,
+                       COALESCE(r.mp_name, r.chv_name, p.orig_name) AS friendly_name,
+                       CASE
+                           WHEN r.mp_name IS NOT NULL THEN 'MEDLINEPLUS'
+                           WHEN r.chv_name IS NOT NULL THEN 'CHV'
+                           ELSE ?
+                       END AS friendly_source,
+                       CASE
+                           WHEN r.mp_name IS NOT NULL OR r.chv_name IS NOT NULL THEN
+                               CASE WHEN r.depth = 0 THEN 'exact' ELSE 'broader' END
+                           ELSE 'original'
+                       END AS match_type,
                        COALESCE(r.depth, 0) AS match_depth,
-                       r.tty, r.matched_cui
-                FROM (SELECT CODE, FIRST(orig_name) AS orig_name FROM base GROUP BY CODE) b
-                LEFT JOIN ranked r ON r.CODE = b.CODE AND r.rn = 1
+                       CASE WHEN r.mp_name IS NOT NULL THEN r.mp_tty ELSE r.chv_tty END AS tty,
+                       COALESCE(r.mp_cui, r.chv_cui) AS matched_cui
+                FROM preferred p
+                LEFT JOIN ranked r ON r.CODE = p.CODE
+                WHERE r.rn = 1
                 """,
-                [source, max_depth, source],
+                [source, source, max_depth, source, source],
             ).fetchall()
 
         by_code: dict[str, _Row] = {}
         for code, orig_name, friendly_name, friendly_source, match_type, depth, tty, cui in rows:
-            if friendly_name and not _is_broad_friendly_name(friendly_source, friendly_name):
+            if friendly_name and (
+                not filter_broad
+                or not _is_broad_friendly_name(friendly_source, friendly_name)
+            ):
                 by_code[code] = _Row(
                     code=code,
                     source=source,
@@ -2292,20 +3317,35 @@ class LocalLiteEngine:
                     ),
                 )
             else:
-                by_code[code] = self._make_original(code, source, technical_name=orig_name)
+                by_code[code] = self._make_original(
+                    code,
+                    source,
+                    technical_name=orig_name,
+                    display_name=orig_name,
+                )
 
         return [by_code.get(code) or self._make_original(code, source) for code in codes]
 
-    def _apply_snomed_fallback(self, source: str, rows: list[_Row], max_depth: int) -> None:
+    def _apply_snomed_fallback(
+        self,
+        source: str,
+        rows: list[_Row],
+        max_depth: int,
+    ) -> None:
         if source not in _SNOMED_FALLBACK_SOURCES:
             return
         fallback_codes = [
             row.code
             for row in rows
-            if row.match_type == "original"
-            or (row.match_type == "exact" and row.friendly_source == "CHV")
+            if row.match_type == "original" or (
+                row.match_type == "exact" and row.friendly_source == "CHV"
+            )
         ]
+        if not fallback_codes:
+            return
         replacements = self._resolve_default_via_snomed(fallback_codes, source, max_depth)
+        if not replacements:
+            return
         for row in rows:
             replacement = replacements.get(row.code)
             if replacement:
@@ -2324,9 +3364,10 @@ class LocalLiteEngine:
         if not codes:
             return {}
         codes = _dedupe(codes)
-        if len(codes) > self.query_chunk_size:
+        effective_chunk_size = min(self.query_chunk_size, _SNOMED_FALLBACK_QUERY_CHUNK_SIZE)
+        if len(codes) > effective_chunk_size:
             result: dict[str, _Row] = {}
-            chunks = list(_chunks(codes, self.query_chunk_size))
+            chunks = list(_chunks(codes, effective_chunk_size))
             for chunk_index, chunk in enumerate(chunks, 1):
                 self._progress(
                     f"resolving {source} SNOMED fallback chunk {chunk_index}/{len(chunks)} "
@@ -2334,110 +3375,291 @@ class LocalLiteEngine:
                 )
                 result.update(self._resolve_default_via_snomed(chunk, source, max_depth))
             return result
-        with self._temp_codes(codes) as temp:
-            rows = self.con.execute(
-                f"""
-                WITH RECURSIVE
-                source_base AS (
-                    SELECT CODE, CUI, AUI, STR AS source_name,
-                           ROW_NUMBER() OVER (PARTITION BY CODE ORDER BY AUI) AS rn
-                    FROM mrconso
-                    WHERE SAB = ? AND SUPPRESS = 'N'
-                      AND CODE IN (SELECT code FROM {temp})
-                ),
-                source_walk AS (
-                    SELECT CODE, CUI, AUI, source_name, 0 AS src_depth
-                    FROM source_base WHERE rn = 1
-                    UNION
-                    SELECT w.CODE, p.CUI, p.AUI, w.source_name, w.src_depth + 1
-                    FROM source_walk w
-                    JOIN mrrel r ON r.AUI1 = w.AUI AND r.REL = 'PAR'
-                    JOIN mrconso p ON p.AUI = r.AUI2
-                    WHERE w.src_depth < ?
-                      AND p.SAB = ? AND p.SUPPRESS = 'N'
-                ),
-                snomed_seed AS (
-                    SELECT DISTINCT w.CODE, w.source_name, w.src_depth,
-                           s.CODE AS snomed_code, s.AUI AS snomed_aui, s.CUI AS snomed_cui
-                    FROM source_walk w
-                    JOIN mrconso s ON s.CUI = w.CUI
-                    WHERE s.SAB = 'SNOMEDCT_US' AND s.SUPPRESS = 'N'
-                ),
-                snomed_walk AS (
-                    SELECT CODE, source_name, src_depth, snomed_code, snomed_aui, snomed_cui,
-                           0 AS snomed_depth
-                    FROM snomed_seed
-                    UNION
-                    SELECT w.CODE, w.source_name, w.src_depth, p.CODE, p.AUI, p.CUI,
-                           w.snomed_depth + 1
-                    FROM snomed_walk w
-                    JOIN mrrel r ON r.AUI1 = w.snomed_aui AND r.REL = 'PAR'
-                    JOIN mrconso p ON p.AUI = r.AUI2
-                    WHERE w.snomed_depth < ?
-                      AND p.SAB = 'SNOMEDCT_US' AND p.SUPPRESS = 'N'
-                ),
-                friendly AS (
-                    SELECT w.CODE, w.source_name, w.src_depth, w.snomed_depth,
-                           w.snomed_code, mp.STR AS friendly_name,
-                           'MEDLINEPLUS' AS friendly_source, 0 AS source_priority,
-                           mp.TTY AS tty, w.snomed_cui AS cui
-                    FROM snomed_walk w
-                    JOIN mrconso mp ON mp.CUI = w.snomed_cui
-                    WHERE mp.SAB = 'MEDLINEPLUS' AND mp.SUPPRESS = 'N' AND mp.TTY != 'HT'
-                    UNION ALL
-                    SELECT w.CODE, w.source_name, w.src_depth, w.snomed_depth,
-                           w.snomed_code, chv.STR AS friendly_name,
-                           'CHV' AS friendly_source, 1 AS source_priority,
-                           chv.TTY AS tty, w.snomed_cui AS cui
-                    FROM snomed_walk w
-                    JOIN mrconso chv ON chv.CUI = w.snomed_cui
-                    WHERE chv.SAB = 'CHV' AND chv.SUPPRESS = 'N' AND chv.TTY != 'HT'
-                ),
-                ranked AS (
-                    SELECT *,
-                           ROW_NUMBER() OVER (
-                               PARTITION BY CODE
-                               ORDER BY src_depth + snomed_depth, source_priority, LOWER(friendly_name)
-                           ) AS rn
-                    FROM friendly
-                )
-                SELECT CODE, source_name, snomed_code, friendly_name, friendly_source,
-                       src_depth, snomed_depth, src_depth + snomed_depth AS match_depth,
-                       tty, cui
-                FROM ranked
-                WHERE rn = 1
-                """,
-                [source, max_depth, source, max_depth],
-            ).fetchall()
 
-        depth_lookup = self._snomed_top_level_depths([row[2] for row in rows if row[2]])
-        result: dict[str, _Row] = {}
+        parent_join_isa = """
+SELECT r.AUI1 AS child_aui, r.AUI2 AS parent_aui
+FROM mrrel r
+JOIN mrconso c1 ON c1.AUI = r.AUI1
+JOIN mrconso c2 ON c2.AUI = r.AUI2
+WHERE c1.SAB = 'SNOMEDCT_US'
+  AND c2.SAB = 'SNOMEDCT_US'
+  AND c1.SUPPRESS = 'N'
+  AND c2.SUPPRESS = 'N'
+  AND r.REL = 'PAR'
+  AND r.RELA = 'isa'
+UNION ALL
+SELECT r.AUI1 AS child_aui, r.AUI2 AS parent_aui
+FROM mrrel r
+JOIN mrconso c1 ON c1.AUI = r.AUI1
+JOIN mrconso c2 ON c2.AUI = r.AUI2
+WHERE c1.SAB = 'SNOMEDCT_US'
+  AND c2.SAB = 'SNOMEDCT_US'
+  AND c1.SUPPRESS = 'N'
+  AND c2.SUPPRESS = 'N'
+  AND r.REL = 'PAR'
+    AND r.RELA = 'inverse_isa'
+"""
+
+        if source == "SNOMEDCT_US":
+            parent_join_isa = f"snomed_parent_links AS (\n{parent_join_isa}\n),"
+        else:
+            parent_join_isa = ""
+
+        if self._table_exists("snomed_top_level_depth"):
+            snomed_stop_join = """
+                    LEFT JOIN snomed_top_level_depth parent_depth
+                      ON parent_depth.code = p.CODE
+            """
+            snomed_stop_predicate = (
+                "AND (parent_depth.min_top_depth IS NULL "
+                f"OR parent_depth.min_top_depth > {_SNOMED_TOP_LEVEL_GUARD_DEPTH})"
+            )
+        else:
+            snomed_stop_join = ""
+            snomed_stop_predicate = ""
+
+        with self._temp_codes(codes) as temp:
+            if source == "SNOMEDCT_US":
+                source_walk_sql = f"""
+base AS (
+    SELECT CODE, CUI, AUI, STR AS source_name, rn
+    FROM (
+        SELECT CODE, CUI, AUI, STR,
+               ROW_NUMBER() OVER (PARTITION BY CODE, CUI ORDER BY AUI) as rn
+        FROM mrconso
+        WHERE CODE IN (SELECT code FROM {temp}) AND SAB = 'SNOMEDCT_US' AND SUPPRESS = 'N'
+    ) base
+    WHERE rn = 1
+),
+source_walk AS (
+    SELECT CODE, CUI, AUI, source_name, 0 AS src_depth
+    FROM base
+),
+"""
+            else:
+                source_walk_sql = f"""
+base AS (
+    SELECT CODE, CUI, AUI, STR AS source_name,
+           ROW_NUMBER() OVER (PARTITION BY CODE, CUI ORDER BY AUI) as rn
+    FROM mrconso
+    WHERE CODE IN (SELECT code FROM {temp}) AND SAB = ? AND SUPPRESS = 'N'
+),
+source_walk AS (
+    SELECT CODE, CUI, AUI, source_name, 0 AS src_depth
+    FROM base WHERE rn = 1
+    UNION ALL
+    SELECT w.CODE, p.CUI, p.AUI, w.source_name, w.src_depth + 1
+    FROM source_walk w
+    JOIN mrrel r ON r.AUI1 = w.AUI AND r.REL = 'PAR'
+    JOIN mrconso p ON p.AUI = r.AUI2 AND p.SAB = ? AND p.SUPPRESS = 'N'
+    WHERE w.src_depth < ?
+),
+"""
+
+            if source == "SNOMEDCT_US":
+                query = f"""
+WITH RECURSIVE
+{source_walk_sql}
+{parent_join_isa}
+snomed_seed AS (
+    SELECT DISTINCT w.CODE, w.source_name, w.src_depth,
+           s.CODE AS snomed_code, s.AUI AS snomed_aui,
+           s.CUI AS snomed_cui, s.TTY AS snomed_tty
+    FROM source_walk w
+    JOIN mrconso s ON s.CUI = w.CUI
+    WHERE s.SAB = 'SNOMEDCT_US' AND s.SUPPRESS = 'N'
+),
+snomed_seed_nearest AS (
+    SELECT *
+    FROM (
+        SELECT *,
+               MIN(src_depth) OVER (PARTITION BY CODE) AS min_src_depth
+        FROM snomed_seed
+    ) nearest
+    WHERE src_depth = min_src_depth
+),
+snomed_seed_filtered AS (
+    SELECT CODE, source_name, src_depth, snomed_code, snomed_aui, snomed_cui
+    FROM (
+        SELECT *,
+               ROW_NUMBER() OVER (
+                   PARTITION BY CODE, snomed_code
+                   ORDER BY CASE upper(snomed_tty)
+                                WHEN 'PT' THEN 0
+                                WHEN 'SCD' THEN 1
+                                WHEN 'FN' THEN 2
+                                WHEN 'SY' THEN 3
+                                ELSE 4
+                            END,
+                   snomed_aui
+               ) AS rn
+        FROM snomed_seed_nearest
+    ) ranked_snomed_seed
+    WHERE rn = 1
+),
+snomed_walk AS (
+    SELECT CODE, source_name, src_depth,
+           snomed_code AS walk_seed, snomed_code AS walk_code,
+           snomed_aui, snomed_cui, 0 AS snomed_depth
+    FROM snomed_seed_filtered
+    UNION
+    SELECT w.CODE, w.source_name, w.src_depth,
+           w.walk_seed, p.CODE, p.AUI, p.CUI, w.snomed_depth + 1
+    FROM snomed_walk w
+    JOIN snomed_parent_links rels ON rels.child_aui = w.snomed_aui
+    JOIN mrconso p ON rels.parent_aui = p.AUI
+    {snomed_stop_join}
+    WHERE w.snomed_depth < ?
+      AND p.SAB = 'SNOMEDCT_US' AND p.SUPPRESS = 'N'
+      {snomed_stop_predicate}
+),
+matched AS (
+    SELECT
+        w.CODE as code,
+        w.source_name,
+        w.snomed_aui as matched_aui,
+        w.walk_seed,
+        w.walk_code,
+        coalesce(mp.STR, chv.STR) as friendly_name,
+        CASE WHEN mp.STR IS NOT NULL THEN 'MEDLINEPLUS'
+             WHEN chv.STR IS NOT NULL THEN 'CHV'
+             ELSE ? END as friendly_source,
+        w.src_depth as src_depth,
+        w.snomed_depth as snomed_depth,
+        w.src_depth + w.snomed_depth as match_depth,
+        CASE WHEN mp.STR IS NOT NULL THEN 0 ELSE 1 END as source_priority,
+        CASE WHEN mp.STR IS NOT NULL OR chv.STR IS NOT NULL THEN 1 ELSE 0 END as has_fallback,
+        mp.TTY as tty,
+        mp.CUI as cui,
+        CASE WHEN w.src_depth = 0 AND w.snomed_depth = 0 THEN 'exact' ELSE 'broader' END as match_type
+    FROM snomed_walk w
+    LEFT JOIN mrconso mp
+        ON w.snomed_cui = mp.CUI AND mp.SAB = 'MEDLINEPLUS'
+        AND mp.SUPPRESS = 'N' AND mp.TTY != 'HT'
+    LEFT JOIN mrconso chv
+        ON w.snomed_cui = chv.CUI AND chv.SAB = 'CHV'
+        AND chv.SUPPRESS = 'N' AND chv.TTY != 'HT'
+        AND lower(chv.STR) NOT IN ({_BROAD_CHV_NAME_SQL})
+)
+SELECT code, source_name, matched_aui, walk_seed, walk_code,
+       friendly_name, friendly_source, src_depth, snomed_depth, match_depth,
+       source_priority, has_fallback, tty, cui, match_type
+FROM matched
+WHERE has_fallback = 1
+"""
+                rows = self.con.execute(query, [max_depth, source]).fetchall()
+            else:
+                query = f"""
+WITH RECURSIVE
+{source_walk_sql}
+snomed_seed AS (
+    SELECT DISTINCT w.CODE, w.source_name, w.src_depth,
+           s.AUI AS snomed_aui, s.CUI AS snomed_cui,
+           s.CODE as walk_seed, s.CODE as walk_code
+    FROM source_walk w
+    JOIN mrconso s ON s.CUI = w.CUI AND s.SAB = 'SNOMEDCT_US' AND s.SUPPRESS = 'N'
+),
+snomed_walk AS (
+    SELECT w.CODE, w.source_name, w.src_depth,
+           w.walk_seed,
+           w.snomed_aui AS walk_seed_aui, w.snomed_cui AS walk_seed_cui,
+           w.walk_code, 0 AS snomed_depth
+    FROM snomed_seed w
+    UNION ALL
+    SELECT w.CODE, w.source_name, w.src_depth,
+           w.walk_seed, p.AUI, p.CUI, p.CODE, w.snomed_depth + 1
+    FROM snomed_walk w
+    JOIN mrrel r ON r.AUI1 = w.walk_seed_aui AND r.REL = 'PAR'
+    JOIN mrconso p ON p.AUI = r.AUI2
+    {snomed_stop_join}
+    WHERE w.snomed_depth < ?
+      AND p.SAB = 'SNOMEDCT_US' AND p.SUPPRESS = 'N'
+      {snomed_stop_predicate}
+),
+matched AS (
+    SELECT
+        w.CODE as code,
+        w.source_name,
+        w.walk_seed_aui as matched_aui,
+        w.walk_seed,
+        w.walk_code,
+        coalesce(mp.STR, chv.STR) as friendly_name,
+        CASE WHEN mp.STR IS NOT NULL THEN 'MEDLINEPLUS'
+             WHEN chv.STR IS NOT NULL THEN 'CHV'
+             ELSE ? END as friendly_source,
+        w.src_depth as src_depth,
+        w.snomed_depth as snomed_depth,
+        w.src_depth + w.snomed_depth as match_depth,
+        CASE WHEN mp.STR IS NOT NULL THEN 0 ELSE 1 END as source_priority,
+        CASE WHEN mp.STR IS NOT NULL OR chv.STR IS NOT NULL THEN 1 ELSE 0 END as has_fallback,
+        mp.TTY as tty,
+        mp.CUI as cui,
+        CASE WHEN w.src_depth = 0 AND w.snomed_depth = 0 THEN 'exact' ELSE 'broader' END as match_type
+    FROM snomed_walk w
+    LEFT JOIN mrconso mp
+        ON w.walk_seed_cui = mp.CUI AND mp.SAB = 'MEDLINEPLUS'
+        AND mp.SUPPRESS = 'N' AND mp.TTY != 'HT'
+    LEFT JOIN mrconso chv
+        ON w.walk_seed_cui = chv.CUI AND chv.SAB = 'CHV'
+        AND chv.SUPPRESS = 'N' AND chv.TTY != 'HT'
+        AND lower(chv.STR) NOT IN ({_BROAD_CHV_NAME_SQL})
+)
+SELECT code, source_name, matched_aui, walk_seed, walk_code,
+       friendly_name, friendly_source, src_depth, snomed_depth, match_depth,
+       source_priority, has_fallback, tty, cui, match_type
+FROM matched
+WHERE has_fallback = 1
+"""
+                params = [source, source, max_depth, max_depth, source]
+                rows = self.con.execute(query, params).fetchall()
+
+        walk_code_index = 4
+        depth_lookup = self._snomed_top_level_depths([row[walk_code_index] for row in rows if row[walk_code_index]])
+
+        def _is_too_broad(walk_code: str | None) -> bool:
+            if not walk_code:
+                return False
+            walk_depth = depth_lookup.get(walk_code)
+            return walk_depth is not None and walk_depth <= _SNOMED_TOP_LEVEL_GUARD_DEPTH
+
+        ranked: dict[str, tuple[tuple[int, int, int, str, str, str], _Row]] = {}
         for (
             code,
             source_name,
-            snomed_code,
+            matched_aui,
+            walk_seed,
+            walk_code,
             friendly_name,
             friendly_source,
             src_depth,
             snomed_depth,
             match_depth,
+            source_priority,
+            has_fallback,
             tty,
             cui,
+            match_type,
         ) in rows:
+            _ = matched_aui
             if not friendly_name:
+                continue
+            if not has_fallback:
                 continue
             if _is_broad_friendly_name(friendly_source, friendly_name):
                 continue
-            if _is_combo_chv_mismatch(source_name, friendly_name):
+            if source == "SNOMEDCT_US" and _is_too_broad(walk_code):
                 continue
-            if depth_lookup.get(snomed_code, 999) <= _SNOMED_TOP_LEVEL_GUARD_DEPTH:
+            if source == "SNOMEDCT_US" and friendly_source == "CHV" and _is_combo_chv_mismatch(
+                source_name, friendly_name
+            ):
                 continue
-            result[code] = _Row(
+
+            row_obj = _Row(
                 code=code,
                 source=source,
                 name=friendly_name,
                 friendly_source=friendly_source,
-                match_type="exact" if int(match_depth or 0) == 0 else "broader",
+                match_type=match_type,
                 match_depth=int(match_depth or 0),
                 technical_name=source_name,
                 matched_via=Provenance.from_steps(
@@ -2449,14 +3671,14 @@ class LocalLiteEngine:
                             source=source,
                             code=code,
                             target_source="SNOMEDCT_US",
-                            target_code=snomed_code,
+                            target_code=walk_seed,
                             mode="broader",
                             depth=int(src_depth or 0),
                         ),
                         ProvenanceStep(
                             op="ancestor",
                             source="SNOMEDCT_US",
-                            code=snomed_code,
+                            code=walk_code,
                             depth=int(snomed_depth or 0),
                         ),
                         ProvenanceStep(
@@ -2470,66 +3692,289 @@ class LocalLiteEngine:
                     ],
                 ),
             )
-        return result
+            score = (
+                int(match_depth or 0),
+                int(source_priority or 0),
+                str(friendly_name).lower(),
+                friendly_source,
+                match_type,
+                0,
+            )
+            current = ranked.get(code)
+            if current is None or score < current[0]:
+                ranked[code] = (score, row_obj)
+        return {code: row for code, (_score, row) in ranked.items()}
+
 
     def _resolve_rxnorm(self, codes: Sequence[str]) -> list[_Row]:
         if not codes:
             return []
+        # RxNorm paths sometimes require walking through suppressed intermediate
+        # AUIs (e.g. suppressed quantified-form / component nodes) before
+        # reaching a target. Final selection prefers active candidates while
+        # still allowing suppressed atoms to preserve recall.
+        candidate_rows, path_step_rows = _rxnorm_tty_sql_rows()
+        candidate_values = _sql_values(candidate_rows)
+        path_step_values = _sql_values(path_step_rows)
         with self._temp_codes(codes) as temp:
             rows = self.con.execute(
                 f"""
                 WITH RECURSIVE
                 base AS (
                     SELECT c.CODE AS input_code, upper(c.TTY) AS start_tty,
-                           c.STR AS orig_name, c.AUI AS start_aui,
-                           ROW_NUMBER() OVER (PARTITION BY c.CODE ORDER BY c.AUI) AS base_rn
+                           c.STR AS orig_name, c.AUI AS start_aui, c.SUPPRESS AS start_suppress,
+                           ROW_NUMBER() OVER (
+                               PARTITION BY c.CODE
+                    ORDER BY {_rxnorm_base_tty_order_sql("c")}, c.AUI
+                    ) AS base_rn
                     FROM mrconso c
                     WHERE c.SAB = 'RXNORM' AND c.SUPPRESS = 'N'
                       AND c.CODE IN (SELECT code FROM {temp})
                 ),
-                walk AS (
-                    SELECT input_code, start_tty, orig_name, start_aui,
-                           start_aui AS aui, input_code AS code, orig_name AS name,
-                           start_tty AS tty, 0 AS depth
-                    FROM base
-                    UNION
-                    SELECT w.input_code, w.start_tty, w.orig_name, w.start_aui,
-                           n.AUI, n.CODE, n.STR, upper(n.TTY), w.depth + 1
-                    FROM walk w
-                    JOIN mrrel r ON r.AUI1 = w.aui AND r.RELA = 'isa'
-                    JOIN mrconso n ON n.AUI = r.AUI2
-                    WHERE w.depth < 6
-                      AND n.SAB = 'RXNORM' AND n.SUPPRESS = 'N'
+                candidate_targets(start_tty, target_tty, target_order, match_type, path_depth) AS (
+                    VALUES {candidate_values}
                 ),
-                candidates AS (
-                    SELECT input_code, orig_name, code AS target_code,
-                           name AS target_name, tty AS target_tty, depth,
-                           CASE
-                               WHEN start_tty IN ('SCD','SBD','SCDF','SBDF','GPCK','BPCK','SBDG','SCDG','SBDC','DFG')
-                                    AND tty = 'SCDG' THEN 0
-                               WHEN start_tty IN ('PIN','SCDC') AND tty = 'IN' THEN 1
-                               WHEN start_tty IN ('PIN','SCDC') AND tty = 'MIN' THEN 2
-                               WHEN start_tty NOT IN ('PIN','SCDC') AND tty = 'MIN' THEN 1
-                               WHEN start_tty NOT IN ('PIN','SCDC') AND tty = 'IN' THEN 2
-                               ELSE NULL
-                           END AS priority,
-                           CASE WHEN tty = 'SCDG' THEN 'group' ELSE 'ingredient' END AS match_type
-                    FROM walk
-                    WHERE NOT (tty = 'IN' AND start_tty = 'IN' AND code != input_code)
+                path_steps(start_tty, target_tty, step, step_tty, path_depth) AS (
+                    VALUES {path_step_values}
+                ),
+                base_candidates AS (
+                    SELECT b.input_code, b.start_tty, b.orig_name, b.start_aui, b.base_rn,
+                           b.start_suppress,
+                           ct.target_tty, ct.target_order, ct.match_type, ct.path_depth
+                    FROM base b
+                    JOIN candidate_targets ct ON ct.start_tty = b.start_tty
+                ),
+                same_tty_hits AS (
+                    SELECT input_code, start_tty, orig_name, start_aui, base_rn,
+                           target_tty, target_order, match_type,
+                           start_aui AS target_aui, input_code AS target_code,
+                           orig_name AS target_name, start_tty AS resolved_tty,
+                           CASE WHEN start_suppress = 'N' THEN 0 ELSE 1 END AS target_is_active,
+                           0 AS match_depth
+                    FROM base_candidates
+                    WHERE path_depth = 0
+                ),
+                topology_walk(
+                    input_code, start_tty, orig_name, start_aui, base_rn,
+                    target_tty, target_order, match_type, path_depth,
+                    step, aui
+                ) AS (
+                    SELECT input_code, start_tty, orig_name, start_aui, base_rn,
+                           target_tty, target_order, match_type, path_depth,
+                           0 AS step, start_aui AS aui
+                    FROM base_candidates
+                    WHERE path_depth > 0
+                    UNION
+                    -- use the full RxNorm graph so suppressed/intermediate nodes can still
+                    -- be traversed as fallback intermediates while preferring active targets.
+                    SELECT w.input_code, w.start_tty, w.orig_name, w.start_aui, w.base_rn,
+                           w.target_tty, w.target_order, w.match_type, w.path_depth,
+                           ps.step, n.AUI
+                    FROM topology_walk w
+                    JOIN path_steps ps
+                      ON ps.start_tty = w.start_tty
+                     AND ps.target_tty = w.target_tty
+                     AND ps.step = w.step + 1
+                    JOIN main.mrrel r ON r.AUI1 = w.aui OR r.AUI2 = w.aui
+                    JOIN main.mrconso n ON n.AUI = CASE
+                        WHEN r.AUI1 = w.aui THEN r.AUI2 ELSE r.AUI1
+                    END
+                    WHERE w.step < w.path_depth
+                      AND n.SAB = 'RXNORM'
+                      AND upper(n.TTY) = ps.step_tty
+                ),
+                topology_hits AS (
+                    SELECT w.input_code, w.start_tty, w.orig_name, w.start_aui, w.base_rn,
+                           w.target_tty, w.target_order, w.match_type,
+                           n.AUI AS target_aui, n.CODE AS target_code,
+                           n.STR AS target_name, upper(n.TTY) AS resolved_tty,
+                           CASE WHEN n.SUPPRESS = 'N' THEN 0 ELSE 1 END AS target_is_active,
+                           w.path_depth AS match_depth
+                    FROM topology_walk w
+                    JOIN main.mrconso n ON n.AUI = w.aui
+                    WHERE w.step = w.path_depth
+                      AND n.SAB = 'RXNORM'
+                    UNION ALL
+                    SELECT * FROM same_tty_hits
+                ),
+                topology_best AS (
+                    SELECT *,
+                           ROW_NUMBER() OVER (
+                               PARTITION BY input_code, start_aui, target_tty
+                               ORDER BY target_is_active,
+                                        CASE WHEN regexp_matches(target_code, '^[0-9]+$') THEN 0 ELSE 1 END,
+                                        TRY_CAST(target_code AS BIGINT),
+                                        target_code,
+                                        target_name,
+                                        target_aui
+                           ) AS candidate_rn
+                    FROM topology_hits
+                    WHERE NOT (target_tty = 'IN' AND start_tty = 'IN' AND target_code != input_code)
+                ),
+                topology_selected AS (
+                    SELECT * FROM topology_best WHERE candidate_rn = 1
+                ),
+                missing_candidates AS (
+                    SELECT bc.input_code, bc.start_tty, bc.orig_name, bc.start_aui, bc.base_rn,
+                           bc.target_tty, bc.target_order, bc.match_type
+                    FROM base_candidates bc
+                    LEFT JOIN topology_selected ts
+                      ON ts.input_code = bc.input_code
+                     AND ts.start_aui = bc.start_aui
+                     AND ts.target_tty = bc.target_tty
+                    WHERE bc.path_depth > 0
+                      AND ts.target_aui IS NULL
+                ),
+                brand_fallback_candidates AS (
+                    SELECT mc.input_code, mc.start_tty, mc.orig_name, mc.start_aui, mc.base_rn,
+                           mc.target_tty, mc.target_order, mc.match_type,
+                           regexp_extract(mc.orig_name, '\\[(.*?)\\]', 1) AS brand_name
+                    FROM missing_candidates mc
+                    WHERE mc.start_tty = 'SBDC'
+                      AND mc.target_tty = 'IN'
+                      AND mc.orig_name IS NOT NULL
+                      AND regexp_extract(mc.orig_name, '\\[(.*?)\\]', 1) IS NOT NULL
+                ),
+                brand_bns AS (
+                    SELECT bfc.input_code, bfc.start_tty, bfc.orig_name, bfc.start_aui, bfc.base_rn,
+                           bfc.target_tty, bfc.target_order, bfc.match_type,
+                           b.STR AS brand_name, b.AUI AS brand_aui
+                    FROM (
+                        SELECT
+                            input_code,
+                            start_tty,
+                            orig_name,
+                            start_aui,
+                            base_rn,
+                            target_tty,
+                            target_order,
+                            match_type,
+                            upper(trim(regexp_extract(orig_name, '\\[(.*?)\\]', 1))) AS brand_name
+                        FROM brand_fallback_candidates
+                    ) bfc
+                    JOIN main.mrconso b
+                      ON b.SAB = 'RXNORM'
+                     AND b.SUPPRESS = 'N'
+                     AND b.TTY = 'BN'
+                     AND upper(trim(b.STR)) = bfc.brand_name
+                ),
+                brand_fallback_hits AS (
+                    SELECT bb.input_code, bb.start_tty, bb.orig_name, bb.start_aui, bb.base_rn,
+                           bb.target_tty, bb.target_order, bb.match_type,
+                           n.AUI AS target_aui, n.CODE AS target_code,
+                           n.STR AS target_name, 'IN' AS resolved_tty,
+                           0 AS target_is_active, 1 AS match_depth
+                    FROM brand_bns bb
+                    JOIN main.mrrel r ON r.AUI1 = bb.brand_aui
+                    JOIN main.mrconso n ON n.AUI = r.AUI2
+                    WHERE n.SAB = 'RXNORM'
+                      AND upper(n.TTY) = 'IN'
+                      AND n.SUPPRESS = 'N'
+                ),
+                brand_fallback_selected AS (
+                    SELECT *
+                    FROM (
+                        SELECT *,
+                               ROW_NUMBER() OVER (
+                                   PARTITION BY input_code, start_aui, target_tty
+                                   ORDER BY target_is_active,
+                                        CASE WHEN regexp_matches(target_code, '^[0-9]+$') THEN 0 ELSE 1 END,
+                                        TRY_CAST(target_code AS BIGINT),
+                                        target_code,
+                                        target_name,
+                                        target_aui
+                               ) AS candidate_rn
+                        FROM brand_fallback_hits
+                    ) ranked_brand_fallback
+                    WHERE candidate_rn = 1
+                ),
+                fallback_walk(
+                    input_code, start_tty, orig_name, start_aui, base_rn,
+                    target_tty, target_order, match_type,
+                    depth, aui, tty, path
+                ) AS (
+                    SELECT input_code, start_tty, orig_name, start_aui, base_rn,
+                           target_tty, target_order, match_type,
+                           0 AS depth, start_aui AS aui, start_tty AS tty,
+                           start_aui AS path
+                    FROM missing_candidates
+                    UNION
+                SELECT w.input_code, w.start_tty, w.orig_name, w.start_aui, w.base_rn,
+                       w.target_tty, w.target_order, w.match_type,
+                       w.depth + 1 AS depth, n.AUI AS aui, upper(n.TTY) AS tty,
+                       w.path || '>' || n.AUI AS path
+                FROM fallback_walk w
+                JOIN main.mrrel r ON r.AUI1 = w.aui
+                JOIN main.mrconso n ON n.AUI = r.AUI2
+                WHERE w.depth < 6
+                  AND n.SAB = 'RXNORM'
+                  AND strpos('>' || w.path || '>', '>' || n.AUI || '>') = 0
+                ),
+                fallback_hits AS (
+                    SELECT w.input_code, w.start_tty, w.orig_name, w.start_aui, w.base_rn,
+                           w.target_tty, w.target_order, w.match_type,
+                           n.AUI AS target_aui, n.CODE AS target_code,
+                           n.STR AS target_name, upper(n.TTY) AS resolved_tty,
+                           CASE WHEN n.SUPPRESS = 'N' THEN 0 ELSE 1 END AS target_is_active,
+                           w.depth AS match_depth
+                    FROM fallback_walk w
+                    JOIN main.mrconso n ON n.AUI = w.aui
+                    WHERE w.depth > 0
+                      AND w.tty = w.target_tty
+                      AND n.SAB = 'RXNORM'
+                      AND NOT (w.target_tty = 'IN' AND w.start_tty = 'IN' AND n.CODE != w.input_code)
+                ),
+                fallback_selected AS (
+                    SELECT *
+                    FROM (
+                        SELECT *,
+                               ROW_NUMBER() OVER (
+                                   PARTITION BY input_code, start_aui, target_tty
+                                   ORDER BY match_depth,
+                                           target_is_active,
+                                        CASE WHEN regexp_matches(target_code, '^[0-9]+$') THEN 0 ELSE 1 END,
+                                        TRY_CAST(target_code AS BIGINT),
+                                        target_code,
+                                        target_name,
+                                        target_aui
+                               ) AS candidate_rn
+                        FROM fallback_hits
+                    ) ranked_fallback
+                    WHERE candidate_rn = 1
+                ),
+                all_selected AS (
+                    SELECT input_code, start_tty, orig_name, start_aui, base_rn,
+                           target_tty, target_order, match_type, target_aui,
+                           target_code, target_name, resolved_tty, match_depth,
+                           target_is_active
+                    FROM topology_selected
+                    UNION ALL
+                    SELECT input_code, start_tty, orig_name, start_aui, base_rn,
+                           target_tty, target_order, match_type, target_aui,
+                           target_code, target_name, resolved_tty, match_depth,
+                            target_is_active
+                    FROM fallback_selected
+                    UNION ALL
+                    SELECT input_code, start_tty, orig_name, start_aui, base_rn,
+                           target_tty, target_order, match_type, target_aui,
+                           target_code, target_name, resolved_tty, match_depth,
+                           target_is_active
+                    FROM brand_fallback_selected
                 ),
                 ranked AS (
                     SELECT *,
                            ROW_NUMBER() OVER (
                                PARTITION BY input_code
-                               ORDER BY priority,
-                                        depth,
+                               ORDER BY base_rn,
+                                        target_order,
+                                        target_is_active,
                                         CASE WHEN regexp_matches(target_code, '^[0-9]+$') THEN 0 ELSE 1 END,
                                         TRY_CAST(target_code AS BIGINT),
                                         target_code,
-                                        target_name
+                                        target_name,
+                                        target_aui
                            ) AS rn
-                    FROM candidates
-                    WHERE priority IS NOT NULL
+                    FROM all_selected
                 ),
                 base_summary AS (
                     SELECT input_code, FIRST(orig_name ORDER BY base_rn) AS orig_name,
@@ -2539,7 +3984,7 @@ class LocalLiteEngine:
                 )
                 SELECT b.input_code, b.orig_name, b.has_in_or_pin,
                        r.target_code, r.target_name, r.target_tty,
-                       r.match_type, r.depth
+                       r.match_type, r.match_depth
                 FROM base_summary b
                 LEFT JOIN ranked r ON r.input_code = b.input_code AND r.rn = 1
                 """
@@ -2596,231 +4041,287 @@ class LocalLiteEngine:
 
         return [by_code.get(code) or self._make_none(code, "RXNORM") for code in codes]
 
-    def _resolve_rxnorm_tty(self, start_aui: str, target_tty: str) -> tuple[str, str, int, str] | None:
-        row = self.con.execute(
-            """
-            WITH RECURSIVE walk AS (
-                SELECT c.AUI, c.CODE, c.STR, c.TTY, 0 AS depth
-                FROM mrconso c
-                WHERE c.AUI = ? AND c.SAB = 'RXNORM' AND c.SUPPRESS = 'N'
-                UNION
-                SELECT n.AUI, n.CODE, n.STR, n.TTY, w.depth + 1
-                FROM walk w
-                JOIN mrrel r ON r.AUI1 = w.AUI AND r.RELA = 'isa'
-                JOIN mrconso n ON n.AUI = r.AUI2
-                WHERE w.depth < 6
-                  AND n.SAB = 'RXNORM' AND n.SUPPRESS = 'N'
-            ),
-            ranked AS (
-                SELECT CODE, STR, TTY, depth,
-                       ROW_NUMBER() OVER (
-                           ORDER BY depth,
-                                    CASE WHEN regexp_matches(CODE, '^[0-9]+$') THEN 0 ELSE 1 END,
-                                    TRY_CAST(CODE AS BIGINT),
-                                    CODE,
-                                    STR
-                       ) AS rn
-                FROM walk
-                WHERE upper(TTY) = ?
-            )
-            SELECT CODE, STR, depth, TTY FROM ranked WHERE rn = 1
-            """,
-            [start_aui, target_tty],
-        ).fetchone()
-        if not row:
-            return None
-        return (row[0], row[1], int(row[2] or 0), row[3])
-
     def _resolve_loinc(self, codes: Sequence[str], max_depth: int) -> list[_Row]:
+        if not codes:
+            return []
         with self._temp_codes(codes) as temp:
             rows = self.con.execute(
                 f"""
                 WITH
                 base AS (
-                    SELECT CODE, CUI, AUI, STR AS orig_name
-                    FROM mrconso
-                    WHERE SAB = 'LNC' AND SUPPRESS = 'N'
-                      AND CODE IN (SELECT code FROM {temp})
+                    SELECT CODE, CUI, STR AS orig_name, AUI
+                    FROM mrconso WHERE CODE IN (SELECT code FROM {temp}) AND SAB = 'LNC' AND SUPPRESS = 'N'
                 ),
                 comp_parts AS (
-                    SELECT b.CODE AS code, b.orig_name, p.CODE AS part_code, p.STR AS part_name
-                    FROM base b
-                    JOIN mrrel r ON r.AUI1 = b.AUI AND r.RELA IN ('component_of', 'measured_by')
-                    JOIN mrconso p ON p.AUI = r.AUI2
-                    WHERE p.SAB = 'LNC' AND p.SUPPRESS = 'N' AND p.TTY = 'LPDN'
+                    SELECT c_src.CODE as loinc_code, c_tgt.STR as part_name
+                    FROM base c_src
+                    JOIN mrrel r ON r.AUI1 = c_src.AUI AND r.RELA IN ('component_of', 'measured_by')
+                    JOIN mrconso c_tgt ON c_tgt.AUI = r.AUI2 AND c_tgt.TTY = 'LPDN' AND c_tgt.SUPPRESS = 'N'
                 ),
                 tier1 AS (
-                    SELECT code, orig_name, part_code, part_name,
-                           ROW_NUMBER() OVER (
-                               PARTITION BY code ORDER BY LENGTH(part_name) DESC, part_name
-                           ) AS rn
-                    FROM comp_parts
+                    SELECT loinc_code, part_name as friendly_name, 'LNC' as fs, 'first_axis' as mt
+                    FROM (
+                        SELECT loinc_code, part_name,
+                            ROW_NUMBER() OVER (
+                                PARTITION BY loinc_code ORDER BY LENGTH(part_name) DESC, part_name
+                            ) as rn
+                        FROM comp_parts
+                        WHERE part_name NOT IN ({','.join(["'" + name + "'" for name in _BLACKLIST_LOINC])})
+                    ) sub WHERE rn = 1
                 ),
                 comp_cuis AS (
-                    SELECT DISTINCT b.CODE AS code, b.orig_name, p.CODE AS part_code,
-                           p.STR AS part_name, p.CUI AS part_cui
-                    FROM base b
-                    JOIN mrrel r ON r.AUI1 = b.AUI AND r.RELA IN ('component_of', 'measured_by')
-                    JOIN mrconso p ON p.AUI = r.AUI2
-                    WHERE p.SUPPRESS = 'N' AND p.CUI IS NOT NULL
+                    SELECT DISTINCT c_src.CODE as loinc_code, c_tgt.CUI as comp_cui
+                    FROM base c_src
+                    LEFT JOIN tier1 t ON c_src.CODE = t.loinc_code
+                    JOIN mrrel r ON r.AUI1 = c_src.AUI AND r.RELA IN ('component_of', 'measured_by')
+                    JOIN mrconso c_tgt ON c_tgt.AUI = r.AUI2
+                        AND c_tgt.SUPPRESS = 'N' AND c_tgt.CUI IS NOT NULL
+                    WHERE t.loinc_code IS NULL
                 ),
-                friendly AS (
-                    SELECT cc.code, cc.orig_name, cc.part_code, cc.part_name,
-                           mp.STR AS friendly_name, 'MEDLINEPLUS' AS friendly_source,
-                           0 AS priority, mp.TTY AS tty, cc.part_cui AS cui
+                tier2 AS (
+                    SELECT cc.loinc_code,
+                        COALESCE(mp.STR, chv.STR) as friendly_name,
+                        CASE WHEN mp.STR IS NOT NULL THEN 'MEDLINEPLUS' ELSE 'CHV' END as fs,
+                        'component' as mt
                     FROM comp_cuis cc
-                    JOIN mrconso mp ON mp.CUI = cc.part_cui
-                    WHERE mp.SAB = 'MEDLINEPLUS' AND mp.SUPPRESS = 'N' AND mp.TTY != 'HT'
+                    LEFT JOIN mrconso mp ON cc.comp_cui = mp.CUI AND mp.SAB = 'MEDLINEPLUS'
+                        AND mp.SUPPRESS = 'N' AND mp.TTY != 'HT'
+                    LEFT JOIN mrconso chv ON cc.comp_cui = chv.CUI AND chv.SAB = 'CHV'
+                        AND chv.SUPPRESS = 'N' AND chv.TTY != 'HT'
+                        AND lower(chv.STR) NOT IN ({_BROAD_CHV_NAME_SQL})
+                    WHERE mp.STR IS NOT NULL OR chv.STR IS NOT NULL
+                ),
+                tier2_dedup AS (
+                    SELECT loinc_code, friendly_name, fs, mt
+                    FROM (
+                        SELECT *, ROW_NUMBER() OVER (PARTITION BY loinc_code ORDER BY fs) as rn FROM tier2
+                    ) sub
+                    WHERE rn = 1
+                ),
+                tier4 AS (
+                    SELECT b.CODE as loinc_code,
+                        COALESCE(lc.STR, b.orig_name) as friendly_name,
+                        'LNC' as fs,
+                        CASE WHEN lc.STR IS NOT NULL THEN 'loinc_common' ELSE 'original' END as mt
+                    FROM base b
+                    LEFT JOIN tier1 t ON b.CODE = t.loinc_code
+                    LEFT JOIN tier2_dedup t2 ON b.CODE = t2.loinc_code
+                    LEFT JOIN mrconso lc ON b.CUI = lc.CUI
+                        AND lc.SAB = 'LNC' AND lc.TTY = 'LC' AND lc.SUPPRESS = 'N'
+                    WHERE t.loinc_code IS NULL AND t2.loinc_code IS NULL
+                ),
+                all_results AS (
+                    SELECT loinc_code AS code, friendly_name, fs, mt, 0 as match_depth FROM tier1
                     UNION ALL
-                    SELECT cc.code, cc.orig_name, cc.part_code, cc.part_name,
-                           chv.STR AS friendly_name, 'CHV' AS friendly_source,
-                           1 AS priority, chv.TTY AS tty, cc.part_cui AS cui
-                    FROM comp_cuis cc
-                    JOIN mrconso chv ON chv.CUI = cc.part_cui
-                    WHERE chv.SAB = 'CHV' AND chv.SUPPRESS = 'N' AND chv.TTY != 'HT'
+                    SELECT loinc_code, friendly_name, fs, mt, 1 FROM tier2_dedup
+                    UNION ALL
+                    SELECT loinc_code, friendly_name, fs, mt, 0 FROM tier4
                 ),
-                ranked_friendly AS (
-                    SELECT *,
-                           ROW_NUMBER() OVER (
-                               PARTITION BY code ORDER BY priority, LOWER(friendly_name)
-                           ) AS rn
-                    FROM friendly
-                ),
-                common AS (
-                    SELECT b.CODE AS code, b.orig_name, lc.STR AS common_name
-                    FROM base b
-                    LEFT JOIN mrconso lc ON lc.CUI = b.CUI
-                    WHERE lc.SAB = 'LNC' AND lc.SUPPRESS = 'N' AND lc.TTY = 'LC'
+                ranked AS (
+                    SELECT code, friendly_name, fs, mt, match_depth,
+                        ROW_NUMBER() OVER (PARTITION BY code ORDER BY match_depth, code) AS rn
+                    FROM all_results
                 )
-                SELECT b.CODE, b.orig_name,
-                       t.part_code, t.part_name,
-                       f.part_code AS friendly_part_code, f.part_name AS friendly_part_name,
-                       f.friendly_name, f.friendly_source, f.tty, f.cui,
-                       c.common_name
-                FROM (SELECT CODE, FIRST(orig_name) AS orig_name FROM base GROUP BY CODE) b
-                LEFT JOIN tier1 t ON t.code = b.CODE AND t.rn = 1
-                LEFT JOIN ranked_friendly f ON f.code = b.CODE AND f.rn = 1
-                LEFT JOIN common c ON c.code = b.CODE
+                SELECT code, friendly_name, fs, mt, match_depth
+                FROM ranked WHERE rn = 1
                 """
             ).fetchall()
 
         by_code: dict[str, _Row] = {}
-        for (
-            code,
-            orig_name,
-            part_code,
-            part_name,
-            friendly_part_code,
-            friendly_part_name,
-            friendly_name,
-            friendly_source,
-            tty,
-            cui,
-            common_name,
-        ) in rows:
-            if part_name and part_name not in _BLACKLIST_LOINC and len(part_name) > 1:
+        for code, friendly_name, friendly_source, match_type, match_depth in rows:
+            orig = self._technical_name(code, "LNC")
+            if match_type == "first_axis":
                 by_code[code] = _Row(
                     code=code,
                     source="LNC",
-                    name=part_name,
+                    name=friendly_name,
                     friendly_source="LNC",
-                    match_type="first_axis",
+                    match_type=match_type,
                     match_depth=0,
-                    technical_name=orig_name,
-                    matched_via=Provenance.from_steps(
-                        "loinc_component",
-                        [
-                            ProvenanceStep(op="input", source="LNC", code=code),
-                            ProvenanceStep(
-                                op="component",
-                                source="LNC",
-                                code=part_code,
-                                name=part_name,
-                                tty="LPDN",
-                                depth=1,
-                            ),
-                        ],
-                    ),
+                    technical_name=orig,
+                    matched_via=self._simple_provenance(match_type, "LNC", code, friendly_name),
                 )
-            elif friendly_name and not _is_broad_friendly_name(friendly_source, friendly_name):
+            elif match_type == "component" and friendly_name and not _is_broad_friendly_name(friendly_source, friendly_name):
                 by_code[code] = _Row(
                     code=code,
                     source="LNC",
                     name=friendly_name,
                     friendly_source=friendly_source,
-                    match_type="component",
-                    match_depth=1,
-                    technical_name=orig_name,
-                    matched_via=Provenance.from_steps(
-                        "loinc_component",
-                        [
-                            ProvenanceStep(op="input", source="LNC", code=code),
-                            ProvenanceStep(
-                                op="component",
-                                source="LNC",
-                                code=friendly_part_code,
-                                name=friendly_part_name,
-                                depth=1,
-                            ),
-                            ProvenanceStep(
-                                op="friendly_atom",
-                                source=friendly_source,
-                                name=friendly_name,
-                                tty=tty,
-                                cui=cui,
-                                depth=1,
-                            ),
-                        ],
-                    ),
+                    match_type=match_type,
+                    match_depth=match_depth,
+                    technical_name=orig,
+                    matched_via=self._simple_provenance("loinc_component", "LNC", code, friendly_name),
                 )
-            elif common_name:
+            elif match_type == "loinc_common":
                 by_code[code] = _Row(
                     code=code,
                     source="LNC",
-                    name=common_name,
+                    name=friendly_name,
                     friendly_source="LNC",
                     match_type="loinc_common",
-                    match_depth=0,
-                    technical_name=orig_name,
-                    matched_via=self._simple_provenance("loinc_common", "LNC", code, common_name),
+                    match_depth=match_depth,
+                    technical_name=orig,
+                    matched_via=self._simple_provenance("loinc_common", "LNC", code, friendly_name),
                 )
             else:
-                by_code[code] = self._make_original(code, "LNC", technical_name=orig_name)
+                by_code[code] = self._make_original(code, "LNC", technical_name=orig)
 
         rows_out = [by_code.get(code) or self._make_original(code, "LNC") for code in codes]
         self._apply_snomed_fallback("LNC", rows_out, max_depth)
         return rows_out
 
     def _resolve_cpt(self, codes: Sequence[str], max_depth: int) -> list[_Row]:
-        rows = self._resolve_default(codes, "CPT", max_depth)
-        fallback_codes = [row.code for row in rows if row.match_type == "original"]
-        if not fallback_codes:
-            return rows
+        if not codes:
+            return []
+        display_order_sql = _source_atom_order_sql("CPT")
+        hierarchy_join, hierarchy_target = _source_hierarchy_join_sql(
+            "CPT",
+            "w.AUI",
+            upward=True,
+        )
+        with self._temp_codes(codes) as temp:
+            query = f"""
+WITH RECURSIVE
+base AS (
+    SELECT CODE, CUI, STR as orig_name, AUI
+    FROM mrconso WHERE CODE IN (SELECT code FROM {temp}) AND SAB = 'CPT' AND SUPPRESS = 'N'
+),
+cpt_walk AS (
+    SELECT b.CODE, b.CUI, b.orig_name, 0 as walk_depth, b.AUI
+    FROM base b
+    UNION ALL
+    SELECT w.CODE, p.CUI, w.orig_name, w.walk_depth + 1 as walk_depth, p.AUI
+    FROM cpt_walk w
+    JOIN mrrel r ON {hierarchy_join}
+    JOIN mrconso p ON p.AUI = {hierarchy_target} AND p.SAB = 'CPT' AND p.SUPPRESS = 'N'
+    WHERE w.walk_depth < ?
+),
+walked AS (
+    SELECT DISTINCT CODE, CUI, orig_name, walk_depth
+    FROM cpt_walk
+),
+walk_friendly AS (
+    SELECT w.CODE, w.walk_depth, mp.STR as friendly_name, 'MEDLINEPLUS' as fs
+    FROM walked w
+    JOIN mrconso mp ON w.CUI = mp.CUI AND mp.SAB = 'MEDLINEPLUS' AND mp.SUPPRESS = 'N'
+    WHERE mp.TTY != 'HT'
+      AND lower(mp.STR) NOT IN ({_BROAD_MEDLINEPLUS_NAME_SQL})
+    UNION ALL
+    SELECT w.CODE, w.walk_depth, chv.STR as friendly_name, 'CHV' as fs
+    FROM walked w
+    JOIN mrconso chv
+      ON w.CUI = chv.CUI AND chv.SAB = 'CHV' AND chv.SUPPRESS = 'N'
+        AND chv.TTY != 'HT'
+        AND lower(chv.STR) NOT IN ({_BROAD_CHV_NAME_SQL})
+),
+walk_results AS (
+    SELECT CODE, friendly_name, fs as friendly_source,
+           CASE WHEN walk_depth = 0 THEN 'exact' ELSE 'broader' END as mt,
+           walk_depth as match_depth
+    FROM (
+        SELECT CODE, friendly_name, fs, walk_depth,
+               ROW_NUMBER() OVER (
+                   PARTITION BY CODE
+                   ORDER BY walk_depth,
+                            CASE WHEN fs = 'MEDLINEPLUS' THEN 0 ELSE 1 END,
+                            LOWER(friendly_name)
+               ) as rn
+        FROM walk_friendly
+    ) ranked
+    WHERE rn = 1
+),
+original_preferred AS (
+    SELECT CODE, orig_name
+    FROM (
+        SELECT CODE, STR AS orig_name,
+               ROW_NUMBER() OVER (
+                   PARTITION BY CODE
+                   ORDER BY {display_order_sql}
+               ) AS rn
+        FROM mrconso
+        WHERE CODE IN (SELECT code FROM {temp})
+          AND SAB = 'CPT'
+          AND SUPPRESS = 'N'
+    ) ranked_original
+    WHERE rn = 1
+),
+original AS (
+    SELECT p.CODE, p.orig_name as friendly_name, 'CPT' as friendly_source, 'original' as mt
+    FROM original_preferred p
+    LEFT JOIN walk_results w ON p.CODE = w.CODE
+    WHERE w.CODE IS NULL
+),
+all_results AS (
+    SELECT CODE, friendly_name, friendly_source, mt, match_depth
+    FROM walk_results
+    UNION ALL
+    SELECT CODE, friendly_name, friendly_source, mt, 0
+    FROM original
+)
+SELECT CODE, friendly_name, friendly_source, mt as match_type, match_depth, 'CPT' as _source
+FROM all_results
+"""
+            rows = self.con.execute(query, [max_depth]).fetchall()
 
+        by_code: dict[str, _Row] = {}
+        for code, friendly_name, friendly_source, match_type, match_depth, _source in rows:
+            by_code[code] = _Row(
+                code=code,
+                source="CPT",
+                name=friendly_name,
+                friendly_source=friendly_source,
+                match_type=match_type,
+                match_depth=int(match_depth or 0),
+                technical_name=self._technical_name(code, "CPT"),
+                matched_via=self._simple_provenance(match_type, "CPT", code, friendly_name),
+            )
+
+        fallback_rows = [row for row in by_code.values() if row.match_type == "original"]
+        if not fallback_rows:
+            return [by_code.get(code) or self._make_original(code, "CPT") for code in codes]
+
+        fallback_codes = [row.code for row in fallback_rows]
         mapping = self._map_cpt_targets(fallback_codes)
-        target_groups: dict[str, list[str]] = defaultdict(list)
-        for _cpt, (target_source, target_code) in mapping.items():
-            target_groups[target_source].append(target_code)
-        target_results: dict[tuple[str, str], _Row] = {}
-        for target_source, target_codes in target_groups.items():
-            if target_source == "SNOMEDCT_US":
-                replacements = self._resolve_default_via_snomed(target_codes, "SNOMEDCT_US", max_depth)
-                target_results.update({("SNOMEDCT_US", k): v for k, v in replacements.items()})
-            else:
-                for row in self._resolve_default(target_codes, target_source, max_depth):
-                    self._apply_snomed_fallback(target_source, [row], max_depth)
-                    target_results[(target_source, row.code)] = row
+        if not mapping:
+            return [by_code.get(code) or self._make_original(code, "CPT") for code in codes]
 
-        by_code = {row.code: row for row in rows}
+        hcpcs_targets = sorted({target for (src, target) in mapping.values() if src == "HCPCS"})
+        icd10_targets = sorted({target for (src, target) in mapping.values() if src == "ICD10CM"})
+        snomed_targets = sorted({target for (src, target) in mapping.values() if src == "SNOMEDCT_US"})
+
+        hcpcs_results = {
+            row.code: row for row in self._resolve_default(hcpcs_targets, "HCPCS", max_depth)
+        } if hcpcs_targets else {}
+        icd10_results = {
+            row.code: row for row in self._resolve_default(icd10_targets, "ICD10CM", max_depth)
+        } if icd10_targets else {}
+        snomed_results = (
+            self._resolve_default_via_snomed(snomed_targets, "SNOMEDCT_US", max_depth)
+            if snomed_targets else {}
+        )
+
+        by_code_lookup = {row.code: row for row in by_code.values()}
         for cpt_code, (target_source, target_code) in mapping.items():
-            replacement = target_results.get((target_source, target_code))
-            base = by_code.get(cpt_code)
-            if not base or not replacement or replacement.match_type in {"original", "none"}:
+            base = by_code_lookup.get(cpt_code)
+            if not base:
+                continue
+            replacement: _Row | None
+            if target_source == "HCPCS":
+                replacement = hcpcs_results.get(target_code)
+            elif target_source == "ICD10CM":
+                replacement = icd10_results.get(target_code)
+            elif target_source == "SNOMEDCT_US":
+                replacement = snomed_results.get(target_code)
+            else:
+                replacement = None
+
+            if not replacement or replacement.match_type in {"original", "none"}:
                 continue
             base.name = replacement.name
             base.friendly_source = replacement.friendly_source
             base.match_type = replacement.match_type
             base.match_depth = replacement.match_depth
+            base.technical_name = self._technical_name(cpt_code, "CPT")
             base.matched_via = Provenance.from_steps(
                 "cpt_cross_reference",
                 [
@@ -2835,7 +4336,8 @@ class LocalLiteEngine:
                     *(replacement.matched_via.steps if replacement.matched_via else ()),
                 ],
             )
-        return rows
+
+        return [by_code.get(code) or self._make_original(code, "CPT") for code in codes]
 
     def _map_cpt_targets(self, codes: Sequence[str]) -> dict[str, tuple[str, str]]:
         if not codes:
@@ -2864,25 +4366,66 @@ class LocalLiteEngine:
         return mapping
 
     def _resolve_cvx(self, codes: Sequence[str]) -> list[_Row]:
+        metadata: dict[str, list[tuple[str | None, str | None]]] = {}
+        if codes:
+            try:
+                with self._temp_codes(codes) as temp:
+                    rows = self.con.execute(
+                        f"""
+                        SELECT code, group_name, short_name
+                        FROM mt4ds.cvx_metadata
+                        WHERE code IN (SELECT code FROM {temp})
+                        """
+                    ).fetchall()
+                for code, group_name, short_name in rows:
+                    metadata.setdefault(str(code), []).append(
+                        (
+                            str(group_name) if group_name else None,
+                            str(short_name) if short_name else None,
+                        )
+                    )
+            except Exception:
+                metadata = {}
+
+        needs_external_groups = any(code not in metadata for code in codes)
+        if self._cvx_groups_auto and not self.cvx_groups and needs_external_groups:
+            self.cvx_groups = _load_default_cvx_groups()
         rows: list[_Row] = []
         for code in codes:
-            groups = self.cvx_groups.get(code)
-            if groups:
-                name = " / ".join(sorted(dict.fromkeys(groups)))
+            metadata_rows = metadata.get(code, [])
+            metadata_groups = [
+                group_name
+                for group_name, _short_name in metadata_rows
+                if group_name
+            ]
+            metadata_short_names = [
+                short_name
+                for _group_name, short_name in metadata_rows
+                if short_name
+            ]
+            groups = metadata_groups or self.cvx_groups.get(code)
+            short_names = metadata_short_names
+            if groups or short_names:
+                name = " / ".join(sorted(dict.fromkeys(groups or short_names)))
                 rows.append(
                     _Row(
                         code=code,
                         source="CVX",
                         name=name,
                         friendly_source="CVX",
-                        match_type="cvx_group",
+                        match_type="cvx_group" if groups else "cvx_short_name",
                         match_depth=0,
                         technical_name=self._technical_name(code, "CVX"),
                         matched_via=Provenance.from_steps(
-                            "cvx_group",
+                            "cvx_group" if groups else "cvx_short_name",
                             [
                                 ProvenanceStep(op="input", source="CVX", code=code),
-                                ProvenanceStep(op="vaccine_group", source="CVX", code=code, name=name),
+                                ProvenanceStep(
+                                    op="vaccine_group" if groups else "short_name",
+                                    source="CVX",
+                                    code=code,
+                                    name=name,
+                                ),
                             ],
                         ),
                     )
@@ -2918,7 +4461,7 @@ class LocalLiteEngine:
                     WHERE r.RELA = 'mapped_from'
                       AND sn.SAB = 'SNOMEDCT_US' AND sn.SUPPRESS = 'N'
                       AND sn.CODE IN (SELECT code FROM {temp})
-                      AND target.SAB IN ('ICD10CM', 'RXNORM', 'LNC', 'CPT')
+                      AND target.SAB IN ('ICD10CM', 'ICD10PCS', 'LNC', 'CPT', 'HCPCS')
                       AND target.SUPPRESS = 'N'
                     UNION
                     SELECT DISTINCT sn.CODE AS sn_code, target.SAB AS target_source,
@@ -2927,14 +4470,18 @@ class LocalLiteEngine:
                     JOIN mrconso target ON target.CUI = sn.CUI
                     WHERE sn.SAB = 'SNOMEDCT_US' AND sn.SUPPRESS = 'N'
                       AND sn.CODE IN (SELECT code FROM {temp})
-                      AND target.SAB IN ('ICD10CM', 'RXNORM', 'LNC', 'CPT')
+                      AND target.SAB IN ('ICD10CM', 'ICD10PCS', 'LNC', 'CPT', 'HCPCS')
                       AND target.SUPPRESS = 'N'
                 )
                 SELECT sn_code, target_source, target_code
                 FROM candidates
                 ORDER BY sn_code,
-                         CASE target_source WHEN 'ICD10CM' THEN 0 WHEN 'RXNORM' THEN 1
-                                            WHEN 'LNC' THEN 2 ELSE 3 END,
+                         CASE target_source WHEN 'ICD10CM' THEN 0
+                                            WHEN 'ICD10PCS' THEN 1
+                                            WHEN 'LNC' THEN 2
+                                            WHEN 'CPT' THEN 3
+                                            WHEN 'HCPCS' THEN 4
+                                            ELSE 5 END,
                          target_code
                 """
             ).fetchall()
@@ -2960,6 +4507,11 @@ class LocalLiteEngine:
                 )
                 rows.extend(self._map_snomed_broader(chunk))
             return rows
+        snomed_join, snomed_target = _source_hierarchy_join_sql(
+            "SNOMEDCT_US",
+            "w.AUI",
+            upward=True,
+        )
         with self._temp_codes(codes) as temp:
             rows = self.con.execute(
                 f"""
@@ -2971,8 +4523,8 @@ class LocalLiteEngine:
                     UNION
                     SELECT w.input_code, p.AUI, p.CUI, w.depth + 1
                     FROM walk w
-                    JOIN mrrel r ON r.AUI1 = w.AUI AND r.REL = 'PAR'
-                    JOIN mrconso p ON p.AUI = r.AUI2
+                    JOIN mrrel r ON {snomed_join}
+                    JOIN mrconso p ON p.AUI = {snomed_target}
                     WHERE w.depth < 2
                       AND p.SAB = 'SNOMEDCT_US' AND p.SUPPRESS = 'N'
                 ),
@@ -2982,13 +4534,17 @@ class LocalLiteEngine:
                                PARTITION BY w.input_code
                                ORDER BY w.depth,
                                         CASE target.SAB WHEN 'ICD10CM' THEN 0
-                                                        WHEN 'RXNORM' THEN 1 ELSE 2 END,
+                                                        WHEN 'ICD10PCS' THEN 1
+                                                        WHEN 'LNC' THEN 2
+                                                        WHEN 'CPT' THEN 3
+                                                        WHEN 'HCPCS' THEN 4
+                                                        ELSE 5 END,
                                         target.CODE
                            ) AS rn
                     FROM walk w
                     JOIN mrconso target ON target.CUI = w.CUI
                     WHERE w.depth > 0
-                      AND target.SAB IN ('ICD10CM', 'RXNORM', 'CPT')
+                      AND target.SAB IN ('ICD10CM', 'ICD10PCS', 'LNC', 'CPT', 'HCPCS')
                       AND target.SUPPRESS = 'N'
                 )
                 SELECT input_code, SAB, CODE FROM candidates WHERE rn = 1
@@ -3072,13 +4628,52 @@ class LocalLiteEngine:
                 rows.append(self._make_original(code, "SNOMEDCT_US"))
         return rows
 
-    def _technical_name(self, code: str, source: str) -> str | None:
+    def _display_name(self, code: str, source: str) -> str | None:
+        if source == "LNC":
+            row = self.con.execute(
+                """
+                SELECT STR
+                FROM mrconso
+                WHERE CODE = ? AND SAB = ? AND SUPPRESS = 'N'
+                LIMIT 1
+                """,
+                [code, source],
+            ).fetchone()
+            return row[0] if row else None
+
+        atom_order_sql = _source_atom_order_sql(source)
         row = self.con.execute(
-            """
+            f"""
             SELECT STR
             FROM mrconso
             WHERE CODE = ? AND SAB = ? AND SUPPRESS = 'N'
-            ORDER BY AUI
+            ORDER BY {atom_order_sql}
+            LIMIT 1
+            """,
+            [code, source],
+        ).fetchone()
+        return row[0] if row else None
+
+    def _technical_name(self, code: str, source: str) -> str | None:
+        if source == "LNC":
+            row = self.con.execute(
+                """
+                SELECT STR
+                FROM mrconso
+                WHERE CODE = ? AND SAB = ? AND SUPPRESS = 'N'
+                LIMIT 1
+                """,
+                [code, source],
+            ).fetchone()
+            return row[0] if row else None
+
+        atom_order_sql = _source_technical_atom_order_sql(source)
+        row = self.con.execute(
+            f"""
+            SELECT STR
+            FROM mrconso
+            WHERE CODE = ? AND SAB = ? AND SUPPRESS = 'N'
+            ORDER BY {atom_order_sql}
             LIMIT 1
             """,
             [code, source],
@@ -3091,18 +4686,20 @@ class LocalLiteEngine:
         source: str,
         *,
         technical_name: str | None = None,
+        display_name: str | None = None,
     ) -> _Row:
-        technical_name = technical_name or self._technical_name(code, source)
-        if technical_name:
+        display_name = display_name or self._display_name(code, source)
+        technical_name = technical_name or self._technical_name(code, source) or display_name
+        if display_name:
             return _Row(
                 code=code,
                 source=source,
-                name=technical_name,
+                name=display_name,
                 friendly_source=source,
                 match_type="original",
                 match_depth=0,
                 technical_name=technical_name,
-                matched_via=self._simple_provenance("original", source, code, technical_name),
+                matched_via=self._simple_provenance("original", source, code, display_name),
             )
         return self._make_none(code, source)
 
@@ -3182,6 +4779,100 @@ class LocalLiteEngine:
         ).fetchone()
         return bool(row)
 
+    def _has_prepared_tables(self) -> bool:
+        """Check if mt4ds prepared tables are available (cached after first check)."""
+        if self._prepared_tables_available is None:
+            try:
+                rows = self.con.execute(
+                    "SELECT table_name FROM information_schema.tables "
+                    "WHERE table_schema = 'mt4ds' AND table_name = 'best_atoms'"
+                ).fetchall()
+                self._prepared_tables_available = len(rows) > 0
+            except Exception:
+                self._prepared_tables_available = False
+        return self._prepared_tables_available
+
+    def _has_patient_friendly_prepared_tables(self, sources: set[str]) -> bool:
+        if not self._prepared_schema_version_is_current():
+            return False
+        required = {
+            "best_atoms",
+            "patient_friendly_strategy",
+        }
+        if sources - {"RXNORM"}:
+            required.update({
+                "walk_edges",
+                "friendly_atoms",
+                "snomed_top_level_depth",
+                "cvx_metadata",
+            })
+        if "RXNORM" in sources:
+            required.update({
+                "rxnorm_tty_paths",
+                "rxnorm_tty_path_steps",
+                "rxnorm_tty_edges",
+            })
+        if "SNOMEDCT_US" in sources or any(source in _SNOMED_FALLBACK_SOURCES for source in sources):
+            required.update({
+                "walk_edges",
+                "friendly_atoms",
+                "snomed_top_level_depth",
+            })
+        try:
+            rows = self.con.execute(
+                """
+                SELECT table_name
+                FROM information_schema.tables
+                WHERE table_schema = 'mt4ds'
+                  AND table_name IN ({})
+                """.format(", ".join(["?"] * len(required))),
+                list(required),
+            ).fetchall()
+        except Exception:
+            return False
+        available = {str(row[0]) for row in rows}
+        if available != required:
+            return False
+        needs_crosswalk = (
+            bool(sources - {"RXNORM"})
+            or "SNOMEDCT_US" in sources
+            or any(source in _SNOMED_FALLBACK_SOURCES for source in sources)
+        )
+        if needs_crosswalk and not (
+            self._table_exists("crosswalk_edges")
+            or self._table_exists("same_cui_edges")
+        ):
+            return False
+        return True
+
+    def _prepared_schema_version_is_current(self) -> bool:
+        try:
+            manifest_exists = self.con.execute(
+                """
+                SELECT 1
+                FROM information_schema.tables
+                WHERE table_schema = 'mt4ds'
+                  AND table_name = 'prepare_manifest'
+                LIMIT 1
+                """
+            ).fetchone()
+            if not manifest_exists:
+                return True
+            row = self.con.execute(
+                """
+                SELECT value
+                FROM mt4ds.prepare_manifest
+                WHERE key = 'prepared_schema_version'
+                """
+            ).fetchone()
+            if not row:
+                return True
+            from medterm4ds.engines.duckdb.prepared import PREPARED_SCHEMA_VERSION
+
+            return str(row[0]) == PREPARED_SCHEMA_VERSION
+        except Exception:
+            return False
+
     @contextmanager
     def _temp_codes(self, codes: Sequence[str]) -> Iterator[str]:
         table = f"_mt4ds_codes_{uuid4().hex}"
@@ -3208,9 +4899,203 @@ class LocalLiteEngine:
         finally:
             self.con.execute(f"DROP TABLE IF EXISTS {table}")
 
+    @contextmanager
+    def _temp_code_ancestors(self, code_ancestors: Sequence[tuple[str, str, int]]) -> Iterator[str]:
+        table = f"_mt4ds_code_ancestors_{uuid4().hex}"
+        self.con.execute(
+            f"CREATE TEMP TABLE {table} (source_code VARCHAR, ancestor_code VARCHAR, depth INTEGER)"
+        )
+        try:
+            self.con.executemany(
+                f"INSERT INTO {table} VALUES (?, ?, ?)",
+                [(str(code), str(ancestor), int(depth)) for code, ancestor, depth in code_ancestors],
+            )
+            yield table
+        finally:
+            self.con.execute(f"DROP TABLE IF EXISTS {table}")
+
 
 def _dedupe(values: Sequence[str]) -> list[str]:
     return list(dict.fromkeys(str(value) for value in values))
+
+
+def _load_default_cvx_groups() -> dict[str, list[str]]:
+    """Load CDC CVX vaccine groups on demand.
+
+    Set MEDTERM4DS_DISABLE_CVX_GROUPS=1 to keep CVX resolution fully offline.
+    MEDTERM4DS_CVX_GROUP_URL can point at a local test fixture or mirror.
+    """
+    global _CVX_GROUP_CACHE
+    if os.environ.get("MEDTERM4DS_DISABLE_CVX_GROUPS"):
+        return {}
+    if _CVX_GROUP_CACHE is not None:
+        return _CVX_GROUP_CACHE
+
+    cache: dict[str, list[str]] = {}
+    try:
+        url = os.environ.get("MEDTERM4DS_CVX_GROUP_URL", _CVX_GROUP_URL)
+        with urllib.request.urlopen(url, timeout=10) as response:
+            text = response.read().decode("utf-8", errors="replace")
+        for line in text.splitlines():
+            parts = line.split("|")
+            if len(parts) < 5:
+                continue
+            code = parts[1].strip()
+            group = parts[3].strip()
+            if code and group and group not in cache.setdefault(code, []):
+                cache[code].append(group)
+        for groups in cache.values():
+            groups.sort()
+    except Exception as exc:
+        logger.debug("Failed to load CVX vaccine groups: %s", exc)
+
+    _CVX_GROUP_CACHE = cache
+    return cache
+
+
+def _source_atom_order_sql(source: str) -> str:
+    source = source.upper()
+    if source == "SNOMEDCT_US":
+        return """
+            CASE upper(TTY)
+                WHEN 'PT' THEN 0
+                WHEN 'FN' THEN 1
+                WHEN 'SY' THEN 2
+                ELSE 3
+            END,
+            LENGTH(STR),
+            AUI
+        """
+    if source in {"ICD10CM", "ICD10PCS"}:
+        return """
+            CASE upper(TTY)
+                WHEN 'PT' THEN 0
+                WHEN 'HT' THEN 1
+                WHEN 'AB' THEN 2
+                WHEN 'ET' THEN 3
+                ELSE 4
+            END,
+            LENGTH(STR),
+            AUI
+        """
+    if source == "CPT":
+        return """
+            CASE upper(TTY)
+                WHEN 'ETCF' THEN 0
+                WHEN 'ETCLIN' THEN 1
+                WHEN 'PT' THEN 2
+                WHEN 'SY' THEN 3
+                ELSE 4
+            END,
+            CASE upper(TTY)
+                WHEN 'SY' THEN LENGTH(STR)
+                ELSE 0
+            END,
+            LENGTH(STR),
+            AUI
+        """
+    if source == "CVX":
+        return """
+            CASE upper(TTY)
+                WHEN 'PT' THEN 0
+                WHEN 'SY' THEN 1
+                WHEN 'AB' THEN 2
+                ELSE 3
+            END,
+            LENGTH(STR),
+            AUI
+        """
+    return "AUI"
+
+
+def _source_hierarchy_atom_order_sql(source: str) -> str:
+    source = source.upper()
+    if source == "CPT":
+        return """
+            CASE upper(TTY)
+                WHEN 'PT' THEN 0
+                WHEN 'HT' THEN 1
+                WHEN 'ETCLIN' THEN 2
+                WHEN 'ETCF' THEN 3
+                WHEN 'SY' THEN 4
+                ELSE 5
+            END,
+            AUI
+        """
+    return _source_atom_order_sql(source)
+
+
+def _source_technical_atom_order_sql(source: str) -> str:
+    source = source.upper()
+    if source == "SNOMEDCT_US":
+        return """
+            CASE upper(TTY)
+                WHEN 'FN' THEN 0
+                WHEN 'PT' THEN 1
+                WHEN 'SY' THEN 2
+                ELSE 3
+            END,
+            LENGTH(STR),
+            AUI
+        """
+    return _source_atom_order_sql(source)
+
+
+def _rxnorm_base_tty_order_sql(alias: str = "c") -> str:
+    tty_expr = f"upper({alias}.TTY)"
+    cases = " ".join(
+        f"WHEN '{tty}' THEN {priority}"
+        for tty, priority in _RXNORM_BASE_TTY_PRIORITY.items()
+    )
+    return f"CASE {tty_expr} {cases} ELSE 99 END"
+
+
+def _rxnorm_tty_sql_rows() -> tuple[list[tuple[object, ...]], list[tuple[object, ...]]]:
+    """Build static rows for RxNorm TTY topology targets and path steps."""
+    candidate_rows: list[tuple[object, ...]] = []
+    path_step_rows: list[tuple[object, ...]] = []
+    for start_tty in sorted(_RXNORM_KNOWN_TTYS):
+        target_specs: list[tuple[str, int, str]] = []
+        if start_tty in _RXNORM_GROUP_TTYS:
+            target_specs.append(("SCDG", 0, "group"))
+        # Patient-friendly RxNorm uses topology targets, not MEDLINEPLUS/CHV
+        # and not generic isa traversal. MIN and IN stay themselves. PIN and
+        # SCDC try IN first, then MIN. Other TTYs try MIN, then IN.
+        if start_tty in {"IN", "MIN"}:
+            ingredient_targets = (start_tty,)
+        elif start_tty in {"PIN", "SCDC"}:
+            ingredient_targets = ("IN", "MIN")
+        else:
+            ingredient_targets = ("MIN", "IN")
+        target_specs.extend(
+            (target_tty, target_order, "ingredient")
+            for target_order, target_tty in enumerate(ingredient_targets, 1)
+        )
+        for target_tty, target_order, match_type in target_specs:
+            path = _rxnorm_find_tty_path(start_tty, target_tty)
+            if not path:
+                continue
+            path_depth = len(path) - 1
+            candidate_rows.append((start_tty, target_tty, target_order, match_type, path_depth))
+            for step, step_tty in enumerate(path[1:], 1):
+                path_step_rows.append((start_tty, target_tty, step, step_tty, path_depth))
+    return candidate_rows, path_step_rows
+
+
+def _sql_values(rows: Sequence[Sequence[object]]) -> str:
+    if not rows:
+        raise ValueError("rows must not be empty")
+    return ",\n                           ".join(
+        "(" + ", ".join(_sql_literal(value) for value in row) + ")"
+        for row in rows
+    )
+
+
+def _sql_literal(value: object) -> str:
+    if isinstance(value, int):
+        return str(value)
+    text = str(value).replace("'", "''")
+    return f"'{text}'"
 
 
 def _chunks(values: Sequence[T], size: int) -> Iterator[list[T]]:
@@ -3255,47 +5140,110 @@ def _relationship_values(relationship: str) -> list[str]:
     return [value]
 
 
-def _prefix_ancestors(code: str, active_codes: set[str]) -> set[str]:
-    ancestors: set[str] = set()
-    for candidate in _prefix_candidates(code):
-        if candidate != code and candidate in active_codes:
-            ancestors.add(candidate)
-    return ancestors
+def _is_isa_relationship(relationship: str | None) -> bool:
+    value = str(relationship or "isa")
+    return value.lower() == "isa" or value.upper() == "PAR"
 
 
-def _prefix_leaf_descendants(code: str, active_codes: set[str]) -> set[str]:
-    descendants = {
-        candidate
-        for candidate in active_codes
-        if candidate != code and _is_prefix_descendant(code, candidate)
-    }
-    return {
-        candidate
-        for candidate in descendants
-        if not any(
-            other != candidate and _is_prefix_descendant(candidate, other)
-            for other in descendants
+def _source_hierarchy_family(source: str) -> str:
+    source = source.upper()
+    if source in _PAR_HIERARCHY_SOURCES:
+        return "par"
+    if source in _RELA_ISA_HIERARCHY_SOURCES:
+        return "rela_isa"
+    return "generic"
+
+
+def _source_hierarchy_join_sql(
+    source: str,
+    current_aui_expr: str,
+    *,
+    rel_alias: str = "r",
+    upward: bool,
+) -> tuple[str, str]:
+    """Return an MRREL join predicate and target AUI expression for source hierarchy."""
+    family = _source_hierarchy_family(source)
+    if family == "par":
+        if upward:
+            return (
+                f"(({rel_alias}.AUI1 = {current_aui_expr} AND {rel_alias}.REL = 'PAR') "
+                f"OR ({rel_alias}.AUI2 = {current_aui_expr} AND {rel_alias}.REL = 'CHD'))",
+                f"CASE WHEN {rel_alias}.AUI1 = {current_aui_expr} "
+                f"THEN {rel_alias}.AUI2 ELSE {rel_alias}.AUI1 END",
+            )
+        return (
+            f"(({rel_alias}.AUI2 = {current_aui_expr} AND {rel_alias}.REL = 'PAR') "
+            f"OR ({rel_alias}.AUI1 = {current_aui_expr} AND {rel_alias}.REL = 'CHD'))",
+            f"CASE WHEN {rel_alias}.AUI2 = {current_aui_expr} "
+            f"THEN {rel_alias}.AUI1 ELSE {rel_alias}.AUI2 END",
         )
-    }
+    if family == "rela_isa":
+        if upward:
+            return (
+                f"{rel_alias}.AUI1 = {current_aui_expr} AND {rel_alias}.RELA = 'isa'",
+                f"{rel_alias}.AUI2",
+            )
+        return (
+            f"{rel_alias}.AUI2 = {current_aui_expr} AND {rel_alias}.RELA = 'isa'",
+            f"{rel_alias}.AUI1",
+        )
+    if upward:
+        return (
+            f"(({rel_alias}.AUI1 = {current_aui_expr} "
+            f"AND ({rel_alias}.RELA = 'isa' OR {rel_alias}.REL = 'PAR')) "
+            f"OR ({rel_alias}.AUI2 = {current_aui_expr} AND {rel_alias}.REL = 'CHD'))",
+            f"CASE WHEN {rel_alias}.AUI1 = {current_aui_expr} "
+            f"THEN {rel_alias}.AUI2 ELSE {rel_alias}.AUI1 END",
+        )
+    return (
+        f"(({rel_alias}.AUI2 = {current_aui_expr} "
+        f"AND ({rel_alias}.RELA = 'isa' OR {rel_alias}.REL = 'PAR')) "
+        f"OR ({rel_alias}.AUI1 = {current_aui_expr} AND {rel_alias}.REL = 'CHD'))",
+        f"CASE WHEN {rel_alias}.AUI2 = {current_aui_expr} "
+        f"THEN {rel_alias}.AUI1 ELSE {rel_alias}.AUI2 END",
+    )
 
 
-def _prefix_candidates(code: str) -> list[str]:
-    candidates: list[str] = []
-    current = code
-    while "." in current and len(current) > 1:
-        current = current[:-1]
-        candidates.append(current.rstrip("."))
-    if len(code) > 3:
-        candidates.append(code[:3])
-    return _dedupe([candidate for candidate in candidates if candidate])
+def _dedupe_relation_rows(rows: Sequence[tuple[int, CodeRelation]]) -> list[tuple[int, CodeRelation]]:
+    deduped: dict[tuple[int, str], tuple[int, CodeRelation]] = {}
+    for ordinal, relation in rows:
+        key = (int(ordinal), relation.target.code)
+        score = (relation.depth, relation.target_aui or "")
+        current = deduped.get(key)
+        if current is None:
+            deduped[key] = (int(ordinal), relation)
+            continue
+        current_score = (
+            current[1].depth,
+            current[1].target_aui or "",
+        )
+        if score < current_score:
+            deduped[key] = (int(ordinal), relation)
+    return list(deduped.values())
 
 
-def _is_prefix_descendant(parent: str, child: str) -> bool:
-    if child == parent:
-        return False
-    if "." in parent:
-        return child.startswith(parent)
-    return child.startswith(parent) and (len(child) == len(parent) or child[len(parent):].startswith("."))
+def _cap_mappings_per_input(
+    rows: Sequence[tuple[int, CodeMapping]],
+    max_results_per_code: int,
+) -> list[CodeMapping]:
+    counts: dict[int, int] = defaultdict(int)
+    output: list[CodeMapping] = []
+    for ordinal, mapping in sorted(
+        rows,
+        key=lambda item: (
+            item[0],
+            item[1].match_depth,
+            item[1].match_type,
+            item[1].target.source,
+            item[1].target.code,
+            item[1].target_aui or "",
+        ),
+    ):
+        if counts[int(ordinal)] >= max_results_per_code:
+            continue
+        counts[int(ordinal)] += 1
+        output.append(mapping)
+    return output
 
 
 def _is_broad_friendly_name(friendly_source: str | None, name: str | None) -> bool:
@@ -3328,3 +5276,7 @@ def _is_combo_chv_mismatch(source_name: str | None, chv_name: str | None) -> boo
     source_tokens = _normalize_term_tokens(source_name)
     chv_tokens = _normalize_term_tokens(chv_name)
     return bool(source_tokens and chv_tokens and source_tokens.isdisjoint(chv_tokens))
+
+
+# Backward-compatible alias for pre-0.0.1 naming.
+LocalLiteEngine = LocalDuckDBEngine

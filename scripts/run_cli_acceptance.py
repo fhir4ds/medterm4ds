@@ -23,7 +23,13 @@ if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
 from medterm4ds.apps.cli import main as cli_main
+from medterm4ds.engines.duckdb.prepared import verify_mt4ds_schema
 from medterm4ds.services.inventory import count_source_codes, normalize_sources
+from medterm4ds.services.schema_reporting import (
+    empty_schema_report_metadata,
+    report_db_role_metadata,
+    schema_report_metadata,
+)
 
 
 @dataclass(frozen=True)
@@ -36,7 +42,8 @@ class CheckResult:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--db", default="/mnt/d/medterm/data/umls_local.duckdb")
+    parser.add_argument("--db", default="/mnt/d/medterm4ds/data/umls_current.duckdb")
+    parser.add_argument("--db-role", default="unknown")
     parser.add_argument("--sources", default="ICD10CM,CVX")
     parser.add_argument("--limit", type=int, default=20)
     parser.add_argument("--partial-limit", type=int, default=5)
@@ -48,10 +55,18 @@ def parse_args() -> argparse.Namespace:
         "--prepare-cache",
         action=argparse.BooleanOptionalAction,
         default=True,
-        help="Exercise LocalLite cache prep during CLI acceptance.",
+        help="Exercise local DuckDB cache prep during CLI acceptance.",
     )
     parser.add_argument("--progress", action="store_true")
     return parser.parse_args()
+
+
+def _schema_metadata(con) -> dict[str, Any]:
+    try:
+        report = verify_mt4ds_schema(con)
+    except Exception:
+        return empty_schema_report_metadata()
+    return schema_report_metadata(report)
 
 
 def main() -> int:
@@ -101,9 +116,26 @@ def main() -> int:
             prepare_cache=args.prepare_cache,
             progress=args.progress,
         )
+        con = duckdb.connect(str(db_path), read_only=True)
+        try:
+            db_metadata = _schema_metadata(con)
+        finally:
+            con.close()
+        db_role_metadata = report_db_role_metadata(args.db_role, db_metadata)
         report = {
             "generated_at": datetime.now(timezone.utc).isoformat(),
             "db": str(db_path),
+            "db_path": str(db_path),
+            "db_role": db_role_metadata["db_role"],
+            "db_role_source": db_role_metadata["db_role_source"],
+            "manifest_db_role": db_metadata.get("manifest_db_role"),
+            "source_archive": db_metadata.get("source_archive"),
+            "umls_release": db_metadata.get("umls_release"),
+            "prepared_schema_version": db_metadata.get("prepared_schema_version"),
+            "patient_friendly_policy_version": db_metadata.get("patient_friendly_policy_version"),
+            "prepared_tables": db_metadata.get("prepared_tables"),
+            "missing_prepared_tables": db_metadata.get("missing_prepared_tables"),
+            "schema_errors": db_metadata.get("schema_errors"),
             "work_dir": str(work_dir),
             "sources": list(sources),
             "limit": expected_total,

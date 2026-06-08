@@ -6,7 +6,7 @@ import duckdb
 import pytest
 
 from medterm4ds.core.models import CodeRef
-from medterm4ds.engines.duckdb import LocalLiteEngine
+from medterm4ds.engines.duckdb import LocalDuckDBEngine
 from medterm4ds.services.discovery import (
     get_code_ttys,
     get_source_stats,
@@ -63,7 +63,7 @@ def engine(tmp_path):
     _make_duckdb(db_path)
     con = duckdb.connect(str(db_path), read_only=True)
     try:
-        yield LocalLiteEngine(con)
+        yield LocalDuckDBEngine(con)
     finally:
         con.close()
 
@@ -107,5 +107,50 @@ def test_search_names_ranks_and_filters_active_atoms(engine):
     assert [(row.code.source, row.code.code, row.match_type, row.tty) for row in results] == [
         ("MEDLINEPLUS", "D_DIAB", "exact", "MH"),
         ("ICD10CM", "E10.9", "contains", "PT"),
+        ("ICD10CM", "E11.9", "contains", "PT"),
+    ]
+
+
+def test_search_names_uses_prepared_atoms_active_only():
+    con = duckdb.connect(database=":memory:")
+    try:
+        con.execute("CREATE SCHEMA mt4ds")
+        con.execute(
+            """
+            CREATE TABLE mt4ds.atoms (
+                source VARCHAR,
+                code VARCHAR,
+                aui VARCHAR,
+                cui VARCHAR,
+                tty VARCHAR,
+                name VARCHAR,
+                suppress VARCHAR,
+                is_active BOOLEAN
+            )
+            """
+        )
+        con.executemany(
+            "INSERT INTO mt4ds.atoms VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            [
+                ("ICD10CM", "E11.9", "ICD_E119", "C_DIAB", "PT", "Type 2 diabetes mellitus", "N", True),
+                ("ICD10CM", "E11.9", "ICD_E119_HT", "C_DIAB", "HT", "Diabetes heading", "N", True),
+                ("MEDLINEPLUS", "D_DIAB", "MP_DIAB", "C_DIAB", "MH", "Diabetes", "N", True),
+                ("CVX", "999", "CVX_999", "C_SUPP", "PT", "Diabetes suppressed", "Y", False),
+            ],
+        )
+        engine = LocalDuckDBEngine(con)
+
+        results = search_names(
+            "diabetes",
+            engine=engine,
+            sources=["ICD10CM", "MEDLINEPLUS", "CVX"],
+            tty_filters=["MH", "PT"],
+            limit=5,
+        )
+    finally:
+        con.close()
+
+    assert [(row.code.source, row.code.code, row.match_type, row.tty) for row in results] == [
+        ("MEDLINEPLUS", "D_DIAB", "exact", "MH"),
         ("ICD10CM", "E11.9", "contains", "PT"),
     ]

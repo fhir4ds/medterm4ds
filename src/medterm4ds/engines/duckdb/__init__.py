@@ -1,7 +1,7 @@
-"""DuckDB LocalLite engine."""
+"""Local DuckDB terminology engine."""
 
-from medterm4ds.core.config import LocalLiteConfig
+from medterm4ds.core.config import LocalDuckDBConfig, LocalLiteConfig
 
-from .engine import LocalLiteEngine
+from .engine import LocalDuckDBEngine, LocalLiteEngine
 
-__all__ = ["LocalLiteConfig", "LocalLiteEngine"]
+__all__ = ["LocalDuckDBConfig", "LocalDuckDBEngine", "LocalLiteConfig", "LocalLiteEngine"]
