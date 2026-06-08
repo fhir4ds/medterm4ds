@@ -73,10 +73,42 @@ These are treated as settled unless a later review explicitly reopens them.
 11. The corrected UMLS download default is Metathesaurus Full Subset.
 12. UMLS release drift must be separated from algorithm parity.
 13. Patient-friendly runtime/export should read materialized resolution rows
-    keyed by source/code/release/policy version.
+    keyed by source/code/release/policy version when those rows are current and
+    serving/export latency requires it. The current closure-backed live prepared
+    resolver is fast enough for iteration and should remain available as the
+    fallback path.
 14. The patient-friendly candidate-generation pipeline must preserve useful
     source-specific policy from existing implementations while removing
     non-UMLS inferred hierarchy jumps.
+15. UMLS hierarchy walking must not create synthetic prefix/range edges. Any
+    acceleration table, including `mt4ds.walk_closure_limited`, is derived only
+    from `mt4ds.walk_edges`.
+16. SNOMED drug/product concepts with explicit same-CUI RxNorm targets may use
+    the RxNorm patient-friendly TTY strategy before broader SNOMED/CHV fallback.
+
+## Current Stabilized Status
+
+As of the shared-primitives refactor, the reviewed live prepared path is:
+
+```text
+mt4ds.best_atoms / walk_edges / walk_closure_limited / crosswalk_edges
+  -> services.prepared_primitives
+  -> lookup / walk / crosswalk prepared services
+  -> patient-friendly policy layer
+```
+
+Measured on `data/umls_current.duckdb`:
+
+- `mt4ds.walk_closure_limited` build: 127.5 seconds, 18,393,302 rows.
+- Benchmark report: 5,285 rows in about 21 seconds.
+- All-code run across ICD10CM, RXNORM, LNC, CVX, CPT, and SNOMEDCT_US:
+  1,186,645 codes in 425.4 seconds query time.
+- Setup plus all-code run: about 9.2 minutes.
+
+Decision: defer final `mt4ds.patient_friendly_resolutions` materialization as a
+default runtime requirement until near-instant repeated static lookup/export is
+needed. Keep the materialized path and candidate/path tables for review,
+auditing, strict-runtime deployments, and future serving use.
 
 ## Target Directory Structure
 

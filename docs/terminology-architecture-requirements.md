@@ -528,6 +528,7 @@ Required materialized tables:
 | `mt4ds.best_atoms` | One or more ranked display atoms per source/code. |
 | `mt4ds.hierarchy_edges` | Normalized source-specific hierarchy edges as `child -> parent`. |
 | `mt4ds.walk_edges` | Shared runtime walk shape. Includes normal hierarchy edges and source-specific graph edges where practical. |
+| `mt4ds.walk_closure_limited` | Optional bounded parent-walk closure derived only from `mt4ds.walk_edges` for high-volume lookup/walk/crosswalk/patient-friendly acceleration. |
 | `mt4ds.same_cui_edges` | Same-CUI cross-source candidate mappings used as build input and compatibility fallback. |
 | `mt4ds.crosswalk_edges` | Canonical runtime crosswalk table. Initially materializes exact same-CUI rows, and can later hold pre-ranked fallback mappings where build-time materialization is worthwhile. |
 | `mt4ds.friendly_atoms` | MEDLINEPLUS/CHV candidate atoms with broad-name flags and TTY flags. |
@@ -564,17 +565,29 @@ It should not contain raw source graph mechanics. Source-specific graph rules
 must already be encoded in `mt4ds.walk_edges`, `mt4ds.rxnorm_tty_edges`,
 `mt4ds.friendly_atoms`, and source policy rows.
 
-Patient-friendly resolution has two execution modes:
+Patient-friendly resolution has three execution modes:
 
 1. Build/review mode generates `mt4ds.patient_friendly_candidates`, optional
    path rows, and `mt4ds.patient_friendly_resolutions` from prepared primitive
    tables.
-2. Runtime/export mode joins input codes to
+2. Live prepared mode runs the same source-specific policy over prepared
+   primitive tables. It may use `mt4ds.walk_closure_limited` for bounded parent
+   walks, but it must not change candidate semantics.
+3. Runtime/export materialized mode joins input codes to
    `mt4ds.patient_friendly_resolutions` and falls back to the source display
    only when a prepared code has no selected resolution.
 
-The two modes must share the same policy version. A runtime result should be
-traceable back to candidate/path rows from the same DB build.
+All modes must share the same policy version. A materialized runtime result
+should be traceable back to candidate/path rows from the same DB build.
+
+Current stabilization decision: defer full final-resolution materialization
+until repeated static serving/export needs it. On the current prepared DB, the
+closure-backed live resolver processed the 5,285-row benchmark in about 21
+seconds with no row-level regression against the reviewed baseline, and
+processed 1,186,645 codes across ICD10CM, RXNORM, LNC, CVX, CPT, and
+SNOMEDCT_US in about 7.1 minutes of query time. Building
+`mt4ds.walk_closure_limited` took about 2.1 minutes, for about 9.2 minutes
+setup-plus-run.
 
 Runtime patient-friendly uses a common shape:
 
@@ -582,7 +595,7 @@ Runtime patient-friendly uses a common shape:
 input_codes
   -> lookup rows from mt4ds.best_atoms
   -> source strategy phases from mt4ds.patient_friendly_strategy
-  -> walk frontiers from mt4ds.walk_edges or mt4ds.rxnorm_tty_edges
+  -> walk frontiers from mt4ds.walk_edges, mt4ds.walk_closure_limited, or mt4ds.rxnorm_tty_edges
   -> crosswalk candidates from mt4ds.crosswalk_edges
   -> candidate names from mt4ds.friendly_atoms or source-native target atoms
   -> shared frontier/ranking selection
@@ -663,20 +676,22 @@ SNOMEDCT_US and walk SNOMED only under the guarded SNOMED policy.
 Workflow:
 
 1. Crosswalk SNOMED to target sources in priority order:
+   - `RXNORM` for explicit same-CUI drug/product target routes
    - `ICD10CM`
    - `ICD10PCS`
    - `LNC`
    - `CPT`
    - `HCPCS`
-2. For each target source candidate, walk the target source hierarchy first and
+2. For an RxNorm target, apply the RxNorm patient-friendly TTY strategy.
+3. For each non-RxNorm target source candidate, walk the target source hierarchy first and
    apply the same MEDLINEPLUS/CHV frontier selection used for native target
    source inputs.
-3. If a target-source route does not produce an acceptable friendly candidate,
+4. If a target-source route does not produce an acceptable friendly candidate,
    fallback crosswalk from that target route to SNOMED and walk SNOMED under the
    guarded SNOMED policy.
-4. If no target-source route produces an acceptable friendly candidate, perform
+5. If no target-source route produces an acceptable friendly candidate, perform
    a direct guarded SNOMED walk for MEDLINEPLUS/CHV.
-5. If still miss, return SNOMED preferred display.
+6. If still miss, return SNOMED preferred display.
 
 This is not recursive patient-friendly composition. It is bounded candidate
 generation with explicit route origins:
@@ -871,8 +886,9 @@ This is preferable to:
    lookup, walk, and crosswalk queries should avoid raw full-table recursive
    joins.
 10. A 5,000-row patient-friendly benchmark against an already prepared
-    resolution table should be a seconds-scale join/reporting task, not a
-    graph traversal job.
+    resolution table should be a seconds-scale join/reporting task. Against the
+    live prepared resolver with `walk_closure_limited`, it should stay near the
+    reviewed 21-second runtime unless semantic policy changes require review.
 
 ## Edge Cases
 
@@ -887,6 +903,8 @@ Required edge cases:
    - Example: `O26.7 -> SNOMED 199308008 -> 263038009 -> 263012009 -> CHV`
 4. SNOMED guard:
    - Do not walk up into top-level depths 1-3 for fallback expansion.
+   - Example: `ICD10CM:S43` must not jump to unrelated `Head Injuries` unless
+     UMLS provides an explicit defensible route.
 5. RxNorm group:
    - `1149364` should resolve through `SBD -> SCD -> SCDG`.
 6. RxNorm ingredient:
@@ -897,15 +915,26 @@ Required edge cases:
    - `IN` stays itself.
    - `MIN` stays itself.
    - `PIN` tries `IN`, then `MIN`.
-9. NDC:
+9. SNOMED drug/product routes:
+   - Explicit SNOMED drug/product crosswalks should use the RxNorm strategy
+     before falling back to broad CHV/SNOMED labels.
+10. CVX combination vaccines:
+   - Multiple CVX group metadata rows for one vaccine should aggregate into a
+     combination label such as `DTAP / HIB / HepB`, not pick one component.
+11. CPT generic guards:
+   - Generic labels such as `Operation`, `current procedural terminology`, and
+     `biochemical test` should not replace a useful CPT display.
+   - Example: `CPT:50580` should still reach `CHV:0000019534` / `nephroscopy`
+     through the UMLS CPT hierarchy.
+12. NDC:
    - normalize to 11 digits
    - preserve leading zeros
    - support dashed and undashed inputs
    - resolve obsolete/historical NDCs where data supports it
-10. Obsolete/historical codes:
+13. Obsolete/historical codes:
    - support active-only and resolve-current modes
    - expose resolution provenance
-11. Broad friendly names:
+14. Broad friendly names:
    - reject broad MEDLINEPLUS/CHV labels such as top-level disease/anatomy terms
    - do not reject deeper acceptable MEDLINEPLUS labels simply because a
      shallower CHV candidate exists

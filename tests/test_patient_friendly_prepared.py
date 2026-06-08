@@ -1503,3 +1503,247 @@ def test_snomed_fallback_skips_unrelated_combo_chv_candidate(
     assert results[0].name == "cocaine related disorders"
     assert results[0].match_type == "snomed_fallback"
     assert results[0].match_depth == 1
+
+
+def test_cvx_combination_metadata_aggregates_components(
+    con: duckdb.DuckDBPyConnection,
+) -> None:
+    """CVX combination vaccines aggregate component group rows."""
+    con.executemany(
+        "INSERT INTO mt4ds.best_atoms VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        [
+            ("CVX", "102", "A_CVX_102", "C_CVX_102", "PT",
+             "DTaP-Hib-Hep B vaccine", "N", True, 1),
+        ],
+    )
+    con.executemany(
+        "INSERT INTO mt4ds.cvx_metadata VALUES (?, ?, ?)",
+        [
+            ("102", "DTAP", "DTAP"),
+            ("102", "HIB", "HIB"),
+            ("102", "HepB", "HepB"),
+        ],
+    )
+
+    result = get_non_rxnorm_patient_friendly(
+        [CodeRef(source="CVX", code="102")],
+        con,
+    )[0]
+
+    assert result.name == "DTAP / HIB / HepB"
+    assert result.friendly_source == "CVX"
+    assert result.match_type == "cvx_group"
+
+
+def test_icd10_s43_uses_explicit_umls_parent_not_unrelated_snomed(
+    con: duckdb.DuckDBPyConnection,
+) -> None:
+    """S43 should not jump to unrelated Head Injuries when native UMLS parent hits."""
+    con.executemany(
+        "INSERT INTO mt4ds.best_atoms VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        [
+            ("ICD10CM", "S43", "A_S43", "C_S43", "HT",
+             "Dislocation and sprain of joints and ligaments of shoulder girdle", "N", True, 1),
+            ("ICD10CM", "S40-S49", "A_S40S49", "C_INJURY_BLOCK", "HT",
+             "Injuries to the shoulder and upper arm", "N", True, 1),
+            ("SNOMEDCT_US", "HEAD", "A_HEAD", "C_HEAD", "PT",
+             "Head injury", "N", True, 1),
+        ],
+    )
+    con.executemany(
+        "INSERT INTO mt4ds.walk_edges VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        [
+            ("ICD10CM", "S43", "A_S43", "C_S43", "HT",
+             "S40-S49", "A_S40S49", "C_INJURY_BLOCK", "HT",
+             "isa", "parent", "umls_mrrel"),
+        ],
+    )
+    con.executemany(
+        "INSERT INTO mt4ds.friendly_atoms VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        [
+            ("C_INJURY_BLOCK", "MEDLINEPLUS", "MP_INJURY", "A_MP_INJURY", "MH",
+             "Injuries", "MEDLINEPLUS", False, False),
+            ("C_HEAD", "MEDLINEPLUS", "MP_HEAD", "A_MP_HEAD", "MH",
+             "Head Injuries", "MEDLINEPLUS", False, False),
+        ],
+    )
+
+    result = get_non_rxnorm_patient_friendly(
+        [CodeRef(source="ICD10CM", code="S43")],
+        con,
+    )[0]
+
+    assert result.name == "Injuries"
+    assert result.name != "Head Injuries"
+    assert result.match_type == "broader"
+    assert result.match_depth == 1
+
+
+def test_cpt_generic_operation_candidate_is_blocked(
+    con: duckdb.DuckDBPyConnection,
+) -> None:
+    """CPT generic operation/surgery labels should not replace useful display."""
+    con.executemany(
+        "INSERT INTO mt4ds.best_atoms VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        [
+            ("CPT", "11644", "A_CPT_11644", "C0038894", "PT",
+             "Removal of cancer skin growth of face, 3.1-4.0 cm", "N", True, 1),
+        ],
+    )
+    con.executemany(
+        "INSERT INTO mt4ds.friendly_atoms VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        [
+            ("C0038894", "MEDLINEPLUS", "MP_OPERATION", "A_MP_OPERATION", "MH",
+             "Operation", "MEDLINEPLUS", False, False),
+        ],
+    )
+
+    result = get_non_rxnorm_patient_friendly(
+        [CodeRef(source="CPT", code="11644")],
+        con,
+    )[0]
+
+    assert result.name == "Removal of cancer skin growth of face, 3.1-4.0 cm"
+    assert result.friendly_source == "CPT"
+    assert result.match_type == "original"
+
+
+def test_cpt_50580_reaches_nephroscopy_through_cpt_hierarchy(
+    con: duckdb.DuckDBPyConnection,
+) -> None:
+    """CPT 50580 should keep useful CPT hierarchy route to CHV nephroscopy."""
+    con.executemany(
+        "INSERT INTO mt4ds.best_atoms VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        [
+            ("CPT", "50580", "A_CPT_50580", "C_50580", "PT",
+             "Removal of foreign body or stone in kidney using an endoscope", "N", True, 1),
+            ("CPT", "1007000", "A_CPT_1007000", "C_PARENT", "HT",
+             "Endoscopy Procedures on the Urinary System", "N", True, 1),
+            ("CPT", "1008152", "A_CPT_1008152", "C0194135", "HT",
+             "Endoscopy Procedures on the Kidney", "N", True, 1),
+        ],
+    )
+    con.executemany(
+        "INSERT INTO mt4ds.walk_edges VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        [
+            ("CPT", "50580", "A_CPT_50580", "C_50580", "PT",
+             "1007000", "A_CPT_1007000", "C_PARENT", "HT",
+             "isa", "parent", "umls_mrrel"),
+            ("CPT", "1007000", "A_CPT_1007000", "C_PARENT", "HT",
+             "1008152", "A_CPT_1008152", "C0194135", "HT",
+             "isa", "parent", "umls_mrrel"),
+        ],
+    )
+    con.executemany(
+        "INSERT INTO mt4ds.friendly_atoms VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        [
+            ("C0194135", "CHV", "0000019534", "A_CHV_NEPHROSCOPY", "PT",
+             "nephroscopy", "CHV", False, False),
+        ],
+    )
+
+    result = get_non_rxnorm_patient_friendly(
+        [CodeRef(source="CPT", code="50580")],
+        con,
+    )[0]
+
+    assert result.name == "nephroscopy"
+    assert result.friendly_source == "CHV"
+    assert result.match_type == "broader"
+    assert result.match_depth == 2
+
+
+def test_snomed_drug_product_routes_to_rxnorm_strategy(
+    con: duckdb.DuckDBPyConnection,
+) -> None:
+    """SNOMED drug/product concepts with RxNorm routes should use RxNorm strategy."""
+    con.execute(
+        """
+        CREATE TABLE mt4ds.rxnorm_tty_paths (
+            path_id INTEGER,
+            start_tty VARCHAR,
+            target_tty VARCHAR,
+            match_type VARCHAR,
+            target_order INTEGER,
+            path_depth INTEGER
+        )
+        """
+    )
+    con.execute(
+        """
+        CREATE TABLE mt4ds.rxnorm_tty_path_steps (
+            path_id INTEGER,
+            step INTEGER,
+            tty VARCHAR
+        )
+        """
+    )
+    con.execute(
+        """
+        CREATE TABLE mt4ds.rxnorm_tty_edges (
+            source_aui VARCHAR,
+            source_code VARCHAR,
+            source_tty VARCHAR,
+            source_name VARCHAR,
+            source_suppress VARCHAR,
+            target_aui VARCHAR,
+            target_code VARCHAR,
+            target_tty VARCHAR,
+            target_name VARCHAR,
+            target_suppress VARCHAR,
+            rel VARCHAR,
+            rela VARCHAR
+        )
+        """
+    )
+    con.executemany(
+        "INSERT INTO mt4ds.patient_friendly_strategy VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        [
+            ("RXNORM", "topology", "tty_traversal", "RXNORM", "SCDG", "group", 0, 1, True, None),
+        ],
+    )
+    con.executemany(
+        "INSERT INTO mt4ds.rxnorm_tty_paths VALUES (?, ?, ?, ?, ?, ?)",
+        [(1, "SCD", "SCDG", "group", 0, 1)],
+    )
+    con.executemany(
+        "INSERT INTO mt4ds.rxnorm_tty_path_steps VALUES (?, ?, ?)",
+        [(1, 0, "SCD"), (1, 1, "SCDG")],
+    )
+    con.executemany(
+        "INSERT INTO mt4ds.best_atoms VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        [
+            ("SNOMEDCT_US", "769135007", "A_SN_DRUG", "C_SN_DRUG", "PT",
+             "Product containing precisely rifampicin oral suspension (clinical drug)", "N", True, 1),
+            ("RXNORM", "12345", "A_RX_SCD", "C_RX_SCD", "SCD",
+             "Rifampin 20 mg/mL Oral Suspension", "N", True, 1),
+            ("RXNORM", "67890", "A_RX_SCDG", "C_RX_SCDG", "SCDG",
+             "rifampin Oral Liquid Product", "N", True, 1),
+        ],
+    )
+    con.executemany(
+        "INSERT INTO mt4ds.same_cui_edges VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        [
+            ("SNOMEDCT_US", "769135007", "C_SN_DRUG", "RXNORM", "12345",
+             "A_RX_SCD", "C_RX_SCD", "SCD"),
+        ],
+    )
+    _promote_same_cui_to_crosswalk_edges(con)
+    con.executemany(
+        "INSERT INTO mt4ds.rxnorm_tty_edges VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        [
+            ("A_RX_SCD", "12345", "SCD", "Rifampin 20 mg/mL Oral Suspension", "N",
+             "A_RX_SCDG", "67890", "SCDG", "rifampin Oral Liquid Product", "N",
+             "RN", "has_tradename"),
+        ],
+    )
+
+    result = get_non_rxnorm_patient_friendly(
+        [CodeRef(source="SNOMEDCT_US", code="769135007")],
+        con,
+    )[0]
+
+    assert result.name == "rifampin Oral Liquid Product"
+    assert result.friendly_source == "RXNORM"
+    assert result.match_type == "group"
+    assert result.match_depth == 1

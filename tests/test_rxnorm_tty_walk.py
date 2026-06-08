@@ -381,6 +381,45 @@ class TestINMINSelfResolution:
         assert r.match_type == "ingredient"
         assert r.match_depth == 0
 
+    def test_pin_prefers_in_over_min(self, con):
+        """PIN codes should try IN before MIN when both ingredient paths exist."""
+        _setup_basic_topology(con)
+        _insert_rxnorm_tty_paths(con, [
+            (20, "PIN", "IN", "ingredient", 1, 1),
+            (21, "PIN", "MIN", "ingredient", 2, 1),
+        ])
+        _insert_rxnorm_tty_path_steps(con, [
+            (20, 0, "PIN"),
+            (20, 1, "IN"),
+            (21, 0, "PIN"),
+            (21, 1, "MIN"),
+        ])
+        _insert_best_atoms(con, [
+            ("RXNORM", "235991", "AUI_PIN1", "C_PIN", "PIN",
+             "anhydrous tacrolimus", "N", True, 1),
+            ("RXNORM", "42316", "AUI_IN1", "C_IN", "IN",
+             "tacrolimus", "N", True, 1),
+            ("RXNORM", "999991", "AUI_MIN1", "C_MIN", "MIN",
+             "tacrolimus mixture", "N", True, 1),
+        ])
+        _insert_rxnorm_tty_edges(con, [
+            ("AUI_PIN1", "235991", "PIN", "anhydrous tacrolimus", "N",
+             "AUI_IN1", "42316", "IN", "tacrolimus", "N",
+             "RN", "precise_ingredient_of"),
+            ("AUI_PIN1", "235991", "PIN", "anhydrous tacrolimus", "N",
+             "AUI_MIN1", "999991", "MIN", "tacrolimus mixture", "N",
+             "RN", "ingredient_of"),
+        ])
+
+        result = get_rxnorm_patient_friendly(
+            [CodeRef(source="RXNORM", code="235991")],
+            con,
+        )[0]
+
+        assert result.name == "tacrolimus"
+        assert result.match_type == "ingredient"
+        assert result.match_depth == 1
+
 
 class TestCodeNotFound:
     """Test behavior when code is not found in best_atoms."""

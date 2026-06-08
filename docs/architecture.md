@@ -81,6 +81,7 @@ mt4ds.atoms
 mt4ds.best_atoms
 mt4ds.hierarchy_edges
 mt4ds.walk_edges
+mt4ds.walk_closure_limited  # optional depth-limited acceleration over UMLS walk_edges
 mt4ds.same_cui_edges        # build/source compatibility layer
 mt4ds.crosswalk_edges       # canonical runtime crosswalk table
 mt4ds.friendly_atoms
@@ -104,6 +105,9 @@ workflows:
   parent edges.
 - SNOMED `isa` hierarchy and top-level guard metadata become normalized walk
   edges plus `mt4ds.snomed_top_level_depth`.
+- `mt4ds.walk_closure_limited` may be materialized from `mt4ds.walk_edges` as a
+  bounded acceleration table. It must contain only UMLS-derived walk edges and
+  must not introduce prefix/range-inferred or otherwise synthetic hierarchy.
 - RxNorm TTY topology becomes prepared TTY path and edge tables.
 - CVX group metadata becomes lookup enrichment metadata.
 - MEDLINEPLUS/CHV candidates become prepared friendly atom rows with broad-name
@@ -129,13 +133,19 @@ to an unrelated broad term.
 
 ## Primitive Services
 
-The target service layer is built from four reusable primitives:
+The target service layer is built from reusable primitives:
 
 - `lookup`: source/code to canonical atom metadata.
 - `walk`: source graph traversal, including RxNorm TTY traversal as a
   source-specific walk.
 - `crosswalk`: source-to-target mappings through same-CUI and bounded fallback.
 - `select`: deterministic candidate ranking and frontier selection.
+
+Prepared DuckDB implementations share low-level helpers in
+`services.prepared_primitives`: preferred atom lookup, same-CUI crosswalk table
+selection, temp-code tables, and optional `walk_closure_limited` use. Workflow
+services should reuse those helpers rather than each re-implementing table
+selection and hierarchy expansion.
 
 Patient-friendly naming, optimize, ConceptMap export, MCP tools, CLI commands,
 and notebook helpers should compose these primitives. Patient-friendly naming
@@ -157,9 +167,11 @@ Source-specific patient-friendly policy stays explicit:
 - ICD10CM, ICD10PCS, LNC, CPT, and HCPCS walk their source hierarchy first,
   then fallback crosswalk to SNOMEDCT_US and walk SNOMED only under guarded
   policy.
-- SNOMEDCT_US routes through ICD10CM, ICD10PCS, LNC, CPT, and HCPCS first,
-  walks those target source hierarchies, and only then uses target-to-SNOMED or
-  direct guarded SNOMED fallback.
+- SNOMEDCT_US may route drug/product concepts with explicit same-CUI RxNorm
+  targets through the RxNorm patient-friendly strategy. Other SNOMED targets
+  route through ICD10CM, ICD10PCS, LNC, CPT, and HCPCS, walk those target source
+  hierarchies, and only then use target-to-SNOMED or direct guarded SNOMED
+  fallback.
 - RxNorm remains source-native for patient-friendly output and uses explicit
   TTY topology rather than MEDLINEPLUS/CHV hierarchy selection.
 - If no defensible friendly candidate exists, patient-friendly returns the
@@ -167,9 +179,13 @@ Source-specific patient-friendly policy stays explicit:
 
 The primitive services still need to be fast and reusable on their own. They
 power hierarchy APIs, mapping, optimize, ConceptMap generation, and candidate
-trace reports. The final patient-friendly API should not rediscover all
-candidates for every request when the database already contains a prepared
-resolution table.
+trace reports. The final patient-friendly API should use
+`mt4ds.patient_friendly_resolutions` when current rows are available. The
+current stabilized live prepared resolver remains acceptable for dynamic
+iteration: with `walk_closure_limited`, the benchmark report runs in about 21
+seconds and all six reviewed code systems, 1,186,645 codes, resolve in about
+7.1 minutes of query time. Building the closure took about 2.1 minutes in the
+current DB, for about 9.2 minutes setup-plus-run.
 
 Source-to-source mapping is exact same-CUI by default. Broader/narrower mapping
 is opt-in through bounded hierarchy traversal so high-volume exports do not
@@ -196,6 +212,8 @@ Current services:
 
 - `get_code_info(...)`
 - `get_code_infos(...)`
+- `get_code_info_prepared(...)`
+- `get_code_infos_prepared(...)`
 - `resolve_codes(...)`
 - `get_source_stats(...)`
 - `sample_source_codes(...)`
@@ -216,6 +234,7 @@ Current services:
 
 Prepared-table services (over `mt4ds.*` normalized tables):
 
+- `prepared_primitives.*` -- shared prepared lookup/walk/crosswalk helpers
 - `rxnorm_tty_walk.get_rxnorm_patient_friendly(...)` -- RxNorm TTY path traversal
 - `patient_friendly_prepared.get_non_rxnorm_patient_friendly(...)` -- non-RxNorm friendly
 - `crosswalk_prepared.get_crosswalk_mappings(...)` -- prepared crosswalk
@@ -261,9 +280,11 @@ transform implementations.
 Bulk patient-friendly is a lookup/export mode over
 `mt4ds.patient_friendly_resolutions` when that table is available. Source-wide
 exports should stream source inventory through joins against the materialized
-resolution table and write incrementally. The slower candidate-generation
-pipeline belongs to database preparation, policy review, or explicit debug
-commands.
+resolution table and write incrementally. Until final resolution materialization
+is required for repeated static serving, the closure-backed live prepared
+resolver is the accepted iteration path. Candidate-generation and path-table
+materialization belong to database preparation, policy review, or explicit
+debug commands.
 
 Real-data validation follows the same rule. `scripts/run_bulk_validation.py`
 streams source inventories through the shared bulk iterators, while
