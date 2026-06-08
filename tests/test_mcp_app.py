@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+import inspect
 from pathlib import Path
 
 import duckdb
@@ -8,6 +10,16 @@ import pytest
 pytest.importorskip("fastmcp")
 
 from medterm4ds.apps.mcp import McpRuntime, McpSettings, _code_refs, create_mcp_server
+
+
+def _mcp_tool_names(server) -> set[str]:
+    if hasattr(server, "list_tools"):
+        tools = server.list_tools()
+        if inspect.isawaitable(tools):
+            tools = asyncio.run(tools)
+    else:
+        tools = server._tool_manager.list_tools()
+    return {tool.name for tool in tools}
 
 
 def _make_duckdb(path: Path) -> None:
@@ -218,7 +230,7 @@ def test_mcp_server_registers_expected_tools(tmp_path):
     _make_duckdb(db_path)
     server = create_mcp_server(_settings(db_path, prepare_cache=False))
 
-    tool_names = {tool.name for tool in server._tool_manager.list_tools()}
+    tool_names = _mcp_tool_names(server)
 
     assert {
         "health",

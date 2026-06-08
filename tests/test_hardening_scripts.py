@@ -11,6 +11,7 @@ import duckdb
 import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
+MEDTERM_BASELINE_SRC = Path("/mnt/d/medterm/src")
 
 
 def _make_duckdb(path: Path) -> None:
@@ -65,14 +66,34 @@ def _make_duckdb(path: Path) -> None:
 def _env() -> dict[str, str]:
     env = dict(os.environ)
     pythonpath = str(ROOT / "src")
-    medterm_src = "/mnt/d/medterm/src"
-    env["PYTHONPATH"] = f"{pythonpath}:{medterm_src}:{env.get('PYTHONPATH', '')}"
+    env["PYTHONPATH"] = f"{pythonpath}:{MEDTERM_BASELINE_SRC}:{env.get('PYTHONPATH', '')}"
     return env
 
 
-def test_parity_script_writes_json_and_markdown(tmp_path):
-    if not Path("/mnt/d/medterm/src").exists():
+def _require_medterm_baseline() -> None:
+    if not MEDTERM_BASELINE_SRC.exists():
         pytest.skip("medterm baseline checkout is not available")
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "import medterm.bulk.transforms.patient_friendly",
+        ],
+        cwd=ROOT,
+        env=_env(),
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout).strip().splitlines()
+        suffix = f": {detail[-1]}" if detail else ""
+        pytest.skip(f"medterm baseline checkout is not importable{suffix}")
+
+
+def test_parity_script_writes_json_and_markdown(tmp_path):
+    _require_medterm_baseline()
     db_path = tmp_path / "umls.duckdb"
     json_path = tmp_path / "parity.json"
     markdown_path = tmp_path / "parity.md"
@@ -130,8 +151,7 @@ def test_parity_script_writes_json_and_markdown(tmp_path):
 
 
 def test_source_parity_runner_writes_index(tmp_path):
-    if not Path("/mnt/d/medterm/src").exists():
-        pytest.skip("medterm baseline checkout is not available")
+    _require_medterm_baseline()
     db_path = tmp_path / "umls.duckdb"
     work_dir = tmp_path / "source_parity"
     _make_duckdb(db_path)
