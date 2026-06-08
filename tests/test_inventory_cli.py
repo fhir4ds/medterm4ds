@@ -44,7 +44,7 @@ def _make_duckdb(path: Path) -> None:
                 ("E11.9", "PT", "Type 2 diabetes mellitus", "ICD_E119", "N", "ICD10CM", "C_DIAB"),
                 ("44054006", "PT", "Diabetes mellitus type 2", "SNOMED_DIAB", "N", "SNOMEDCT_US", "C_DIAB"),
                 ("D_DIAB", "MH", "Diabetes", "MP_DIAB", "N", "MEDLINEPLUS", "C_DIAB"),
-                ("208", "PT", "COVID-19 vaccine", "CVX_208", "N", "CVX", "C_CVX"),
+                ("208", "PT", "COVID-19 Vaccine", "CVX_208", "N", "CVX", "C_CVX"),
                 ("208", "PT", "COVID-19 vaccine duplicate", "CVX_208_B", "N", "CVX", "C_CVX"),
                 ("999", "PT", "Suppressed code", "CVX_999", "Y", "CVX", "C_SUPP"),
             ],
@@ -180,7 +180,7 @@ def test_inventory_uses_prepared_best_atoms_active_only():
             [
                 ("ICD10CM", "E11.9", "ICD_PT", "C_DIAB", "PT", "Type 2 diabetes mellitus", "N", True, 1),
                 ("ICD10CM", "S1", "ICD_SUP", "C_SUP", "PT", "Suppressed only", "Y", False, 1),
-                ("CVX", "208", "CVX_208", "C_CVX", "PT", "COVID-19 vaccine", "N", True, 1),
+                ("CVX", "208", "CVX_208", "C_CVX", "PT", "COVID-19 Vaccine", "N", True, 1),
             ],
         )
 
@@ -225,7 +225,7 @@ def test_cli_writes_patient_friendly_conceptmap_jsonl(tmp_path):
         json.loads(line)
         for line in output_path.read_text(encoding="utf-8").splitlines()
     ]
-    assert [row["target_display"] for row in rows] == ["Diabetes", "COVID-19 vaccine"]
+    assert [row["target_display"] for row in rows] == ["Diabetes", "COVID-19 Vaccine"]
     assert [row["relationship"] for row in rows] == ["equivalent", "not-translated"]
 
 
@@ -444,7 +444,7 @@ def test_cli_lookup_writes_jsonl(tmp_path):
     ]
     assert [(row["source"], row["code"], row["name"]) for row in rows] == [
         ("ICD10CM", "E11.9", "Type 2 diabetes mellitus"),
-        ("CVX", "208", "COVID-19 vaccine"),
+        ("CVX", "208", "COVID-19 Vaccine"),
     ]
 
 
@@ -699,7 +699,7 @@ def test_cli_bulk_lookup_writes_checkpointed_jsonl(tmp_path):
     ]
     assert [(row["source"], row["code"], row["name"]) for row in rows] == [
         ("ICD10CM", "E11.9", "Type 2 diabetes mellitus"),
-        ("CVX", "208", "COVID-19 vaccine"),
+        ("CVX", "208", "COVID-19 Vaccine"),
     ]
     checkpoint = json.loads((tmp_path / "bulk_lookup.jsonl.checkpoint.json").read_text(encoding="utf-8"))
     assert checkpoint["complete"] is True
@@ -732,7 +732,7 @@ def test_cli_bulk_patient_friendly_writes_csv(tmp_path):
     assert status == 0
     with output_path.open(encoding="utf-8", newline="") as file:
         rows = list(csv.DictReader(file))
-    assert [row["name"] for row in rows] == ["Diabetes", "COVID-19 vaccine"]
+    assert [row["name"] for row in rows] == ["Diabetes", "COVID-19 Vaccine"]
 
 
 def test_cli_bulk_map_writes_jsonl(tmp_path):
@@ -864,7 +864,7 @@ def test_cli_resumes_jsonl_from_existing_output(tmp_path):
         ("ICD10CM", "E11.9"),
         ("CVX", "208"),
     ]
-    assert [row["target_display"] for row in rows] == ["Diabetes", "COVID-19 vaccine"]
+    assert [row["target_display"] for row in rows] == ["Diabetes", "COVID-19 Vaccine"]
 
 
 def test_cli_resumes_csv_without_rewriting_header(tmp_path):

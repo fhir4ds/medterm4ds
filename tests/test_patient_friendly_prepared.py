@@ -223,7 +223,7 @@ def test_icd10cm_native_walk_finds_chv(con: duckdb.DuckDBPyConnection) -> None:
         "INSERT INTO mt4ds.friendly_atoms VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
         [
             ("C_DIAB_PARENT", "CHV", "CHV_DIAB", "A_CHV_DIAB", "PT",
-             "diabetes", "CHV", False, False),
+             "Diabetes", "CHV", False, False),
         ],
     )
 
@@ -232,7 +232,7 @@ def test_icd10cm_native_walk_finds_chv(con: duckdb.DuckDBPyConnection) -> None:
     )
     assert len(results) == 1
     r = results[0]
-    assert r.name == "diabetes"
+    assert r.name == "Diabetes"
     assert r.friendly_source == "CHV"
     assert r.match_type == "broader"
     assert r.match_depth == 1
@@ -294,7 +294,7 @@ def test_local_engine_uses_prepared_patient_friendly_tables(con: duckdb.DuckDBPy
         "INSERT INTO mt4ds.friendly_atoms VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
         [
             ("C_DIAB_PARENT", "CHV", "CHV_DIAB", "A_CHV_DIAB", "PT",
-             "diabetes", "CHV", False, False),
+             "Diabetes", "CHV", False, False),
         ],
     )
 
@@ -303,7 +303,7 @@ def test_local_engine_uses_prepared_patient_friendly_tables(con: duckdb.DuckDBPy
         LocalDuckDBEngine(con),
     )[0]
 
-    assert result.name == "diabetes"
+    assert result.name == "Diabetes"
     assert result.friendly_source == "CHV"
     assert result.match_type == "broader"
 
@@ -314,7 +314,7 @@ def test_icd10cm_returns_original_when_no_friendly(con: duckdb.DuckDBPyConnectio
         "INSERT INTO mt4ds.best_atoms VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
         [
             ("ICD10CM", "Z99.9", "A_Z999", "C_UNKNOWN", "PT",
-             "Dependence on enabling machines", "N", True, 1),
+             "Dependence On Enabling Machines", "N", True, 1),
         ],
     )
     # No walk edges, no friendly atoms for this CUI
@@ -325,7 +325,7 @@ def test_icd10cm_returns_original_when_no_friendly(con: duckdb.DuckDBPyConnectio
     assert len(results) == 1
     r = results[0]
     assert r.match_type == "original"
-    assert r.name == "Dependence on enabling machines"
+    assert r.name == "Dependence On Enabling Machines"
     assert r.friendly_source == "ICD10CM"
 
 
@@ -446,7 +446,7 @@ def test_snomed_guard_blocks_overly_broad(con: duckdb.DuckDBPyConnection) -> Non
         "INSERT INTO mt4ds.best_atoms VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
         [
             ("SNOMEDCT_US", "12345", "A_SN_12345", "C_SPECIFIC", "PT",
-             "Specific disorder", "N", True, 1),
+             "Specific Disorder", "N", True, 1),
             ("SNOMEDCT_US", "99999", "A_SN_99999", "C_BROAD", "PT",
              "Clinical finding", "N", True, 1),
         ],
@@ -481,7 +481,7 @@ def test_snomed_guard_blocks_overly_broad(con: duckdb.DuckDBPyConnection) -> Non
     r = results[0]
     # Guard should have blocked the broad result
     assert r.match_type == "original"
-    assert r.name == "Specific disorder"
+    assert r.name == "Specific Disorder"
 
 
 # ---------------------------------------------------------------------------
@@ -495,7 +495,7 @@ def test_cvx_returns_original_display(con: duckdb.DuckDBPyConnection) -> None:
         "INSERT INTO mt4ds.best_atoms VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
         [
             ("CVX", "207", "A_CVX_207", "C_CVX_207", "PT",
-             "COVID-19 vaccine, mRNA", "N", True, 1),
+             "COVID-19 Vaccine, mRNA", "N", True, 1),
         ],
     )
     # No cvx_metadata rows for this code
@@ -506,7 +506,7 @@ def test_cvx_returns_original_display(con: duckdb.DuckDBPyConnection) -> None:
     assert len(results) == 1
     r = results[0]
     assert r.match_type == "original"
-    assert r.name == "COVID-19 vaccine, mRNA"
+    assert r.name == "COVID-19 Vaccine, mRNA"
     assert r.friendly_source == "CVX"
 
 
@@ -524,7 +524,7 @@ def test_loinc_returns_original_when_no_tiers(con: duckdb.DuckDBPyConnection) ->
         "INSERT INTO mt4ds.best_atoms VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
         [
             ("LNC", "12345-6", "A_LNC_12345", "C_LNC_12345", "LN",
-             "Some obscure lab test", "N", True, 1),
+             "Some Obscure Lab Test", "N", True, 1),
         ],
     )
     # No friendly atoms, no walk edges, no SNOMED crosswalk
@@ -535,7 +535,7 @@ def test_loinc_returns_original_when_no_tiers(con: duckdb.DuckDBPyConnection) ->
     assert len(results) == 1
     r = results[0]
     assert r.match_type == "original"
-    assert r.name == "Some obscure lab test"
+    assert r.name == "Some Obscure Lab Test"
 
 
 # ---------------------------------------------------------------------------
@@ -570,7 +570,7 @@ def test_medlineplus_preferred_over_chv_same_depth(con: duckdb.DuckDBPyConnectio
             ("C_URTI", "MEDLINEPLUS", "MP_URTI", "A_MP_URTI", "MH",
              "Upper Respiratory Infections", "MEDLINEPLUS", False, False),
             ("C_URTI", "CHV", "CHV_URTI", "A_CHV_URTI", "PT",
-             "cold and flu", "CHV", False, False),
+             "Cold And Flu", "CHV", False, False),
         ],
     )
 
@@ -611,7 +611,7 @@ def test_closest_frontier_beats_farther_medlineplus(con: duckdb.DuckDBPyConnecti
         "INSERT INTO mt4ds.friendly_atoms VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
         [
             ("C_URTI", "CHV", "CHV_URTI", "A_CHV_URTI", "PT",
-             "cold and flu", "CHV", False, False),
+             "Cold And Flu", "CHV", False, False),
             ("C_RESP", "MEDLINEPLUS", "MP_RESP", "A_MP_RESP", "MH",
              "Respiratory Diseases", "MEDLINEPLUS", False, False),
         ],
@@ -622,7 +622,7 @@ def test_closest_frontier_beats_farther_medlineplus(con: duckdb.DuckDBPyConnecti
     )
     assert len(results) == 1
     r = results[0]
-    assert r.name == "cold and flu"
+    assert r.name == "Cold And Flu"
     assert r.friendly_source == "CHV"
     assert r.match_depth == 1
 
@@ -674,7 +674,7 @@ def test_mixed_sources_in_one_batch(con: duckdb.DuckDBPyConnection) -> None:
              "Type 2 diabetes mellitus", "N", True, 1),
             # CVX
             ("CVX", "207", "A_CVX_207", "C_CVX_207", "PT",
-             "COVID-19 vaccine, mRNA", "N", True, 1),
+             "COVID-19 Vaccine, mRNA", "N", True, 1),
             # LOINC
             ("LNC", "2345-7", "A_LNC_2345", "C_LNC_2345", "LN",
              "Glucose lab test", "N", True, 1),
@@ -872,7 +872,7 @@ def test_snomed_fallback_skips_unrelated_combo_chv_candidate(
             ("C_SN_BAD", "CHV", "CHV_BAD", "A_CHV_BAD", "PT",
              "brain findings", "CHV", False, False),
             ("C_SN_GOOD", "CHV", "CHV_GOOD", "A_CHV_GOOD", "PT",
-             "cocaine related disorders", "CHV", False, False),
+             "Cocaine Related Disorders", "CHV", False, False),
         ],
     )
 
@@ -882,7 +882,7 @@ def test_snomed_fallback_skips_unrelated_combo_chv_candidate(
     )
 
     assert len(results) == 1
-    assert results[0].name == "cocaine related disorders"
+    assert results[0].name == "Cocaine Related Disorders"
     assert results[0].match_type == "snomed_fallback"
     assert results[0].match_depth == 1
 
@@ -969,7 +969,7 @@ def test_cpt_generic_operation_candidate_is_blocked(
         "INSERT INTO mt4ds.best_atoms VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
         [
             ("CPT", "11644", "A_CPT_11644", "C0038894", "PT",
-             "Removal of cancer skin growth of face, 3.1-4.0 cm", "N", True, 1),
+             "Removal Of Cancer Skin Growth Of Face, 3.1-4.0 cm", "N", True, 1),
         ],
     )
     con.executemany(
@@ -985,7 +985,7 @@ def test_cpt_generic_operation_candidate_is_blocked(
         con,
     )[0]
 
-    assert result.name == "Removal of cancer skin growth of face, 3.1-4.0 cm"
+    assert result.name == "Removal Of Cancer Skin Growth Of Face, 3.1-4.0 cm"
     assert result.friendly_source == "CPT"
     assert result.match_type == "original"
 
@@ -1020,7 +1020,7 @@ def test_cpt_50580_reaches_nephroscopy_through_cpt_hierarchy(
         "INSERT INTO mt4ds.friendly_atoms VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
         [
             ("C0194135", "CHV", "0000019534", "A_CHV_NEPHROSCOPY", "PT",
-             "nephroscopy", "CHV", False, False),
+             "Nephroscopy", "CHV", False, False),
         ],
     )
 
@@ -1029,7 +1029,7 @@ def test_cpt_50580_reaches_nephroscopy_through_cpt_hierarchy(
         con,
     )[0]
 
-    assert result.name == "nephroscopy"
+    assert result.name == "Nephroscopy"
     assert result.friendly_source == "CHV"
     assert result.match_type == "broader"
     assert result.match_depth == 2
@@ -1100,7 +1100,7 @@ def test_snomed_drug_product_routes_to_rxnorm_strategy(
             ("RXNORM", "12345", "A_RX_SCD", "C_RX_SCD", "SCD",
              "Rifampin 20 mg/mL Oral Suspension", "N", True, 1),
             ("RXNORM", "67890", "A_RX_SCDG", "C_RX_SCDG", "SCDG",
-             "rifampin Oral Liquid Product", "N", True, 1),
+             "Rifampin Oral Liquid Product", "N", True, 1),
         ],
     )
     con.executemany(
@@ -1115,7 +1115,7 @@ def test_snomed_drug_product_routes_to_rxnorm_strategy(
         "INSERT INTO mt4ds.rxnorm_tty_edges VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         [
             ("A_RX_SCD", "12345", "SCD", "Rifampin 20 mg/mL Oral Suspension", "N",
-             "A_RX_SCDG", "67890", "SCDG", "rifampin Oral Liquid Product", "N",
+             "A_RX_SCDG", "67890", "SCDG", "Rifampin Oral Liquid Product", "N",
              "RN", "has_tradename"),
         ],
     )
@@ -1125,7 +1125,7 @@ def test_snomed_drug_product_routes_to_rxnorm_strategy(
         con,
     )[0]
 
-    assert result.name == "rifampin Oral Liquid Product"
+    assert result.name == "Rifampin Oral Liquid Product"
     assert result.friendly_source == "RXNORM"
     assert result.match_type == "group"
     assert result.match_depth == 1

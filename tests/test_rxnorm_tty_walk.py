@@ -395,13 +395,13 @@ class TestINMINSelfResolution:
             ("RXNORM", "235991", "AUI_PIN1", "C_PIN", "PIN",
              "anhydrous tacrolimus", "N", True, 1),
             ("RXNORM", "42316", "AUI_IN1", "C_IN", "IN",
-             "tacrolimus", "N", True, 1),
+             "Tacrolimus", "N", True, 1),
             ("RXNORM", "999991", "AUI_MIN1", "C_MIN", "MIN",
              "tacrolimus mixture", "N", True, 1),
         ])
         _insert_rxnorm_tty_edges(con, [
             ("AUI_PIN1", "235991", "PIN", "anhydrous tacrolimus", "N",
-             "AUI_IN1", "42316", "IN", "tacrolimus", "N",
+             "AUI_IN1", "42316", "IN", "Tacrolimus", "N",
              "RN", "precise_ingredient_of"),
             ("AUI_PIN1", "235991", "PIN", "anhydrous tacrolimus", "N",
              "AUI_MIN1", "999991", "MIN", "tacrolimus mixture", "N",
@@ -413,7 +413,7 @@ class TestINMINSelfResolution:
             con,
         )[0]
 
-        assert result.name == "tacrolimus"
+        assert result.name == "Tacrolimus"
         assert result.match_type == "ingredient"
         assert result.match_depth == 1
 
@@ -467,7 +467,7 @@ class TestActivePreferredOverSuppressed:
             ("RXNORM", "1200001", "AUI_SCD3", "C11", "SCD",
              "Drug X 100 MG Tablet", "N", True, 1),
             ("RXNORM", "2200001", "AUI_MIN3A", "C12", "MIN",
-             "Drug X (active)", "N", True, 1),
+             "Drug X (Active)", "N", True, 1),
             ("RXNORM", "2200002", "AUI_MIN3B", "C12", "MIN",
              "Drug X (suppressed)", "O", False, 2),
         ])
@@ -475,7 +475,7 @@ class TestActivePreferredOverSuppressed:
         # Both active and suppressed MIN targets reachable
         _insert_rxnorm_tty_edges(con, [
             ("AUI_SCD3", "1200001", "SCD", "Drug X 100 MG Tablet", "N",
-             "AUI_MIN3A", "2200001", "MIN", "Drug X (active)", "N",
+             "AUI_MIN3A", "2200001", "MIN", "Drug X (Active)", "N",
              "RN", "ingredient_of"),
             ("AUI_SCD3", "1200001", "SCD", "Drug X 100 MG Tablet", "N",
              "AUI_MIN3B", "2200002", "MIN", "Drug X (suppressed)", "O",
@@ -488,7 +488,7 @@ class TestActivePreferredOverSuppressed:
         )
         assert len(results) == 1
         r = results[0]
-        assert r.name == "Drug X (active)"
+        assert r.name == "Drug X (Active)"
         assert r.match_type == "ingredient"
 
 class TestDeterministicTieBreaking:
@@ -539,14 +539,14 @@ class TestDeterministicTieBreaking:
             ("RXNORM", "1300002", "AUI_SCD5", "C15", "SCD",
              "Drug Z 200 MG Tablet", "N", True, 1),
             ("RXNORM", "9", "AUI_MIN5A", "C16", "MIN",
-             "Drug Z lower numeric code", "N", True, 1),
+             "Drug Z Lower Numeric Code", "N", True, 1),
             ("RXNORM", "10", "AUI_MIN5B", "C16", "MIN",
              "Drug Z lexical-first code", "N", True, 2),
         ])
 
         _insert_rxnorm_tty_edges(con, [
             ("AUI_SCD5", "1300002", "SCD", "Drug Z 200 MG Tablet", "N",
-             "AUI_MIN5A", "9", "MIN", "Drug Z lower numeric code", "N",
+             "AUI_MIN5A", "9", "MIN", "Drug Z Lower Numeric Code", "N",
              "RN", "ingredient_of"),
             ("AUI_SCD5", "1300002", "SCD", "Drug Z 200 MG Tablet", "N",
              "AUI_MIN5B", "10", "MIN", "Drug Z lexical-first code", "N",
@@ -558,7 +558,7 @@ class TestDeterministicTieBreaking:
             con,
         )
 
-        assert results[0].name == "Drug Z lower numeric code"
+        assert results[0].name == "Drug Z Lower Numeric Code"
 
 
 class TestMultipleCodes:

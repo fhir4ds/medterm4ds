@@ -6,6 +6,7 @@ from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 from typing import Any
 
+from .display import format_patient_friendly_name
 from .normalize import normalize_source
 
 
@@ -287,6 +288,9 @@ class FriendlyNameResult:
     match_depth: int = 0
     technical_name: str | None = None
     matched_via: Provenance | None = None
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "name", format_patient_friendly_name(str(self.name)))
 
     def to_dict(self) -> dict[str, Any]:
         data = {

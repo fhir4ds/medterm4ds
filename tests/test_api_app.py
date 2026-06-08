@@ -44,7 +44,7 @@ def _make_duckdb(path: Path) -> None:
                 ("E11", "PT", "Type 2 diabetes mellitus", "ICD_E11", "N", "ICD10CM", "C_E11"),
                 ("44054006", "PT", "Diabetes mellitus type 2", "SNOMED_DIAB", "N", "SNOMEDCT_US", "C_DIAB"),
                 ("D_DIAB", "MH", "Diabetes", "MP_DIAB", "N", "MEDLINEPLUS", "C_DIAB"),
-                ("208", "PT", "COVID-19 vaccine", "CVX_208", "N", "CVX", "C_CVX"),
+                ("208", "PT", "COVID-19 Vaccine", "CVX_208", "N", "CVX", "C_CVX"),
             ],
         )
         con.executemany(
@@ -103,7 +103,7 @@ def test_api_patient_friendly_endpoint(tmp_path):
 
     assert response.status_code == 200
     payload = response.json()
-    assert [row["name"] for row in payload["results"]] == ["Diabetes", "COVID-19 vaccine"]
+    assert [row["name"] for row in payload["results"]] == ["Diabetes", "COVID-19 Vaccine"]
     assert [row["match_type"] for row in payload["results"]] == ["exact", "original"]
 
 
