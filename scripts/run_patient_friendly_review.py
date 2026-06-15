@@ -62,6 +62,7 @@ CSV_COLUMNS = (
     "match_type",
     "match_depth",
     "technical_name",
+    "source_tty",
     "cui",
     "aui",
 )
@@ -157,6 +158,7 @@ def main() -> int:
             timings.append(timing)
 
             for r in results:
+                last_step = r.matched_via.steps[-1] if r.matched_via and r.matched_via.steps else None
                 all_rows.append({
                     "source": r.code.source,
                     "code": r.code.code,
@@ -165,8 +167,9 @@ def main() -> int:
                     "match_type": r.match_type,
                     "match_depth": r.match_depth,
                     "technical_name": r.technical_name,
-                    "cui": r.matched_via.steps[-1].cui if r.matched_via and r.matched_via.steps else None,
-                    "aui": r.matched_via.steps[-1].aui if r.matched_via and r.matched_via.steps else None,
+                    "source_tty": last_step.tty if last_step else None,
+                    "cui": last_step.cui if last_step else None,
+                    "aui": last_step.aui if last_step else None,
                 })
 
             print(
