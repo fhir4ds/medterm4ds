@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Replaced the `drugs_for_indication` context-only stub with a UMLS Metathesaurus relationship walker that resolves medications for a condition via `may_treat` / `may_prevent` / `may_diagnose` / `contraindicated_with_disease` edges. The new uniform response shape drops `drug_name_context`, `reason`, and the `terminology_context_only` status; both success and fallback branches now return the same key set (`source`, `code`, `status`, `relationship_types`, `target_source`, `target_ttys`, `max_depth`, `include_product_groups`, `result_count`, `results`, `diagnosis_context`).
+- Hardened the indication walker: substring-prone cycle detection now uses delimited membership; MIN (Multiple Ingredient) RxNorm targets get their real ingredient count instead of a default of 1; the recursive path uses a uniform ` -> ` delimiter so `path.split(" -> ")` yields clean segments; ORDER BY and dedup ROW_NUMBER tiebreakers were made deterministic.
+- Added input validation for `drugs_for_indication`: empty `condition` and `code` without `source` (including `source=""`) now raise upfront instead of crashing deep in the call stack.
+- Removed the unused `_rxnorm_product_group_expansions` helper.
 - Stabilized patient-friendly naming around UMLS-only hierarchy traversal and removed synthetic hierarchy edge generation.
 - Archived the old final-resolution materialization path; the live prepared runtime resolver is now the canonical patient-friendly path.
 - Added smart title casing for patient-friendly `name` output while preserving `technical_name` source casing, clinical units, acronyms, mixed-case terms, and systematic chemical names.

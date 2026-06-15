@@ -325,8 +325,27 @@ class McpRuntime:
     def drugs_by_class(self, *, class_id: str, limit: int = 20) -> dict[str, Any]:
         return terminology_domain.drugs_by_class(class_id, engine=self._engine(), limit=limit)
 
-    def drugs_for_indication(self, *, condition: str, limit: int = 20) -> dict[str, Any]:
-        return terminology_domain.drugs_for_indication(condition, engine=self._engine(), limit=limit)
+    def drugs_for_indication(
+        self,
+        *,
+        condition: str,
+        limit: int = 20,
+        source: str | None = None,
+        code: str | None = None,
+        relationship_types: Sequence[str] | None = None,
+        max_depth: int = 5,
+        include_product_groups: bool = True,
+    ) -> dict[str, Any]:
+        return terminology_domain.drugs_for_indication(
+            condition,
+            engine=self._engine(),
+            limit=limit,
+            source=source,
+            code=code,
+            relationship_types=relationship_types,
+            max_depth=max_depth,
+            include_product_groups=include_product_groups,
+        )
 
     def indication_search(self, *, indication: str, limit: int = 20) -> dict[str, Any]:
         return evidence_domain.indication_search(indication, limit=limit)
@@ -741,9 +760,25 @@ def create_mcp_server(
         return server_runtime.drugs_by_class(class_id=class_id, limit=limit)
 
     @mcp.tool()
-    async def drugs_for_indication(condition: str, limit: int = 20) -> dict[str, Any]:
-        """Return UMLS-backed indication context for drug workflows."""
-        return server_runtime.drugs_for_indication(condition=condition, limit=limit)
+    async def drugs_for_indication(
+        condition: str,
+        limit: int = 20,
+        source: str | None = None,
+        code: str | None = None,
+        relationship_types: list[str] | None = None,
+        max_depth: int = 5,
+        include_product_groups: bool = True,
+    ) -> dict[str, Any]:
+        """Return UMLS relationship-backed medications for a condition."""
+        return server_runtime.drugs_for_indication(
+            condition=condition,
+            limit=limit,
+            source=source,
+            code=code,
+            relationship_types=relationship_types,
+            max_depth=max_depth,
+            include_product_groups=include_product_groups,
+        )
 
     @mcp.tool()
     async def indication_search(indication: str, limit: int = 20) -> dict[str, Any]:
