@@ -370,8 +370,16 @@ def main() -> int:
 
     if "2" in args.tables or "3" in args.tables:
         config = local_duckdb_config(args.memory_profile)
-        # Apply DuckDB memory/config settings on the connection.
-        con = duckdb.connect(str(db_path), read_only=True, config=config)
+        duckdb_config: dict[str, object] = {
+            "preserve_insertion_order": config.preserve_insertion_order,
+        }
+        if config.memory_limit:
+            duckdb_config["memory_limit"] = config.memory_limit
+        if config.temp_directory is not None:
+            duckdb_config["temp_directory"] = str(config.temp_directory)
+        if config.threads is not None:
+            duckdb_config["threads"] = config.threads
+        con = duckdb.connect(str(db_path), read_only=True, config=duckdb_config)
         try:
             if "2" in args.tables:
                 print("[Table 2] rxnorm_ingredient_decomposition.csv")
