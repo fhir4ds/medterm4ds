@@ -118,12 +118,16 @@ def enrich_patient_friendly(con, input_path: Path, output_path: Path) -> int:
 
 # Step 2: build canonical_codes.csv.
 #
+# Target systems are ICD10CM (conditions), LNC (labs), RXNORM (medications).
+# SNOMEDCT_US is intentionally excluded from canonical candidates: it spans
+# clinical findings, substances, and products, which causes substance names
+# like "Phenylephrine" to land in the condition bucket. SNOMED inputs still
+# contribute to Table 1 (patient_friendly_names.csv) for name resolution;
+# they just don't produce a canonical code here.
+#
 # Rules per category:
-#   condition (ICD10CM, SNOMEDCT_US) -> ICD10CM preferred, else SNOMEDCT_US.
-#     Among candidates from the chosen source, pick the shortest code
-#     (the most general ancestor). ICD10CM is preferred when both vocabularies
-#     contain candidates for the same friendly name.
-#   lab (LNC) -> pick the shortest LOINC code among candidates.
+#   condition (ICD10CM) -> pick the shortest ICD10CM code (most general ancestor).
+#   lab (LNC) -> pick the shortest LOINC code.
 #   medication (RXNORM) -> prefer TTY=IN, then MIN, then SCDG, then other.
 #     Among same TTY, pick the shortest code.
 CANONICAL_SQL = """
@@ -140,12 +144,12 @@ categorized AS (
     SELECT
         pf.*,
         CASE
-            WHEN pf.source IN ('ICD10CM', 'SNOMEDCT_US') THEN 'condition'
+            WHEN pf.source = 'ICD10CM' THEN 'condition'
             WHEN pf.source = 'LNC' THEN 'lab'
             WHEN pf.source = 'RXNORM' THEN 'medication'
         END AS category
     FROM pf
-    WHERE pf.source IN ('ICD10CM', 'SNOMEDCT_US', 'LNC', 'RXNORM')
+    WHERE pf.source IN ('ICD10CM', 'LNC', 'RXNORM')
 ),
 candidates AS (
     SELECT
@@ -164,12 +168,6 @@ ranked AS (
         ROW_NUMBER() OVER (
             PARTITION BY category, name
             ORDER BY
-                -- condition: prefer ICD10CM, then SNOMEDCT_US
-                CASE
-                    WHEN category = 'condition' AND source = 'ICD10CM' THEN 0
-                    WHEN category = 'condition' AND source = 'SNOMEDCT_US' THEN 1
-                    ELSE 0
-                END,
                 -- medication: prefer TTY=IN, then MIN, then SCDG, then anything else
                 CASE
                     WHEN category = 'medication' AND source_tty = 'IN' THEN 0
@@ -196,8 +194,7 @@ SELECT
     w.cui AS canonical_cui,
     m.STR AS canonical_name,
     CASE
-        WHEN w.category = 'condition' AND w.source = 'ICD10CM' THEN 'icd10cm_shortest'
-        WHEN w.category = 'condition' AND w.source = 'SNOMEDCT_US' THEN 'snomedct_shortest_no_icd10'
+        WHEN w.category = 'condition' THEN 'icd10cm_shortest'
         WHEN w.category = 'lab' THEN 'lnc_shortest'
         WHEN w.category = 'medication' AND w.source_tty = 'IN' THEN 'rxnorm_in'
         WHEN w.category = 'medication' AND w.source_tty = 'MIN' THEN 'rxnorm_min'
