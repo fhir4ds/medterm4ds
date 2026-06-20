@@ -15,10 +15,16 @@ UMLS-derived tables for the fhir4px model. Produced by `medterm4ds` from a local
 | `rxnorm_ingredient_decomposition.csv` | 125,894 | 15 MB | 2026-06-15 | RxNorm product → ingredient(s) with ATC levels 1–5 |
 | `condition_medication_ingredient.csv` | 2,984,437 | 218 MB | 2026-06-15 | Condition → medication ingredient (may_treat / may_prevent) |
 | `canonical_codes.csv` | 196,509 | 27 MB | 2026-06-20 | One canonical code per (category, friendly_name); categories: condition, lab, medication, vaccine |
-| `embedding_index.jsonl` | 196,509 | 117 MB | 2026-06-20 | Embedding-ready documents — one JSON record per canonical with 4 vector texts plus metadata |
+| `embedding_index.jsonl` | 196,509 | 117 MB | 2026-06-20 | Embedding-ready documents — one JSON record per **canonical** code (friendly-name grain) with 4 vector texts plus metadata |
+| `embedding_index_full.jsonl` | 546,273 | 361 MB | 2026-06-20 | Embedding-ready documents — one JSON record per **clinically-addressable** code (specific-code grain) with the same 4 vector texts plus metadata |
 
 CSV format: UTF-8, comma-delimited, double-quote text qualifier, header row.
 JSONL format: UTF-8, one JSON object per line.
+
+The two embedding indices serve different retrieval goals:
+
+- **`embedding_index.jsonl`** (canonical, friendly-name grain): one record per `(category, friendly_name)`. Use when retrieval target is "what is this concept?" — e.g., "T2DM" matches canonical E11 (not E11.40). 196K records, ~117 MB.
+- **`embedding_index_full.jsonl`** (clinically-addressable grain): one record per individual code that a clinician might mean. Use when retrieval target is "which exact code?" — e.g., "T2DM with neuropathy" matches E11.40 specifically. 546K records, ~361 MB.
 
 **Regeneration history**:
 
@@ -26,6 +32,7 @@ JSONL format: UTF-8, one JSON object per line.
 - **2026-06-18**: added `canonical_codes.csv`; enriched Table 1 with `source_tty`/`cui`/`aui`.
 - **2026-06-20 (early)**: loaded MRSTY into DuckDB; re-routed SNOMED via TUI filter; added `semantic_types` column to Table 1; re-introduced SNOMED canonical candidates per category with TUI guard; added `category=vaccine` for CVX; regenerated Table 1 and canonical_codes.csv; added `embedding_index.jsonl`.
 - **2026-06-20 (late)**: added `lat` column to `mrconso` (from MRCONSO.RRF); `embedding_index.jsonl` synonyms now filter to `LAT='ENG'`, dropping ~40% of non-English synonym atoms. File size 134 MB → 117 MB.
+- **2026-06-20 (final)**: added `embedding_index_full.jsonl` — the clinically-addressable companion to `embedding_index.jsonl`. 546K codes (ICD10PCS leaf-only, SNOMED TUI-filtered, LNC LN-only, RXNORM IN/MIN/SCDG/SCD/SBD, plus ICD10CM/CPT/HCPCS/CVX all). ATC for SCD/SBD now resolved via Table 2 decomposition (10K → 28K meds with ATC).
 
 Tables 2 and 3 still reflect the 2026-06-15 build. They are independent of MRSTY routing and canonical_codes changes; rerun `scripts/build_clinical_relationship_tables.py --tables 2 3` only if a UMLS refresh requires it.
 
@@ -74,6 +81,9 @@ PYTHONPATH=src python3 scripts/build_canonical_codes.py
 
 # 3. Build embedding_index.jsonl from canonical_codes.csv (~20 seconds)
 PYTHONPATH=src python3 scripts/build_embedding_index.py
+
+# 4. Build embedding_index_full.jsonl from Table 1 (~45 seconds)
+PYTHONPATH=src python3 scripts/build_embedding_index_full.py
 ```
 
 ### Selective rebuild
@@ -98,6 +108,7 @@ PYTHONPATH=src python3 scripts/build_canonical_codes.py --skip-enrich
 | `scripts/build_clinical_relationship_tables.py` | Tables 1, 2, 3 | Delegates Table 1 to `scripts/run_patient_friendly_review.py` |
 | `scripts/build_canonical_codes.py` | Enriched Table 1, canonical_codes.csv | Joins Table 1 against `mrconso` to populate CUI/AUI/source_tty, then groups by friendly name |
 | `scripts/build_embedding_index.py` | embedding_index.jsonl | Reads canonical_codes.csv and emits one JSON record per canonical with 4 vector texts plus metadata |
+| `scripts/build_embedding_index_full.py` | embedding_index_full.jsonl | Reads patient_friendly_names.csv (Table 1), applies per-source filters (ICD10PCS leaf-only, SNOMED TUI-filtered, LNC LN-only, RXNORM IN/MIN/SCDG/SCD/SBD), and emits one JSON record per addressable code with the same 4 vector texts plus metadata |
 
 ---
 
@@ -321,7 +332,123 @@ Embedding-ready documents — one JSON record per canonical code. Each record ca
 }
 ```
 
-**Known limitation — exact-code recall**: This index is at the canonical grain (one vector set per friendly_name + category). A query like "T2DM with neuropathy" will match the canonical E11 (Diabetes Type 2) — it will not surface E11.40 (the specific subcode). If exact-code recall becomes the objective, expand the index to the clinically-addressable grain (~583K codes per the design discussion).
+**Known limitation — exact-code recall**: This index is at the canonical grain (one vector set per friendly_name + category). A query like "T2DM with neuropathy" will match the canonical E11 (Diabetes Type 2) — it will not surface E11.40 (the specific subcode). The companion `embedding_index_full.jsonl` (below) addresses this at the specific-code grain.
+
+---
+
+### `embedding_index_full.jsonl`
+
+Embedding-ready documents at the **clinically-addressable grain** — one JSON record per individual code (not per friendly name). Use this when retrieval needs to surface a specific code (E11.40, not E11).
+
+**Per-source filters** (applied during build):
+
+| Source | Filter | Codes in index |
+|--------|--------|----------------|
+| ICD10CM | (none — all codes) | 98,506 |
+| ICD10PCS | leaf-only (codes with no `PAR`/`RB` children — drops intermediate hierarchy nodes) | 79,512 |
+| SNOMEDCT_US | TUI-filtered: must have a TUI in condition/lab/procedure/medication sets OR a CVX crosswalk. Body parts, bacteria, devices, pure chemicals/proteins are excluded. | 194,143 |
+| LNC | TTY=`LN` only (lab tests; excludes parts `LPN`, answers `LA`, display names) | 104,334 |
+| RXNORM | TTY in `{IN, MIN, SCDG, SCD, SBD}` (excludes PIN, BN, DF, SCDC/SBDC/SCDF/SBDF) | 46,337 |
+| CPT | (all) | 15,468 |
+| HCPCS | (all) | 7,685 |
+| CVX | (all) | 288 |
+| **Total** | | **546,273** |
+
+**SNOMED TUI sets used for filtering and categorization** (mirrors `_SNOMED_TUI_TARGETS` in `src/medterm4ds/engines/duckdb/engine.py`):
+
+| Category | TUIs |
+|----------|------|
+| condition | T019 (Congenital Abnormality), T020 (Acquired Abnormality), T037 (Injury or Poisoning), T046 (Pathologic Function), T047 (Disease or Syndrome), T048 (Mental or Behavioral Dysfunction), T049 (Cell or Molecular Dysfunction), T190 (Anatomical Abnormality), T191 (Neoplastic Process) |
+| lab | T034 (Laboratory or Test Result), T059 (Laboratory Procedure) |
+| procedure | T060 (Diagnostic Procedure), T061 (Therapeutic or Preventive Procedure), T062 (Research Activity), T063 (Molecular Biology Research Technique) |
+| medication | T121 (Pharmacologic Substance), T123 (Biologically Active Substance), T200 (Clinical Drug) |
+| vaccine | (no TUI — detected via CVX crosswalk) |
+
+**Excluded TUI examples** (not addressable for free-text retrieval): T029 (Body Part), T007 (Bacterium), T074 (Medical Device), T109 alone (Organic Chemical without T121), T116 alone (Amino Acid/Protein without T121).
+
+**Category priority for multi-TUI SNOMED concepts**: condition > lab > procedure > medication > vaccine. A SNOMED concept with both T047 and T121 is categorized as `condition` (the disease view) unless it lacks any condition TUI.
+
+**Schema** (same shape as `embedding_index.jsonl`, with `code` instead of `canonical`):
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `category` | string | `condition`, `lab`, `medication`, `vaccine`, or `procedure` (new vs canonical index) |
+| `friendly_name` | string | Patient-friendly name from Table 1 for this code (may be shared across multiple codes) |
+| `code.source` | string | Source vocabulary |
+| `code.code` | string | The specific code in the source vocabulary |
+| `code.tty` | string or null | TTY of the source atom |
+| `code.cui` | string or null | UMLS CUI |
+| `code.name` | string or null | Preferred name in the source vocabulary |
+| `rule` | string | Always `addressable` (codes selected by per-source filter, not by canonical-name grouping) |
+| `semantic_types` | array of string | TUIs via mrsty on the code's CUI |
+| `atc` | object or null | (RXNORM only) ATC levels 1–5 with name. For IN: direct via shared CUI. For SCD/SBD/SCDG/MIN: via Table 2 decomposition (`rxnorm_ingredient_decomposition.csv`) |
+| `vectors.technical` | string | Preferred-term name (per-source TTY conventions, same as canonical index) |
+| `vectors.synonyms` | array of string | Up to K=8 English synonyms sharing the CUI, prioritized by source |
+| `vectors.friendly` | string | Patient-friendly name (same as `friendly_name`) |
+| `vectors.hierarchy` | array of string | Source-specific ancestor chain. ICD10CM/ICD10PCS: PAR/RB walk, code + name. SNOMEDCT_US: PAR/RB walk, name only. LNC: LOINC CLASS. RXNORM: ATC level 2 → level 4 → level 5. |
+
+**Coverage from the current build**:
+
+| Field | Coverage |
+|-------|----------|
+| `vectors.technical` | 100% |
+| `vectors.friendly` | 100% |
+| `vectors.synonyms` | 82.0% (higher than canonical — more codes share CUIs) |
+| `vectors.hierarchy` | 88.5% (much higher — specific codes have rich hierarchies) |
+| `atc` | 60.5% of medication rows (RXNORM with IN-level ATC or Table 2 decomposition) |
+| `semantic_types` | 100% |
+
+**Sample record** (medication, specific SCD):
+
+```json
+{
+  "category": "medication",
+  "friendly_name": "Metformin Oral Product",
+  "code": {
+    "source": "RXNORM", "code": "860975", "tty": "SCD",
+    "cui": "C0978484",
+    "name": "24 HR metformin hydrochloride 500 MG Extended Release Oral Tablet"
+  },
+  "rule": "addressable",
+  "semantic_types": ["T200"],
+  "atc": {
+    "atc_code": "A10BA02",
+    "atc_level1": "A", "atc_level2": "A10", "atc_level3": "A10B",
+    "atc_level4": "A10BA", "atc_level5": "A10BA02",
+    "atc_name": "metformin"
+  },
+  "vectors": {
+    "technical": "24 HR metformin hydrochloride 500 MG Extended Release Oral Tablet",
+    "synonyms": [
+      "Product containing precisely metformin hydrochloride 500 milligram/1 each prolonged-release oral tablet (clinical drug)",
+      "Metformin hydrochloride 500 mg prolonged-release oral tablet",
+      "metFORMIN HCl 500 MG 24HR Extended Release Oral Tablet",
+      "..."
+    ],
+    "friendly": "Metformin Oral Product",
+    "hierarchy": [
+      "A10 (A10BA parent)",
+      "A10BA (A10BA02 parent)",
+      "A10BA02 — metformin"
+    ]
+  }
+}
+```
+
+**Comparison with the canonical index**:
+
+| Property | `embedding_index.jsonl` (canonical) | `embedding_index_full.jsonl` (addressable) |
+|----------|-------------------------------------|---------------------------------------------|
+| Records | 196,509 | 546,273 |
+| Grain | One per `(category, friendly_name)` | One per addressable code |
+| Best for | "What concept is this?" — ingredient-level for meds, component-level for labs | "Which exact code?" — specific SCDs, ICD10 subcodes, LNC variants |
+| Categories | condition, lab, medication, vaccine | condition, lab, medication, vaccine, **procedure** |
+| Size | 117 MB | 361 MB |
+| Synonym coverage | 60.4% | 82.0% |
+| Hierarchy coverage | 48.6% | 88.5% |
+| ATC coverage (meds) | 6.7% | 60.5% |
+
+Choose based on retrieval objective: the canonical index is leaner and surfaces the right concept; the full index is heavier but enables exact-code matching.
 
 ---
 
