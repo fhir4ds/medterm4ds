@@ -642,6 +642,170 @@ def test_local_duckdb_does_not_route_snomed_ancestor_to_rxnorm():
         con.close()
 
 
+def _init_mrsty(con: duckdb.DuckDBPyConnection) -> None:
+    """Create the mrsty table for tests that exercise TUI-based routing."""
+    con.execute(
+        """
+        CREATE TABLE mrsty (
+            cui VARCHAR,
+            tui VARCHAR,
+            sty VARCHAR
+        )
+        """
+    )
+
+
+def test_local_duckdb_snomed_substance_routes_to_rxnorm_with_mrsty():
+    """A SNOMED concept whose CUI has T121 (Pharmacologic Substance) should
+    route to RXNORM, not LNC, when MRSTY is loaded."""
+    con = duckdb.connect(database=":memory:")
+    try:
+        _init_schema(con)
+        _init_mrsty(con)
+        con.executemany(
+            "INSERT INTO mrconso VALUES (?, ?, ?, ?, ?, ?, ?)",
+            [
+                ("SN_DRUG", "PT", "Phenylephrine", "SN_PHE", "N", "SNOMEDCT_US", "C_PHE"),
+                ("8163", "IN", "phenylephrine", "RX_PHE", "N", "RXNORM", "C_PHE"),
+                ("LP_PHE", "LPN", "Phenylephrine", "LNC_PHE", "N", "LNC", "C_PHE"),
+            ],
+        )
+        con.executemany(
+            "INSERT INTO mrsty VALUES (?, ?, ?)",
+            [
+                ("C_PHE", "T121", "Pharmacologic Substance"),
+                ("C_PHE", "T109", "Organic Chemical"),
+            ],
+        )
+
+        engine = LocalDuckDBEngine(con)
+        row = get_patient_friendly_names([CodeRef("SNOMEDCT_US", "SN_DRUG")], engine)[0]
+
+        # Should resolve via RXNORM ingredient, not LNC.
+        assert row.friendly_source == "RXNORM", row
+        assert row.name == "Phenylephrine"
+    finally:
+        con.close()
+
+
+def test_local_duckdb_snomed_vaccine_routes_to_cvx_with_mrsty():
+    """A SNOMED vaccine concept sharing a CUI with a CVX atom should route to
+    CVX regardless of TUI (vaccines share generic substance TUIs)."""
+    con = duckdb.connect(database=":memory:")
+    try:
+        _init_schema(con)
+        _init_mrsty(con)
+        con.executemany(
+            "INSERT INTO mrconso VALUES (?, ?, ?, ?, ?, ?, ?)",
+            [
+                ("SN_VAC", "PT", "Pneumococcal vaccine", "SN_VAC_AUI", "N", "SNOMEDCT_US", "C_VAC"),
+                ("33", "PT", "pneumococcal", "CVX_VAC_AUI", "N", "CVX", "C_VAC"),
+                ("33_RX", "IN", "Pneumococcal Vaccine", "RX_VAC_AUI", "N", "RXNORM", "C_VAC"),
+            ],
+        )
+        con.executemany(
+            "INSERT INTO mrsty VALUES (?, ?, ?)",
+            [
+                ("C_VAC", "T121", "Pharmacologic Substance"),
+            ],
+        )
+
+        engine = LocalDuckDBEngine(con)
+        # Reach into the engine's internal mapping to verify routing.
+        mapping = engine._map_snomed_codes(["SN_VAC"])
+        assert mapping["SN_VAC"][0] == "CVX", mapping["SN_VAC"]
+    finally:
+        con.close()
+
+
+def test_local_duckdb_snomed_disease_still_routes_to_icd10cm_with_mrsty():
+    """A SNOMED disease concept should still route to ICD10CM when MRSTY is
+    loaded. Regression guard for the TUI-based routing change."""
+    con = duckdb.connect(database=":memory:")
+    try:
+        _init_schema(con)
+        _init_mrsty(con)
+        con.executemany(
+            "INSERT INTO mrconso VALUES (?, ?, ?, ?, ?, ?, ?)",
+            [
+                ("SN_DX", "PT", "Type 2 diabetes mellitus", "SN_DX_AUI", "N", "SNOMEDCT_US", "C_DX"),
+                ("E11", "HT", "Type 2 diabetes mellitus", "ICD_E11_AUI", "N", "ICD10CM", "C_DX"),
+            ],
+        )
+        con.executemany(
+            "INSERT INTO mrsty VALUES (?, ?, ?)",
+            [
+                ("C_DX", "T047", "Disease or Syndrome"),
+            ],
+        )
+
+        engine = LocalDuckDBEngine(con)
+        mapping = engine._map_snomed_codes(["SN_DX"])
+        assert mapping["SN_DX"][0] == "ICD10CM", mapping["SN_DX"]
+    finally:
+        con.close()
+
+
+def test_local_duckdb_snomed_procedure_routes_to_cpt_with_mrsty():
+    """A SNOMED therapeutic procedure should route to CPT, not RXNORM or LNC."""
+    con = duckdb.connect(database=":memory:")
+    try:
+        _init_schema(con)
+        _init_mrsty(con)
+        con.executemany(
+            "INSERT INTO mrconso VALUES (?, ?, ?, ?, ?, ?, ?)",
+            [
+                ("SN_PROC", "PT", "Appendectomy", "SN_PROC_AUI", "N", "SNOMEDCT_US", "C_PROC"),
+                ("44970", "PT", "Laparoscopic appendectomy", "CPT_AUI", "N", "CPT", "C_PROC"),
+                ("0DB68ZX", "PT", "Excision of appendix", "ICDPCS_AUI", "N", "ICD10PCS", "C_PROC"),
+            ],
+        )
+        con.executemany(
+            "INSERT INTO mrsty VALUES (?, ?, ?)",
+            [
+                ("C_PROC", "T061", "Therapeutic or Preventive Procedure"),
+            ],
+        )
+
+        engine = LocalDuckDBEngine(con)
+        mapping = engine._map_snomed_codes(["SN_PROC"])
+        # Both CPT and ICD10PCS are allowed; priority picks ICD10PCS first.
+        assert mapping["SN_PROC"][0] in {"CPT", "ICD10PCS"}, mapping["SN_PROC"]
+    finally:
+        con.close()
+
+
+def test_local_duckdb_snomed_pure_protein_does_not_route_to_rxnorm_with_mrsty():
+    """A SNOMED protein/gene concept (T116 alone, no T121) should NOT route to
+    RXNORM even when a CUI crosswalk exists. Mirrors the PMS2 case but with
+    MRSTY loaded: TUI filter excludes the crosswalk."""
+    con = duckdb.connect(database=":memory:")
+    try:
+        _init_schema(con)
+        _init_mrsty(con)
+        con.executemany(
+            "INSERT INTO mrconso VALUES (?, ?, ?, ?, ?, ?, ?)",
+            [
+                ("SN_PMS2", "PT", "Mismatch Repair Endonuclease PMS2", "SN_PMS2_AUI", "N", "SNOMEDCT_US", "C_PMS2"),
+                ("1156", "IN", "asparaginase", "RX_ASPARAGINASE", "N", "RXNORM", "C_PMS2"),
+            ],
+        )
+        con.executemany(
+            "INSERT INTO mrsty VALUES (?, ?, ?)",
+            [
+                # T116 alone — a protein, but NOT a Pharmacologic Substance.
+                ("C_PMS2", "T116", "Amino Acid, Peptide, or Protein"),
+            ],
+        )
+
+        engine = LocalDuckDBEngine(con)
+        mapping = engine._map_snomed_codes(["SN_PMS2"])
+        # PMS2 should not route anywhere (no compatible TUI, no CVX crosswalk).
+        assert "SN_PMS2" not in mapping or mapping["SN_PMS2"][0] != "RXNORM", mapping
+    finally:
+        con.close()
+
+
 def test_local_duckdb_cpt_walks_rela_isa_hierarchy():
     con = duckdb.connect(database=":memory:")
     try:

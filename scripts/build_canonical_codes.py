@@ -74,6 +74,19 @@ ranked_atoms AS (
         ) AS rn
     FROM mrconso
     WHERE CODE IS NOT NULL AND CODE != ''
+),
+pf_cui AS (
+    SELECT pf.*, a.CUI
+    FROM pf
+    LEFT JOIN ranked_atoms a ON a.source = pf.source AND a.code = pf.code AND a.rn = 1
+),
+semantic_types AS (
+    -- Comma-separated list of TUIs per CUI (only when mrsty table exists).
+    SELECT
+        cui,
+        string_agg(DISTINCT tui, ',' ORDER BY tui) AS semantic_types
+    FROM mrsty
+    GROUP BY cui
 )
 SELECT
     pf.source,
@@ -84,17 +97,19 @@ SELECT
     CAST(pf.match_depth AS INTEGER) AS match_depth,
     pf.technical_name,
     a.TTY AS source_tty,
-    a.CUI AS cui,
-    a.AUI AS aui
-FROM pf
+    pf.CUI AS cui,
+    a.AUI AS aui,
+    st.semantic_types
+FROM pf_cui pf
 LEFT JOIN ranked_atoms a ON a.source = pf.source AND a.code = pf.code AND a.rn = 1
+LEFT JOIN semantic_types st ON st.cui = pf.CUI
 ORDER BY pf.source, pf.code
 """
 
 ENRICH_COLUMNS = [
     "source", "code", "name", "friendly_source",
     "match_type", "match_depth", "technical_name",
-    "source_tty", "cui", "aui",
+    "source_tty", "cui", "aui", "semantic_types",
 ]
 
 
@@ -118,18 +133,24 @@ def enrich_patient_friendly(con, input_path: Path, output_path: Path) -> int:
 
 # Step 2: build canonical_codes.csv.
 #
-# Target systems are ICD10CM (conditions), LNC (labs), RXNORM (medications).
-# SNOMEDCT_US is intentionally excluded from canonical candidates: it spans
-# clinical findings, substances, and products, which causes substance names
-# like "Phenylephrine" to land in the condition bucket. SNOMED inputs still
-# contribute to Table 1 (patient_friendly_names.csv) for name resolution;
-# they just don't produce a canonical code here.
+# Target systems: ICD10CM (condition), LNC (lab), RXNORM (medication), CVX (vaccine).
+# SNOMEDCT_US is included as a fallback per category, gated by MRSTY semantic
+# types — a SNOMED concept is only eligible as a condition canonical if its
+# TUI is disease/finding-like, only eligible as a medication canonical if its
+# TUI is pharmacologic-substance/clinical-drug, etc. This avoids the prior
+# problem of substances (Phenylephrine) appearing as conditions via SNOMED
+# product concepts.
 #
 # Rules per category:
-#   condition (ICD10CM) -> pick the shortest ICD10CM code (most general ancestor).
-#   lab (LNC) -> pick the shortest LOINC code.
-#   medication (RXNORM) -> prefer TTY=IN, then MIN, then SCDG, then other.
-#     Among same TTY, pick the shortest code.
+#   condition (ICD10CM preferred; SNOMED fallback if TUI is disease/finding-like)
+#     Pick the shortest code from the preferred source. SNOMED fallback only
+#     considered when no ICD10CM candidate exists.
+#   lab (LNC preferred; SNOMED fallback if TUI is lab-procedure/result)
+#     Same pattern.
+#   medication (RXNORM preferred; SNOMED fallback if TUI is pharmacologic)
+#     Prefer TTY=IN, then MIN, then SCDG, then other. Among same TTY, shortest code.
+#   vaccine (CVX preferred; SNOMED fallback if crosswalk exists)
+#     SNOMED concepts with a shared-CUI CVX atom count as vaccine candidates.
 CANONICAL_SQL = """
 WITH pf AS (
     SELECT
@@ -140,6 +161,22 @@ WITH pf AS (
         CAST(cui AS VARCHAR) AS cui
     FROM read_csv_auto(?, HEADER=true)
 ),
+-- SNOMED TUIs per code, looked up via mrsty through the code's CUI.
+snomed_tuis AS (
+    SELECT DISTINCT pf.source, pf.code, pf.name, m.tui
+    FROM pf
+    JOIN mrconso c ON c.SAB = 'SNOMEDCT_US' AND c.CODE = pf.code AND c.SUPPRESS = 'N'
+    JOIN mrsty m ON m.cui = c.CUI
+    WHERE pf.source = 'SNOMEDCT_US'
+),
+-- SNOMED codes with a shared-CUI CVX atom (vaccine candidates).
+snomed_cvx AS (
+    SELECT DISTINCT pf.source, pf.code, pf.name
+    FROM pf
+    JOIN mrconso c ON c.SAB = 'SNOMEDCT_US' AND c.CODE = pf.code AND c.SUPPRESS = 'N'
+    JOIN mrconso cvx ON cvx.CUI = c.CUI AND cvx.SAB = 'CVX' AND cvx.SUPPRESS = 'N'
+    WHERE pf.source = 'SNOMEDCT_US'
+),
 categorized AS (
     SELECT
         pf.*,
@@ -147,9 +184,29 @@ categorized AS (
             WHEN pf.source = 'ICD10CM' THEN 'condition'
             WHEN pf.source = 'LNC' THEN 'lab'
             WHEN pf.source = 'RXNORM' THEN 'medication'
+            WHEN pf.source = 'CVX' THEN 'vaccine'
+            WHEN pf.source = 'SNOMEDCT_US' AND EXISTS (
+                SELECT 1 FROM snomed_tuis st
+                WHERE st.source = pf.source AND st.code = pf.code
+                  AND st.tui IN ('T019','T020','T037','T046','T047','T048','T049','T190','T191')
+            ) THEN 'condition'
+            WHEN pf.source = 'SNOMEDCT_US' AND EXISTS (
+                SELECT 1 FROM snomed_tuis st
+                WHERE st.source = pf.source AND st.code = pf.code
+                  AND st.tui IN ('T034','T059')
+            ) THEN 'lab'
+            WHEN pf.source = 'SNOMEDCT_US' AND EXISTS (
+                SELECT 1 FROM snomed_tuis st
+                WHERE st.source = pf.source AND st.code = pf.code
+                  AND st.tui IN ('T121','T123','T200')
+            ) THEN 'medication'
+            WHEN pf.source = 'SNOMEDCT_US' AND EXISTS (
+                SELECT 1 FROM snomed_cvx sc
+                WHERE sc.source = pf.source AND sc.code = pf.code
+            ) THEN 'vaccine'
         END AS category
     FROM pf
-    WHERE pf.source IN ('ICD10CM', 'LNC', 'RXNORM')
+    WHERE pf.source IN ('ICD10CM', 'LNC', 'RXNORM', 'CVX', 'SNOMEDCT_US')
 ),
 candidates AS (
     SELECT
@@ -161,6 +218,7 @@ candidates AS (
         source_tty,
         cui
     FROM categorized
+    WHERE category IS NOT NULL
 ),
 ranked AS (
     SELECT
@@ -168,6 +226,18 @@ ranked AS (
         ROW_NUMBER() OVER (
             PARTITION BY category, name
             ORDER BY
+                -- Prefer primary target source over SNOMED fallback.
+                CASE
+                    WHEN category = 'condition' AND source = 'ICD10CM' THEN 0
+                    WHEN category = 'condition' AND source = 'SNOMEDCT_US' THEN 1
+                    WHEN category = 'lab' AND source = 'LNC' THEN 0
+                    WHEN category = 'lab' AND source = 'SNOMEDCT_US' THEN 1
+                    WHEN category = 'medication' AND source = 'RXNORM' THEN 0
+                    WHEN category = 'medication' AND source = 'SNOMEDCT_US' THEN 1
+                    WHEN category = 'vaccine' AND source = 'CVX' THEN 0
+                    WHEN category = 'vaccine' AND source = 'SNOMEDCT_US' THEN 1
+                    ELSE 0
+                END,
                 -- medication: prefer TTY=IN, then MIN, then SCDG, then anything else
                 CASE
                     WHEN category = 'medication' AND source_tty = 'IN' THEN 0
@@ -194,12 +264,17 @@ SELECT
     w.cui AS canonical_cui,
     m.STR AS canonical_name,
     CASE
-        WHEN w.category = 'condition' THEN 'icd10cm_shortest'
-        WHEN w.category = 'lab' THEN 'lnc_shortest'
-        WHEN w.category = 'medication' AND w.source_tty = 'IN' THEN 'rxnorm_in'
-        WHEN w.category = 'medication' AND w.source_tty = 'MIN' THEN 'rxnorm_min'
-        WHEN w.category = 'medication' AND w.source_tty = 'SCDG' THEN 'rxnorm_scdg'
-        ELSE 'rxnorm_other'
+        WHEN w.category = 'condition' AND w.source = 'ICD10CM' THEN 'icd10cm_shortest'
+        WHEN w.category = 'condition' AND w.source = 'SNOMEDCT_US' THEN 'snomedct_condition_fallback'
+        WHEN w.category = 'lab' AND w.source = 'LNC' THEN 'lnc_shortest'
+        WHEN w.category = 'lab' AND w.source = 'SNOMEDCT_US' THEN 'snomedct_lab_fallback'
+        WHEN w.category = 'medication' AND w.source = 'RXNORM' AND w.source_tty = 'IN' THEN 'rxnorm_in'
+        WHEN w.category = 'medication' AND w.source = 'RXNORM' AND w.source_tty = 'MIN' THEN 'rxnorm_min'
+        WHEN w.category = 'medication' AND w.source = 'RXNORM' AND w.source_tty = 'SCDG' THEN 'rxnorm_scdg'
+        WHEN w.category = 'medication' AND w.source = 'RXNORM' THEN 'rxnorm_other'
+        WHEN w.category = 'medication' AND w.source = 'SNOMEDCT_US' THEN 'snomedct_medication_fallback'
+        WHEN w.category = 'vaccine' AND w.source = 'CVX' THEN 'cvx_shortest'
+        WHEN w.category = 'vaccine' AND w.source = 'SNOMEDCT_US' THEN 'snomedct_vaccine_fallback'
     END AS rule,
     w.candidate_count
 FROM winners w

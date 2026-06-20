@@ -49,14 +49,86 @@ from medterm4ds.sources.rxnorm import (
 logger = logging.getLogger(__name__)
 T = TypeVar("T")
 
-_SNOMED_FALLBACK_SOURCES = {"ICD10CM", "ICD10PCS", "LNC", "HCPCS", "CPT"}
+_SNOMED_FALLBACK_SOURCES = {"ICD10CM", "ICD10PCS", "LNC", "HCPCS", "CPT", "RXNORM", "CVX"}
 _SNOMED_TARGET_PRIORITY = {
-    "ICD10CM": 0,
-    "ICD10PCS": 1,
-    "LNC": 2,
-    "CPT": 3,
-    "HCPCS": 4,
+    "CVX": 0,
+    "ICD10CM": 1,
+    "ICD10PCS": 2,
+    "LNC": 3,
+    "RXNORM": 4,
+    "CPT": 5,
+    "HCPCS": 6,
 }
+
+# UMLS semantic types (TUI) → target source vocabularies that are semantically
+# compatible. Used by _map_snomed_codes to filter crosswalk candidates so a
+# SNOMED concept routes to a clinically appropriate target (e.g., Pharmacologic
+# Substance → RXNORM, not LNC). CVX is intentionally absent: vaccines share
+# generic substance TUIs and are detected via crosswalk existence instead.
+_SNOMED_TUI_TARGETS: dict[str, tuple[str, ...]] = {
+    # Conditions → ICD10CM
+    "T019": ("ICD10CM",),  # Congenital Abnormality
+    "T020": ("ICD10CM",),  # Acquired Abnormality
+    "T037": ("ICD10CM",),  # Injury or Poisoning
+    "T046": ("ICD10CM",),  # Pathologic Function
+    "T047": ("ICD10CM",),  # Disease or Syndrome
+    "T048": ("ICD10CM",),  # Mental or Behavioral Dysfunction
+    "T049": ("ICD10CM",),  # Cell or Molecular Dysfunction
+    "T190": ("ICD10CM",),  # Anatomical Abnormality
+    "T191": ("ICD10CM",),  # Neoplastic Process
+    # Labs → LNC
+    "T034": ("LNC",),      # Laboratory or Test Result
+    "T059": ("LNC",),      # Laboratory Procedure
+    # Substances / Drugs → RXNORM
+    # Restrictive: only pharmacologic-substance or clinical-drug TUIs trigger
+    # RXNORM routing. Endogenous proteins (T116 alone, e.g., the PMS2 gene
+    # product) and pure organic chemicals without pharmacologic semantics are
+    # excluded — they may share a CUI with a drug but aren't drugs themselves.
+    "T121": ("RXNORM",),   # Pharmacologic Substance
+    "T123": ("RXNORM",),   # Biologically Active Substance
+    "T200": ("RXNORM",),   # Clinical Drug
+    # Procedures → CPT (and ICD10PCS for surgical, priority picks ICD10PCS first)
+    "T060": ("CPT", "ICD10PCS"),  # Diagnostic Procedure
+    "T061": ("CPT", "ICD10PCS"),  # Therapeutic or Preventive Procedure
+    "T062": ("CPT", "ICD10PCS"),  # Research Activity
+    "T063": ("CPT", "ICD10PCS"),  # Molecular Biology Research Technique
+}
+
+# All target SABs that the SNOMED crosswalk may consider when MRSTY is loaded.
+# RXNORM and CVX require TUI-based filtering (otherwise the legacy priority-only
+# fallback could misroute gene products to drugs via shared-CUI crosswalks).
+_SNOMED_TARGET_SABS_WITH_MGSTY = (
+    "ICD10CM", "ICD10PCS", "LNC", "RXNORM", "CVX", "CPT", "HCPCS",
+)
+_SNOMED_TARGET_SABS_LEGACY = (
+    "ICD10CM", "ICD10PCS", "LNC", "CPT", "HCPCS",
+)
+
+
+def _snomed_tui_target_pairs_sql() -> str:
+    """SQL producing (tui, target_source) rows for every TUI in the map.
+
+    A TUI that maps to several targets (e.g., procedure TUIs → CPT and
+    ICD10PCS) expands into multiple rows via UNION ALL.
+    """
+    pairs: list[tuple[str, str]] = []
+    for tui, targets in _SNOMED_TUI_TARGETS.items():
+        for target in targets:
+            pairs.append((tui, target))
+    return " UNION ALL ".join(
+        f"SELECT '{tui}' AS tui, '{target}' AS target_source" for tui, target in pairs
+    )
+
+
+def _has_mrsty_table(con) -> bool:
+    """Return True if the mrsty table is loaded and queryable."""
+    try:
+        con.execute("SELECT 1 FROM mrsty LIMIT 1").fetchone()
+        return True
+    except Exception:
+        return False
+
+
 _CPT_TARGET_PRIORITY = {"HCPCS": 0, "ICD10CM": 1, "SNOMEDCT_US": 2}
 _SNOMED_TOP_LEVEL_GUARD_DEPTH = 3
 _SNOMED_TOP_LEVEL_GUARD_EXEMPT_MATCH_TYPES = {"same_cui"}
@@ -4313,42 +4385,115 @@ FROM all_results
                 mapping.update(self._map_snomed_codes(chunk))
             return mapping
         mapping: dict[str, tuple[str, str, bool]] = {}
+        use_mrsty = _has_mrsty_table(self.con)
+        tui_pairs_sql = _snomed_tui_target_pairs_sql()
+        sabs_sql = ", ".join(
+            f"'{s}'" for s in (
+                _SNOMED_TARGET_SABS_WITH_MGSTY if use_mrsty else _SNOMED_TARGET_SABS_LEGACY
+            )
+        )
         with self._temp_codes(codes) as temp:
-            direct_rows = self.con.execute(
-                f"""
-                WITH candidates AS (
-                    SELECT DISTINCT sn.CODE AS sn_code, target.SAB AS target_source,
-                           target.CODE AS target_code
-                    FROM mrrel r
-                    JOIN mrconso sn ON sn.AUI = r.AUI1
-                    JOIN mrconso target ON target.AUI = r.AUI2
-                    WHERE r.RELA = 'mapped_from'
-                      AND sn.SAB = 'SNOMEDCT_US' AND sn.SUPPRESS = 'N'
-                      AND sn.CODE IN (SELECT code FROM {temp})
-                      AND target.SAB IN ('ICD10CM', 'ICD10PCS', 'LNC', 'CPT', 'HCPCS')
-                      AND target.SUPPRESS = 'N'
-                    UNION
-                    SELECT DISTINCT sn.CODE AS sn_code, target.SAB AS target_source,
-                           target.CODE AS target_code
-                    FROM mrconso sn
-                    JOIN mrconso target ON target.CUI = sn.CUI
-                    WHERE sn.SAB = 'SNOMEDCT_US' AND sn.SUPPRESS = 'N'
-                      AND sn.CODE IN (SELECT code FROM {temp})
-                      AND target.SAB IN ('ICD10CM', 'ICD10PCS', 'LNC', 'CPT', 'HCPCS')
-                      AND target.SUPPRESS = 'N'
-                )
-                SELECT sn_code, target_source, target_code
-                FROM candidates
-                ORDER BY sn_code,
-                         CASE target_source WHEN 'ICD10CM' THEN 0
-                                            WHEN 'ICD10PCS' THEN 1
-                                            WHEN 'LNC' THEN 2
-                                            WHEN 'CPT' THEN 3
-                                            WHEN 'HCPCS' THEN 4
-                                            ELSE 5 END,
-                         target_code
-                """
-            ).fetchall()
+            if use_mrsty:
+                direct_rows = self.con.execute(
+                    f"""
+                    WITH raw_candidates AS (
+                        SELECT DISTINCT sn.CODE AS sn_code, target.SAB AS target_source,
+                               target.CODE AS target_code
+                        FROM mrrel r
+                        JOIN mrconso sn ON sn.AUI = r.AUI1
+                        JOIN mrconso target ON target.AUI = r.AUI2
+                        WHERE r.RELA = 'mapped_from'
+                          AND sn.SAB = 'SNOMEDCT_US' AND sn.SUPPRESS = 'N'
+                          AND sn.CODE IN (SELECT code FROM {temp})
+                          AND target.SAB IN ({sabs_sql})
+                          AND target.SUPPRESS = 'N'
+                        UNION
+                        SELECT DISTINCT sn.CODE AS sn_code, target.SAB AS target_source,
+                               target.CODE AS target_code
+                        FROM mrconso sn
+                        JOIN mrconso target ON target.CUI = sn.CUI
+                        WHERE sn.SAB = 'SNOMEDCT_US' AND sn.SUPPRESS = 'N'
+                          AND sn.CODE IN (SELECT code FROM {temp})
+                          AND target.SAB IN ({sabs_sql})
+                          AND target.SUPPRESS = 'N'
+                    ),
+                    sn_tuis AS (
+                        SELECT DISTINCT sn.CODE AS sn_code, m.tui
+                        FROM mrconso sn
+                        JOIN mrsty m ON m.cui = sn.CUI
+                        WHERE sn.SAB = 'SNOMEDCT_US' AND sn.SUPPRESS = 'N'
+                          AND sn.CODE IN (SELECT code FROM {temp})
+                    ),
+                    tui_targets AS (
+                        SELECT t.sn_code, p.target_source
+                        FROM (SELECT DISTINCT sn_code FROM sn_tuis) t
+                        JOIN ({tui_pairs_sql}) p
+                          ON p.tui IN (SELECT tui FROM sn_tuis WHERE sn_code = t.sn_code)
+                    ),
+                    candidates AS (
+                        SELECT c.sn_code, c.target_source, c.target_code
+                        FROM raw_candidates c
+                        LEFT JOIN tui_targets a
+                          ON a.sn_code = c.sn_code AND a.target_source = c.target_source
+                        WHERE c.target_source = 'CVX'
+                           OR a.sn_code IS NOT NULL
+                           OR NOT EXISTS (
+                               SELECT 1 FROM sn_tuis t WHERE t.sn_code = c.sn_code
+                           )
+                    )
+                    SELECT sn_code, target_source, target_code
+                    FROM candidates
+                    ORDER BY sn_code,
+                             CASE target_source WHEN 'CVX' THEN 0
+                                                WHEN 'ICD10CM' THEN 1
+                                                WHEN 'ICD10PCS' THEN 2
+                                                WHEN 'LNC' THEN 3
+                                                WHEN 'RXNORM' THEN 4
+                                                WHEN 'CPT' THEN 5
+                                                WHEN 'HCPCS' THEN 6
+                                                ELSE 7 END,
+                             target_code
+                    """
+                ).fetchall()
+            else:
+                # MRSTY not loaded: fall back to legacy priority-only routing.
+                direct_rows = self.con.execute(
+                    f"""
+                    WITH candidates AS (
+                        SELECT DISTINCT sn.CODE AS sn_code, target.SAB AS target_source,
+                               target.CODE AS target_code
+                        FROM mrrel r
+                        JOIN mrconso sn ON sn.AUI = r.AUI1
+                        JOIN mrconso target ON target.AUI = r.AUI2
+                        WHERE r.RELA = 'mapped_from'
+                          AND sn.SAB = 'SNOMEDCT_US' AND sn.SUPPRESS = 'N'
+                          AND sn.CODE IN (SELECT code FROM {temp})
+                          AND target.SAB IN ({sabs_sql})
+                          AND target.SUPPRESS = 'N'
+                        UNION
+                        SELECT DISTINCT sn.CODE AS sn_code, target.SAB AS target_source,
+                               target.CODE AS target_code
+                        FROM mrconso sn
+                        JOIN mrconso target ON target.CUI = sn.CUI
+                        WHERE sn.SAB = 'SNOMEDCT_US' AND sn.SUPPRESS = 'N'
+                          AND sn.CODE IN (SELECT code FROM {temp})
+                          AND target.SAB IN ({sabs_sql})
+                          AND target.SUPPRESS = 'N'
+                    )
+                    SELECT sn_code, target_source, target_code
+                    FROM candidates
+                    ORDER BY sn_code,
+                             CASE target_source WHEN 'CVX' THEN 0
+                                                WHEN 'ICD10CM' THEN 1
+                                                WHEN 'ICD10PCS' THEN 2
+                                                WHEN 'LNC' THEN 3
+                                                WHEN 'RXNORM' THEN 4
+                                                WHEN 'CPT' THEN 5
+                                                WHEN 'HCPCS' THEN 6
+                                                ELSE 7 END,
+                             target_code
+                    """
+                ).fetchall()
         for sn_code, target_source, target_code in direct_rows:
             current = mapping.get(sn_code)
             if current is None or _SNOMED_TARGET_PRIORITY[target_source] < _SNOMED_TARGET_PRIORITY[current[0]]:
@@ -4376,44 +4521,115 @@ FROM all_results
             "w.AUI",
             upward=True,
         )
+        use_mrsty = _has_mrsty_table(self.con)
+        tui_pairs_sql = _snomed_tui_target_pairs_sql()
+        sabs_sql = ", ".join(
+            f"'{s}'" for s in (
+                _SNOMED_TARGET_SABS_WITH_MGSTY if use_mrsty else _SNOMED_TARGET_SABS_LEGACY
+            )
+        )
         with self._temp_codes(codes) as temp:
-            rows = self.con.execute(
-                f"""
-                WITH RECURSIVE walk AS (
-                    SELECT CODE AS input_code, AUI, CUI, 0 AS depth
-                    FROM mrconso
-                    WHERE SAB = 'SNOMEDCT_US' AND SUPPRESS = 'N'
-                      AND CODE IN (SELECT code FROM {temp})
-                    UNION
-                    SELECT w.input_code, p.AUI, p.CUI, w.depth + 1
-                    FROM walk w
-                    JOIN mrrel r ON {snomed_join}
-                    JOIN mrconso p ON p.AUI = {snomed_target}
-                    WHERE w.depth < 2
-                      AND p.SAB = 'SNOMEDCT_US' AND p.SUPPRESS = 'N'
-                ),
-                candidates AS (
-                    SELECT DISTINCT w.input_code, target.SAB, target.CODE, w.depth,
-                           ROW_NUMBER() OVER (
-                               PARTITION BY w.input_code
-                               ORDER BY w.depth,
-                                        CASE target.SAB WHEN 'ICD10CM' THEN 0
-                                                        WHEN 'ICD10PCS' THEN 1
-                                                        WHEN 'LNC' THEN 2
-                                                        WHEN 'CPT' THEN 3
-                                                        WHEN 'HCPCS' THEN 4
-                                                        ELSE 5 END,
+            if use_mrsty:
+                rows = self.con.execute(
+                    f"""
+                    WITH RECURSIVE walk AS (
+                        SELECT CODE AS input_code, AUI, CUI, 0 AS depth
+                        FROM mrconso
+                        WHERE SAB = 'SNOMEDCT_US' AND SUPPRESS = 'N'
+                          AND CODE IN (SELECT code FROM {temp})
+                        UNION
+                        SELECT w.input_code, p.AUI, p.CUI, w.depth + 1
+                        FROM walk w
+                        JOIN mrrel r ON {snomed_join}
+                        JOIN mrconso p ON p.AUI = {snomed_target}
+                        WHERE w.depth < 2
+                          AND p.SAB = 'SNOMEDCT_US' AND p.SUPPRESS = 'N'
+                    ),
+                    ancestor_tuis AS (
+                        SELECT DISTINCT w.input_code, m.tui
+                        FROM walk w
+                        JOIN mrsty m ON m.cui = w.CUI
+                        WHERE w.depth > 0
+                    ),
+                    tui_targets AS (
+                        SELECT t.input_code, p.target_source
+                        FROM (SELECT DISTINCT input_code FROM ancestor_tuis) t
+                        JOIN ({tui_pairs_sql}) p
+                          ON p.tui IN (SELECT tui FROM ancestor_tuis WHERE input_code = t.input_code)
+                    ),
+                    candidates AS (
+                        SELECT DISTINCT w.input_code, target.SAB, target.CODE, w.depth,
+                               ROW_NUMBER() OVER (
+                                   PARTITION BY w.input_code
+                                   ORDER BY w.depth,
+                                            CASE target.SAB WHEN 'CVX' THEN 0
+                                                            WHEN 'ICD10CM' THEN 1
+                                                            WHEN 'ICD10PCS' THEN 2
+                                                            WHEN 'LNC' THEN 3
+                                                            WHEN 'RXNORM' THEN 4
+                                                            WHEN 'CPT' THEN 5
+                                                            WHEN 'HCPCS' THEN 6
+                                                            ELSE 7 END,
+                                            target.CODE
+                               ) AS rn
+                        FROM walk w
+                        JOIN mrconso target ON target.CUI = w.CUI
+                        LEFT JOIN tui_targets a
+                          ON a.input_code = w.input_code AND a.target_source = target.SAB
+                        WHERE w.depth > 0
+                          AND target.SAB IN ({sabs_sql})
+                          AND target.SUPPRESS = 'N'
+                          AND (
+                              target.SAB = 'CVX'
+                              OR a.input_code IS NOT NULL
+                              OR NOT EXISTS (
+                                  SELECT 1 FROM ancestor_tuis t WHERE t.input_code = w.input_code
+                              )
+                          )
+                    )
+                    SELECT input_code, SAB, CODE FROM candidates WHERE rn = 1
+                    """
+                ).fetchall()
+            else:
+                rows = self.con.execute(
+                    f"""
+                    WITH RECURSIVE walk AS (
+                        SELECT CODE AS input_code, AUI, CUI, 0 AS depth
+                        FROM mrconso
+                        WHERE SAB = 'SNOMEDCT_US' AND SUPPRESS = 'N'
+                          AND CODE IN (SELECT code FROM {temp})
+                        UNION
+                        SELECT w.input_code, p.AUI, p.CUI, w.depth + 1
+                        FROM walk w
+                        JOIN mrrel r ON {snomed_join}
+                        JOIN mrconso p ON p.AUI = {snomed_target}
+                        WHERE w.depth < 2
+                          AND p.SAB = 'SNOMEDCT_US' AND p.SUPPRESS = 'N'
+                    ),
+                    candidates AS (
+                        SELECT DISTINCT w.input_code, target.SAB, target.CODE, w.depth,
+                               ROW_NUMBER() OVER (
+                                   PARTITION BY w.input_code
+                                   ORDER BY w.depth,
+                                        CASE target.SAB WHEN 'CVX' THEN 0
+                                                        WHEN 'ICD10CM' THEN 1
+                                                        WHEN 'ICD10PCS' THEN 2
+                                                        WHEN 'LNC' THEN 3
+                                                        WHEN 'RXNORM' THEN 4
+                                                        WHEN 'CPT' THEN 5
+                                                        WHEN 'HCPCS' THEN 6
+                                                        ELSE 7 END,
                                         target.CODE
                            ) AS rn
-                    FROM walk w
-                    JOIN mrconso target ON target.CUI = w.CUI
-                    WHERE w.depth > 0
-                      AND target.SAB IN ('ICD10CM', 'ICD10PCS', 'LNC', 'CPT', 'HCPCS')
-                      AND target.SUPPRESS = 'N'
-                )
-                SELECT input_code, SAB, CODE FROM candidates WHERE rn = 1
-                """
-            ).fetchall()
+                        FROM walk w
+                        JOIN mrconso target ON target.CUI = w.CUI
+                        WHERE w.depth > 0
+                          AND target.SAB IN ({sabs_sql})
+                          AND target.SUPPRESS = 'N'
+                    )
+                    SELECT input_code, SAB, CODE FROM candidates WHERE rn = 1
+                    """
+                ).fetchall()
         return [(row[0], row[1], row[2]) for row in rows]
 
     def _resolve_snomed(

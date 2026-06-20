@@ -2,19 +2,19 @@
 
 UMLS-derived tables for the fhir4px model. Produced by `medterm4ds` from a local UMLS Metathesaurus DuckDB build.
 
-- **Produced**: 2026-06-18
+- **Produced**: 2026-06-20
 - **medterm4ds version**: 0.0.1
 - **Source data**: `/mnt/d/medterm4ds/data/umls_current.duckdb` → `umls_2026aa.duckdb` (UMLS 2026AA release)
-- **Last commit**: `b779322`
+- **Last commit**: (post-MRSTY SNOMED routing change)
 
 ## Files
 
 | File | Rows | Size | Purpose |
 |------|------|------|---------|
-| `patient_friendly_names.csv` | 1,127,094 | 160 MB | Patient-friendly name for every active code across 8 source vocabularies |
+| `patient_friendly_names.csv` | 1,127,094 | 165 MB | Patient-friendly name for every active code across 8 source vocabularies |
 | `rxnorm_ingredient_decomposition.csv` | 125,894 | 15 MB | RxNorm product → ingredient(s) with ATC levels 1–5 |
 | `condition_medication_ingredient.csv` | 2,984,437 | 218 MB | Condition → medication ingredient (may_treat / may_prevent) |
-| `canonical_codes.csv` | 183,103 | 26 MB | One canonical code per (category, friendly_name) |
+| `canonical_codes.csv` | 196,509 | 27 MB | One canonical code per (category, friendly_name); categories: condition, lab, medication, vaccine |
 
 CSV format: UTF-8, comma-delimited, double-quote text qualifier, header row.
 
@@ -22,10 +22,16 @@ CSV format: UTF-8, comma-delimited, double-quote text qualifier, header row.
 
 ## Prerequisites
 
-- UMLS DuckDB at `/mnt/d/medterm4ds/data/umls_current.duckdb` (UMLS Metathesaurus with `mrconso` and `mrrel` tables)
+- UMLS DuckDB at `/mnt/d/medterm4ds/data/umls_current.duckdb` (UMLS Metathesaurus with `mrconso`, `mrrel`, and `mrsty` tables)
 - Python 3.10+
 - `medterm4ds` repo at `/mnt/d/medterm4ds`
 - Python dependencies installed (`pip install -e .[mcp]` or equivalent)
+
+The `mrsty` table must be loaded before rebuild. One-time setup (~12 seconds):
+
+```bash
+python3 scripts/load_mrsty.py
+```
 
 ---
 
@@ -35,14 +41,17 @@ Total wall time: ~7 minutes on the reference machine (WSL2, fast memory profile)
 
 ```bash
 cd /mnt/d/medterm4ds
-mkdir -p reports/fhir4px
+
+# 0. One-time: load MRSTY into the DuckDB (~12 seconds)
+python3 scripts/load_mrsty.py
 
 # 1. Build Tables 1, 2, 3 (~5 minutes)
+mkdir -p reports/fhir4px
 PYTHONPATH=src python3 scripts/build_clinical_relationship_tables.py \
   --memory-profile fast \
   --output-dir reports/fhir4px
 
-# 2. Enrich Table 1 with CUI/AUI/source_tty and build canonical_codes.csv (~2 minutes)
+# 2. Enrich Table 1 with CUI/AUI/source_tty/semantic_types and build canonical_codes.csv (~2 minutes)
 PYTHONPATH=src python3 scripts/build_canonical_codes.py
 ```
 
@@ -180,9 +189,9 @@ One canonical code per `(category, friendly_name)`. Use this to map any patient-
 
 | Column | Type | Description |
 |--------|------|-------------|
-| `category` | string | `condition`, `lab`, or `medication` |
+| `category` | string | `condition`, `lab`, `medication`, or `vaccine` |
 | `friendly_name` | string | The patient-friendly name from Table 1 |
-| `canonical_source` | string | `ICD10CM` (condition), `LNC` (lab), or `RXNORM` (medication) |
+| `canonical_source` | string | `ICD10CM` (condition), `LNC` (lab), `RXNORM` (medication), or `CVX` (vaccine). SNOMEDCT_US may appear as a fallback source per category. |
 | `canonical_code` | string | The canonical code in the target system |
 | `canonical_tty` | string or null | TTY of the canonical code in its source vocabulary |
 | `canonical_cui` | string or null | UMLS CUI of the canonical code |
@@ -195,27 +204,39 @@ One canonical code per `(category, friendly_name)`. Use this to map any patient-
 | Category | Rule | Rows |
 |----------|------|------|
 | condition | `icd10cm_shortest` | 27,577 |
+| condition | `snomedct_condition_fallback` | 10,268 |
 | lab | `lnc_shortest` | 113,670 |
+| lab | `snomedct_lab_fallback` | 1,454 |
 | medication | `rxnorm_in` | 14,617 |
 | medication | `rxnorm_min` | 3,827 |
 | medication | `rxnorm_scdg` | 8,909 |
 | medication | `rxnorm_other` | 14,503 |
+| medication | `snomedct_medication_fallback` | 1,575 |
+| vaccine | `cvx_shortest` | 108 |
+| vaccine | `snomedct_vaccine_fallback` | 1 |
 
 **Canonical rules**:
 
-- **condition** (`icd10cm_shortest`): Among ICD10CM inputs that produced this friendly name, pick the shortest code (the most general ancestor). SNOMEDCT_US is intentionally excluded — see caveats below.
-- **lab** (`lnc_shortest`): Among LNC inputs, pick the shortest LOINC code.
-- **medication**: Among RXNORM inputs, prefer TTY=`IN`, then `MIN`, then `SCDG`, then anything else. Within a TTY, pick the shortest code. `rxnorm_other` is the fallback for RXNORM atoms with TTY outside `{IN, MIN, SCDG}` (e.g., `SCDC`, `SCDF`, `PIN`).
+- **condition**: prefer ICD10CM (`icd10cm_shortest` — shortest ICD10CM code). Fall back to SNOMED (`snomedct_condition_fallback`) when no ICD10CM candidate exists, only if the SNOMED concept's TUI is disease/finding-like (T019, T020, T037, T046, T047, T048, T049, T190, T191).
+- **lab**: prefer LNC (`lnc_shortest`). Fall back to SNOMED (`snomedct_lab_fallback`) when TUI is T034 or T059.
+- **medication**: prefer RXNORM; rank TTY=IN > MIN > SCDG > other (`rxnorm_in`/`rxnorm_min`/`rxnorm_scdg`/`rxnorm_other`). Fall back to SNOMED (`snomedct_medication_fallback`) when TUI is T121, T123, or T200.
+- **vaccine**: prefer CVX (`cvx_shortest`). Fall back to SNOMED (`snomedct_vaccine_fallback`) when the SNOMED concept shares a CUI with any CVX atom.
 
 ---
 
 ## Caveats
 
-### SNOMED is excluded from canonical_codes
+### SNOMED canonicals are gated by MRSTY semantic types
 
-SNOMEDCT_US spans clinical findings, substances, and products. Including it caused substance names like *Phenylephrine* and *Metformin* to land in the `condition` bucket via SNOMED "product containing X" concepts. `canonical_codes.csv` now only emits condition canonicals from ICD10CM. SNOMED inputs still appear in `patient_friendly_names.csv` for display — they just don't promote to a canonical code.
+SNOMEDCT_US spans clinical findings, substances, and products in UMLS. We re-include SNOMED as a *fallback* canonical per category, gated by MRSTY TUI: a SNOMED concept only qualifies as a condition canonical if its TUI is disease/finding-like, only as a medication canonical if its TUI is pharmacologic-substance/clinical-drug, etc. This preserves SNOMED coverage for legitimate concepts (e.g., rare SNOMED findings with no ICD10 equivalent) while excluding the noise that previously put *Phenylephrine* in the condition bucket.
 
-**Impact**: 74,573 SNOMED-only condition names have no canonical. These are mostly SNOMED-specific clinical findings without ICD10 equivalents; they were never going to participate in an ICD10-keyed deterministic join.
+Vaccines are detected via crosswalk existence (shared CUI with a CVX atom) rather than TUI — vaccines share generic substance TUIs and aren't TUI-distinguishable.
+
+### SNOMED → target routing in Table 1 is TUI-driven
+
+When MRSTY is loaded, the SNOMED → target vocabulary step uses semantic-type filtering. A SNOMED Pharmacologic Substance (T121) routes to RXNORM rather than LNC, a Disease (T047) routes to ICD10CM, a Lab Procedure (T059) routes to LNC, a Therapeutic Procedure (T061) routes to CPT/ICD10PCS. CVX is preferred when a shared-CUI crosswalk exists. This means SNOMED inputs that previously resolved via LNC (e.g., Phenylephrine the substance) now resolve via RXNORM in `patient_friendly_names.csv`.
+
+When MRSTY is absent, the engine falls back to legacy priority-only routing (CVX/RXNORM targets are not considered).
 
 ### Multi-category friendly names
 
