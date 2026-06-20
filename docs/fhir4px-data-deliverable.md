@@ -15,8 +15,10 @@ UMLS-derived tables for the fhir4px model. Produced by `medterm4ds` from a local
 | `rxnorm_ingredient_decomposition.csv` | 125,894 | 15 MB | RxNorm product → ingredient(s) with ATC levels 1–5 |
 | `condition_medication_ingredient.csv` | 2,984,437 | 218 MB | Condition → medication ingredient (may_treat / may_prevent) |
 | `canonical_codes.csv` | 196,509 | 27 MB | One canonical code per (category, friendly_name); categories: condition, lab, medication, vaccine |
+| `embedding_index.jsonl` | 196,509 | 134 MB | Embedding-ready documents — one JSON record per canonical with 4 vector texts plus metadata |
 
 CSV format: UTF-8, comma-delimited, double-quote text qualifier, header row.
+JSONL format: UTF-8, one JSON object per line.
 
 ---
 
@@ -37,7 +39,7 @@ python3 scripts/load_mrsty.py
 
 ## Full Rebuild
 
-Total wall time: ~7 minutes on the reference machine (WSL2, fast memory profile).
+Total wall time: ~7.5 minutes on the reference machine (WSL2, fast memory profile).
 
 ```bash
 cd /mnt/d/medterm4ds
@@ -53,6 +55,9 @@ PYTHONPATH=src python3 scripts/build_clinical_relationship_tables.py \
 
 # 2. Enrich Table 1 with CUI/AUI/source_tty/semantic_types and build canonical_codes.csv (~2 minutes)
 PYTHONPATH=src python3 scripts/build_canonical_codes.py
+
+# 3. Build embedding_index.jsonl from canonical_codes.csv (~20 seconds)
+PYTHONPATH=src python3 scripts/build_embedding_index.py
 ```
 
 ### Selective rebuild
@@ -72,8 +77,10 @@ PYTHONPATH=src python3 scripts/build_canonical_codes.py --skip-enrich
 
 | Script | Produces | Notes |
 |--------|----------|-------|
+| `scripts/load_mrsty.py` | `mrsty` table in DuckDB | One-time. Loads UMLS MRSTY.RRF (3.9M rows, ~12s). |
 | `scripts/build_clinical_relationship_tables.py` | Tables 1, 2, 3 | Delegates Table 1 to `scripts/run_patient_friendly_review.py` |
 | `scripts/build_canonical_codes.py` | Enriched Table 1, canonical_codes.csv | Joins Table 1 against `mrconso` to populate CUI/AUI/source_tty, then groups by friendly name |
+| `scripts/build_embedding_index.py` | embedding_index.jsonl | Reads canonical_codes.csv and emits one JSON record per canonical with 4 vector texts plus metadata |
 
 ---
 
@@ -221,6 +228,83 @@ One canonical code per `(category, friendly_name)`. Use this to map any patient-
 - **lab**: prefer LNC (`lnc_shortest`). Fall back to SNOMED (`snomedct_lab_fallback`) when TUI is T034 or T059.
 - **medication**: prefer RXNORM; rank TTY=IN > MIN > SCDG > other (`rxnorm_in`/`rxnorm_min`/`rxnorm_scdg`/`rxnorm_other`). Fall back to SNOMED (`snomedct_medication_fallback`) when TUI is T121, T123, or T200.
 - **vaccine**: prefer CVX (`cvx_shortest`). Fall back to SNOMED (`snomedct_vaccine_fallback`) when the SNOMED concept shares a CUI with any CVX atom.
+
+---
+
+### `embedding_index.jsonl`
+
+Embedding-ready documents — one JSON record per canonical code. Each record carries 4 vector texts (for multi-vector retrieval) plus metadata for re-ranking and filtering. The model team embeds each vector field independently.
+
+**Schema** (per JSON record):
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `category` | string | `condition`, `lab`, `medication`, or `vaccine` |
+| `friendly_name` | string | The patient-friendly name from Table 1 (join key) |
+| `canonical.source` | string | Source vocabulary (`ICD10CM`, `LNC`, `RXNORM`, `CVX`, `SNOMEDCT_US`) |
+| `canonical.code` | string | The canonical code in the source vocabulary |
+| `canonical.tty` | string or null | TTY of the canonical atom in its source vocabulary |
+| `canonical.cui` | string or null | UMLS CUI of the canonical atom |
+| `canonical.name` | string or null | Preferred name of the canonical code in its source vocabulary |
+| `rule` | string | Canonical-selection rule (see canonical_codes.csv rules) |
+| `candidate_count` | integer | How many input codes in Table 1 shared this `(category, friendly_name)` |
+| `semantic_types` | array of string | UMLS TUIs (e.g., `["T047"]`) looked up via `mrsty` on the canonical CUI |
+| `atc` | object or null | (RXNORM only) ATC levels 1–5 with name; null when no ATC crosswalk exists |
+| `vectors.technical` | string | Preferred-term name in the source vocabulary (per-source preferred TTY: ICD10CM HT, SNOMED/CVX/CPT/HCPCS/ICD10PCS PT, LNC LN/LPN, RXNORM IN/MIN/SCDG/SCD) |
+| `vectors.synonyms` | array of string | Up to K=8 synonyms sharing the CUI, prioritized: MSH > MEDLINEPLUS > CHV > SNOMEDCT_US > ICD10CM > RXNORM > LNC > CPT/HCPCS/CVX > MTH > others. Excludes the technical name itself. |
+| `vectors.friendly` | string | The patient-friendly name (same as `friendly_name`) |
+| `vectors.hierarchy` | array of string | Source-specific 3-level ancestor chain (broadest first). ICD10CM: chapter + ancestors; SNOMEDCT_US: PAR/RB ancestors; LNC: LOINC CLASS; RXNORM: ATC level 2 → level 4 → level 5 with names. Empty array when no hierarchy exists. |
+
+**Coverage from the current build**:
+
+| Field | Coverage |
+|-------|----------|
+| `vectors.technical` | 100% |
+| `vectors.friendly` | 100% |
+| `vectors.synonyms` | 60.5% (codes that share a CUI with another atom) |
+| `vectors.hierarchy` | 48.6% (codes with a meaningful class/ancestor — LNC LA codes lack CLASS, etc.) |
+| `atc` | 6.7% of medication rows (RXNORM IN-level ATC coverage; SCDG/MIN rarely have direct ATC) |
+| `semantic_types` | 100% |
+
+**Sample record** (medication):
+
+```json
+{
+  "category": "medication",
+  "friendly_name": "Phenylephrine",
+  "canonical": {
+    "source": "RXNORM", "code": "8163", "tty": "IN",
+    "cui": "C0031469", "name": "phenylephrine"
+  },
+  "rule": "rxnorm_in",
+  "candidate_count": 58,
+  "semantic_types": ["T109", "T121"],
+  "atc": {
+    "atc_code": "R01AA04",
+    "atc_level1": "R", "atc_level2": "R01", "atc_level3": "R01A",
+    "atc_level4": "R01AA", "atc_level5": "R01AA04",
+    "atc_name": "phenylephrine"
+  },
+  "vectors": {
+    "technical": "phenylephrine",
+    "synonyms": [
+      "(R)-3-Hydroxy-alpha-((methylamino)methyl)benzenemethanol",
+      "Phenylephrine (substance)",
+      "Product containing phenylephrine (medicinal product)",
+      "Phenylephrine-containing product",
+      "..."
+    ],
+    "friendly": "Phenylephrine",
+    "hierarchy": [
+      "R01 (R01AA parent)",
+      "R01AA (R01AA04 parent)",
+      "R01AA04 — phenylephrine"
+    ]
+  }
+}
+```
+
+**Known limitation — exact-code recall**: This index is at the canonical grain (one vector set per friendly_name + category). A query like "T2DM with neuropathy" will match the canonical E11 (Diabetes Type 2) — it will not surface E11.40 (the specific subcode). If exact-code recall becomes the objective, expand the index to the clinically-addressable grain (~583K codes per the design discussion).
 
 ---
 
