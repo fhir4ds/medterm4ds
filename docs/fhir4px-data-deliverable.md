@@ -5,20 +5,28 @@ UMLS-derived tables for the fhir4px model. Produced by `medterm4ds` from a local
 - **Produced**: 2026-06-20
 - **medterm4ds version**: 0.0.1
 - **Source data**: `/mnt/d/medterm4ds/data/umls_current.duckdb` → `umls_2026aa.duckdb` (UMLS 2026AA release)
-- **Last commit**: (post-MRSTY SNOMED routing change)
+- **Last commit**: `b69f24a` (Add embedding index builder for canonical codes)
 
 ## Files
 
-| File | Rows | Size | Purpose |
-|------|------|------|---------|
-| `patient_friendly_names.csv` | 1,127,094 | 165 MB | Patient-friendly name for every active code across 8 source vocabularies |
-| `rxnorm_ingredient_decomposition.csv` | 125,894 | 15 MB | RxNorm product → ingredient(s) with ATC levels 1–5 |
-| `condition_medication_ingredient.csv` | 2,984,437 | 218 MB | Condition → medication ingredient (may_treat / may_prevent) |
-| `canonical_codes.csv` | 196,509 | 27 MB | One canonical code per (category, friendly_name); categories: condition, lab, medication, vaccine |
-| `embedding_index.jsonl` | 196,509 | 134 MB | Embedding-ready documents — one JSON record per canonical with 4 vector texts plus metadata |
+| File | Rows | Size | Last regenerated | Purpose |
+|------|------|------|------------------|---------|
+| `patient_friendly_names.csv` | 1,127,094 | 165 MB | 2026-06-20 | Patient-friendly name for every active code across 8 source vocabularies |
+| `rxnorm_ingredient_decomposition.csv` | 125,894 | 15 MB | 2026-06-15 | RxNorm product → ingredient(s) with ATC levels 1–5 |
+| `condition_medication_ingredient.csv` | 2,984,437 | 218 MB | 2026-06-15 | Condition → medication ingredient (may_treat / may_prevent) |
+| `canonical_codes.csv` | 196,509 | 27 MB | 2026-06-20 | One canonical code per (category, friendly_name); categories: condition, lab, medication, vaccine |
+| `embedding_index.jsonl` | 196,509 | 134 MB | 2026-06-20 | Embedding-ready documents — one JSON record per canonical with 4 vector texts plus metadata |
 
 CSV format: UTF-8, comma-delimited, double-quote text qualifier, header row.
 JSONL format: UTF-8, one JSON object per line.
+
+**Regeneration history**:
+
+- **2026-06-15**: initial build of Tables 1, 2, 3.
+- **2026-06-18**: added `canonical_codes.csv`; enriched Table 1 with `source_tty`/`cui`/`aui`.
+- **2026-06-20**: loaded MRSTY into DuckDB; re-routed SNOMED via TUI filter; added `semantic_types` column to Table 1; re-introduced SNOMED canonical candidates per category with TUI guard; added `category=vaccine` for CVX; regenerated Table 1 and canonical_codes.csv; added `embedding_index.jsonl`.
+
+Tables 2 and 3 still reflect the 2026-06-15 build. They are independent of MRSTY routing and canonical_codes changes; rerun `scripts/build_clinical_relationship_tables.py --tables 2 3` only if a UMLS refresh requires it.
 
 ---
 
