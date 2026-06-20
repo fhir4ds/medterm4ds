@@ -15,7 +15,7 @@ UMLS-derived tables for the fhir4px model. Produced by `medterm4ds` from a local
 | `rxnorm_ingredient_decomposition.csv` | 125,894 | 15 MB | 2026-06-15 | RxNorm product → ingredient(s) with ATC levels 1–5 |
 | `condition_medication_ingredient.csv` | 2,984,437 | 218 MB | 2026-06-15 | Condition → medication ingredient (may_treat / may_prevent) |
 | `canonical_codes.csv` | 196,509 | 27 MB | 2026-06-20 | One canonical code per (category, friendly_name); categories: condition, lab, medication, vaccine |
-| `embedding_index.jsonl` | 196,509 | 134 MB | 2026-06-20 | Embedding-ready documents — one JSON record per canonical with 4 vector texts plus metadata |
+| `embedding_index.jsonl` | 196,509 | 117 MB | 2026-06-20 | Embedding-ready documents — one JSON record per canonical with 4 vector texts plus metadata |
 
 CSV format: UTF-8, comma-delimited, double-quote text qualifier, header row.
 JSONL format: UTF-8, one JSON object per line.
@@ -24,7 +24,8 @@ JSONL format: UTF-8, one JSON object per line.
 
 - **2026-06-15**: initial build of Tables 1, 2, 3.
 - **2026-06-18**: added `canonical_codes.csv`; enriched Table 1 with `source_tty`/`cui`/`aui`.
-- **2026-06-20**: loaded MRSTY into DuckDB; re-routed SNOMED via TUI filter; added `semantic_types` column to Table 1; re-introduced SNOMED canonical candidates per category with TUI guard; added `category=vaccine` for CVX; regenerated Table 1 and canonical_codes.csv; added `embedding_index.jsonl`.
+- **2026-06-20 (early)**: loaded MRSTY into DuckDB; re-routed SNOMED via TUI filter; added `semantic_types` column to Table 1; re-introduced SNOMED canonical candidates per category with TUI guard; added `category=vaccine` for CVX; regenerated Table 1 and canonical_codes.csv; added `embedding_index.jsonl`.
+- **2026-06-20 (late)**: added `lat` column to `mrconso` (from MRCONSO.RRF); `embedding_index.jsonl` synonyms now filter to `LAT='ENG'`, dropping ~40% of non-English synonym atoms. File size 134 MB → 117 MB.
 
 Tables 2 and 3 still reflect the 2026-06-15 build. They are independent of MRSTY routing and canonical_codes changes; rerun `scripts/build_clinical_relationship_tables.py --tables 2 3` only if a UMLS refresh requires it.
 
@@ -37,11 +38,17 @@ Tables 2 and 3 still reflect the 2026-06-15 build. They are independent of MRSTY
 - `medterm4ds` repo at `/mnt/d/medterm4ds`
 - Python dependencies installed (`pip install -e .[mcp]` or equivalent)
 
-The `mrsty` table must be loaded before rebuild. One-time setup (~12 seconds):
+Two one-time schema enrichments are required before rebuild:
 
 ```bash
+# Load MRSTY (semantic types) — ~12 seconds
 python3 scripts/load_mrsty.py
+
+# Add the LAT (language) column to mrconso — ~10 seconds
+python3 scripts/load_mrconso_lat.py
 ```
+
+Both are idempotent and safe to re-run.
 
 ---
 
@@ -52,8 +59,9 @@ Total wall time: ~7.5 minutes on the reference machine (WSL2, fast memory profil
 ```bash
 cd /mnt/d/medterm4ds
 
-# 0. One-time: load MRSTY into the DuckDB (~12 seconds)
+# 0. One-time schema enrichments (skip if already done)
 python3 scripts/load_mrsty.py
+python3 scripts/load_mrconso_lat.py
 
 # 1. Build Tables 1, 2, 3 (~5 minutes)
 mkdir -p reports/fhir4px
@@ -86,6 +94,7 @@ PYTHONPATH=src python3 scripts/build_canonical_codes.py --skip-enrich
 | Script | Produces | Notes |
 |--------|----------|-------|
 | `scripts/load_mrsty.py` | `mrsty` table in DuckDB | One-time. Loads UMLS MRSTY.RRF (3.9M rows, ~12s). |
+| `scripts/load_mrconso_lat.py` | `lat` column on `mrconso` | One-time. Loads UMLS MRCONSO.RRF (18M rows, ~10s) and adds the LAT column to the existing `mrconso` table. Required for English-only synonym filtering. |
 | `scripts/build_clinical_relationship_tables.py` | Tables 1, 2, 3 | Delegates Table 1 to `scripts/run_patient_friendly_review.py` |
 | `scripts/build_canonical_codes.py` | Enriched Table 1, canonical_codes.csv | Joins Table 1 against `mrconso` to populate CUI/AUI/source_tty, then groups by friendly name |
 | `scripts/build_embedding_index.py` | embedding_index.jsonl | Reads canonical_codes.csv and emits one JSON record per canonical with 4 vector texts plus metadata |
@@ -259,7 +268,7 @@ Embedding-ready documents — one JSON record per canonical code. Each record ca
 | `semantic_types` | array of string | UMLS TUIs (e.g., `["T047"]`) looked up via `mrsty` on the canonical CUI |
 | `atc` | object or null | (RXNORM only) ATC levels 1–5 with name; null when no ATC crosswalk exists |
 | `vectors.technical` | string | Preferred-term name in the source vocabulary (per-source preferred TTY: ICD10CM HT, SNOMED/CVX/CPT/HCPCS/ICD10PCS PT, LNC LN/LPN, RXNORM IN/MIN/SCDG/SCD) |
-| `vectors.synonyms` | array of string | Up to K=8 synonyms sharing the CUI, prioritized: MSH > MEDLINEPLUS > CHV > SNOMEDCT_US > ICD10CM > RXNORM > LNC > CPT/HCPCS/CVX > MTH > others. Excludes the technical name itself. |
+| `vectors.synonyms` | array of string | Up to K=8 **English** synonyms sharing the CUI, prioritized: MSH > MEDLINEPLUS > CHV > SNOMEDCT_US > ICD10CM > RXNORM > LNC > CPT/HCPCS/CVX > MTH > others. Excludes the technical name itself. Non-English atoms (`LAT != 'ENG'`) are filtered out via the `lat` column on `mrconso`. |
 | `vectors.friendly` | string | The patient-friendly name (same as `friendly_name`) |
 | `vectors.hierarchy` | array of string | Source-specific 3-level ancestor chain (broadest first). ICD10CM: chapter + ancestors; SNOMEDCT_US: PAR/RB ancestors; LNC: LOINC CLASS; RXNORM: ATC level 2 → level 4 → level 5 with names. Empty array when no hierarchy exists. |
 
@@ -269,7 +278,7 @@ Embedding-ready documents — one JSON record per canonical code. Each record ca
 |-------|----------|
 | `vectors.technical` | 100% |
 | `vectors.friendly` | 100% |
-| `vectors.synonyms` | 60.5% (codes that share a CUI with another atom) |
+| `vectors.synonyms` | 60.4% (codes that share a CUI with another English atom) |
 | `vectors.hierarchy` | 48.6% (codes with a meaningful class/ancestor — LNC LA codes lack CLASS, etc.) |
 | `atc` | 6.7% of medication rows (RXNORM IN-level ATC coverage; SCDG/MIN rarely have direct ATC) |
 | `semantic_types` | 100% |

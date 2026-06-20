@@ -54,7 +54,8 @@ _SYNONYM_K = 8
 
 def _synonyms_sql() -> str:
     """For each (source, code, cui) in the canonical list, get all atoms sharing
-    the CUI. We'll dedupe and prioritize in Python."""
+    the CUI. Filter to English (LAT='ENG') so non-English sources (MSHCZE,
+    MSHRUS, LNC-ES-MX, SCTSPA, ...) don't pollute the synonym vectors."""
     return """
         WITH canon AS (
             SELECT
@@ -74,6 +75,7 @@ def _synonyms_sql() -> str:
             FROM canon c
             JOIN mrconso m ON m.CUI = c.cui
             WHERE m.SUPPRESS = 'N'
+              AND m.lat = 'ENG'
               AND m.STR IS NOT NULL AND m.STR != ''
               AND m.SAB IS NOT NULL
         )
