@@ -51,7 +51,6 @@ def main() -> int:
     con = duckdb.connect(str(db_path), read_only=False)
     try:
         # Add the column if missing.
-        cols = {row[1] for row in con.execute("PRAGMA table_info('mrconso')").fetchall()}
         # Note: PRAGMA table_info returns (cid, name, type, notnull, dflt_value, pk)
         col_names = {row[1] for row in con.execute("PRAGMA table_info('mrconso')").fetchall()}
         if "lat" not in col_names:

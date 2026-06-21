@@ -32,7 +32,6 @@ Usage:
 from __future__ import annotations
 
 import argparse
-import csv
 import json
 import sys
 import time
@@ -873,7 +872,7 @@ def main() -> int:
             for cat in ("condition", "lab", "medication", "procedure", "vaccine", "body_structure")
         }
         try:
-            counts: dict[str, int] = {cat: 0 for cat in category_files}
+            counts: dict[str, int] = dict.fromkeys(category_files, 0)
             with output_path.open("r", encoding="utf-8") as src:
                 for line in src:
                     r = json.loads(line)
@@ -882,7 +881,6 @@ def main() -> int:
                         category_files[cat].write(line)
                         counts[cat] += 1
             for cat, fh in category_files.items():
-                size = fh.tell()
                 fh.close()
                 p = output_path.parent / f"embedding_index_{cat}.jsonl"
                 size_mb = p.stat().st_size / (1024 * 1024)
