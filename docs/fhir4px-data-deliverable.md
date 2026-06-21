@@ -16,7 +16,7 @@ UMLS-derived tables for the fhir4px model. Produced by `medterm4ds` from a local
 | `condition_medication_ingredient.csv` | 2,984,437 | 218 MB | 2026-06-15 | Condition → medication ingredient (may_treat / may_prevent) |
 | `canonical_codes.csv` | 196,509 | 27 MB | 2026-06-20 | One canonical code per (category, friendly_name); categories: condition, lab, medication, vaccine |
 | `embedding_index.jsonl` | 196,509 | 117 MB | 2026-06-20 | Embedding-ready documents — one JSON record per **canonical** code (friendly-name grain) with 4 vector texts plus metadata |
-| `embedding_index_full.jsonl` | 623,043 | 422 MB | 2026-06-20 | Embedding-ready documents — one JSON record per **clinically-addressable** code (specific-code grain); superset of all category splits below |
+| `embedding_index_full.jsonl` | 623,043 | 424 MB | 2026-06-21 | Embedding-ready documents — one JSON record per **clinically-addressable** code (specific-code grain); superset of all category splits below |
 | `embedding_index_condition.jsonl` | 201,447 | 127 MB | 2026-06-20 | Condition-category split of the full index (ICD10CM + SNOMED conditions) |
 | `embedding_index_lab.jsonl` | 116,498 | 84 MB | 2026-06-20 | Lab-category split (LNC + SNOMED labs) |
 | `embedding_index_medication.jsonl` | 117,544 | 75 MB | 2026-06-20 | Medication-category split (RXNORM with all addressable TTYs + SNOMED substances) |
@@ -40,6 +40,11 @@ The embedding indices serve different retrieval goals:
 - **2026-06-20 (early)**: loaded MRSTY into DuckDB; re-routed SNOMED via TUI filter; added `semantic_types` column to Table 1; re-introduced SNOMED canonical candidates per category with TUI guard; added `category=vaccine` for CVX; regenerated Table 1 and canonical_codes.csv; added `embedding_index.jsonl`.
 - **2026-06-20 (late)**: added `lat` column to `mrconso` (from MRCONSO.RRF); `embedding_index.jsonl` synonyms now filter to `LAT='ENG'`, dropping ~40% of non-English synonym atoms. File size 134 MB → 117 MB.
 - **2026-06-20 (final)**: added `embedding_index_full.jsonl` — the clinically-addressable companion to `embedding_index.jsonl`. 546K codes (ICD10PCS leaf-only, SNOMED TUI-filtered, LNC LN-only, RXNORM IN/MIN/SCDG/SCD/SBD, plus ICD10CM/CPT/HCPCS/CVX all). ATC for SCD/SBD now resolved via Table 2 decomposition (10K → 28K meds with ATC).
+- **2026-06-21 (follow-up)**: applied fhir4px MEDTERM4DS_FOLLOWUP_CHANGES:
+  - ICD10PCS hierarchy/synonyms: cleaned the `@`-template format from HX atoms (now `Imaging - Veins - Computerized Tomography ...` in hierarchy; space-joined in synonyms). Verified: zero `@` symbols remain in any ICD10PCS record.
+  - ICD10PCS root section names ("Imaging", "Medical and Surgical", "Radiation Therapy", "Nuclear Medicine", ...) are now priority synonyms — they are the patient-friendly bucket names per the spec.
+  - LOINC CLASS abbreviation is replaced with a human-readable name in hierarchy (e.g., `MICRO` → `Microbiology`, `HEM/BC` → `Hematology`, `CHEM` → `Chemistry`, `ABXBACT` → `Antibacterial Susceptibility`). Readable name also prepended as a priority synonym.
+  - **Not implemented**: spec change #3 (LOINC parent group/panel concepts). PAR walks from LNC codes land on Metathesaurus part atoms that duplicate the CLASS info already surfaced. The LOINC group/panel structure is not in UMLS mrrel; would require loading LOINC source files (`Group.csv` / `MultiAxialGroup.csv`) into the DuckDB.
 - **2026-06-20 (spec)**: applied fhir4px MEDTERM4DS_INDEX_SPEC changes:
   - Added brand-name RxNorm TTYs (BN, PIN, SCDC, SBDC, SBDF, BPCK, GPCK) on top of existing IN/MIN/SCDG/SCD/SBD — total RxNORM rows grew from 46K to 83K.
   - Brand-name records carry the **generic ingredient** as `friendly_name` (already produced by the resolver) so brand-name lookups still resolve to the right concept.
@@ -47,7 +52,7 @@ The embedding indices serve different retrieval goals:
   - Added combination-drug individual ingredients as priority synonyms for RXNORM MIN/SCD/SBD/SCDG/SCDC/SBDC/SBDF/BPCK/GPCK records (sourced from Table 2 decomposition).
   - Added top-level `tty` field (also available as `code.tty`).
   - Added `body_structure` category for SNOMED anatomy TUIs (T023/T024/T025/T026/T029/T030/T031). 40K SNOMED codes newly addressable.
-  - Split the full index into per-category files: `embedding_index_{condition,lab,medication,procedure,vaccine,body_structure}.jsonl`. Total records 623K, 422 MB full / sum of category files.
+  - Split the full index into per-category files: `embedding_index_{condition,lab,medication,procedure,vaccine,body_structure}.jsonl`. Total records 623K, 424 MB full / sum of category files.
 
 Tables 2 and 3 still reflect the 2026-06-15 build. They are independent of MRSTY routing and canonical_codes changes; rerun `scripts/build_clinical_relationship_tables.py --tables 2 3` only if a UMLS refresh requires it.
 
@@ -401,9 +406,9 @@ Embedding-ready documents at the **clinically-addressable grain** — one JSON r
 | `atc` | object or null | (RXNORM only) ATC levels 1–5 with name. For IN: direct via shared CUI. For SCD/SBD/SCDG/MIN: via Table 2 decomposition (`rxnorm_ingredient_decomposition.csv`) |
 | `component` | string or null | (LNC only) LOINC COMPONENT — the clinically meaningful first axis (e.g., "Hemoglobin A1c/Hemoglobin.total"). Sourced from `mrsat.ATN='LOINC_COMPONENT'`. Also appears as `vectors.synonyms[0]`. |
 | `vectors.technical` | string | Preferred-term name (per-source TTY conventions, same as canonical index) |
-| `vectors.synonyms` | array of string | Up to K=8 English synonyms. Order: LOINC COMPONENT (LNC only) and combination-product individual ingredients (RXNORM only) first, then CUI-shared synonyms prioritized by source (MSH > MEDLINEPLUS > CHV > SNOMEDCT_US > ICD10CM > RXNORM > LNC > CPT/HCPCS/CVX > MTH > ATC). Excludes the technical name itself. |
+| `vectors.synonyms` | array of string | Up to K=8 English synonyms. Priority order (highest first): ICD10PCS root section names ("Imaging", "Medical and Surgical", "Radiation Therapy", ...) for ICD10PCS; LOINC CLASS readable name ("Microbiology", "Hematology", "Chemistry", ...) for LNC; LOINC COMPONENT (first axis) for LNC; combination-product individual ingredients for RXNORM combos; then CUI-shared synonyms prioritized by source (MSH > MEDLINEPLUS > CHV > SNOMEDCT_US > ICD10CM > RXNORM > LNC > CPT/HCPCS/CVX > MTH > ATC). For ICD10PCS, any `@`-template synonym from the HX atom is replaced with its space-joined cleaned form. Excludes the technical name itself. |
 | `vectors.friendly` | string | Patient-friendly name (same as `friendly_name`) |
-| `vectors.hierarchy` | array of string | Source-specific ancestor chain. ICD10CM/ICD10PCS: PAR/RB walk, code + name. SNOMEDCT_US: PAR/RB walk, name only. LNC: LOINC CLASS. RXNORM: ATC level 2 → level 4 → level 5. |
+| `vectors.hierarchy` | array of string | Source-specific ancestor chain. ICD10CM: PAR/RB walk, code + name. ICD10PCS: cleaned `@`-template flattened to ` - `-joined segments. SNOMEDCT_US: PAR/RB walk, name only. LNC: readable LOINC CLASS name (e.g., `Chemistry (CHEM)`). RXNORM: ATC level 2 → level 4 → level 5. |
 
 **Coverage from the current build**:
 

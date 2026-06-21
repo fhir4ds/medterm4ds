@@ -350,6 +350,136 @@ def _hierarchy_lnc_sql() -> str:
     """
 
 
+def _lnc_parents_sql() -> str:
+    """For each LNC code, walk PAR edges to find parent LNC codes and their
+    preferred names. These are LOINC group/panel concepts that may match a
+    query's broad bucket term (e.g., a parent panel like 'Acylcarnitine'
+    when the input is 'Octanoylcarnitine')."""
+    return """
+        WITH RECURSIVE target AS (
+            SELECT code, aui FROM (""" + _codes_sql() + """) AS t
+            WHERE source = 'LNC'
+        ),
+        walk AS (
+            SELECT code, aui, 0 AS depth FROM target
+            UNION ALL
+            SELECT w.code, parent.AUI, w.depth + 1
+            FROM walk w
+            JOIN mrrel r ON r.AUI1 = w.aui AND r.REL = 'PAR'
+            JOIN mrconso parent ON parent.AUI = r.AUI2
+                             AND parent.SAB = 'LNC'
+                             AND parent.SUPPRESS = 'N'
+            WHERE w.depth < 2
+        ),
+        ranked AS (
+            SELECT w.code, w.depth, m.CODE AS parent_code, m.STR,
+                   ROW_NUMBER() OVER (PARTITION BY w.code, w.depth ORDER BY m.AUI) AS rn
+            FROM walk w
+            JOIN mrconso m ON m.AUI = w.aui AND m.SAB = 'LNC' AND m.TTY = 'LC'
+            WHERE w.depth > 0
+        )
+        SELECT code, depth, parent_code, STR FROM ranked WHERE rn = 1
+    """
+
+
+# LOINC CLASS abbreviation -> human-readable name. Used to surface readable
+# class names as hierarchy synonyms for LNC records. Built from the
+# top-30 CLASS values in the current build plus a curated handful of
+# less-common but clinically meaningful ones.
+_LNC_CLASS_READABLE: dict[str, str] = {
+    "MICRO": "Microbiology",
+    "CHEM": "Chemistry",
+    "DRUG/TOX": "Drug and Toxicology",
+    "RAD": "Radiology",
+    "ALLERGY": "Allergy",
+    "CHAL": "Challenge Tests",
+    "DOC.ONTOLOGY": "Document Ontology",
+    "PHENX": "PHENX Surveys",
+    "SERO": "Serology",
+    "LABORDERS.ONTOLOGY": "Lab Order Ontology",
+    "SURVEY.PROMIS": "PROMIS Survey",
+    "HEM/BC": "Hematology",
+    "ABXBACT": "Antibacterial Susceptibility",
+    "CELLMARK": "Cell Marker",
+    "SURVEY.GNHLTH": "General Health Survey",
+    "MOLPATH.MUT": "Molecular Pathology Mutations",
+    "BLDBK": "Blood Bank",
+    "COAG": "Coagulation",
+    "SURVEY.CMS": "CMS Survey",
+    "H&P.HX": "History and Physical",
+    "PULM": "Pulmonary",
+    "PANEL.SURVEY.CMS": "CMS Survey Panel",
+    "SURVEY.MDS": "MDS Survey",
+    "CARD.US": "Cardiac Ultrasound",
+    "OB.US": "Obstetric Ultrasound",
+    "PATH": "Pathology",
+    "PANEL.PHENX": "PHENX Panel",
+    "MOLPATH": "Molecular Pathology",
+    "UA": "Urinalysis",
+    "HLA": "HLA Typing",
+    "BD": "Blood Gas",
+    "BP": "Blood Pressure",
+    "BDYWGT.ATOM": "Body Weight",
+    "BDYTMP.ATOM": "Body Temperature",
+    "HRTRATE.ATOM": "Heart Rate",
+    "RESP.ATOM": "Respiratory Rate",
+    "BDYOBS.ATOM": "Body Observation",
+    "PAIN.ATOM": "Pain",
+    "VISION.ATOM": "Vision",
+}
+
+
+def _lnc_class_readable(cls: str | None) -> str | None:
+    """Return a human-readable LOINC CLASS name, or the original CLASS if
+    no mapping is known."""
+    if not cls:
+        return None
+    return _LNC_CLASS_READABLE.get(cls, cls)
+
+
+# Section header prefixes that appear as the first axis of ICD10PCS long
+# names. These are surfaced as clean synonyms (they ARE the patient-friendly
+# bucket names: "Imaging", "Radiation Therapy", "Medical and Surgical").
+_ICD10PCS_ROOT_SECTIONS = (
+    "Medical and Surgical",
+    "Medical",
+    "Surgical",
+    "Imaging",
+    "Mental Health",
+    "Radiation Therapy",
+    "Nuclear Medicine",
+    "Physical Rehabilitation and Diagnostic Audiology",
+    "Chiropractic",
+    "Administration of Medicine",
+    "Measurement",
+    "Extracorporeal Assistance and Performance",
+    "Osteopathic",
+    "Other Procedures",
+)
+
+
+def _clean_icd10pcs_template(text: str | None) -> tuple[list[str], str | None]:
+    """Flatten an ICD10PCS `@`-delimited template into clean segments.
+
+    Returns (segments, root_section). `segments` is the list of meaningful
+    nodes (drops empty/None placeholders). `root_section` is the first
+    segment if it matches a known ICD10PCS root section name (e.g.,
+    "Imaging", "Radiation Therapy"), else None.
+
+    Example:
+      'Imaging @ Veins @ Computerized Tomography (CT Scan) @ Superior Vena Cava @ High Osmolar @ None @ None'
+      -> (['Imaging', 'Veins', 'Computerized Tomography (CT Scan)',
+           'Superior Vena Cava', 'High Osmolar'],
+          'Imaging')
+    """
+    if not text or "@" not in text:
+        return [], None
+    raw_segments = [s.strip() for s in text.split("@")]
+    segments = [s for s in raw_segments if s and s != "None"]
+    root = segments[0] if segments and segments[0] in _ICD10PCS_ROOT_SECTIONS else None
+    return segments, root
+
+
 def _hierarchy_rxnorm_sql(decomposition_csv: str) -> str:
     """For RXNORM, look up ATC two ways:
     - IN-level (and any code sharing a CUI with an ATC atom): direct via mrconso.
@@ -540,6 +670,13 @@ def main() -> int:
             if cls:
                 hier_lnc[code] = cls
         print(f"  LNC: {len(hier_lnc):,} codes with CLASS")
+        # Note: LOINC group/panel concepts (e.g., "Acylcarnitines" as a parent
+        # of specific acylcarnitine tests) are NOT available in UMLS mrrel.
+        # Walking PAR from a LNC code yields Metathesaurus part concepts
+        # (MTHU atoms like "Chemistry"), which duplicate the CLASS info we
+        # already surface. Implementing spec change #3 fully would require
+        # loading the LOINC source files (Group.csv / MultiAxialGroup.csv)
+        # into the DuckDB.
 
         # RXNORM ATC: pick one row per code (first by ATC code).
         atc_by_code: dict[str, dict[str, str]] = {}
@@ -573,14 +710,34 @@ def main() -> int:
                 levels = sorted(hier_icd.get(code, []), key=lambda x: x["depth"])
                 return [f"{lv['name']} ({lv['code']})" for lv in reversed(levels)]
             if source == "ICD10PCS":
+                # ICD10PCS ancestors carry the @ template format. Clean each
+                # segment, drop None placeholders. If a hierarchy entry
+                # doesn't have @, keep it as-is.
                 levels = sorted(hier_icdpcs.get(code, []), key=lambda x: x["depth"])
-                return [f"{lv['name']} ({lv['code']})" for lv in reversed(levels)]
+                out: list[str] = []
+                for lv in reversed(levels):
+                    name = lv["name"]
+                    if "@" in name:
+                        segments, _root = _clean_icd10pcs_template(name)
+                        if segments:
+                            # Drop the trailing "(CODE)" since the segments
+                            # are the meaningful part. The ICD10PCS code is
+                            # already in the index — no need to repeat.
+                            out.append(" - ".join(segments))
+                    else:
+                        out.append(f"{name} ({lv['code']})")
+                return out
             if source == "SNOMEDCT_US":
                 levels = sorted(hier_snomed.get(code, []), key=lambda x: x["depth"])
                 return [lv["name"] for lv in reversed(levels)]
             if source == "LNC":
+                # LNC hierarchy: just the readable CLASS name. Parent panels/
+                # groups are not in UMLS mrrel (would need LOINC source files).
                 cls = hier_lnc.get(code)
-                return [cls] if cls else []
+                if not cls:
+                    return []
+                readable = _lnc_class_readable(cls)
+                return [f"{readable} ({cls})" if readable != cls else cls]
             if source == "RXNORM":
                 atc = atc_by_code.get(code)
                 if not atc:
@@ -609,13 +766,66 @@ def main() -> int:
                 atc = atc_by_code.get(code) if source == "RXNORM" else None
                 sem_types = sem_by_key.get(key, [])
 
-                # For LOINC, also surface the COMPONENT as a top-level field
-                # (it's already in synonyms[0], but having it explicit helps
-                # consumers that want to display "Component: X" without
-                # parsing the full 6-axis name).
-                component = (
-                    syns[0] if (source == "LNC" and syns) else None
-                )
+                # Spec follow-up: surface readable LOINC CLASS name and
+                # ICD10PCS root section as priority synonyms (prepended,
+                # before the standard CUI-shared set). These are the
+                # patient-friendly "bucket" names that BM25 struggles to
+                # extract from full noisy strings.
+                priority_synonyms: list[str] = []
+                if source == "LNC":
+                    cls = hier_lnc.get(code)
+                    if cls:
+                        readable = _lnc_class_readable(cls)
+                        if readable and readable != cls:
+                            priority_synonyms.append(readable)
+                if source == "ICD10PCS" and hierarchy:
+                    # The first hierarchy entry after build_hierarchy is the
+                    # broadest ancestor. Extract the root section from it.
+                    first_hier = hierarchy[0]
+                    # build_hierarchy joins @ segments with " - ", so the
+                    # root section is the first segment.
+                    root_segment = first_hier.split(" - ")[0].strip()
+                    if root_segment in _ICD10PCS_ROOT_SECTIONS:
+                        priority_synonyms.append(root_segment)
+
+                # Clean @-template synonyms from ICD10PCS HX atoms. The HX
+                # atom shares a CUI with the PT atom and gets pulled into
+                # the synonym list, but its 'A @ B @ None @ C' format is
+                # noise for BM25. Replace each @ synonym with its cleaned
+                # segment-joined version (dedupe against the technical
+                # name and other synonyms to avoid repetition).
+                if source == "ICD10PCS":
+                    cleaned_syns: list[str] = []
+                    for s in syns:
+                        if "@" in s:
+                            segments, _root = _clean_icd10pcs_template(s)
+                            if segments:
+                                cleaned = " ".join(segments)
+                                if (cleaned.lower() not in
+                                        {c.lower() for c in cleaned_syns}
+                                    and cleaned.lower() != (tech or "").lower()):
+                                    cleaned_syns.append(cleaned)
+                        else:
+                            cleaned_syns.append(s)
+                    syns = cleaned_syns
+
+                # Dedupe priority synonyms against the existing set, then
+                # prepend (so they appear before the standard CUI-shared
+                # synonyms in the K=8 list).
+                existing_lower = {s.lower() for s in syns}
+                existing_lower.add(tech.lower() if tech else "")
+                extra = [s for s in priority_synonyms if s.lower() not in existing_lower]
+                syns = extra + syns
+                # Re-apply the K=8 cap.
+                if len(syns) > _SYNONYM_K:
+                    syns = syns[:_SYNONYM_K]
+
+                # For LOINC, also surface the COMPONENT as a top-level field.
+                # Parse it from technical_name (the LN long name) — the
+                # first segment before the first ':'.
+                component = None
+                if source == "LNC" and tech and ":" in tech:
+                    component = tech.split(":")[0].strip() or None
 
                 record = {
                     "category": t["category"],

@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Applied fhir4px MEDTERM4DS_FOLLOWUP_CHANGES to `scripts/build_embedding_index_full.py`:
+  - ICD10PCS hierarchy entries are cleaned: the `@`-template format is flattened to `Imaging - Veins - Computerized Tomography ...`. Same for ICD10PCS synonyms — the HX atom's `@`-format string is replaced with its space-joined cleaned form. Verified: zero `@` symbols remain in any ICD10PCS hierarchy or synonym.
+  - ICD10PCS root section names ("Imaging", "Medical and Surgical", "Radiation Therapy", etc.) are surfaced as priority synonyms — these are the patient-friendly bucket names per the spec.
+  - LOINC CLASS abbreviation is replaced with a human-readable name in hierarchy (e.g., `MICRO` → `Microbiology`, `HEM/BC` → `Hematology`, `CHEM` → `Chemistry`). The readable name is also prepended as a priority synonym. Curated mapping for the top-30 CLASS values plus common vital-sign `.ATOM` classes.
+  - Spec change #3 (LOINC parent group/panel concepts) was investigated but not implemented: PAR walks from LNC codes land on Metathesaurus part atoms (e.g., MTHU "Chemistry") which duplicate the CLASS info already surfaced. The LOINC group/panel structure (e.g., "Acylcarnitines" as a parent of specific acylcarnitine tests) is not in UMLS mrrel; implementing change #3 would require loading the LOINC source files (Group.csv / MultiAxialGroup.csv) into the DuckDB.
 - Applied fhir4px MEDTERM4DS_INDEX_SPEC changes to `scripts/build_embedding_index_full.py`. The full index grows from 546K to 623K records and now produces per-category splits:
   - RXNORM TTY filter expanded to include BN, PIN, SCDC, SBDC, SBDF, BPCK, GPCK on top of IN/MIN/SCDG/SCD/SBD. Brand-name records (BN/SBDC/SBDF/BPCK/SBD) carry the **generic ingredient** as `friendly_name` via the resolver crosswalk — e.g., BN "Lastacaft" has friendly_name "Alcaftadine".
   - LOINC COMPONENT added as `vectors.synonyms[0]` for LNC records (sourced from `mrsat.ATN='LOINC_COMPONENT'`) and surfaced as a top-level `component` field.
