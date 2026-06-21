@@ -16,13 +16,15 @@ UMLS-derived tables for the fhir4px model. Produced by `medterm4ds` from a local
 | `condition_medication_ingredient.csv` | 2,984,437 | 218 MB | 2026-06-15 | Condition → medication ingredient (may_treat / may_prevent) |
 | `canonical_codes.csv` | 196,509 | 27 MB | 2026-06-20 | One canonical code per (category, friendly_name); categories: condition, lab, medication, vaccine |
 | `embedding_index.jsonl` | 196,509 | 117 MB | 2026-06-20 | Embedding-ready documents — one JSON record per **canonical** code (friendly-name grain) with 4 vector texts plus metadata |
-| `embedding_index_full.jsonl` | 623,043 | 424 MB | 2026-06-21 | Embedding-ready documents — one JSON record per **clinically-addressable** code (specific-code grain); superset of all category splits below |
+| `embedding_index_full.jsonl` | 630,772 | 428 MB | 2026-06-21 | Embedding-ready documents — one JSON record per **clinically-addressable** code (specific-code grain); superset of all category splits below |
 | `embedding_index_condition.jsonl` | 201,447 | 127 MB | 2026-06-20 | Condition-category split of the full index (ICD10CM + SNOMED conditions) |
 | `embedding_index_lab.jsonl` | 116,498 | 84 MB | 2026-06-20 | Lab-category split (LNC + SNOMED labs) |
 | `embedding_index_medication.jsonl` | 117,544 | 75 MB | 2026-06-20 | Medication-category split (RXNORM with all addressable TTYs + SNOMED substances) |
 | `embedding_index_procedure.jsonl` | 147,268 | 116 MB | 2026-06-20 | Procedure-category split (ICD10PCS + CPT + HCPCS + SNOMED procedures) |
 | `embedding_index_vaccine.jsonl` | 291 | 0.2 MB | 2026-06-20 | Vaccine-category split (CVX + SNOMED vaccines) |
 | `embedding_index_body_structure.jsonl` | 39,995 | 23 MB | 2026-06-20 | Body-structure-category split (SNOMED anatomy: T023/T024/T025/T026/T029/T030/T031) |
+| `valueset_2.16.840.1.113762.1.4.1267.23_patient_friendly.csv` | 231 | 33 KB | 2026-06-21 | Patient-friendly names for the Encounter Type ValueSet (2.16.840.1.113762.1.4.1267.23-20250510); 231 of 233 codes (99.1%) — 2 misses are obsolete/not-in-DB |
+| `embedding_index_valueset_encounter_type.jsonl` | 231 | 0.2 MB | 2026-06-21 | Per-ValueSet embedding index — filters `embedding_index_full.jsonl` to the 231 encounter-type codes |
 
 CSV format: UTF-8, comma-delimited, double-quote text qualifier, header row.
 JSONL format: UTF-8, one JSON object per line.
@@ -40,6 +42,8 @@ The embedding indices serve different retrieval goals:
 - **2026-06-20 (early)**: loaded MRSTY into DuckDB; re-routed SNOMED via TUI filter; added `semantic_types` column to Table 1; re-introduced SNOMED canonical candidates per category with TUI guard; added `category=vaccine` for CVX; regenerated Table 1 and canonical_codes.csv; added `embedding_index.jsonl`.
 - **2026-06-20 (late)**: added `lat` column to `mrconso` (from MRCONSO.RRF); `embedding_index.jsonl` synonyms now filter to `LAT='ENG'`, dropping ~40% of non-English synonym atoms. File size 134 MB → 117 MB.
 - **2026-06-20 (final)**: added `embedding_index_full.jsonl` — the clinically-addressable companion to `embedding_index.jsonl`. 546K codes (ICD10PCS leaf-only, SNOMED TUI-filtered, LNC LN-only, RXNORM IN/MIN/SCDG/SCD/SBD, plus ICD10CM/CPT/HCPCS/CVX all). ATC for SCD/SBD now resolved via Table 2 decomposition (10K → 28K meds with ATC).
+- **2026-06-21 (valueset)**: added per-ValueSet lookup and index files for the Encounter Type ValueSet (2.16.840.1.113762.1.4.1267.23-20250510). `valueset_*_patient_friendly.csv` carries patient-friendly names for 231 of 233 codes (99.1% — 2 misses: 1 obsolete, 1 sentinel `0xFFFFFFFF` placeholder). `embedding_index_valueset_encounter_type.jsonl` filters the full index to the same 231 codes for embedding-based retrieval. Built with the new `scripts/filter_embedding_index.py` (reusable for any (source, code) list).
+  - Also expanded the SNOMED procedure TUI set to include T058 (Health Care Activity) — covers patient encounters, evaluations, care-plan activities. 7.7K new SNOMED codes addressed; full index grew from 623K to 631K. Without T058 the Encounter Type ValueSet index would miss 60 of its 231 codes.
 - **2026-06-21 (follow-up)**: applied fhir4px MEDTERM4DS_FOLLOWUP_CHANGES:
   - ICD10PCS hierarchy/synonyms: cleaned the `@`-template format from HX atoms (now `Imaging - Veins - Computerized Tomography ...` in hierarchy; space-joined in synonyms). Verified: zero `@` symbols remain in any ICD10PCS record.
   - ICD10PCS root section names ("Imaging", "Medical and Surgical", "Radiation Therapy", "Nuclear Medicine", ...) are now priority synonyms — they are the patient-friendly bucket names per the spec.
@@ -129,6 +133,7 @@ PYTHONPATH=src python3 scripts/build_canonical_codes.py --skip-enrich
 | `scripts/build_canonical_codes.py` | Enriched Table 1, canonical_codes.csv | Joins Table 1 against `mrconso` to populate CUI/AUI/source_tty, then groups by friendly name |
 | `scripts/build_embedding_index.py` | embedding_index.jsonl | Reads canonical_codes.csv and emits one JSON record per canonical with 4 vector texts plus metadata |
 | `scripts/build_embedding_index_full.py` | embedding_index_full.jsonl | Reads patient_friendly_names.csv (Table 1), applies per-source filters (ICD10PCS leaf-only, SNOMED TUI-filtered, LNC LN-only, RXNORM IN/MIN/SCDG/SCD/SBD), and emits one JSON record per addressable code with the same 4 vector texts plus metadata |
+| `scripts/filter_embedding_index.py` | (any output filename) | Filters an existing embedding index JSONL to a specific list of (source, code) pairs. Input: a CSV with `source` and `code` columns. Use to produce per-ValueSet indices like `embedding_index_valueset_encounter_type.jsonl`. |
 
 ---
 
@@ -366,13 +371,13 @@ Embedding-ready documents at the **clinically-addressable grain** — one JSON r
 |--------|--------|----------------|
 | ICD10CM | (none — all codes) | 98,506 |
 | ICD10PCS | leaf-only (codes with no `PAR`/`RB` children — drops intermediate hierarchy nodes) | 79,512 |
-| SNOMEDCT_US | TUI-filtered: must have a TUI in condition/lab/procedure/medication/body_structure sets OR a CVX crosswalk. Bacteria, devices, occupations, pure chemicals/proteins (without T121) are excluded. | 234,138 |
+| SNOMEDCT_US | TUI-filtered: must have a TUI in condition/lab/procedure/medication/body_structure sets OR a CVX crosswalk. Bacteria, devices, occupations, pure chemicals/proteins (without T121) are excluded. | 241,867 |
 | LNC | TTY=`LN` only (lab tests; excludes parts `LPN`, answers `LA`, display names) | 104,334 |
 | RXNORM | TTY in `{IN, MIN, SCDG, SCD, SBD, BN, PIN, SCDC, SBDC, SBDF, BPCK, GPCK}` (excludes pure synonyms PSN/SY/TMSY, dose forms DF/DFG, and the "P"-suffix precision variants SCDGP/SCDFP/SBDFP) | 83,112 |
 | CPT | (all) | 15,468 |
 | HCPCS | (all) | 7,685 |
 | CVX | (all) | 288 |
-| **Total** | | **623,043** |
+| **Total** | | **630,772** |
 
 **SNOMED TUI sets used for filtering and categorization** (mirrors `_SNOMED_TUI_TARGETS` in `src/medterm4ds/engines/duckdb/engine.py`):
 
@@ -380,7 +385,7 @@ Embedding-ready documents at the **clinically-addressable grain** — one JSON r
 |----------|------|
 | condition | T019 (Congenital Abnormality), T020 (Acquired Abnormality), T037 (Injury or Poisoning), T046 (Pathologic Function), T047 (Disease or Syndrome), T048 (Mental or Behavioral Dysfunction), T049 (Cell or Molecular Dysfunction), T190 (Anatomical Abnormality), T191 (Neoplastic Process) |
 | lab | T034 (Laboratory or Test Result), T059 (Laboratory Procedure) |
-| procedure | T060 (Diagnostic Procedure), T061 (Therapeutic or Preventive Procedure), T062 (Research Activity), T063 (Molecular Biology Research Technique) |
+| procedure | T058 (Health Care Activity — includes patient encounters, evaluations, care-plan activities), T060 (Diagnostic Procedure), T061 (Therapeutic or Preventive Procedure), T062 (Research Activity), T063 (Molecular Biology Research Technique) |
 | medication | T121 (Pharmacologic Substance), T123 (Biologically Active Substance), T200 (Clinical Drug) |
 | vaccine | (no TUI — detected via CVX crosswalk) |
 | body_structure | T023 (Body Part, Organ, or Organ Component), T024 (Tissue), T025 (Cell), T026 (Cell Component), T029 (Body Location or Region), T030 (Body Space or Junction), T031 (Body Substance) |

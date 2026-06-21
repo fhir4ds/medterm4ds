@@ -50,7 +50,7 @@ DEFAULT_OUTPUT = Path("reports/fhir4px/embedding_index_full.jsonl")
 # condition > lab > procedure > medication > vaccine.
 _SNOMED_CONDITION_TUIS = ("T019", "T020", "T037", "T046", "T047", "T048", "T049", "T190", "T191")
 _SNOMED_LAB_TUIS = ("T034", "T059")
-_SNOMED_PROCEDURE_TUIS = ("T060", "T061", "T062", "T063")
+_SNOMED_PROCEDURE_TUIS = ("T058", "T060", "T061", "T062", "T063")
 _SNOMED_MEDICATION_TUIS = ("T121", "T123", "T200")
 # Body structure TUIs (anatomy). Surfaced as their own category per the
 # fhir4px spec — useful for clinical NLP queries about anatomical sites.
@@ -124,7 +124,7 @@ def _codes_sql() -> str:
                             SELECT 1 FROM mrsty m WHERE m.cui = pf.cui
                               AND m.tui IN ('T019','T020','T037','T046','T047','T048','T049','T190','T191',
                                             'T034','T059',
-                                            'T060','T061','T062','T063',
+                                            'T058','T060','T061','T062','T063',
                                             'T121','T123','T200',
                                             'T023','T024','T025','T026','T029','T030','T031')
                         )
@@ -159,7 +159,7 @@ def _codes_sql() -> str:
                             THEN 'condition'
                         WHEN EXISTS (SELECT 1 FROM mrsty m WHERE m.cui = t.cui AND m.tui IN ('T034','T059'))
                             THEN 'lab'
-                        WHEN EXISTS (SELECT 1 FROM mrsty m WHERE m.cui = t.cui AND m.tui IN ('T060','T061','T062','T063'))
+                        WHEN EXISTS (SELECT 1 FROM mrsty m WHERE m.cui = t.cui AND m.tui IN ('T058','T060','T061','T062','T063'))
                             THEN 'procedure'
                         WHEN EXISTS (SELECT 1 FROM mrsty m WHERE m.cui = t.cui AND m.tui IN ('T121','T123','T200'))
                             THEN 'medication'

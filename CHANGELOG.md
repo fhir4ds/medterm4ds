@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Added `scripts/filter_embedding_index.py` to filter an existing embedding index JSONL to a specific list of (source, code) pairs. Reads a CSV with `source` and `code` columns; useful for producing per-ValueSet indices on demand.
+- Generated the Encounter Type ValueSet lookup and index: `valueset_2.16.840.1.113762.1.4.1267.23_patient_friendly.csv` (231 of 233 codes — 99.1% — patient-friendly name coverage) and `embedding_index_valueset_encounter_type.jsonl` (231 records filtered from the full index, 0.2 MB).
+- Added T058 (Health Care Activity) to the SNOMED procedure TUI set in `scripts/build_embedding_index_full.py`. Adds 7.7K new SNOMED codes covering patient encounters, evaluations, and care-plan activities. Without this, 60 codes in the Encounter Type ValueSet were missing from the index. Full index grew from 623K to 631K records.
 - Applied fhir4px MEDTERM4DS_FOLLOWUP_CHANGES to `scripts/build_embedding_index_full.py`:
   - ICD10PCS hierarchy entries are cleaned: the `@`-template format is flattened to `Imaging - Veins - Computerized Tomography ...`. Same for ICD10PCS synonyms — the HX atom's `@`-format string is replaced with its space-joined cleaned form. Verified: zero `@` symbols remain in any ICD10PCS hierarchy or synonym.
   - ICD10PCS root section names ("Imaging", "Medical and Surgical", "Radiation Therapy", etc.) are surfaced as priority synonyms — these are the patient-friendly bucket names per the spec.
