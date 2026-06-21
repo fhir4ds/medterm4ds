@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- Applied fhir4px MEDTERM4DS_INDEX_SPEC changes to `scripts/build_embedding_index_full.py`. The full index grows from 546K to 623K records and now produces per-category splits:
+  - RXNORM TTY filter expanded to include BN, PIN, SCDC, SBDC, SBDF, BPCK, GPCK on top of IN/MIN/SCDG/SCD/SBD. Brand-name records (BN/SBDC/SBDF/BPCK/SBD) carry the **generic ingredient** as `friendly_name` via the resolver crosswalk — e.g., BN "Lastacaft" has friendly_name "Alcaftadine".
+  - LOINC COMPONENT added as `vectors.synonyms[0]` for LNC records (sourced from `mrsat.ATN='LOINC_COMPONENT'`) and surfaced as a top-level `component` field.
+  - Combination-drug individual ingredients added as priority synonyms for RXNORM MIN/SCD/SBD/SCDG/SCDC/SBDC/SBDF/BPCK/GPCK records (sourced from Table 2 decomposition). A query mentioning only one ingredient of a combination product can now match.
+  - Added top-level `tty` field (also kept under `code.tty`).
+  - Added `body_structure` category for SNOMED anatomy TUIs (T023/T024/T025/T026/T029/T030/T031). 40K SNOMED anatomy codes newly addressable.
+  - Split the full index into per-category files alongside the main full index: `embedding_index_{condition,lab,medication,procedure,vaccine,body_structure}.jsonl`.
 - Added `scripts/build_embedding_index_full.py` to produce `reports/fhir4px/embedding_index_full.jsonl` — the clinically-addressable companion to `embedding_index.jsonl`. Reads Table 1 (patient_friendly_names.csv) and emits one JSON record per addressable code: ICD10CM all 98K, ICD10PCS leaf-only ~80K (codes with no PAR/RB children), SNOMED TUI-filtered ~194K (condition/lab/procedure/medication/vaccine TUIs, plus CVX crosswalk), LNC TTY=LN only 104K, RXNORM TTY in {IN,MIN,SCDG,SCD,SBD} 46K, CPT/HCPCS/CVX all. Same 4-vector schema as the canonical index, plus a new `procedure` category for ICD10PCS/CPT/HCPCS/SNOMED procedures. ATC for SCD/SBD resolved via Table 2 decomposition (rxnorm_ingredient_decomposition.csv) since has_ingredient edges in this UMLS build don't directly link IN to SCD. 546K records, 361 MB, ~43s build.
 - Added `scripts/load_mrconso_lat.py` to add a `lat` column to the existing `mrconso` table, populated from the LAT field in UMLS MRCONSO.RRF. One-time schema enrichment (~10s), idempotent. Result: 59.5% of atoms are ENG; the remaining 40% are SPA, POR, FRE, DUT, CZE, JPN, RUS, GER, ITA, POL, etc.
 - Updated `scripts/build_embedding_index.py` to filter synonyms to `lat='ENG'`. Non-English atoms (MSHCZE, MSHRUS, LNC-ES-MX, SCTSPA, etc.) are no longer included in synonym vectors. Embedding index file size drops from 134 MB to 117 MB; synonym coverage 60.5% → 60.4% (negligible loss, since the dropped atoms were rarely in the top-K by source priority anyway).

@@ -53,8 +53,24 @@ _SNOMED_CONDITION_TUIS = ("T019", "T020", "T037", "T046", "T047", "T048", "T049"
 _SNOMED_LAB_TUIS = ("T034", "T059")
 _SNOMED_PROCEDURE_TUIS = ("T060", "T061", "T062", "T063")
 _SNOMED_MEDICATION_TUIS = ("T121", "T123", "T200")
+# Body structure TUIs (anatomy). Surfaced as their own category per the
+# fhir4px spec — useful for clinical NLP queries about anatomical sites.
+_SNOMED_BODY_STRUCTURE_TUIS = (
+    "T023",  # Body Part, Organ, or Organ Component
+    "T024",  # Tissue
+    "T025",  # Cell
+    "T026",  # Cell Component
+    "T029",  # Body Location or Region
+    "T030",  # Body Space or Junction
+    "T031",  # Body Substance
+)
 
+# Source priority for synonyms — LNC_COMPONENT and RXNORM_ING are surfaced
+# first (highest priority, negative) since they are clean clinical signals
+# that BM25 struggles to extract from the full noisy strings.
 _SYNONYM_SOURCE_PRIORITY = {
+    "LNC_COMPONENT": -1,
+    "RXNORM_ING": -1,
     "MSH": 0, "MEDLINEPLUS": 1, "CHV": 2, "SNOMEDCT_US": 3, "ICD10CM": 4,
     "RXNORM": 5, "LNC": 6, "CPT": 7, "HCPCS": 7, "CVX": 7, "MTH": 8, "ATC": 9,
 }
@@ -99,8 +115,9 @@ def _codes_sql() -> str:
                     )
                 )
                 -- SNOMEDCT_US: TUI-filtered (any condition/lab/procedure/
-                -- medication TUI, OR a CVX crosswalk). Body parts, bacteria,
-                -- devices, pure chemicals/proteins are excluded.
+                -- medication/body_structure TUI, OR a CVX crosswalk).
+                -- Bacteria, devices, pure chemicals/proteins, occupations are
+                -- excluded.
                 OR (
                     pf.source = 'SNOMEDCT_US'
                     AND (
@@ -109,7 +126,8 @@ def _codes_sql() -> str:
                               AND m.tui IN ('T019','T020','T037','T046','T047','T048','T049','T190','T191',
                                             'T034','T059',
                                             'T060','T061','T062','T063',
-                                            'T121','T123','T200')
+                                            'T121','T123','T200',
+                                            'T023','T024','T025','T026','T029','T030','T031')
                         )
                         OR EXISTS (
                             SELECT 1
@@ -120,8 +138,11 @@ def _codes_sql() -> str:
                 )
                 -- LNC: TTY='LN' (actual lab tests; exclude parts/answers).
                 OR (pf.source = 'LNC' AND pf.source_tty = 'LN')
-                -- RXNORM: IN, MIN, SCDG, SCD, SBD.
-                OR (pf.source = 'RXNORM' AND pf.source_tty IN ('IN','MIN','SCDG','SCD','SBD'))
+                -- RXNORM: IN, MIN, SCDG, SCD, SBD, plus brand/component/pack codes.
+                OR (pf.source = 'RXNORM' AND pf.source_tty IN (
+                    'IN','MIN','SCDG','SCD','SBD',
+                    'BN','PIN','SCDC','SBDC','SBDF','BPCK','GPCK'
+                ))
                 -- CPT, HCPCS, CVX: all.
                 OR pf.source IN ('CPT', 'HCPCS', 'CVX')
         )
@@ -145,6 +166,8 @@ def _codes_sql() -> str:
                             THEN 'medication'
                         WHEN EXISTS (SELECT 1 FROM mrconso cvx WHERE cvx.CUI = t.cui AND cvx.SAB = 'CVX' AND cvx.SUPPRESS = 'N')
                             THEN 'vaccine'
+                        WHEN EXISTS (SELECT 1 FROM mrsty m WHERE m.cui = t.cui AND m.tui IN ('T023','T024','T025','T026','T029','T030','T031'))
+                            THEN 'body_structure'
                     END
             END AS category
         FROM target t
@@ -152,13 +175,30 @@ def _codes_sql() -> str:
 
 
 def _synonyms_sql() -> str:
-    """English-only synonyms sharing the CUI, prioritized by source."""
-    return """
+    """English-only synonyms sharing the CUI, prioritized by source.
+
+    Three categories of synonyms are unioned together; the Python
+    aggregator dedupes and applies source priority + the K=8 cap.
+
+    1. CUI-shared atoms (the standard source of synonyms).
+    2. LOINC COMPONENT (from mrsat ATN='LOINC_COMPONENT') — the clinically
+       meaningful first axis of the LOINC long name, surfaced as a clean
+       synonym so BM25 doesn't have to parse the 6-axis format.
+    3. For combination RxNorm codes (MIN, SCD, SBD, SCDG, etc.) — the
+       individual ingredients from Table 2 decomposition, so a query
+       mentioning only one ingredient ("Amoxicillin") can still match the
+       combination product.
+    """
+    return (
+        """
         WITH target AS (
-            SELECT source, code, cui FROM (""" + _codes_sql() + """) AS t
+            SELECT source, code, cui, source_tty FROM ("""
+        + _codes_sql()
+        + """) AS t
             WHERE cui IS NOT NULL AND cui != ''
         ),
-        synonyms AS (
+        -- (1) Standard CUI-shared synonyms.
+        cui_synonyms AS (
             SELECT DISTINCT
                 t.source, t.code,
                 m.STR AS synonym,
@@ -170,9 +210,47 @@ def _synonyms_sql() -> str:
               AND m.lat = 'ENG'
               AND m.STR IS NOT NULL AND m.STR != ''
               AND m.SAB IS NOT NULL
+        ),
+        -- (2) LOINC COMPONENT as a clean first-axis synonym.
+        lnc_components AS (
+            SELECT DISTINCT
+                t.source, t.code,
+                s.ATV AS synonym,
+                'LNC_COMPONENT' AS sab,
+                'COMPONENT' AS tty
+            FROM target t
+            JOIN mrsat s ON s.SAB = 'LNC' AND s.CODE = t.code AND s.ATN = 'LOINC_COMPONENT'
+            WHERE t.source = 'LNC'
+              AND s.ATV IS NOT NULL AND s.ATV != ''
+        ),
+        -- (3) Individual ingredients for combination RxNorm products.
+        combination_ingredients AS (
+            SELECT DISTINCT
+                'RXNORM' AS source,
+                t.code,
+                d.ingredient_name AS synonym,
+                'RXNORM_ING' AS sab,
+                'IN' AS tty
+            FROM target t
+            JOIN read_csv_auto('"""
+        + str(Path("reports/fhir4px/rxnorm_ingredient_decomposition.csv"))
+        + """', HEADER=true) d
+              ON d.rxnorm_code = t.code
+            WHERE t.source = 'RXNORM'
+              AND t.source_tty IN ('MIN','SCD','SBD','SCDG','SCDC','SBDC','SBDF','BPCK','GPCK')
+              AND d.ingredient_name IS NOT NULL AND d.ingredient_name != ''
+              AND d.ingredient_rxnorm_code IS NOT NULL
+        ),
+        all_synonyms AS (
+            SELECT source, code, synonym, sab, tty FROM cui_synonyms
+            UNION ALL
+            SELECT source, code, synonym, sab, tty FROM lnc_components
+            UNION ALL
+            SELECT source, code, synonym, sab, tty FROM combination_ingredients
         )
-        SELECT source, code, synonym, sab, tty FROM synonyms
+        SELECT source, code, synonym, sab, tty FROM all_synonyms
     """
+    )
 
 
 def _hierarchy_icd10cm_sql() -> str:
@@ -531,8 +609,17 @@ def main() -> int:
                 atc = atc_by_code.get(code) if source == "RXNORM" else None
                 sem_types = sem_by_key.get(key, [])
 
+                # For LOINC, also surface the COMPONENT as a top-level field
+                # (it's already in synonyms[0], but having it explicit helps
+                # consumers that want to display "Component: X" without
+                # parsing the full 6-axis name).
+                component = (
+                    syns[0] if (source == "LNC" and syns) else None
+                )
+
                 record = {
                     "category": t["category"],
+                    "tty": t["source_tty"],
                     "friendly_name": friendly,
                     "code": {
                         "source": source,
@@ -544,6 +631,7 @@ def main() -> int:
                     "rule": "addressable",
                     "semantic_types": sem_types,
                     "atc": atc,
+                    "component": component,
                     "vectors": {
                         "technical": tech,
                         "synonyms": syns,
@@ -561,6 +649,38 @@ def main() -> int:
         print(f"Wrote {n_written:,} records to {output_path} ({size_mb:.1f} MB) in {elapsed:.1f}s")
         if n_skipped:
             print(f"Skipped {n_skipped:,} codes with no category (TUI didn't match any)")
+
+        # Split the index by category for the fhir4px app. The app always
+        # knows the category from the FHIR resourceType (MedicationRequest ->
+        # medication, Observation -> lab, etc.), so per-category files let it
+        # load only what it needs and tune BM25 per category.
+        print()
+        print("Splitting index by category...")
+        category_files: dict[str, object] = {
+            cat: (output_path.parent / f"embedding_index_{cat}.jsonl").open(
+                "w", encoding="utf-8"
+            )
+            for cat in ("condition", "lab", "medication", "procedure", "vaccine", "body_structure")
+        }
+        try:
+            counts: dict[str, int] = {cat: 0 for cat in category_files}
+            with output_path.open("r", encoding="utf-8") as src:
+                for line in src:
+                    r = json.loads(line)
+                    cat = r.get("category")
+                    if cat in category_files:
+                        category_files[cat].write(line)
+                        counts[cat] += 1
+            for cat, fh in category_files.items():
+                size = fh.tell()
+                fh.close()
+                p = output_path.parent / f"embedding_index_{cat}.jsonl"
+                size_mb = p.stat().st_size / (1024 * 1024)
+                print(f"  embedding_index_{cat}.jsonl: {counts[cat]:,} records ({size_mb:.1f} MB)")
+        finally:
+            for fh in category_files.values():
+                if not fh.closed:
+                    fh.close()
     finally:
         con.close()
 

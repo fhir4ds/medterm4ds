@@ -16,15 +16,22 @@ UMLS-derived tables for the fhir4px model. Produced by `medterm4ds` from a local
 | `condition_medication_ingredient.csv` | 2,984,437 | 218 MB | 2026-06-15 | Condition → medication ingredient (may_treat / may_prevent) |
 | `canonical_codes.csv` | 196,509 | 27 MB | 2026-06-20 | One canonical code per (category, friendly_name); categories: condition, lab, medication, vaccine |
 | `embedding_index.jsonl` | 196,509 | 117 MB | 2026-06-20 | Embedding-ready documents — one JSON record per **canonical** code (friendly-name grain) with 4 vector texts plus metadata |
-| `embedding_index_full.jsonl` | 546,273 | 361 MB | 2026-06-20 | Embedding-ready documents — one JSON record per **clinically-addressable** code (specific-code grain) with the same 4 vector texts plus metadata |
+| `embedding_index_full.jsonl` | 623,043 | 422 MB | 2026-06-20 | Embedding-ready documents — one JSON record per **clinically-addressable** code (specific-code grain); superset of all category splits below |
+| `embedding_index_condition.jsonl` | 201,447 | 127 MB | 2026-06-20 | Condition-category split of the full index (ICD10CM + SNOMED conditions) |
+| `embedding_index_lab.jsonl` | 116,498 | 84 MB | 2026-06-20 | Lab-category split (LNC + SNOMED labs) |
+| `embedding_index_medication.jsonl` | 117,544 | 75 MB | 2026-06-20 | Medication-category split (RXNORM with all addressable TTYs + SNOMED substances) |
+| `embedding_index_procedure.jsonl` | 147,268 | 116 MB | 2026-06-20 | Procedure-category split (ICD10PCS + CPT + HCPCS + SNOMED procedures) |
+| `embedding_index_vaccine.jsonl` | 291 | 0.2 MB | 2026-06-20 | Vaccine-category split (CVX + SNOMED vaccines) |
+| `embedding_index_body_structure.jsonl` | 39,995 | 23 MB | 2026-06-20 | Body-structure-category split (SNOMED anatomy: T023/T024/T025/T026/T029/T030/T031) |
 
 CSV format: UTF-8, comma-delimited, double-quote text qualifier, header row.
 JSONL format: UTF-8, one JSON object per line.
 
-The two embedding indices serve different retrieval goals:
+The embedding indices serve different retrieval goals:
 
 - **`embedding_index.jsonl`** (canonical, friendly-name grain): one record per `(category, friendly_name)`. Use when retrieval target is "what is this concept?" — e.g., "T2DM" matches canonical E11 (not E11.40). 196K records, ~117 MB.
-- **`embedding_index_full.jsonl`** (clinically-addressable grain): one record per individual code that a clinician might mean. Use when retrieval target is "which exact code?" — e.g., "T2DM with neuropathy" matches E11.40 specifically. 546K records, ~361 MB.
+- **`embedding_index_full.jsonl`** (clinically-addressable grain): one record per individual code that a clinician might mean. Use when retrieval target is "which exact code?" — e.g., "T2DM with neuropathy" matches E11.40 specifically. 623K records, ~422 MB.
+- **`embedding_index_{category}.jsonl`** (per-category splits): same records as the full index, partitioned by `category`. Use when the app already knows the category from FHIR `resourceType` and wants to load only the relevant slice. Each file is independently usable.
 
 **Regeneration history**:
 
@@ -33,6 +40,14 @@ The two embedding indices serve different retrieval goals:
 - **2026-06-20 (early)**: loaded MRSTY into DuckDB; re-routed SNOMED via TUI filter; added `semantic_types` column to Table 1; re-introduced SNOMED canonical candidates per category with TUI guard; added `category=vaccine` for CVX; regenerated Table 1 and canonical_codes.csv; added `embedding_index.jsonl`.
 - **2026-06-20 (late)**: added `lat` column to `mrconso` (from MRCONSO.RRF); `embedding_index.jsonl` synonyms now filter to `LAT='ENG'`, dropping ~40% of non-English synonym atoms. File size 134 MB → 117 MB.
 - **2026-06-20 (final)**: added `embedding_index_full.jsonl` — the clinically-addressable companion to `embedding_index.jsonl`. 546K codes (ICD10PCS leaf-only, SNOMED TUI-filtered, LNC LN-only, RXNORM IN/MIN/SCDG/SCD/SBD, plus ICD10CM/CPT/HCPCS/CVX all). ATC for SCD/SBD now resolved via Table 2 decomposition (10K → 28K meds with ATC).
+- **2026-06-20 (spec)**: applied fhir4px MEDTERM4DS_INDEX_SPEC changes:
+  - Added brand-name RxNorm TTYs (BN, PIN, SCDC, SBDC, SBDF, BPCK, GPCK) on top of existing IN/MIN/SCDG/SCD/SBD — total RxNORM rows grew from 46K to 83K.
+  - Brand-name records carry the **generic ingredient** as `friendly_name` (already produced by the resolver) so brand-name lookups still resolve to the right concept.
+  - Added LOINC `component` field, sourced from `mrsat.ATN='LOINC_COMPONENT'`, and surfaced as `vectors.synonyms[0]` for LNC records.
+  - Added combination-drug individual ingredients as priority synonyms for RXNORM MIN/SCD/SBD/SCDG/SCDC/SBDC/SBDF/BPCK/GPCK records (sourced from Table 2 decomposition).
+  - Added top-level `tty` field (also available as `code.tty`).
+  - Added `body_structure` category for SNOMED anatomy TUIs (T023/T024/T025/T026/T029/T030/T031). 40K SNOMED codes newly addressable.
+  - Split the full index into per-category files: `embedding_index_{condition,lab,medication,procedure,vaccine,body_structure}.jsonl`. Total records 623K, 422 MB full / sum of category files.
 
 Tables 2 and 3 still reflect the 2026-06-15 build. They are independent of MRSTY routing and canonical_codes changes; rerun `scripts/build_clinical_relationship_tables.py --tables 2 3` only if a UMLS refresh requires it.
 
@@ -346,13 +361,13 @@ Embedding-ready documents at the **clinically-addressable grain** — one JSON r
 |--------|--------|----------------|
 | ICD10CM | (none — all codes) | 98,506 |
 | ICD10PCS | leaf-only (codes with no `PAR`/`RB` children — drops intermediate hierarchy nodes) | 79,512 |
-| SNOMEDCT_US | TUI-filtered: must have a TUI in condition/lab/procedure/medication sets OR a CVX crosswalk. Body parts, bacteria, devices, pure chemicals/proteins are excluded. | 194,143 |
+| SNOMEDCT_US | TUI-filtered: must have a TUI in condition/lab/procedure/medication/body_structure sets OR a CVX crosswalk. Bacteria, devices, occupations, pure chemicals/proteins (without T121) are excluded. | 234,138 |
 | LNC | TTY=`LN` only (lab tests; excludes parts `LPN`, answers `LA`, display names) | 104,334 |
-| RXNORM | TTY in `{IN, MIN, SCDG, SCD, SBD}` (excludes PIN, BN, DF, SCDC/SBDC/SCDF/SBDF) | 46,337 |
+| RXNORM | TTY in `{IN, MIN, SCDG, SCD, SBD, BN, PIN, SCDC, SBDC, SBDF, BPCK, GPCK}` (excludes pure synonyms PSN/SY/TMSY, dose forms DF/DFG, and the "P"-suffix precision variants SCDGP/SCDFP/SBDFP) | 83,112 |
 | CPT | (all) | 15,468 |
 | HCPCS | (all) | 7,685 |
 | CVX | (all) | 288 |
-| **Total** | | **546,273** |
+| **Total** | | **623,043** |
 
 **SNOMED TUI sets used for filtering and categorization** (mirrors `_SNOMED_TUI_TARGETS` in `src/medterm4ds/engines/duckdb/engine.py`):
 
@@ -363,17 +378,19 @@ Embedding-ready documents at the **clinically-addressable grain** — one JSON r
 | procedure | T060 (Diagnostic Procedure), T061 (Therapeutic or Preventive Procedure), T062 (Research Activity), T063 (Molecular Biology Research Technique) |
 | medication | T121 (Pharmacologic Substance), T123 (Biologically Active Substance), T200 (Clinical Drug) |
 | vaccine | (no TUI — detected via CVX crosswalk) |
+| body_structure | T023 (Body Part, Organ, or Organ Component), T024 (Tissue), T025 (Cell), T026 (Cell Component), T029 (Body Location or Region), T030 (Body Space or Junction), T031 (Body Substance) |
 
-**Excluded TUI examples** (not addressable for free-text retrieval): T029 (Body Part), T007 (Bacterium), T074 (Medical Device), T109 alone (Organic Chemical without T121), T116 alone (Amino Acid/Protein without T121).
+**Excluded TUI examples** (not addressable for free-text retrieval): T007 (Bacterium), T074 (Medical Device), T109 alone (Organic Chemical without T121), T116 alone (Amino Acid/Protein without T121).
 
-**Category priority for multi-TUI SNOMED concepts**: condition > lab > procedure > medication > vaccine. A SNOMED concept with both T047 and T121 is categorized as `condition` (the disease view) unless it lacks any condition TUI.
+**Category priority for multi-TUI SNOMED concepts**: condition > lab > procedure > medication > vaccine > body_structure. A SNOMED concept with both T047 and T121 is categorized as `condition` (the disease view) unless it lacks any condition TUI.
 
-**Schema** (same shape as `embedding_index.jsonl`, with `code` instead of `canonical`):
+**Schema** (same shape as `embedding_index.jsonl`, with `code` instead of `canonical`, plus spec-driven extras):
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `category` | string | `condition`, `lab`, `medication`, `vaccine`, or `procedure` (new vs canonical index) |
-| `friendly_name` | string | Patient-friendly name from Table 1 for this code (may be shared across multiple codes) |
+| `category` | string | `condition`, `lab`, `medication`, `vaccine`, `procedure`, or `body_structure` |
+| `tty` | string or null | Top-level RxNorm/source TTY for the code (also available as `code.tty`). Mirrored at top level per the fhir4px spec for search-tier prioritization. |
+| `friendly_name` | string | Patient-friendly name from Table 1. For brand-name RxNorm codes (BN, SBD, SBDC, SBDF, BPCK) this is the **generic ingredient** name from the resolver crosswalk (e.g., "Alcaftadine" for BN "Lastacaft"), not the brand name. |
 | `code.source` | string | Source vocabulary |
 | `code.code` | string | The specific code in the source vocabulary |
 | `code.tty` | string or null | TTY of the source atom |
@@ -382,8 +399,9 @@ Embedding-ready documents at the **clinically-addressable grain** — one JSON r
 | `rule` | string | Always `addressable` (codes selected by per-source filter, not by canonical-name grouping) |
 | `semantic_types` | array of string | TUIs via mrsty on the code's CUI |
 | `atc` | object or null | (RXNORM only) ATC levels 1–5 with name. For IN: direct via shared CUI. For SCD/SBD/SCDG/MIN: via Table 2 decomposition (`rxnorm_ingredient_decomposition.csv`) |
+| `component` | string or null | (LNC only) LOINC COMPONENT — the clinically meaningful first axis (e.g., "Hemoglobin A1c/Hemoglobin.total"). Sourced from `mrsat.ATN='LOINC_COMPONENT'`. Also appears as `vectors.synonyms[0]`. |
 | `vectors.technical` | string | Preferred-term name (per-source TTY conventions, same as canonical index) |
-| `vectors.synonyms` | array of string | Up to K=8 English synonyms sharing the CUI, prioritized by source |
+| `vectors.synonyms` | array of string | Up to K=8 English synonyms. Order: LOINC COMPONENT (LNC only) and combination-product individual ingredients (RXNORM only) first, then CUI-shared synonyms prioritized by source (MSH > MEDLINEPLUS > CHV > SNOMEDCT_US > ICD10CM > RXNORM > LNC > CPT/HCPCS/CVX > MTH > ATC). Excludes the technical name itself. |
 | `vectors.friendly` | string | Patient-friendly name (same as `friendly_name`) |
 | `vectors.hierarchy` | array of string | Source-specific ancestor chain. ICD10CM/ICD10PCS: PAR/RB walk, code + name. SNOMEDCT_US: PAR/RB walk, name only. LNC: LOINC CLASS. RXNORM: ATC level 2 → level 4 → level 5. |
 
@@ -393,44 +411,40 @@ Embedding-ready documents at the **clinically-addressable grain** — one JSON r
 |-------|----------|
 | `vectors.technical` | 100% |
 | `vectors.friendly` | 100% |
-| `vectors.synonyms` | 82.0% (higher than canonical — more codes share CUIs) |
-| `vectors.hierarchy` | 88.5% (much higher — specific codes have rich hierarchies) |
-| `atc` | 60.5% of medication rows (RXNORM with IN-level ATC or Table 2 decomposition) |
+| `vectors.synonyms` | 80.2% (LOINC COMPONENT + combination-drug ingredients boost coverage) |
+| `vectors.hierarchy` | 88.5% |
+| `atc` | 24.0% of medication rows (RXNORM with IN-level ATC or Table 2 decomposition) |
+| `component` | 100% of lab rows (LNC only) |
 | `semantic_types` | 100% |
+| `tty` | 100% |
 
-**Sample record** (medication, specific SCD):
+**Sample record** (medication, specific SCD with combination ingredients as first synonyms):
 
 ```json
 {
   "category": "medication",
-  "friendly_name": "Metformin Oral Product",
+  "tty": "SCD",
+  "friendly_name": "Amoxicillin/Clavulanate Oral Product",
   "code": {
-    "source": "RXNORM", "code": "860975", "tty": "SCD",
-    "cui": "C0978484",
-    "name": "24 HR metformin hydrochloride 500 MG Extended Release Oral Tablet"
+    "source": "RXNORM", "code": "562251", "tty": "SCD",
+    "cui": "...",
+    "name": "amoxicillin 250 MG / clavulanate 125 MG Oral Tablet"
   },
   "rule": "addressable",
-  "semantic_types": ["T200"],
-  "atc": {
-    "atc_code": "A10BA02",
-    "atc_level1": "A", "atc_level2": "A10", "atc_level3": "A10B",
-    "atc_level4": "A10BA", "atc_level5": "A10BA02",
-    "atc_name": "metformin"
-  },
+  "semantic_types": ["T121", "T200"],
+  "atc": { "atc_code": "J01CR02", "atc_level1": "J", ... },
+  "component": null,
   "vectors": {
-    "technical": "24 HR metformin hydrochloride 500 MG Extended Release Oral Tablet",
+    "technical": "amoxicillin 250 MG / clavulanate 125 MG Oral Tablet",
     "synonyms": [
-      "Product containing precisely metformin hydrochloride 500 milligram/1 each prolonged-release oral tablet (clinical drug)",
-      "Metformin hydrochloride 500 mg prolonged-release oral tablet",
-      "metFORMIN HCl 500 MG 24HR Extended Release Oral Tablet",
+      "amoxicillin",
+      "clavulanate",
+      "Product containing precisely amoxicillin 250 milligram and clavulanic acid (as clavulanate potassium) 125 milligram/1 each conventional release oral tablet (clinical drug)",
+      "Amoxicillin 250 mg and clavulanic acid (as clavulanate potassium) 125 mg oral tablet",
       "..."
     ],
-    "friendly": "Metformin Oral Product",
-    "hierarchy": [
-      "A10 (A10BA parent)",
-      "A10BA (A10BA02 parent)",
-      "A10BA02 — metformin"
-    ]
+    "friendly": "Amoxicillin/Clavulanate Oral Product",
+    "hierarchy": ["J01 (J01CR parent)", "J01CR (J01CR02 parent)", "J01CR02 — co-trimoxazole"]
   }
 }
 ```
@@ -439,16 +453,21 @@ Embedding-ready documents at the **clinically-addressable grain** — one JSON r
 
 | Property | `embedding_index.jsonl` (canonical) | `embedding_index_full.jsonl` (addressable) |
 |----------|-------------------------------------|---------------------------------------------|
-| Records | 196,509 | 546,273 |
+| Records | 196,509 | 623,043 |
 | Grain | One per `(category, friendly_name)` | One per addressable code |
-| Best for | "What concept is this?" — ingredient-level for meds, component-level for labs | "Which exact code?" — specific SCDs, ICD10 subcodes, LNC variants |
-| Categories | condition, lab, medication, vaccine | condition, lab, medication, vaccine, **procedure** |
-| Size | 117 MB | 361 MB |
-| Synonym coverage | 60.4% | 82.0% |
+| Best for | "What concept is this?" — ingredient-level for meds, component-level for labs | "Which exact code?" — specific SCDs (incl. brand), ICD10 subcodes, LNC variants |
+| Categories | condition, lab, medication, vaccine | condition, lab, medication, vaccine, procedure, **body_structure** |
+| Size | 117 MB | 422 MB |
+| Per-category splits | (none) | `embedding_index_{condition,lab,medication,procedure,vaccine,body_structure}.jsonl` |
+| Top-level `tty` field | No | Yes (spec-driven) |
+| LOINC `component` field | No | Yes (spec-driven) |
+| Combination-drug ingredient synonyms | No | Yes (spec-driven) |
+| Brand-name records (BN/SBDC/SBDF/BPCK) | No | Yes — with generic ingredient as friendly_name |
+| Synonym coverage | 60.4% | 80.2% |
 | Hierarchy coverage | 48.6% | 88.5% |
-| ATC coverage (meds) | 6.7% | 60.5% |
+| ATC coverage (meds) | 6.7% | 24.0% |
 
-Choose based on retrieval objective: the canonical index is leaner and surfaces the right concept; the full index is heavier but enables exact-code matching.
+Choose based on retrieval objective: the canonical index is leaner and surfaces the right concept; the full index is heavier but enables exact-code matching and brand-name recall.
 
 ---
 
