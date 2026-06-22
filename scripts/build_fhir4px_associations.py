@@ -26,7 +26,7 @@ import duckdb
 
 DEFAULT_DB = "/mnt/d/medterm4ds/data/umls_current.duckdb"
 DEFAULT_OUTPUT = Path("reports/fhir4px/condition_associations.json")
-DEFAULT_MAX_DEPTH = 4
+DEFAULT_MAX_DEPTH = 5
 
 ASSOCIATIONS_SQL = """
 WITH RECURSIVE
@@ -97,14 +97,12 @@ JOIN rel_edges e
 """
 
 
-def _depth_to_strength(depth: int) -> str | None:
+def _depth_to_strength(depth: int) -> str:
     if depth <= 1:
         return "strong"
     if depth == 2:
         return "moderate"
-    if depth <= 4:
-        return "weak"
-    return None  # depth 5+ excluded
+    return "weak"
 
 
 def main() -> int:
@@ -133,8 +131,6 @@ def main() -> int:
 
         for _cond_source, cond_code, rel_type, med_code, depth in rows:
             strength = _depth_to_strength(depth)
-            if strength is None:
-                continue
             key = f"{cond_code}"
             med_key = (med_code, rel_type)
             if med_key not in seen_meds[key]:
@@ -144,6 +140,7 @@ def main() -> int:
                     "code": med_code,
                     "strength": strength,
                     "relationship": rel_label,
+                    "depth": depth,
                 })
     finally:
         con.close()

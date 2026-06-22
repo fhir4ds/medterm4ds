@@ -117,10 +117,23 @@ def main() -> int:
         start = time.perf_counter()
         rows = con.execute(SQL).fetchall()
         print(f"  {len(rows):,} pairs in {time.perf_counter()-start:.1f}s")
+
+        # Get ALL product codes (including BN/PIN with no ingredients)
+        all_products = con.execute("""
+            SELECT DISTINCT CODE FROM mrconso
+            WHERE SAB = 'RXNORM' AND SUPPRESS = 'N'
+              AND TTY IN ('SCDG', 'SCD', 'SBD', 'MIN', 'PIN', 'IN', 'BN')
+              AND CODE IS NOT NULL AND CODE != ''
+        """).fetchall()
+        all_product_codes = {r[0] for r in all_products}
+        print(f"  {len(all_product_codes):,} total product codes (including BN/PIN with no ingredients)")
     finally:
         con.close()
 
     result: dict[str, list] = {}
+    # Initialize all products with empty arrays (BN/PIN stay empty)
+    for code in all_product_codes:
+        result[code] = []
     for rxnorm_code, ing_code, ing_name in rows:
         result.setdefault(rxnorm_code, []).append({"c": ing_code, "n": ing_name})
 
