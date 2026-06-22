@@ -155,15 +155,26 @@ def main() -> int:
             print(f"Merging Synthea condition-lab from {synthea_path}...")
             with synthea_path.open() as f:
                 synthea = json.load(f)
-            for cond_code, labs in synthea.items():
+            # Handle both flat {code: [labs]} and nested {conditions: {code: {labs: [...]}}} formats
+            conditions_data = synthea.get("conditions", synthea)
+            n_synthea = 0
+            for cond_code, data in conditions_data.items():
                 if cond_code == "_meta":
                     continue
-                for lab_code in labs:
-                    associations[cond_code]["labs"].append({
-                        "code": lab_code,
-                        "strength": "strong",
-                    })
-            print(f"  Merged {len(synthea)} conditions with lab associations")
+                labs = data if isinstance(data, list) else data.get("labs", [])
+                for lab_entry in labs:
+                    if isinstance(lab_entry, dict):
+                        associations[cond_code]["labs"].append({
+                            "code": lab_entry["code"],
+                            "strength": lab_entry.get("strength", "strong"),
+                        })
+                    else:
+                        associations[cond_code]["labs"].append({
+                            "code": lab_entry,
+                            "strength": "strong",
+                        })
+                n_synthea += 1
+            print(f"  Merged {n_synthea} conditions with lab associations")
         else:
             print(f"  Synthea file not found: {synthea_path}, skipping")
 
