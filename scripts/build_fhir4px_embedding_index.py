@@ -244,24 +244,59 @@ def main() -> int:
                 lnc_class[code] = cls
         print(f"  LNC CLASS: {len(lnc_class):,}")
 
-        # RXNORM ATC
+        # RXNORM ATC — all 5 levels. Uses multi-hop ingredient traversal
+        # (same paths as ingredient_codes) so SCD/SBD products resolve ATC
+        # via their ingredients even without direct has_ingredient edges.
         atc_by_code: dict[str, dict] = {}
         for row in con.execute(f"""
             WITH target AS (SELECT code, cui, source_tty FROM ({_codes_sql(csv_arg)}) AS t WHERE source='RXNORM'),
+            -- (a) Direct via shared CUI (works for IN-level)
             atc_direct AS (
                 SELECT DISTINCT t.code, a.CODE AS atc_code, a.STR AS atc_name
                 FROM target t JOIN mrconso a ON a.CUI=t.cui AND a.SAB='ATC' AND a.SUPPRESS='N' AND length(a.CODE)=7
             ),
+            -- (b) Via direct has_ingredient/has_part (covers SCDC, SCDG, MIN, SCD, SBD)
             atc_via_ing AS (
                 SELECT DISTINCT t.code, a.CODE AS atc_code, a.STR AS atc_name
                 FROM target t
                 JOIN mrconso prod ON prod.CODE=t.code AND prod.SAB='RXNORM' AND prod.SUPPRESS='N'
-                JOIN mrrel r ON r.AUI2=prod.AUI AND r.RELA='has_ingredient'
+                JOIN mrrel r ON r.AUI2=prod.AUI AND r.RELA IN ('has_ingredient','has_part')
                 JOIN mrconso ing ON ing.AUI=r.AUI1 AND ing.SAB='RXNORM' AND ing.SUPPRESS='N' AND ing.TTY='IN'
                 JOIN mrconso a ON a.CUI=ing.CUI AND a.SAB='ATC' AND a.SUPPRESS='N' AND length(a.CODE)=7
-                WHERE t.source_tty IN ('SCD','SBD','SCDG','MIN')
+                WHERE t.source_tty IN ('SCD','SBD','SCDG','SCDC','MIN','SBDC','SBDF')
             ),
-            all_atc AS (SELECT * FROM atc_direct UNION SELECT * FROM atc_via_ing)
+            -- (c) SCD via SCDC: SCD consists_of SCDC → has_ingredient → IN → ATC
+            atc_scd_via_scdc AS (
+                SELECT DISTINCT t.code, a.CODE AS atc_code, a.STR AS atc_name
+                FROM target t
+                JOIN mrconso prod ON prod.CODE=t.code AND prod.SAB='RXNORM' AND prod.SUPPRESS='N'
+                JOIN mrrel r1 ON r1.AUI2=prod.AUI AND r1.RELA='consists_of'
+                JOIN mrconso scdc ON scdc.AUI=r1.AUI1 AND scdc.SAB='RXNORM' AND scdc.SUPPRESS='N' AND scdc.TTY='SCDC'
+                JOIN mrrel r2 ON r2.AUI2=scdc.AUI AND r2.RELA='has_ingredient'
+                JOIN mrconso ing ON ing.AUI=r2.AUI1 AND ing.SAB='RXNORM' AND ing.SUPPRESS='N' AND ing.TTY='IN'
+                JOIN mrconso a ON a.CUI=ing.CUI AND a.SAB='ATC' AND a.SUPPRESS='N' AND length(a.CODE)=7
+                WHERE t.source_tty='SCD'
+            ),
+            -- (d) SBD via SCD: SBD has_tradename SCD → SCDC → IN → ATC
+            atc_sbd_via_scd AS (
+                SELECT DISTINCT t.code, a.CODE AS atc_code, a.STR AS atc_name
+                FROM target t
+                JOIN mrconso prod ON prod.CODE=t.code AND prod.SAB='RXNORM' AND prod.SUPPRESS='N'
+                JOIN mrrel r1 ON r1.AUI1=prod.AUI AND r1.RELA='has_tradename'
+                JOIN mrconso scd ON scd.AUI=r1.AUI2 AND scd.SAB='RXNORM' AND scd.SUPPRESS='N' AND scd.TTY='SCD'
+                JOIN mrrel r2 ON r2.AUI2=scd.AUI AND r2.RELA='consists_of'
+                JOIN mrconso scdc ON scdc.AUI=r2.AUI1 AND scdc.SAB='RXNORM' AND scdc.SUPPRESS='N' AND scdc.TTY='SCDC'
+                JOIN mrrel r3 ON r3.AUI2=scdc.AUI AND r3.RELA='has_ingredient'
+                JOIN mrconso ing ON ing.AUI=r3.AUI1 AND ing.SAB='RXNORM' AND ing.SUPPRESS='N' AND ing.TTY='IN'
+                JOIN mrconso a ON a.CUI=ing.CUI AND a.SAB='ATC' AND a.SUPPRESS='N' AND length(a.CODE)=7
+                WHERE t.source_tty='SBD'
+            ),
+            all_atc AS (
+                SELECT * FROM atc_direct
+                UNION SELECT * FROM atc_via_ing
+                UNION SELECT * FROM atc_scd_via_scdc
+                UNION SELECT * FROM atc_sbd_via_scd
+            )
             SELECT code, atc_code, atc_name,
                    ROW_NUMBER() OVER (PARTITION BY code ORDER BY atc_code) AS rn FROM all_atc
         """).fetchall():
