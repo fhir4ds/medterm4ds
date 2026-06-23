@@ -21,7 +21,7 @@ RXNORM_TTY_TOPOLOGY: dict[str, tuple[str, ...]] = {
     "SCDF": ("SCD", "SBDF"),
     "BPCK": ("SBD", "GPCK"),
     "GPCK": ("SCD", "BPCK"),
-    "IN": ("SCDC", "MIN", "BN"),
+    "IN": ("SCDC", "BN"),
     "MIN": ("SCD", "IN"),
     "PIN": ("IN", "SCDC"),
     "DF": ("SCD",),
