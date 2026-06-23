@@ -498,6 +498,76 @@ def main() -> int:
                 category_files[cat].write(line)
                 counts[cat] += 1
 
+        # Standalone ATC entries at every level (L1–L5). Each ATC code becomes
+        # its own medication-category record so BM25 can match class names
+        # directly ("biguanides", "antineoplastic agents", etc.). ATC is also
+        # kept as an attribute on RXNORM entries — these standalone entries
+        # are additive.
+        print("  Adding standalone ATC entries...")
+        atc_atoms = con.execute("""
+            SELECT CODE, MIN(STR) AS name, MIN(CUI) AS cui
+            FROM mrconso
+            WHERE SAB = 'ATC' AND SUPPRESS = 'N'
+              AND CODE IS NOT NULL AND CODE != ''
+            GROUP BY CODE
+            ORDER BY CODE
+        """).fetchall()
+        atc_levels = {1: "L1", 3: "L2", 4: "L3", 5: "L4", 7: "L5"}
+        for atc_code, atc_name, atc_cui in atc_atoms:
+            code_len = len(atc_code)
+            level_label = atc_levels.get(code_len)
+            if not level_label:
+                continue
+            # Build hierarchy from parent levels (shorter prefixes)
+            atc_hier: list[str] = []
+            for plen in (7, 5, 4, 3, 1):
+                if plen >= code_len:
+                    continue
+                pcode = atc_code[:plen]
+                pname = atc_names.get(pcode, "")
+                atc_hier.append(f"{pcode} — {pname}")
+            # Synonyms: the ATC code itself + alternate names from other TTYs
+            atc_syns = [atc_code]
+            alt_names = con.execute(
+                "SELECT DISTINCT STR FROM mrconso WHERE SAB='ATC' AND CODE=? AND SUPPRESS='N' AND STR != ?",
+                [atc_code, atc_name],
+            ).fetchall()
+            for (alt,) in alt_names:
+                if alt and alt.lower() not in {s.lower() for s in atc_syns} and len(atc_syns) < _SYNONYM_K:
+                    atc_syns.append(alt)
+
+            atc_record = {
+                "category": "medication",
+                "tty": level_label,
+                "friendly_name": atc_name or atc_code,
+                "code": {"source": "ATC", "code": atc_code, "tty": level_label,
+                         "cui": atc_cui, "name": atc_name},
+                "rule": "atc_standalone",
+                "semantic_types": [],
+                "atc": {
+                    "atc_code": atc_code,
+                    "atc_name": atc_name,
+                    "atc_level1": {"code": atc_code[:1], "name": atc_names.get(atc_code[:1])},
+                    "atc_level2": {"code": atc_code[:3], "name": atc_names.get(atc_code[:3])} if code_len >= 3 else None,
+                    "atc_level3": {"code": atc_code[:4], "name": atc_names.get(atc_code[:4])} if code_len >= 4 else None,
+                    "atc_level4": {"code": atc_code[:5], "name": atc_names.get(atc_code[:5])} if code_len >= 5 else None,
+                    "atc_level5": {"code": atc_code[:7], "name": atc_names.get(atc_code[:7])} if code_len >= 7 else None,
+                },
+                "component": None,
+                "icd10_code": None,
+                "ingredient_codes": None,
+                "vectors": {
+                    "technical": atc_name or atc_code,
+                    "synonyms": atc_syns,
+                    "friendly": atc_name or atc_code,
+                    "hierarchy": atc_hier,
+                },
+            }
+            category_files["medication"].write(
+                json.dumps(atc_record, ensure_ascii=False) + "\n"
+            )
+            counts["medication"] += 1
+
         for cat, fh in category_files.items():
             fh.close()
             p = output_dir / f"embedding_index_{cat}.jsonl"
