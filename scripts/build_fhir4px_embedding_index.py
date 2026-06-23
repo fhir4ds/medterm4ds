@@ -244,18 +244,25 @@ def main() -> int:
                 lnc_class[code] = cls
         print(f"  LNC CLASS: {len(lnc_class):,}")
 
-        # RXNORM ATC — all 5 levels. Uses multi-hop ingredient traversal
-        # (same paths as ingredient_codes) so SCD/SBD products resolve ATC
-        # via their ingredients even without direct has_ingredient edges.
+        # Pre-load all ATC code → name mappings in one query (levels 1-5)
+        print("  Loading ATC code names...")
+        atc_names: dict[str, str] = {}
+        for code, name in con.execute("""
+            SELECT CODE, MIN(STR) FROM mrconso
+            WHERE SAB='ATC' AND SUPPRESS='N' AND CODE IS NOT NULL AND CODE != ''
+            GROUP BY CODE
+        """).fetchall():
+            atc_names[code] = name
+
+        # RXNORM ATC — all 5 levels with code+name per level. Uses multi-hop
+        # ingredient traversal so SCD/SBD products resolve ATC via ingredients.
         atc_by_code: dict[str, dict] = {}
         for row in con.execute(f"""
             WITH target AS (SELECT code, cui, source_tty FROM ({_codes_sql(csv_arg)}) AS t WHERE source='RXNORM'),
-            -- (a) Direct via shared CUI (works for IN-level)
             atc_direct AS (
                 SELECT DISTINCT t.code, a.CODE AS atc_code, a.STR AS atc_name
                 FROM target t JOIN mrconso a ON a.CUI=t.cui AND a.SAB='ATC' AND a.SUPPRESS='N' AND length(a.CODE)=7
             ),
-            -- (b) Via direct has_ingredient/has_part (covers SCDC, SCDG, MIN, SCD, SBD)
             atc_via_ing AS (
                 SELECT DISTINCT t.code, a.CODE AS atc_code, a.STR AS atc_name
                 FROM target t
@@ -265,7 +272,6 @@ def main() -> int:
                 JOIN mrconso a ON a.CUI=ing.CUI AND a.SAB='ATC' AND a.SUPPRESS='N' AND length(a.CODE)=7
                 WHERE t.source_tty IN ('SCD','SBD','SCDG','SCDC','MIN','SBDC','SBDF')
             ),
-            -- (c) SCD via SCDC: SCD consists_of SCDC → has_ingredient → IN → ATC
             atc_scd_via_scdc AS (
                 SELECT DISTINCT t.code, a.CODE AS atc_code, a.STR AS atc_name
                 FROM target t
@@ -277,7 +283,6 @@ def main() -> int:
                 JOIN mrconso a ON a.CUI=ing.CUI AND a.SAB='ATC' AND a.SUPPRESS='N' AND length(a.CODE)=7
                 WHERE t.source_tty='SCD'
             ),
-            -- (d) SBD via SCD: SBD has_tradename SCD → SCDC → IN → ATC
             atc_sbd_via_scd AS (
                 SELECT DISTINCT t.code, a.CODE AS atc_code, a.STR AS atc_name
                 FROM target t
@@ -301,9 +306,17 @@ def main() -> int:
                    ROW_NUMBER() OVER (PARTITION BY code ORDER BY atc_code) AS rn FROM all_atc
         """).fetchall():
             if row[3] == 1 and row[0] not in atc_by_code:
-                atc_by_code[row[0]] = {"atc_code": row[1], "atc_name": row[2],
-                    "atc_level1": row[1][:1], "atc_level2": row[1][:3],
-                    "atc_level3": row[1][:4], "atc_level4": row[1][:5], "atc_level5": row[1]}
+                ac = row[1]
+                l1, l2, l3, l4, l5 = ac[:1], ac[:3], ac[:4], ac[:5], ac
+                atc_by_code[row[0]] = {
+                    "atc_code": ac,
+                    "atc_name": row[2],
+                    "atc_level1": {"code": l1, "name": atc_names.get(l1)},
+                    "atc_level2": {"code": l2, "name": atc_names.get(l2)},
+                    "atc_level3": {"code": l3, "name": atc_names.get(l3)},
+                    "atc_level4": {"code": l4, "name": atc_names.get(l4)},
+                    "atc_level5": {"code": l5, "name": atc_names.get(l5)},
+                }
 
         print(f"  RXNORM ATC: {len(atc_by_code):,}")
 
@@ -423,9 +436,12 @@ def main() -> int:
             elif source == "RXNORM":
                 atc = atc_by_code.get(code)
                 if atc:
-                    h = [f"{atc['atc_level2']} ({atc['atc_level4']} parent)",
-                         f"{atc['atc_level4']} ({atc['atc_level5']} parent)",
-                         f"{atc['atc_level5']} — {atc.get('atc_name','')}"]
+                    l2 = atc["atc_level2"]
+                    l4 = atc["atc_level4"]
+                    l5 = atc["atc_level5"]
+                    h = [f"{l2['code']} — {l2['name'] or ''}",
+                         f"{l4['code']} — {l4['name'] or ''}",
+                         f"{l5['code']} — {l5['name'] or ''}"]
 
             # Priority synonyms (LOINC CLASS readable, ICD10PCS root section)
             priority: list[str] = []
