@@ -1,0 +1,2420 @@
+{
+  "snomed_to_rxnorm": {
+    "total_available": 35710,
+    "sample_count": 100,
+    "examples": [
+      {
+        "snomed_code": "312258005",
+        "snomed_name": "Calcium pyrophosphate",
+        "depth": 0,
+        "target_code": "1362901",
+        "target_name": "calcium pyrophosphate",
+        "target_system": "RxNorm"
+      },
+      {
+        "snomed_code": "1148712004",
+        "snomed_name": "Umbralisib tosylate",
+        "depth": 0,
+        "target_code": "2478438",
+        "target_name": "umbralisib tosylate",
+        "target_system": "RxNorm"
+      },
+      {
+        "snomed_code": "398882009",
+        "snomed_name": "Propylhexedrine-containing product",
+        "depth": 0,
+        "target_code": "8792",
+        "target_name": "propylhexedrine",
+        "target_system": "RxNorm"
+      },
+      {
+        "snomed_code": "387145002",
+        "snomed_name": "Dobutamine",
+        "depth": 0,
+        "target_code": "3616",
+        "target_name": "DOBUTamine",
+        "target_system": "RxNorm"
+      },
+      {
+        "snomed_code": "376794008",
+        "snomed_name": "Trifluoperazine hydrochloride 10 mg oral tablet",
+        "depth": 0,
+        "target_code": "198323",
+        "target_name": "trifluoperazine 10 MG Oral Tablet",
+        "target_system": "RxNorm"
+      },
+      {
+        "snomed_code": "324357002",
+        "snomed_name": "Sulfamethoxazole 400 mg and trimethoprim 80 mg oral tablet",
+        "depth": 0,
+        "target_code": "198334",
+        "target_name": "sulfamethoxazole 400 MG / trimethoprim 80 MG Oral Tablet",
+        "target_system": "RxNorm"
+      },
+      {
+        "snomed_code": "256142001",
+        "snomed_name": "Bis (diethyldithiocarbamato) zinc",
+        "depth": 0,
+        "target_code": "1427192",
+        "target_name": "ditiocarb, zinc salt",
+        "target_system": "RxNorm"
+      },
+      {
+        "snomed_code": "785204007",
+        "snomed_name": "Glucose 200 mg/mL solution for injection",
+        "depth": 0,
+        "target_code": "237649",
+        "target_name": "500 ML glucose 200 MG/ML Injection",
+        "target_system": "RxNorm"
+      },
+      {
+        "snomed_code": "14645000",
+        "snomed_name": "Zinc phenolsulfonate",
+        "depth": 0,
+        "target_code": "89831",
+        "target_name": "zinc phenolsulfonate",
+        "target_system": "RxNorm"
+      },
+      {
+        "snomed_code": "716046009",
+        "snomed_name": "Mepolizumab",
+        "depth": 0,
+        "target_code": "1720597",
+        "target_name": "mepolizumab",
+        "target_system": "RxNorm"
+      },
+      {
+        "snomed_code": "1156972003",
+        "snomed_name": "Imatinib (as imatinib mesylate) 50 mg oral capsule",
+        "depth": 0,
+        "target_code": "411240",
+        "target_name": "imatinib 50 MG Oral Capsule",
+        "target_system": "RxNorm"
+      },
+      {
+        "snomed_code": "1155969003",
+        "snomed_name": "Dacomitinib 15 mg oral tablet",
+        "depth": 0,
+        "target_code": "2058915",
+        "target_name": "dacomitinib 15 MG Oral Tablet",
+        "target_system": "RxNorm"
+      },
+      {
+        "snomed_code": "21371411000001106",
+        "snomed_name": "Icosapent ethyl",
+        "depth": 0,
+        "target_code": "1304974",
+        "target_name": "icosapent ethyl",
+        "target_system": "RxNorm"
+      },
+      {
+        "snomed_code": "376146001",
+        "snomed_name": "Pemoline 75 mg oral tablet",
+        "depth": 0,
+        "target_code": "198068",
+        "target_name": "pemoline 75 MG Oral Tablet",
+        "target_system": "RxNorm"
+      },
+      {
+        "snomed_code": "1213681000202103",
+        "snomed_name": "Cabotegravir-containing product in oral dose form",
+        "depth": 1,
+        "target_code": "2475196",
+        "target_name": "cabotegravir Oral Product",
+        "target_system": "RxNorm"
+      },
+      {
+        "snomed_code": "775351004",
+        "snomed_name": "Cod liver oil-containing product",
+        "depth": 1,
+        "target_code": "2669",
+        "target_name": "cod liver oil",
+        "target_system": "RxNorm"
+      },
+      {
+        "snomed_code": "442801007",
+        "snomed_name": "Streptococcus pyogenes",
+        "depth": 1,
+        "target_code": "1311281",
+        "target_name": "Streptococcus pyogenes",
+        "target_system": "RxNorm"
+      },
+      {
+        "snomed_code": "778951005",
+        "snomed_name": "Deutetrabenazine-containing product in oral dose form",
+        "depth": 1,
+        "target_code": "1876907",
+        "target_name": "deutetrabenazine Oral Product",
+        "target_system": "RxNorm"
+      },
+      {
+        "snomed_code": "777003003",
+        "snomed_name": "Ornidazole-containing product",
+        "depth": 1,
+        "target_code": "7701",
+        "target_name": "ornidazole",
+        "target_system": "RxNorm"
+      },
+      {
+        "snomed_code": "374419000",
+        "snomed_name": "Potassium aminobenzoate-containing product",
+        "depth": 1,
+        "target_code": "142141",
+        "target_name": "aminobenzoate potassium",
+        "target_system": "RxNorm"
+      },
+      {
+        "snomed_code": "778771006",
+        "snomed_name": "Dibucaine-containing product in rectal dose form",
+        "depth": 1,
+        "target_code": "1155887",
+        "target_name": "dibucaine Rectal Product",
+        "target_system": "RxNorm"
+      },
+      {
+        "snomed_code": "789139006",
+        "snomed_name": "Apremilast-containing product in oral dose form",
+        "depth": 1,
+        "target_code": "1492729",
+        "target_name": "apremilast Oral Product",
+        "target_system": "RxNorm"
+      },
+      {
+        "snomed_code": "779620009",
+        "snomed_name": "Ivacaftor-containing product in oral dose form",
+        "depth": 1,
+        "target_code": "1243043",
+        "target_name": "ivacaftor Oral Product",
+        "target_system": "RxNorm"
+      },
+      {
+        "snomed_code": "860770005",
+        "snomed_name": "Isatuximab-containing product",
+        "depth": 1,
+        "target_code": "2282018",
+        "target_name": "isatuximab",
+        "target_system": "RxNorm"
+      },
+      {
+        "snomed_code": "1162434002",
+        "snomed_name": "Pegcetacoplan-containing product in parenteral dose form",
+        "depth": 1,
+        "target_code": "2557384",
+        "target_name": "pegcetacoplan Injectable Product",
+        "target_system": "RxNorm"
+      },
+      {
+        "snomed_code": "779905000",
+        "snomed_name": "Milnacipran-containing product in oral dose form",
+        "depth": 1,
+        "target_code": "1157278",
+        "target_name": "milnacipran Oral Product",
+        "target_system": "RxNorm"
+      },
+      {
+        "snomed_code": "778378003",
+        "snomed_name": "Aspirin-containing product in rectal dose form",
+        "depth": 1,
+        "target_code": "1154071",
+        "target_name": "aspirin Rectal Product",
+        "target_system": "RxNorm"
+      },
+      {
+        "snomed_code": "785364008",
+        "snomed_name": "Encorafenib-containing product in oral dose form",
+        "depth": 1,
+        "target_code": "2049108",
+        "target_name": "encorafenib Oral Product",
+        "target_system": "RxNorm"
+      },
+      {
+        "snomed_code": "407287007",
+        "snomed_name": "Escherichia coli",
+        "depth": 2,
+        "target_code": "350202",
+        "target_name": "Escherichia coli",
+        "target_system": "RxNorm"
+      },
+      {
+        "snomed_code": "603413005",
+        "snomed_name": "Hepatitis C virus",
+        "depth": 2,
+        "target_code": "1491863",
+        "target_name": "hepatitis C virus",
+        "target_system": "RxNorm"
+      },
+      {
+        "snomed_code": "698102004",
+        "snomed_name": "Streptococcus pneumoniae",
+        "depth": 2,
+        "target_code": "1363917",
+        "target_name": "Streptococcus pneumoniae",
+        "target_system": "RxNorm"
+      },
+      {
+        "snomed_code": "773353004",
+        "snomed_name": "Irinotecan-containing product",
+        "depth": 2,
+        "target_code": "51499",
+        "target_name": "irinotecan",
+        "target_system": "RxNorm"
+      },
+      {
+        "snomed_code": "782073002",
+        "snomed_name": "Potassium chloride- and sodium chloride-containing product in parenteral dose form",
+        "depth": 2,
+        "target_code": "1160481",
+        "target_name": "potassium chloride / sodium chloride Injectable Product",
+        "target_system": "RxNorm"
+      },
+      {
+        "snomed_code": "1179452000",
+        "snomed_name": "Domperidone-containing product in oral dose form",
+        "depth": 2,
+        "target_code": "1160752",
+        "target_name": "domperidone Oral Product",
+        "target_system": "RxNorm"
+      },
+      {
+        "snomed_code": "1209013008",
+        "snomed_name": "Albumin human-containing product in parenteral dose form",
+        "depth": 2,
+        "target_code": "1154314",
+        "target_name": "albumin human, USP Injectable Product",
+        "target_system": "RxNorm"
+      },
+      {
+        "snomed_code": "379261000112109",
+        "snomed_name": "Escherichia coli",
+        "depth": 2,
+        "target_code": "350202",
+        "target_name": "Escherichia coli",
+        "target_system": "RxNorm"
+      },
+      {
+        "snomed_code": "1237150000",
+        "snomed_name": "Inotuzumab ozogamicin-containing product in parenteral dose form",
+        "depth": 2,
+        "target_code": "1942952",
+        "target_name": "inotuzumab ozogamicin Injectable Product",
+        "target_system": "RxNorm"
+      },
+      {
+        "snomed_code": "1306763009",
+        "snomed_name": "Pancreatic amylase- and pancreatic lipase- and pancreatic protease-containing product in oral dose form",
+        "depth": 2,
+        "target_code": "1153486",
+        "target_name": "amylase / lipase / protease Oral Product",
+        "target_system": "RxNorm"
+      },
+      {
+        "snomed_code": "1141785000",
+        "snomed_name": "Amlodipine- and perindopril-containing product in oral dose form",
+        "depth": 2,
+        "target_code": "1600713",
+        "target_name": "amLODIPine / perindopril Oral Product",
+        "target_system": "RxNorm"
+      },
+      {
+        "snomed_code": "1237147003",
+        "snomed_name": "Ofatumumab-containing product in parenteral dose form",
+        "depth": 2,
+        "target_code": "712566",
+        "target_name": "ofatumumab",
+        "target_system": "RxNorm"
+      },
+      {
+        "snomed_code": "699821010000108",
+        "snomed_name": "Immunoglobulin G",
+        "depth": 2,
+        "target_code": "5666",
+        "target_name": "immunoglobulin G",
+        "target_system": "RxNorm"
+      },
+      {
+        "snomed_code": "1037511000202102",
+        "snomed_name": "Rifampin-containing product in parenteral dose form",
+        "depth": 2,
+        "target_code": "1165463",
+        "target_name": "rifAMPin Injectable Product",
+        "target_system": "RxNorm"
+      },
+      {
+        "snomed_code": "24161003",
+        "snomed_name": "Hafnium",
+        "depth": 3,
+        "target_code": "1534767",
+        "target_name": "hafnium",
+        "target_system": "RxNorm"
+      },
+      {
+        "snomed_code": "50374006",
+        "snomed_name": "Iodine",
+        "depth": 3,
+        "target_code": "5933",
+        "target_name": "iodine",
+        "target_system": "RxNorm"
+      },
+      {
+        "snomed_code": "700881010000106",
+        "snomed_name": "Immunoglobulin G",
+        "depth": 3,
+        "target_code": "5666",
+        "target_name": "immunoglobulin G",
+        "target_system": "RxNorm"
+      },
+      {
+        "snomed_code": "226501009",
+        "snomed_name": "Ethanol",
+        "depth": 3,
+        "target_code": "448",
+        "target_name": "ethanol",
+        "target_system": "RxNorm"
+      },
+      {
+        "snomed_code": "1201747001",
+        "snomed_name": "Valproic acid-containing product",
+        "depth": 3,
+        "target_code": "11118",
+        "target_name": "valproic acid",
+        "target_system": "RxNorm"
+      },
+      {
+        "snomed_code": "29348008",
+        "snomed_name": "Ytterbium",
+        "depth": 3,
+        "target_code": "1311498",
+        "target_name": "ytterbium",
+        "target_system": "RxNorm"
+      },
+      {
+        "snomed_code": "37000002",
+        "snomed_name": "Sulfur",
+        "depth": 3,
+        "target_code": "10223",
+        "target_name": "sulfur",
+        "target_system": "RxNorm"
+      },
+      {
+        "snomed_code": "1137008",
+        "snomed_name": "Uranium",
+        "depth": 3,
+        "target_code": "10999",
+        "target_name": "uranium",
+        "target_system": "RxNorm"
+      },
+      {
+        "snomed_code": "1197127008",
+        "snomed_name": "Artemether-containing product",
+        "depth": 3,
+        "target_code": "18343",
+        "target_name": "artemether",
+        "target_system": "RxNorm"
+      },
+      {
+        "snomed_code": "698268008",
+        "snomed_name": "Clostridium botulinum",
+        "depth": 3,
+        "target_code": "1811178",
+        "target_name": "Clostridium botulinum",
+        "target_system": "RxNorm"
+      },
+      {
+        "snomed_code": "11058004",
+        "snomed_name": "Palladium",
+        "depth": 3,
+        "target_code": "1311279",
+        "target_name": "palladium",
+        "target_system": "RxNorm"
+      },
+      {
+        "snomed_code": "1231351003",
+        "snomed_name": "Gabapentin-containing product in oral dose form",
+        "depth": 3,
+        "target_code": "1156681",
+        "target_name": "gabapentin Oral Product",
+        "target_system": "RxNorm"
+      },
+      {
+        "snomed_code": "256405000",
+        "snomed_name": "Human plasma, blood product",
+        "depth": 3,
+        "target_code": "2539171",
+        "target_name": "human plasma preparation",
+        "target_system": "RxNorm"
+      },
+      {
+        "snomed_code": "1231406004",
+        "snomed_name": "Atenolol-containing product in oral dose form",
+        "depth": 3,
+        "target_code": "1154378",
+        "target_name": "atenolol Oral Product",
+        "target_system": "RxNorm"
+      },
+      {
+        "snomed_code": "1217604006",
+        "snomed_name": "Nitrogen",
+        "depth": 4,
+        "target_code": "7456",
+        "target_name": "nitrogen",
+        "target_system": "RxNorm"
+      },
+      {
+        "snomed_code": "428699004",
+        "snomed_name": "Nitrogen",
+        "depth": 4,
+        "target_code": "7456",
+        "target_name": "nitrogen",
+        "target_system": "RxNorm"
+      },
+      {
+        "snomed_code": "115616005",
+        "snomed_name": "Phosphorus",
+        "depth": 4,
+        "target_code": "8263",
+        "target_name": "phosphorus",
+        "target_system": "RxNorm"
+      },
+      {
+        "snomed_code": "782174006",
+        "snomed_name": "Nitrogen",
+        "depth": 4,
+        "target_code": "7456",
+        "target_name": "nitrogen",
+        "target_system": "RxNorm"
+      },
+      {
+        "snomed_code": "781636002",
+        "snomed_name": "Sulfur",
+        "depth": 4,
+        "target_code": "10223",
+        "target_name": "sulfur",
+        "target_system": "RxNorm"
+      },
+      {
+        "snomed_code": "255953004",
+        "snomed_name": "Nitrogen",
+        "depth": 4,
+        "target_code": "7456",
+        "target_name": "nitrogen",
+        "target_system": "RxNorm"
+      },
+      {
+        "snomed_code": "95992004",
+        "snomed_name": "Phosphorus",
+        "depth": 4,
+        "target_code": "8263",
+        "target_name": "phosphorus",
+        "target_system": "RxNorm"
+      },
+      {
+        "snomed_code": "7243005",
+        "snomed_name": "Nitrogen",
+        "depth": 4,
+        "target_code": "7456",
+        "target_name": "nitrogen",
+        "target_system": "RxNorm"
+      },
+      {
+        "snomed_code": "18300003",
+        "snomed_name": "Phosphorus",
+        "depth": 4,
+        "target_code": "8263",
+        "target_name": "phosphorus",
+        "target_system": "RxNorm"
+      },
+      {
+        "snomed_code": "778829001",
+        "snomed_name": "Protease-containing product",
+        "depth": 4,
+        "target_code": "8031",
+        "target_name": "protease",
+        "target_system": "RxNorm"
+      },
+      {
+        "snomed_code": "725726004",
+        "snomed_name": "Nitrogen",
+        "depth": 4,
+        "target_code": "7456",
+        "target_name": "nitrogen",
+        "target_system": "RxNorm"
+      },
+      {
+        "snomed_code": "1148829005",
+        "snomed_name": "Phosphorus",
+        "depth": 4,
+        "target_code": "8263",
+        "target_name": "phosphorus",
+        "target_system": "RxNorm"
+      },
+      {
+        "snomed_code": "1144773009",
+        "snomed_name": "Phosphorus",
+        "depth": 4,
+        "target_code": "8263",
+        "target_name": "phosphorus",
+        "target_system": "RxNorm"
+      },
+      {
+        "snomed_code": "1217563005",
+        "snomed_name": "Nitrogen",
+        "depth": 4,
+        "target_code": "7456",
+        "target_name": "nitrogen",
+        "target_system": "RxNorm"
+      },
+      {
+        "snomed_code": "372618002",
+        "snomed_name": "Nitrogen",
+        "depth": 5,
+        "target_code": "7456",
+        "target_name": "nitrogen",
+        "target_system": "RxNorm"
+      },
+      {
+        "snomed_code": "1172717008",
+        "snomed_name": "Nitrogen",
+        "depth": 5,
+        "target_code": "7456",
+        "target_name": "nitrogen",
+        "target_system": "RxNorm"
+      },
+      {
+        "snomed_code": "428706009",
+        "snomed_name": "Nitrogen",
+        "depth": 5,
+        "target_code": "7456",
+        "target_name": "nitrogen",
+        "target_system": "RxNorm"
+      },
+      {
+        "snomed_code": "706942003",
+        "snomed_name": "Nitrogen",
+        "depth": 5,
+        "target_code": "7456",
+        "target_name": "nitrogen",
+        "target_system": "RxNorm"
+      },
+      {
+        "snomed_code": "43880002",
+        "snomed_name": "Nitrogen",
+        "depth": 5,
+        "target_code": "7456",
+        "target_name": "nitrogen",
+        "target_system": "RxNorm"
+      },
+      {
+        "snomed_code": "707599007",
+        "snomed_name": "Nitrogen",
+        "depth": 5,
+        "target_code": "7456",
+        "target_name": "nitrogen",
+        "target_system": "RxNorm"
+      },
+      {
+        "snomed_code": "363521001",
+        "snomed_name": "Nitrogen",
+        "depth": 5,
+        "target_code": "7456",
+        "target_name": "nitrogen",
+        "target_system": "RxNorm"
+      },
+      {
+        "snomed_code": "228108001",
+        "snomed_name": "Nitrogen",
+        "depth": 5,
+        "target_code": "7456",
+        "target_name": "nitrogen",
+        "target_system": "RxNorm"
+      },
+      {
+        "snomed_code": "57859004",
+        "snomed_name": "Nitrogen",
+        "depth": 5,
+        "target_code": "7456",
+        "target_name": "nitrogen",
+        "target_system": "RxNorm"
+      },
+      {
+        "snomed_code": "396024004",
+        "snomed_name": "Nitrogen",
+        "depth": 5,
+        "target_code": "7456",
+        "target_name": "nitrogen",
+        "target_system": "RxNorm"
+      },
+      {
+        "snomed_code": "39933002",
+        "snomed_name": "Nitrogen",
+        "depth": 5,
+        "target_code": "7456",
+        "target_name": "nitrogen",
+        "target_system": "RxNorm"
+      },
+      {
+        "snomed_code": "709842001",
+        "snomed_name": "Nitrogen",
+        "depth": 5,
+        "target_code": "7456",
+        "target_name": "nitrogen",
+        "target_system": "RxNorm"
+      },
+      {
+        "snomed_code": "116612002",
+        "snomed_name": "Nitrogen",
+        "depth": 5,
+        "target_code": "7456",
+        "target_name": "nitrogen",
+        "target_system": "RxNorm"
+      },
+      {
+        "snomed_code": "9530002",
+        "snomed_name": "Nitrogen",
+        "depth": 5,
+        "target_code": "7456",
+        "target_name": "nitrogen",
+        "target_system": "RxNorm"
+      },
+      {
+        "snomed_code": "708572008",
+        "snomed_name": "Dihydroergocryptine mesylate",
+        "depth": 0,
+        "target_code": "42646",
+        "target_name": "dihydroergocryptine mesylate",
+        "target_system": "RxNorm"
+      },
+      {
+        "snomed_code": "57979006",
+        "snomed_name": "Picrotoxin",
+        "depth": 0,
+        "target_code": "2539172",
+        "target_name": "picrotoxin",
+        "target_system": "RxNorm"
+      },
+      {
+        "snomed_code": "373468005",
+        "snomed_name": "Chloroquine",
+        "depth": 0,
+        "target_code": "2393",
+        "target_name": "chloroquine",
+        "target_system": "RxNorm"
+      },
+      {
+        "snomed_code": "350368008",
+        "snomed_name": "Estradiol-containing product in oral dose form",
+        "depth": 0,
+        "target_code": "1165185",
+        "target_name": "estradiol Oral Product",
+        "target_system": "RxNorm"
+      },
+      {
+        "snomed_code": "3823007",
+        "snomed_name": "Prochlorperazine edisylate",
+        "depth": 0,
+        "target_code": "8705",
+        "target_name": "prochlorperazine edisylate",
+        "target_system": "RxNorm"
+      },
+      {
+        "snomed_code": "387292008",
+        "snomed_name": "Calcium gluconate",
+        "depth": 0,
+        "target_code": "1908",
+        "target_name": "calcium gluconate",
+        "target_system": "RxNorm"
+      },
+      {
+        "snomed_code": "322840006",
+        "snomed_name": "Clonidine hydrochloride 25 microgram oral tablet",
+        "depth": 0,
+        "target_code": "892791",
+        "target_name": "cloNIDine HCl 0.025 MG Oral Tablet",
+        "target_system": "RxNorm"
+      },
+      {
+        "snomed_code": "14385002",
+        "snomed_name": "Enterobacter cloacae",
+        "depth": 0,
+        "target_code": "1491010",
+        "target_name": "Enterobacter cloacae",
+        "target_system": "RxNorm"
+      },
+      {
+        "snomed_code": "387398009",
+        "snomed_name": "Podophyllum resin",
+        "depth": 0,
+        "target_code": "8462",
+        "target_name": "podophyllum resin",
+        "target_system": "RxNorm"
+      },
+      {
+        "snomed_code": "6071000",
+        "snomed_name": "Coal tar-containing product",
+        "depth": 0,
+        "target_code": "2635",
+        "target_name": "coal tar",
+        "target_system": "RxNorm"
+      },
+      {
+        "snomed_code": "784432007",
+        "snomed_name": "Tuberculin purified protein derivative 100 unit/mL solution for injection",
+        "depth": 0,
+        "target_code": "251472",
+        "target_name": "purified protein derivative of tuberculin 100 UNT/ML Injectable Solution",
+        "target_system": "RxNorm"
+      },
+      {
+        "snomed_code": "784913005",
+        "snomed_name": "Carbachol 250 microgram/mL solution for injection",
+        "depth": 0,
+        "target_code": "247075",
+        "target_name": "carbachol 0.25 MG/ML Injectable Solution",
+        "target_system": "RxNorm"
+      },
+      {
+        "snomed_code": "17356001",
+        "snomed_name": "Pralidoxime chloride",
+        "depth": 0,
+        "target_code": "55322",
+        "target_name": "pralidoxime chloride",
+        "target_system": "RxNorm"
+      },
+      {
+        "snomed_code": "771769001",
+        "snomed_name": "Griseofulvin-containing product in cutaneous dose form",
+        "depth": 0,
+        "target_code": "1158542",
+        "target_name": "griseofulvin Topical Product",
+        "target_system": "RxNorm"
+      },
+      {
+        "snomed_code": "373347005",
+        "snomed_name": "Physostigmine",
+        "depth": 0,
+        "target_code": "8299",
+        "target_name": "physostigmine",
+        "target_system": "RxNorm"
+      },
+      {
+        "snomed_code": "716072000",
+        "snomed_name": "Sacubitril",
+        "depth": 0,
+        "target_code": "1656328",
+        "target_name": "sacubitril",
+        "target_system": "RxNorm"
+      }
+    ]
+  },
+  "snomed_to_icd10": {
+    "total_available": 104142,
+    "sample_count": 100,
+    "examples": [
+      {
+        "snomed_code": "697976003",
+        "snomed_name": "Coronary microvascular dysfunction",
+        "depth": 0,
+        "target_code": "I25.85",
+        "target_name": "Coronary microvascular dysfunction NOS",
+        "target_system": "ICD-10"
+      },
+      {
+        "snomed_code": "15444000",
+        "snomed_name": "Acquired lordosis deformity of spine due to poor posture",
+        "depth": 0,
+        "target_code": "M40.4",
+        "target_name": "Postural lordosis",
+        "target_system": "ICD-10"
+      },
+      {
+        "snomed_code": "109368005",
+        "snomed_name": "Overlapping malignant neoplasm of hypopharynx",
+        "depth": 0,
+        "target_code": "C13.8",
+        "target_name": "Malignant neoplasm of overlapping sites of hypopharynx",
+        "target_system": "ICD-10"
+      },
+      {
+        "snomed_code": "87819007",
+        "snomed_name": "Staphyloma posticum",
+        "depth": 0,
+        "target_code": "H15.83",
+        "target_name": "Staphyloma posticum",
+        "target_system": "ICD-10"
+      },
+      {
+        "snomed_code": "242831003",
+        "snomed_name": "Intentional methadone overdose",
+        "depth": 0,
+        "target_code": "T40.3X2",
+        "target_name": "Poisoning by methadone, intentional self-harm",
+        "target_system": "ICD-10"
+      },
+      {
+        "snomed_code": "231446000",
+        "snomed_name": "Organic emotionally labile disorder",
+        "depth": 0,
+        "target_code": "F06.8",
+        "target_name": "Organic emotionally labile [asthenic] disorder",
+        "target_system": "ICD-10"
+      },
+      {
+        "snomed_code": "212113008",
+        "snomed_name": "Corrosion involving 80 to 89 percent of body surface",
+        "depth": 0,
+        "target_code": "T32.8",
+        "target_name": "Corrosions involving 80-89% of body surface",
+        "target_system": "ICD-10"
+      },
+      {
+        "snomed_code": "18690003",
+        "snomed_name": "Farmers' lung",
+        "depth": 0,
+        "target_code": "J67.0",
+        "target_name": "Farmer's lung",
+        "target_system": "ICD-10"
+      },
+      {
+        "snomed_code": "86527000",
+        "snomed_name": "Hypoplasia of eye",
+        "depth": 0,
+        "target_code": "Q11.2",
+        "target_name": "Rudimentary eye",
+        "target_system": "ICD-10"
+      },
+      {
+        "snomed_code": "1371315001",
+        "snomed_name": "Rheumatoid nodule of subcutaneous tissue of hand",
+        "depth": 0,
+        "target_code": "M06.34",
+        "target_name": "Rheumatoid nodule, hand",
+        "target_system": "ICD-10"
+      },
+      {
+        "snomed_code": "734025005",
+        "snomed_name": "Excessive spacing of fully erupted teeth",
+        "depth": 0,
+        "target_code": "M26.32",
+        "target_name": "Excessive spacing of fully erupted teeth",
+        "target_system": "ICD-10"
+      },
+      {
+        "snomed_code": "87603003",
+        "snomed_name": "Lymphocutaneous sporotrichosis",
+        "depth": 0,
+        "target_code": "B42.1",
+        "target_name": "Lymphocutaneous sporotrichosis",
+        "target_system": "ICD-10"
+      },
+      {
+        "snomed_code": "46041001",
+        "snomed_name": "Maffucci syndrome",
+        "depth": 0,
+        "target_code": "Q78.4",
+        "target_name": "Maffucci's syndrome",
+        "target_system": "ICD-10"
+      },
+      {
+        "snomed_code": "12835000",
+        "snomed_name": "Multiple injuries",
+        "depth": 0,
+        "target_code": "T07",
+        "target_name": "Unspecified multiple injuries",
+        "target_system": "ICD-10"
+      },
+      {
+        "snomed_code": "11313961000119100",
+        "snomed_name": "Stress fracture",
+        "depth": 1,
+        "target_code": "M84.3",
+        "target_name": "Stress fracture NOS",
+        "target_system": "ICD-10"
+      },
+      {
+        "snomed_code": "262881000",
+        "snomed_name": "Internal injury of abdominal organ",
+        "depth": 1,
+        "target_code": "S36",
+        "target_name": "Injury of intra-abdominal organs",
+        "target_system": "ICD-10"
+      },
+      {
+        "snomed_code": "16140007",
+        "snomed_name": "Bacterial infectious disease",
+        "depth": 1,
+        "target_code": "A49",
+        "target_name": "Bacterial infection of unspecified site",
+        "target_system": "ICD-10"
+      },
+      {
+        "snomed_code": "450934005",
+        "snomed_name": "Myeloid proliferation",
+        "depth": 1,
+        "target_code": "D47.1",
+        "target_name": "Myeloproliferative disease, unspecified",
+        "target_system": "ICD-10"
+      },
+      {
+        "snomed_code": "34161000087101",
+        "snomed_name": "Injury of face",
+        "depth": 1,
+        "target_code": "S09.93",
+        "target_name": "Injury of face NOS",
+        "target_system": "ICD-10"
+      },
+      {
+        "snomed_code": "127342003",
+        "snomed_name": "Disorder of male genital organ",
+        "depth": 1,
+        "target_code": "N50.9",
+        "target_name": "Disorder of male genital organs, unspecified",
+        "target_system": "ICD-10"
+      },
+      {
+        "snomed_code": "446434001",
+        "snomed_name": "Disorder of external ear",
+        "depth": 1,
+        "target_code": "H60-H62",
+        "target_name": "Diseases of external ear (H60-H62)",
+        "target_system": "ICD-10"
+      },
+      {
+        "snomed_code": "78975002",
+        "snomed_name": "Essential hypertension",
+        "depth": 1,
+        "target_code": "I10",
+        "target_name": "Essential (primary) hypertension",
+        "target_system": "ICD-10"
+      },
+      {
+        "snomed_code": "64664008",
+        "snomed_name": "Disorder of gallbladder",
+        "depth": 1,
+        "target_code": "K82.9",
+        "target_name": "Disease of gallbladder, unspecified",
+        "target_system": "ICD-10"
+      },
+      {
+        "snomed_code": "840453009",
+        "snomed_name": "Infection by Loa loa",
+        "depth": 1,
+        "target_code": "B74.3",
+        "target_name": "Loiasis",
+        "target_system": "ICD-10"
+      },
+      {
+        "snomed_code": "10873811000119108",
+        "snomed_name": "Open wound of ear",
+        "depth": 1,
+        "target_code": "S01.3",
+        "target_name": "Open wound of ear",
+        "target_system": "ICD-10"
+      },
+      {
+        "snomed_code": "700455003",
+        "snomed_name": "Candidiasis",
+        "depth": 1,
+        "target_code": "B37",
+        "target_name": "moniliasis",
+        "target_system": "ICD-10"
+      },
+      {
+        "snomed_code": "425671009",
+        "snomed_name": "Disorder of intestine",
+        "depth": 1,
+        "target_code": "K63.9",
+        "target_name": "Disease of intestine, unspecified",
+        "target_system": "ICD-10"
+      },
+      {
+        "snomed_code": "762680008",
+        "snomed_name": "Hypothermia - accidental",
+        "depth": 1,
+        "target_code": "T68",
+        "target_name": "Accidental hypothermia",
+        "target_system": "ICD-10"
+      },
+      {
+        "snomed_code": "240062007",
+        "snomed_name": "Muscular dystrophy",
+        "depth": 2,
+        "target_code": "G71.0",
+        "target_name": "Muscular dystrophy",
+        "target_system": "ICD-10"
+      },
+      {
+        "snomed_code": "292162001",
+        "snomed_name": "Adverse reaction to drug",
+        "depth": 2,
+        "target_code": "T88.7",
+        "target_name": "Drug reaction NOS",
+        "target_system": "ICD-10"
+      },
+      {
+        "snomed_code": "294230007",
+        "snomed_name": "Allergy to drug",
+        "depth": 2,
+        "target_code": "T88.7",
+        "target_name": "Drug hypersensitivity NOS",
+        "target_system": "ICD-10"
+      },
+      {
+        "snomed_code": "448113007",
+        "snomed_name": "Developmental disorder",
+        "depth": 2,
+        "target_code": "F89",
+        "target_name": "Developmental disorder NOS",
+        "target_system": "ICD-10"
+      },
+      {
+        "snomed_code": "763064007",
+        "snomed_name": "Malignant neoplasm of cervix uteri",
+        "depth": 2,
+        "target_code": "C53",
+        "target_name": "Malignant neoplasm of cervix uteri",
+        "target_system": "ICD-10"
+      },
+      {
+        "snomed_code": "1187549009",
+        "snomed_name": "Disorder of pituitary gland",
+        "depth": 2,
+        "target_code": "E23.7",
+        "target_name": "Disorder of pituitary gland, unspecified",
+        "target_system": "ICD-10"
+      },
+      {
+        "snomed_code": "1264184001",
+        "snomed_name": "Perinatal disorder",
+        "depth": 2,
+        "target_code": "P96.9",
+        "target_name": "Condition originating in the perinatal period, unspecified",
+        "target_system": "ICD-10"
+      },
+      {
+        "snomed_code": "233800000",
+        "snomed_name": "Disorder of respiratory system",
+        "depth": 2,
+        "target_code": "J00-J99",
+        "target_name": "Diseases of the respiratory system (J00-J99)",
+        "target_system": "ICD-10"
+      },
+      {
+        "snomed_code": "1343377003",
+        "snomed_name": "Scar",
+        "depth": 2,
+        "target_code": "L90.5",
+        "target_name": "Scar NOS",
+        "target_system": "ICD-10"
+      },
+      {
+        "snomed_code": "16467181000119109",
+        "snomed_name": "Disorder of bone",
+        "depth": 2,
+        "target_code": "M89.9",
+        "target_name": "Disorder of bone, unspecified",
+        "target_system": "ICD-10"
+      },
+      {
+        "snomed_code": "1082141000119108",
+        "snomed_name": "Malignant neoplasm of respiratory system",
+        "depth": 2,
+        "target_code": "C39.9",
+        "target_name": "Malignant neoplasm of respiratory tract NOS",
+        "target_system": "ICD-10"
+      },
+      {
+        "snomed_code": "1340067005",
+        "snomed_name": "Disorder of soft tissue",
+        "depth": 2,
+        "target_code": "M79.9",
+        "target_name": "Soft tissue disorder, unspecified",
+        "target_system": "ICD-10"
+      },
+      {
+        "snomed_code": "307576001",
+        "snomed_name": "Malignant neoplastic disease",
+        "depth": 2,
+        "target_code": "C80",
+        "target_name": "Malignant neoplasm without specification of site",
+        "target_system": "ICD-10"
+      },
+      {
+        "snomed_code": "1038000",
+        "snomed_name": "Disorder of carbohydrate metabolism",
+        "depth": 2,
+        "target_code": "E74.9",
+        "target_name": "Disorder of carbohydrate metabolism, unspecified",
+        "target_system": "ICD-10"
+      },
+      {
+        "snomed_code": "16466981000119109",
+        "snomed_name": "Hypertrophy of bone",
+        "depth": 3,
+        "target_code": "M89.3",
+        "target_name": "Hypertrophy of bone",
+        "target_system": "ICD-10"
+      },
+      {
+        "snomed_code": "293207006",
+        "snomed_name": "Adverse reaction to drug",
+        "depth": 3,
+        "target_code": "T88.7",
+        "target_name": "Drug reaction NOS",
+        "target_system": "ICD-10"
+      },
+      {
+        "snomed_code": "300144003",
+        "snomed_name": "Disorder of tympanic membrane",
+        "depth": 3,
+        "target_code": "H73.9",
+        "target_name": "Unspecified disorder of tympanic membrane",
+        "target_system": "ICD-10"
+      },
+      {
+        "snomed_code": "16004791000119108",
+        "snomed_name": "Disorder of bone",
+        "depth": 3,
+        "target_code": "M89.9",
+        "target_name": "Disorder of bone, unspecified",
+        "target_system": "ICD-10"
+      },
+      {
+        "snomed_code": "11790881000119106",
+        "snomed_name": "Traumatic injury",
+        "depth": 3,
+        "target_code": "T14.9",
+        "target_name": "Unspecified injury",
+        "target_system": "ICD-10"
+      },
+      {
+        "snomed_code": "209566009",
+        "snomed_name": "Musculoskeletal and connective tissue disorder",
+        "depth": 3,
+        "target_code": "M00-M99",
+        "target_name": "Diseases of the musculoskeletal system and connective tissue (M00-M99)",
+        "target_system": "ICD-10"
+      },
+      {
+        "snomed_code": "237687003",
+        "snomed_name": "Hypopituitarism",
+        "depth": 3,
+        "target_code": "E23.0",
+        "target_name": "Pituitary insufficiency NOS",
+        "target_system": "ICD-10"
+      },
+      {
+        "snomed_code": "1078289006",
+        "snomed_name": "Musculoskeletal and connective tissue disorder",
+        "depth": 3,
+        "target_code": "M00-M99",
+        "target_name": "Diseases of the musculoskeletal system and connective tissue (M00-M99)",
+        "target_system": "ICD-10"
+      },
+      {
+        "snomed_code": "1162487002",
+        "snomed_name": "Congenital chromosomal disease",
+        "depth": 3,
+        "target_code": "Q99.9",
+        "target_name": "Chromosomal abnormality, unspecified",
+        "target_system": "ICD-10"
+      },
+      {
+        "snomed_code": "297153009",
+        "snomed_name": "Peripheral vascular disease",
+        "depth": 3,
+        "target_code": "I73.9",
+        "target_name": "Peripheral vascular disease, unspecified",
+        "target_system": "ICD-10"
+      },
+      {
+        "snomed_code": "10571000",
+        "snomed_name": "Poisoning",
+        "depth": 3,
+        "target_code": "T65.91",
+        "target_name": "Poisoning NOS",
+        "target_system": "ICD-10"
+      },
+      {
+        "snomed_code": "12207181000119105",
+        "snomed_name": "Arthropathy",
+        "depth": 3,
+        "target_code": "M12.9",
+        "target_name": "Arthropathy, unspecified",
+        "target_system": "ICD-10"
+      },
+      {
+        "snomed_code": "187949009",
+        "snomed_name": "Malignant neoplasm of upper limb",
+        "depth": 3,
+        "target_code": "C76.4",
+        "target_name": "Malignant neoplasm of upper limb",
+        "target_system": "ICD-10"
+      },
+      {
+        "snomed_code": "12265261000119102",
+        "snomed_name": "Disorder of the central nervous system",
+        "depth": 3,
+        "target_code": "G96.9",
+        "target_name": "Disorder of central nervous system, unspecified",
+        "target_system": "ICD-10"
+      },
+      {
+        "snomed_code": "11785081000119107",
+        "snomed_name": "Musculoskeletal and connective tissue disorder",
+        "depth": 4,
+        "target_code": "M00-M99",
+        "target_name": "Diseases of the musculoskeletal system and connective tissue (M00-M99)",
+        "target_system": "ICD-10"
+      },
+      {
+        "snomed_code": "285671000119107",
+        "snomed_name": "Deep venous thrombosis",
+        "depth": 4,
+        "target_code": "I82.40",
+        "target_name": "Deep vein thrombosis NOS",
+        "target_system": "ICD-10"
+      },
+      {
+        "snomed_code": "10935561000119100",
+        "snomed_name": "Disorder of bone",
+        "depth": 4,
+        "target_code": "M89.9",
+        "target_name": "Disorder of bone, unspecified",
+        "target_system": "ICD-10"
+      },
+      {
+        "snomed_code": "49811000087107",
+        "snomed_name": "Musculoskeletal and connective tissue disorder",
+        "depth": 4,
+        "target_code": "M00-M99",
+        "target_name": "Diseases of the musculoskeletal system and connective tissue (M00-M99)",
+        "target_system": "ICD-10"
+      },
+      {
+        "snomed_code": "49741000087104",
+        "snomed_name": "Musculoskeletal and connective tissue disorder",
+        "depth": 4,
+        "target_code": "M00-M99",
+        "target_name": "Diseases of the musculoskeletal system and connective tissue (M00-M99)",
+        "target_system": "ICD-10"
+      },
+      {
+        "snomed_code": "15684441000119101",
+        "snomed_name": "Disorder of soft tissue",
+        "depth": 4,
+        "target_code": "M79.9",
+        "target_name": "Soft tissue disorder, unspecified",
+        "target_system": "ICD-10"
+      },
+      {
+        "snomed_code": "715272002",
+        "snomed_name": "Disorder of soft tissue",
+        "depth": 4,
+        "target_code": "M79.9",
+        "target_name": "Soft tissue disorder, unspecified",
+        "target_system": "ICD-10"
+      },
+      {
+        "snomed_code": "406613000",
+        "snomed_name": "Bacterial infectious disease",
+        "depth": 4,
+        "target_code": "A49",
+        "target_name": "Bacterial infection of unspecified site",
+        "target_system": "ICD-10"
+      },
+      {
+        "snomed_code": "1259806004",
+        "snomed_name": "Malignant retroperitoneal neoplasm",
+        "depth": 4,
+        "target_code": "C48.0",
+        "target_name": "Malignant neoplasm of retroperitoneum",
+        "target_system": "ICD-10"
+      },
+      {
+        "snomed_code": "49341000087103",
+        "snomed_name": "Musculoskeletal and connective tissue disorder",
+        "depth": 4,
+        "target_code": "M00-M99",
+        "target_name": "Diseases of the musculoskeletal system and connective tissue (M00-M99)",
+        "target_system": "ICD-10"
+      },
+      {
+        "snomed_code": "430351000124109",
+        "snomed_name": "Vesicoureteric reflux",
+        "depth": 4,
+        "target_code": "N13.7",
+        "target_name": "Vesicoureteral-reflux",
+        "target_system": "ICD-10"
+      },
+      {
+        "snomed_code": "1080801000119102",
+        "snomed_name": "Malignant neoplasm of upper limb",
+        "depth": 4,
+        "target_code": "C76.4",
+        "target_name": "Malignant neoplasm of upper limb",
+        "target_system": "ICD-10"
+      },
+      {
+        "snomed_code": "1079201000119101",
+        "snomed_name": "Malignant neoplasm of upper limb",
+        "depth": 4,
+        "target_code": "C76.4",
+        "target_name": "Malignant neoplasm of upper limb",
+        "target_system": "ICD-10"
+      },
+      {
+        "snomed_code": "1162892005",
+        "snomed_name": "Neoplasm, benign",
+        "depth": 4,
+        "target_code": "D36.9",
+        "target_name": "Benign neoplasm, unspecified site",
+        "target_system": "ICD-10"
+      },
+      {
+        "snomed_code": "237306003",
+        "snomed_name": "Disorder of soft tissue",
+        "depth": 5,
+        "target_code": "M79.9",
+        "target_name": "Soft tissue disorder, unspecified",
+        "target_system": "ICD-10"
+      },
+      {
+        "snomed_code": "10935681000119108",
+        "snomed_name": "Disorder of bone",
+        "depth": 5,
+        "target_code": "M89.9",
+        "target_name": "Disorder of bone, unspecified",
+        "target_system": "ICD-10"
+      },
+      {
+        "snomed_code": "269655003",
+        "snomed_name": "Transport accident",
+        "depth": 5,
+        "target_code": "V89.2",
+        "target_name": "Road (traffic) accident [RTA] NOS",
+        "target_system": "ICD-10"
+      },
+      {
+        "snomed_code": "34201000119101",
+        "snomed_name": "Disorder of the genitourinary system",
+        "depth": 5,
+        "target_code": "N00-N99",
+        "target_name": "Diseases of the genitourinary system (N00-N99)",
+        "target_system": "ICD-10"
+      },
+      {
+        "snomed_code": "283097006",
+        "snomed_name": "Wound",
+        "depth": 5,
+        "target_code": "T14.8",
+        "target_name": "Wound NOS",
+        "target_system": "ICD-10"
+      },
+      {
+        "snomed_code": "417049003",
+        "snomed_name": "Neoplasm",
+        "depth": 5,
+        "target_code": "D49",
+        "target_name": "new growth NOS",
+        "target_system": "ICD-10"
+      },
+      {
+        "snomed_code": "216303007",
+        "snomed_name": "Transport accident",
+        "depth": 5,
+        "target_code": "V89.2",
+        "target_name": "Road (traffic) accident [RTA] NOS",
+        "target_system": "ICD-10"
+      },
+      {
+        "snomed_code": "215915005",
+        "snomed_name": "Air and space transport accident",
+        "depth": 5,
+        "target_code": "V95-V97",
+        "target_name": "Air and space transport accidents (V95-V97)",
+        "target_system": "ICD-10"
+      },
+      {
+        "snomed_code": "295235007",
+        "snomed_name": "Traumatic injury",
+        "depth": 5,
+        "target_code": "T14.9",
+        "target_name": "Unspecified injury",
+        "target_system": "ICD-10"
+      },
+      {
+        "snomed_code": "242169006",
+        "snomed_name": "Transport accident",
+        "depth": 5,
+        "target_code": "V89.2",
+        "target_name": "Road (traffic) accident [RTA] NOS",
+        "target_system": "ICD-10"
+      },
+      {
+        "snomed_code": "242203002",
+        "snomed_name": "Air and space transport accident",
+        "depth": 5,
+        "target_code": "V95-V97",
+        "target_name": "Air and space transport accidents (V95-V97)",
+        "target_system": "ICD-10"
+      },
+      {
+        "snomed_code": "703289004",
+        "snomed_name": "Heart disease",
+        "depth": 5,
+        "target_code": "I51.9",
+        "target_name": "Heart disease, unspecified",
+        "target_system": "ICD-10"
+      },
+      {
+        "snomed_code": "10927401000119108",
+        "snomed_name": "Disorder of bone",
+        "depth": 5,
+        "target_code": "M89.9",
+        "target_name": "Disorder of bone, unspecified",
+        "target_system": "ICD-10"
+      },
+      {
+        "snomed_code": "249804000",
+        "snomed_name": "Musculoskeletal and connective tissue disorder",
+        "depth": 5,
+        "target_code": "M00-M99",
+        "target_name": "Diseases of the musculoskeletal system and connective tissue (M00-M99)",
+        "target_system": "ICD-10"
+      },
+      {
+        "snomed_code": "402828000",
+        "snomed_name": "Hidradenitis suppurativa",
+        "depth": 1,
+        "target_code": "L73.2",
+        "target_name": "Hidradenitis suppurativa",
+        "target_system": "ICD-10"
+      },
+      {
+        "snomed_code": "36789003",
+        "snomed_name": "Infectious gastroenteritis",
+        "depth": 1,
+        "target_code": "A09",
+        "target_name": "Infectious gastroenteritis NOS",
+        "target_system": "ICD-10"
+      },
+      {
+        "snomed_code": "211051008",
+        "snomed_name": "Wound",
+        "depth": 1,
+        "target_code": "T14.8",
+        "target_name": "Wound NOS",
+        "target_system": "ICD-10"
+      },
+      {
+        "snomed_code": "7931000",
+        "snomed_name": "Carbuncle of trunk",
+        "depth": 1,
+        "target_code": "L02.23",
+        "target_name": "Carbuncle of trunk",
+        "target_system": "ICD-10"
+      },
+      {
+        "snomed_code": "202224005",
+        "snomed_name": "Recurrent dislocation of elbow",
+        "depth": 1,
+        "target_code": "M24.42",
+        "target_name": "Recurrent dislocation, elbow",
+        "target_system": "ICD-10"
+      },
+      {
+        "snomed_code": "234362006",
+        "snomed_name": "Pernicious anemia",
+        "depth": 1,
+        "target_code": "D51.0",
+        "target_name": "Biermer anemia",
+        "target_system": "ICD-10"
+      },
+      {
+        "snomed_code": "238732008",
+        "snomed_name": "Infection caused by Staphylococcus aureus",
+        "depth": 1,
+        "target_code": "A49.01",
+        "target_name": "Staphylococcus aureus infection NOS",
+        "target_system": "ICD-10"
+      },
+      {
+        "snomed_code": "15710761000119109",
+        "snomed_name": "Dissection of iliac artery",
+        "depth": 1,
+        "target_code": "I77.72",
+        "target_name": "Dissection of iliac artery",
+        "target_system": "ICD-10"
+      },
+      {
+        "snomed_code": "1259124000",
+        "snomed_name": "Frontotemporal dementia",
+        "depth": 1,
+        "target_code": "G31.0",
+        "target_name": "Frontotemporal dementia",
+        "target_system": "ICD-10"
+      },
+      {
+        "snomed_code": "23951003",
+        "snomed_name": "Cyst of eyelid",
+        "depth": 1,
+        "target_code": "H02.82",
+        "target_name": "Cysts of eyelid",
+        "target_system": "ICD-10"
+      },
+      {
+        "snomed_code": "370555000",
+        "snomed_name": "Urinary incontinence",
+        "depth": 1,
+        "target_code": "R32",
+        "target_name": "Unspecified urinary incontinence",
+        "target_system": "ICD-10"
+      },
+      {
+        "snomed_code": "716170005",
+        "snomed_name": "Sensorineural hearing loss",
+        "depth": 1,
+        "target_code": "H90.5",
+        "target_name": "Unspecified sensorineural hearing loss",
+        "target_system": "ICD-10"
+      },
+      {
+        "snomed_code": "720500008",
+        "snomed_name": "Aplasia cutis congenita",
+        "depth": 1,
+        "target_code": "Q84.8",
+        "target_name": "Aplasia cutis congenita",
+        "target_system": "ICD-10"
+      },
+      {
+        "snomed_code": "1264012009",
+        "snomed_name": "Myositis",
+        "depth": 1,
+        "target_code": "G72.49",
+        "target_name": "Inflammatory myopathy NOS",
+        "target_system": "ICD-10"
+      },
+      {
+        "snomed_code": "89489004",
+        "snomed_name": "Stomatitis",
+        "depth": 1,
+        "target_code": "K12.1",
+        "target_name": "Stomatitis NOS",
+        "target_system": "ICD-10"
+      },
+      {
+        "snomed_code": "59761008",
+        "snomed_name": "Disorder of sulfur-bearing amino acid metabolism",
+        "depth": 1,
+        "target_code": "E72.1",
+        "target_name": "Disorders of sulfur-bearing amino-acid metabolism",
+        "target_system": "ICD-10"
+      }
+    ]
+  },
+  "snomed_to_cpt": {
+    "total_available": 47936,
+    "sample_count": 100,
+    "examples": [
+      {
+        "snomed_code": "72786002",
+        "snomed_name": "Removal of intact mammary implant",
+        "depth": 0,
+        "target_code": "19328",
+        "target_name": "REMOVAL INTACT BREAST IMPLANT",
+        "target_system": "CPT"
+      },
+      {
+        "snomed_code": "14740000",
+        "snomed_name": "Triglycerides measurement",
+        "depth": 0,
+        "target_code": "84478",
+        "target_name": "ASSAY OF TRIGLYCERIDES",
+        "target_system": "CPT"
+      },
+      {
+        "snomed_code": "104752004",
+        "snomed_name": "Insulin, total measurement",
+        "depth": 0,
+        "target_code": "83525",
+        "target_name": "Measurement of total insulin",
+        "target_system": "CPT"
+      },
+      {
+        "snomed_code": "88702001",
+        "snomed_name": "Suture of infrapatellar tendon, primary",
+        "depth": 0,
+        "target_code": "27380",
+        "target_name": "SUTURE INFRAPATELLAR TENDON PRIMARY",
+        "target_system": "CPT"
+      },
+      {
+        "snomed_code": "30038001",
+        "snomed_name": "Ureteropyelostomy",
+        "depth": 0,
+        "target_code": "50740",
+        "target_name": "Ureteropyelostomy",
+        "target_system": "CPT"
+      },
+      {
+        "snomed_code": "268377001",
+        "snomed_name": "Hypersensitivity skin testing",
+        "depth": 0,
+        "target_code": "1011969",
+        "target_name": "Skin test",
+        "target_system": "CPT"
+      },
+      {
+        "snomed_code": "251736005",
+        "snomed_name": "Repair of cleft palate using pharyngeal flap",
+        "depth": 0,
+        "target_code": "42225",
+        "target_name": "PALATOP CL PALATE ATTACHMENT PHARYNGEAL FLAP",
+        "target_system": "CPT"
+      },
+      {
+        "snomed_code": "173380000",
+        "snomed_name": "Excision of lesion of palate",
+        "depth": 0,
+        "target_code": "42104",
+        "target_name": "Excision of lesion of palate",
+        "target_system": "CPT"
+      },
+      {
+        "snomed_code": "87751001",
+        "snomed_name": "Cineradiography",
+        "depth": 0,
+        "target_code": "76120",
+        "target_name": "Cineradiography",
+        "target_system": "CPT"
+      },
+      {
+        "snomed_code": "1344850007",
+        "snomed_name": "Transplantation of uterus",
+        "depth": 0,
+        "target_code": "1036614",
+        "target_name": "Uterus Transplantation",
+        "target_system": "CPT"
+      },
+      {
+        "snomed_code": "79046000",
+        "snomed_name": "Repair of wound of Tenon's capsule",
+        "depth": 0,
+        "target_code": "65290",
+        "target_name": "Repair of wound of Tenon's capsule",
+        "target_system": "CPT"
+      },
+      {
+        "snomed_code": "88444006",
+        "snomed_name": "Partial excision of fibula",
+        "depth": 0,
+        "target_code": "27641",
+        "target_name": "Partial excision (craterization, saucerization, or diaphysectomy), bone (eg, osteomyelitis); fibula",
+        "target_system": "CPT"
+      },
+      {
+        "snomed_code": "59000001",
+        "snomed_name": "Surgical pathology consultation and report on referred slides prepared elsewhere",
+        "depth": 0,
+        "target_code": "88321",
+        "target_name": "Surgical pathology consultation and report on referred slides prepared elsewhere",
+        "target_system": "CPT"
+      },
+      {
+        "snomed_code": "1251000",
+        "snomed_name": "Incisional biopsy of testis",
+        "depth": 0,
+        "target_code": "54505",
+        "target_name": "BIOPSY TESTIS INCISIONAL SEPARATE PROCEDURE",
+        "target_system": "CPT"
+      },
+      {
+        "snomed_code": "108313002",
+        "snomed_name": "Group psychotherapy",
+        "depth": 1,
+        "target_code": "90853",
+        "target_name": "Group psychotherapy",
+        "target_system": "CPT"
+      },
+      {
+        "snomed_code": "233473005",
+        "snomed_name": "Vascular surgery procedure",
+        "depth": 1,
+        "target_code": "1006359",
+        "target_name": "Surgical Procedures on Arteries and Veins",
+        "target_system": "CPT"
+      },
+      {
+        "snomed_code": "61404002",
+        "snomed_name": "Operation on ovary",
+        "depth": 1,
+        "target_code": "1008914",
+        "target_name": "Surgical Procedures on the Ovary",
+        "target_system": "CPT"
+      },
+      {
+        "snomed_code": "72106008",
+        "snomed_name": "Excision of liver",
+        "depth": 1,
+        "target_code": "1007804",
+        "target_name": "Excision Procedures on the Liver",
+        "target_system": "CPT"
+      },
+      {
+        "snomed_code": "13956007",
+        "snomed_name": "Urinalysis",
+        "depth": 1,
+        "target_code": "1011223",
+        "target_name": "Urinalysis Procedures",
+        "target_system": "CPT"
+      },
+      {
+        "snomed_code": "32745000",
+        "snomed_name": "Removal of implant",
+        "depth": 1,
+        "target_code": "1003735",
+        "target_name": "Removal of implant",
+        "target_system": "CPT"
+      },
+      {
+        "snomed_code": "270992008",
+        "snomed_name": "Protein measurement",
+        "depth": 1,
+        "target_code": "1011659",
+        "target_name": "Protein",
+        "target_system": "CPT"
+      },
+      {
+        "snomed_code": "53533006",
+        "snomed_name": "Lobectomy of thyroid gland",
+        "depth": 1,
+        "target_code": "1009035",
+        "target_name": "Total thyroid lobectomy, unilateral",
+        "target_system": "CPT"
+      },
+      {
+        "snomed_code": "61982008",
+        "snomed_name": "Echocardiography",
+        "depth": 1,
+        "target_code": "1013050",
+        "target_name": "Echocardiography Procedures",
+        "target_system": "CPT"
+      },
+      {
+        "snomed_code": "7833003",
+        "snomed_name": "Endoscopic procedure",
+        "depth": 1,
+        "target_code": "1014777",
+        "target_name": "Endoscopy, surgical",
+        "target_system": "CPT"
+      },
+      {
+        "snomed_code": "122189000",
+        "snomed_name": "Procedure to identify antibody",
+        "depth": 1,
+        "target_code": "1011880",
+        "target_name": "Antibody identification",
+        "target_system": "CPT"
+      },
+      {
+        "snomed_code": "313977007",
+        "snomed_name": "Lamotrigine measurement",
+        "depth": 1,
+        "target_code": "80175",
+        "target_name": "Lamotrigine",
+        "target_system": "CPT"
+      },
+      {
+        "snomed_code": "440108009",
+        "snomed_name": "Endoscopic procedure",
+        "depth": 1,
+        "target_code": "1014777",
+        "target_name": "Endoscopy, surgical",
+        "target_system": "CPT"
+      },
+      {
+        "snomed_code": "387598008",
+        "snomed_name": "Operation on ureter",
+        "depth": 1,
+        "target_code": "1008168",
+        "target_name": "Surgical Procedures on the Ureter",
+        "target_system": "CPT"
+      },
+      {
+        "snomed_code": "265060005",
+        "snomed_name": "Operation on female genital organs",
+        "depth": 2,
+        "target_code": "1008681",
+        "target_name": "Surgical Procedures on the Female Genital System",
+        "target_system": "CPT"
+      },
+      {
+        "snomed_code": "341943002",
+        "snomed_name": "Bypass graft",
+        "depth": 2,
+        "target_code": "1006582",
+        "target_name": "Bypass graft",
+        "target_system": "CPT"
+      },
+      {
+        "snomed_code": "37412006",
+        "snomed_name": "Operative procedure on digestive system",
+        "depth": 2,
+        "target_code": "1006964",
+        "target_name": "Surgical Procedures on the Digestive System",
+        "target_system": "CPT"
+      },
+      {
+        "snomed_code": "439299009",
+        "snomed_name": "Immunology laboratory test",
+        "depth": 2,
+        "target_code": "1011874",
+        "target_name": "Immunology Procedures",
+        "target_system": "CPT"
+      },
+      {
+        "snomed_code": "70568006",
+        "snomed_name": "Operative procedure on foot",
+        "depth": 2,
+        "target_code": "28899",
+        "target_name": "UNLISTED PROCEDURE FOOT/TOES",
+        "target_system": "CPT"
+      },
+      {
+        "snomed_code": "1345073008",
+        "snomed_name": "Cardiovascular surgical procedure",
+        "depth": 2,
+        "target_code": "1006056",
+        "target_name": "Surgical Procedures on the Cardiovascular System",
+        "target_system": "CPT"
+      },
+      {
+        "snomed_code": "172991009",
+        "snomed_name": "Excision",
+        "depth": 2,
+        "target_code": "1004869",
+        "target_name": "Excision",
+        "target_system": "CPT"
+      },
+      {
+        "snomed_code": "241474008",
+        "snomed_name": "Procedure on endocrine system",
+        "depth": 2,
+        "target_code": "60699",
+        "target_name": "Unlisted procedure, endocrine system",
+        "target_system": "CPT"
+      },
+      {
+        "snomed_code": "178745004",
+        "snomed_name": "Surgical procedure",
+        "depth": 2,
+        "target_code": "1003143",
+        "target_name": "Surgery",
+        "target_system": "CPT"
+      },
+      {
+        "snomed_code": "231022003",
+        "snomed_name": "Removal of implant",
+        "depth": 2,
+        "target_code": "1003735",
+        "target_name": "Removal of implant",
+        "target_system": "CPT"
+      },
+      {
+        "snomed_code": "1155686006",
+        "snomed_name": "Grafting procedure",
+        "depth": 2,
+        "target_code": "1003478",
+        "target_name": "Graft",
+        "target_system": "CPT"
+      },
+      {
+        "snomed_code": "178722005",
+        "snomed_name": "Surgical procedure",
+        "depth": 2,
+        "target_code": "1003143",
+        "target_name": "Surgery",
+        "target_system": "CPT"
+      },
+      {
+        "snomed_code": "388145004",
+        "snomed_name": "Allergen specific immunoglobulin E",
+        "depth": 2,
+        "target_code": "1011877",
+        "target_name": "Allergen specific IgE",
+        "target_system": "CPT"
+      },
+      {
+        "snomed_code": "104185001",
+        "snomed_name": "Bacterial culture",
+        "depth": 2,
+        "target_code": "1012139",
+        "target_name": "Culture, bacterial",
+        "target_system": "CPT"
+      },
+      {
+        "snomed_code": "301889008",
+        "snomed_name": "Surgical procedure",
+        "depth": 3,
+        "target_code": "1003143",
+        "target_name": "Surgery",
+        "target_system": "CPT"
+      },
+      {
+        "snomed_code": "434379003",
+        "snomed_name": "Vascular surgery procedure",
+        "depth": 3,
+        "target_code": "1006359",
+        "target_name": "Surgical Procedures on Arteries and Veins",
+        "target_system": "CPT"
+      },
+      {
+        "snomed_code": "609107001",
+        "snomed_name": "Operative procedure on digestive system",
+        "depth": 3,
+        "target_code": "1006964",
+        "target_name": "Surgical Procedures on the Digestive System",
+        "target_system": "CPT"
+      },
+      {
+        "snomed_code": "281572005",
+        "snomed_name": "Procedure on cardiovascular system",
+        "depth": 3,
+        "target_code": "1012974",
+        "target_name": "Cardiovascular Procedures",
+        "target_system": "CPT"
+      },
+      {
+        "snomed_code": "1348247008",
+        "snomed_name": "Surgical procedure on eye proper",
+        "depth": 3,
+        "target_code": "1009728",
+        "target_name": "Surgical Procedures on the Eyeball",
+        "target_system": "CPT"
+      },
+      {
+        "snomed_code": "32545003",
+        "snomed_name": "Immunology laboratory test",
+        "depth": 3,
+        "target_code": "1011874",
+        "target_name": "Immunology Procedures",
+        "target_system": "CPT"
+      },
+      {
+        "snomed_code": "390935004",
+        "snomed_name": "Injection",
+        "depth": 3,
+        "target_code": "1003714",
+        "target_name": "Injection(s)",
+        "target_system": "CPT"
+      },
+      {
+        "snomed_code": "117971009",
+        "snomed_name": "Protein measurement",
+        "depth": 3,
+        "target_code": "1011659",
+        "target_name": "Protein",
+        "target_system": "CPT"
+      },
+      {
+        "snomed_code": "1334000002",
+        "snomed_name": "Breast procedure",
+        "depth": 3,
+        "target_code": "19499",
+        "target_name": "UNLISTED PROCEDURE BREAST",
+        "target_system": "CPT"
+      },
+      {
+        "snomed_code": "60541000087106",
+        "snomed_name": "Procedure on cardiovascular system",
+        "depth": 3,
+        "target_code": "1012974",
+        "target_name": "Cardiovascular Procedures",
+        "target_system": "CPT"
+      },
+      {
+        "snomed_code": "113049002",
+        "snomed_name": "Microbiology procedure",
+        "depth": 3,
+        "target_code": "1012134",
+        "target_name": "Microbiology Procedures",
+        "target_system": "CPT"
+      },
+      {
+        "snomed_code": "171379005",
+        "snomed_name": "Physical examination",
+        "depth": 3,
+        "target_code": "1014526",
+        "target_name": "Physical Examination",
+        "target_system": "CPT"
+      },
+      {
+        "snomed_code": "307555006",
+        "snomed_name": "Surgical removal",
+        "depth": 3,
+        "target_code": "1004869",
+        "target_name": "Excision",
+        "target_system": "CPT"
+      },
+      {
+        "snomed_code": "171599003",
+        "snomed_name": "Surgical procedure",
+        "depth": 3,
+        "target_code": "1003143",
+        "target_name": "Surgery",
+        "target_system": "CPT"
+      },
+      {
+        "snomed_code": "770906006",
+        "snomed_name": "Physical examination",
+        "depth": 4,
+        "target_code": "1014526",
+        "target_name": "Physical Examination",
+        "target_system": "CPT"
+      },
+      {
+        "snomed_code": "118733005",
+        "snomed_name": "Surgical procedure",
+        "depth": 4,
+        "target_code": "1003143",
+        "target_name": "Surgery",
+        "target_system": "CPT"
+      },
+      {
+        "snomed_code": "232703000",
+        "snomed_name": "Therapeutic procedure",
+        "depth": 4,
+        "target_code": "1011127",
+        "target_name": "Therapeutic Procedures",
+        "target_system": "CPT"
+      },
+      {
+        "snomed_code": "1142206004",
+        "snomed_name": "Physical examination",
+        "depth": 4,
+        "target_code": "1014526",
+        "target_name": "Physical Examination",
+        "target_system": "CPT"
+      },
+      {
+        "snomed_code": "33441001",
+        "snomed_name": "Surgical pathology procedure",
+        "depth": 4,
+        "target_code": "1012454",
+        "target_name": "Surgical Pathology Procedures",
+        "target_system": "CPT"
+      },
+      {
+        "snomed_code": "32159004",
+        "snomed_name": "Surgical procedure",
+        "depth": 4,
+        "target_code": "1003143",
+        "target_name": "Surgery",
+        "target_system": "CPT"
+      },
+      {
+        "snomed_code": "718083000",
+        "snomed_name": "Surgical removal",
+        "depth": 4,
+        "target_code": "1004869",
+        "target_name": "Excision",
+        "target_system": "CPT"
+      },
+      {
+        "snomed_code": "770606008",
+        "snomed_name": "Surgical procedure",
+        "depth": 4,
+        "target_code": "1003143",
+        "target_name": "Surgery",
+        "target_system": "CPT"
+      },
+      {
+        "snomed_code": "165868003",
+        "snomed_name": "Procedure to identify antibody",
+        "depth": 4,
+        "target_code": "1011880",
+        "target_name": "Antibody identification",
+        "target_system": "CPT"
+      },
+      {
+        "snomed_code": "405510004",
+        "snomed_name": "Cardiovascular surgical procedure",
+        "depth": 4,
+        "target_code": "1006056",
+        "target_name": "Surgical Procedures on the Cardiovascular System",
+        "target_system": "CPT"
+      },
+      {
+        "snomed_code": "27839000",
+        "snomed_name": "Surgical procedure",
+        "depth": 4,
+        "target_code": "1003143",
+        "target_name": "Surgery",
+        "target_system": "CPT"
+      },
+      {
+        "snomed_code": "1332280008",
+        "snomed_name": "Ultrasonic guidance procedure",
+        "depth": 4,
+        "target_code": "1010824",
+        "target_name": "Ultrasonic Guidance Procedures",
+        "target_system": "CPT"
+      },
+      {
+        "snomed_code": "314607003",
+        "snomed_name": "Ultrasonography",
+        "depth": 4,
+        "target_code": "1010759",
+        "target_name": "Diagnostic Ultrasound Procedures",
+        "target_system": "CPT"
+      },
+      {
+        "snomed_code": "302239005",
+        "snomed_name": "Psychotherapy",
+        "depth": 4,
+        "target_code": "1021137",
+        "target_name": "Psychotherapy Services and Procedures",
+        "target_system": "CPT"
+      },
+      {
+        "snomed_code": "237478002",
+        "snomed_name": "Excision",
+        "depth": 5,
+        "target_code": "1004869",
+        "target_name": "Excision",
+        "target_system": "CPT"
+      },
+      {
+        "snomed_code": "1217102009",
+        "snomed_name": "Flap",
+        "depth": 5,
+        "target_code": "1003472",
+        "target_name": "Flap",
+        "target_system": "CPT"
+      },
+      {
+        "snomed_code": "300025007",
+        "snomed_name": "Surgical procedure",
+        "depth": 5,
+        "target_code": "1003143",
+        "target_name": "Surgery",
+        "target_system": "CPT"
+      },
+      {
+        "snomed_code": "437291000124108",
+        "snomed_name": "Therapy",
+        "depth": 5,
+        "target_code": "1011127",
+        "target_name": "Therapeutic Procedures",
+        "target_system": "CPT"
+      },
+      {
+        "snomed_code": "307386001",
+        "snomed_name": "Surgical procedure",
+        "depth": 5,
+        "target_code": "1003143",
+        "target_name": "Surgery",
+        "target_system": "CPT"
+      },
+      {
+        "snomed_code": "438201000124100",
+        "snomed_name": "Therapy",
+        "depth": 5,
+        "target_code": "1011127",
+        "target_name": "Therapeutic Procedures",
+        "target_system": "CPT"
+      },
+      {
+        "snomed_code": "23419006",
+        "snomed_name": "Physical examination",
+        "depth": 5,
+        "target_code": "1014526",
+        "target_name": "Physical Examination",
+        "target_system": "CPT"
+      },
+      {
+        "snomed_code": "17471000087104",
+        "snomed_name": "Procedure on artery",
+        "depth": 5,
+        "target_code": "1006737",
+        "target_name": "Arterial Procedures",
+        "target_system": "CPT"
+      },
+      {
+        "snomed_code": "417121007",
+        "snomed_name": "Therapeutic procedure",
+        "depth": 5,
+        "target_code": "1011127",
+        "target_name": "Therapeutic Procedures",
+        "target_system": "CPT"
+      },
+      {
+        "snomed_code": "252582001",
+        "snomed_name": "Physical examination",
+        "depth": 5,
+        "target_code": "1014526",
+        "target_name": "Physical Examination",
+        "target_system": "CPT"
+      },
+      {
+        "snomed_code": "252839008",
+        "snomed_name": "Physical examination",
+        "depth": 5,
+        "target_code": "1014526",
+        "target_name": "Physical Examination",
+        "target_system": "CPT"
+      },
+      {
+        "snomed_code": "449214001",
+        "snomed_name": "Therapeutic procedure",
+        "depth": 5,
+        "target_code": "1011127",
+        "target_name": "Therapeutic Procedures",
+        "target_system": "CPT"
+      },
+      {
+        "snomed_code": "118024003",
+        "snomed_name": "Anatomic pathology procedure",
+        "depth": 5,
+        "target_code": "1012348",
+        "target_name": "Anatomic Pathology Procedures",
+        "target_system": "CPT"
+      },
+      {
+        "snomed_code": "278721002",
+        "snomed_name": "Surgical procedure",
+        "depth": 5,
+        "target_code": "1003143",
+        "target_name": "Surgery",
+        "target_system": "CPT"
+      },
+      {
+        "snomed_code": "261484003",
+        "snomed_name": "Vascular surgery procedure",
+        "depth": 2,
+        "target_code": "1006359",
+        "target_name": "Surgical Procedures on Arteries and Veins",
+        "target_system": "CPT"
+      },
+      {
+        "snomed_code": "241676002",
+        "snomed_name": "Magnetic resonance spectroscopy",
+        "depth": 2,
+        "target_code": "76390",
+        "target_name": "Magnetic resonance (MR) spectroscopy",
+        "target_system": "CPT"
+      },
+      {
+        "snomed_code": "175719009",
+        "snomed_name": "Procedure on artery",
+        "depth": 2,
+        "target_code": "1006737",
+        "target_name": "Arterial Procedures",
+        "target_system": "CPT"
+      },
+      {
+        "snomed_code": "40081001",
+        "snomed_name": "Cardiovascular surgical procedure",
+        "depth": 2,
+        "target_code": "1006056",
+        "target_name": "Surgical Procedures on the Cardiovascular System",
+        "target_system": "CPT"
+      },
+      {
+        "snomed_code": "173264007",
+        "snomed_name": "Lip excision",
+        "depth": 2,
+        "target_code": "1006966",
+        "target_name": "Excision Procedures on the Lips",
+        "target_system": "CPT"
+      },
+      {
+        "snomed_code": "179265003",
+        "snomed_name": "Surgical procedure",
+        "depth": 2,
+        "target_code": "1003143",
+        "target_name": "Surgery",
+        "target_system": "CPT"
+      },
+      {
+        "snomed_code": "182779002",
+        "snomed_name": "Preventive monitoring",
+        "depth": 2,
+        "target_code": "1035629",
+        "target_name": "Monitoring",
+        "target_system": "CPT"
+      },
+      {
+        "snomed_code": "13759007",
+        "snomed_name": "Surgical removal",
+        "depth": 2,
+        "target_code": "1004869",
+        "target_name": "Excision",
+        "target_system": "CPT"
+      },
+      {
+        "snomed_code": "450438002",
+        "snomed_name": "Positron emission tomography",
+        "depth": 2,
+        "target_code": "1011115",
+        "target_name": "Positron emission tomography (PET) imaging",
+        "target_system": "CPT"
+      },
+      {
+        "snomed_code": "1268399001",
+        "snomed_name": "Operation on pancreas",
+        "depth": 2,
+        "target_code": "1007908",
+        "target_name": "Surgical Procedures on the Pancreas",
+        "target_system": "CPT"
+      },
+      {
+        "snomed_code": "183355006",
+        "snomed_name": "Therapy",
+        "depth": 2,
+        "target_code": "1011127",
+        "target_name": "Therapeutic Procedures",
+        "target_system": "CPT"
+      },
+      {
+        "snomed_code": "444900008",
+        "snomed_name": "Ultrasonography",
+        "depth": 2,
+        "target_code": "1010759",
+        "target_name": "Diagnostic Ultrasound Procedures",
+        "target_system": "CPT"
+      },
+      {
+        "snomed_code": "243214009",
+        "snomed_name": "Therapy",
+        "depth": 2,
+        "target_code": "1011127",
+        "target_name": "Therapeutic Procedures",
+        "target_system": "CPT"
+      },
+      {
+        "snomed_code": "361157006",
+        "snomed_name": "Procedure on eyelid",
+        "depth": 2,
+        "target_code": "1009988",
+        "target_name": "Procedures on the Eyelids",
+        "target_system": "CPT"
+      },
+      {
+        "snomed_code": "432652008",
+        "snomed_name": "Ultrasonography",
+        "depth": 2,
+        "target_code": "1010759",
+        "target_name": "Diagnostic Ultrasound Procedures",
+        "target_system": "CPT"
+      },
+      {
+        "snomed_code": "439248002",
+        "snomed_name": "Physical assessment",
+        "depth": 2,
+        "target_code": "1014526",
+        "target_name": "Physical Examination",
+        "target_system": "CPT"
+      }
+    ]
+  }
+}
