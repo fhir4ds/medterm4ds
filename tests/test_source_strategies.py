@@ -352,21 +352,32 @@ class TestEngineUsesCanonicalBroadNames:
             "engine._BROAD_MEDLINEPLUS_NAMES must be imported from sources.base, not redefined"
         )
 
-    def test_engine_snomed_target_priority_is_canonical(self):
+    def test_engine_snomed_target_priority_intentionally_diverges(self):
+        """Engine's fallback path uses a different priority than the prepared path.
+
+        Engine includes CVX=0 and RXNORM=4 because MRSTY-based routing in the
+        fallback path can produce these as candidates (T121 Pharmacologic
+        Substance → RXNORM; vaccine CUI crosswalk → CVX). The prepared path
+        excludes them because RXNORM and CVX have their own dedicated resolvers.
+
+        This test documents the intentional divergence. If someone tries to
+        consolidate the two dicts without unifying the routing policies, the
+        engine's fallback misroutes (KeyError or wrong target).
+        """
         from medterm4ds.engines.duckdb.engine import _SNOMED_TARGET_PRIORITY
-        from medterm4ds.sources.snomed import SNOMED_TARGET_PRIORITY
 
-        assert _SNOMED_TARGET_PRIORITY is SNOMED_TARGET_PRIORITY, (
-            "engine._SNOMED_TARGET_PRIORITY must be imported from sources.snomed, not redefined"
-        )
+        # Engine has 7 entries; sources has 5. CVX and RXNORM must be present.
+        assert "CVX" in _SNOMED_TARGET_PRIORITY, "Engine fallback needs CVX for vaccine routing"
+        assert "RXNORM" in _SNOMED_TARGET_PRIORITY, "Engine fallback needs RXNORM for drug routing"
+        # And they should have different priorities (not both 0).
+        assert _SNOMED_TARGET_PRIORITY["CVX"] != _SNOMED_TARGET_PRIORITY["RXNORM"]
 
-    def test_engine_snomed_fallback_sources_is_canonical(self):
+    def test_engine_snomed_fallback_sources_includes_all_targets(self):
+        """Engine's _SNOMED_FALLBACK_SOURCES must include RXNORM and CVX."""
         from medterm4ds.engines.duckdb.engine import _SNOMED_FALLBACK_SOURCES
-        from medterm4ds.sources.snomed import SNOMED_FALLBACK_SOURCES
 
-        assert _SNOMED_FALLBACK_SOURCES is SNOMED_FALLBACK_SOURCES, (
-            "engine._SNOMED_FALLBACK_SOURCES must be imported from sources.snomed, not redefined"
-        )
+        assert "RXNORM" in _SNOMED_FALLBACK_SOURCES
+        assert "CVX" in _SNOMED_FALLBACK_SOURCES
 
 
 # ---------------------------------------------------------------------------
