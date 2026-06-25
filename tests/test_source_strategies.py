@@ -330,6 +330,29 @@ class TestBroadNameSets:
             assert name == name.lower(), f"MLP name {name!r} is not lowercase"
 
 
+class TestEngineUsesCanonicalBroadNames:
+    """Engine must import BROAD_*_NAMES from sources, not redefine them.
+
+    Regression for the duplicate-constant drift flagged in the architecture
+    review. If the engine ever re-introduces a local copy, this test fails
+    on the identity check (`is`).
+    """
+
+    def test_engine_broad_chv_names_are_canonical(self):
+        from medterm4ds.engines.duckdb.engine import _BROAD_CHV_NAMES
+
+        assert _BROAD_CHV_NAMES is BROAD_CHV_NAMES, (
+            "engine._BROAD_CHV_NAMES must be imported from sources.base, not redefined"
+        )
+
+    def test_engine_broad_medlineplus_names_are_canonical(self):
+        from medterm4ds.engines.duckdb.engine import _BROAD_MEDLINEPLUS_NAMES
+
+        assert _BROAD_MEDLINEPLUS_NAMES is BROAD_MEDLINEPLUS_NAMES, (
+            "engine._BROAD_MEDLINEPLUS_NAMES must be imported from sources.base, not redefined"
+        )
+
+
 # ---------------------------------------------------------------------------
 # Additional coverage: SNOMED constants
 # ---------------------------------------------------------------------------

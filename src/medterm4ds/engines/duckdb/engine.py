@@ -33,6 +33,12 @@ from medterm4ds.core.models import (
     ProvenanceStep,
     SourceStats,
 )
+from medterm4ds.sources.base import (
+    BROAD_CHV_NAMES as _BROAD_CHV_NAMES,
+)
+from medterm4ds.sources.base import (
+    BROAD_MEDLINEPLUS_NAMES as _BROAD_MEDLINEPLUS_NAMES,
+)
 from medterm4ds.sources.rxnorm import (
     RXNORM_BASE_TTY_PRIORITY as _RXNORM_BASE_TTY_PRIORITY,
 )
@@ -161,36 +167,8 @@ _RELA_ISA_HIERARCHY_SOURCES = frozenset({"ATC", "CPT", "MSH", "RXNORM"})
 # from code strings or ranges. Hierarchy comes only from source data normalized
 # into mt4ds.walk_edges / mt4ds.hierarchy_edges.
 
-_BROAD_CHV_NAMES = {
-    "clinical findings",
-    "clinical investigation",
-    "cpt",
-    "hydrolase",
-    "hydrolases",
-    "operation",
-    "operations",
-    "sign and symptom",
-    "signs and symptoms",
-    "symptoms and signs",
-    "service",
-    "services",
-    "finding",
-    "findings",
-    "symptom",
-    "symptoms",
-}
+# _BROAD_CHV_NAMES and _BROAD_MEDLINEPLUS_NAMES imported from sources.base (canonical).
 _BROAD_CHV_NAME_SQL = ", ".join(f"'{name}'" for name in sorted(_BROAD_CHV_NAMES))
-_BROAD_MEDLINEPLUS_NAMES = {
-    "anatomy",
-    "body structure",
-    "body structures",
-    "clinical finding",
-    "disease inflammatory",
-    "finding",
-    "findings",
-    "physical finding",
-    "procedure",
-}
 _BROAD_MEDLINEPLUS_NAME_SQL = ", ".join(f"'{name}'" for name in sorted(_BROAD_MEDLINEPLUS_NAMES))
 _BLACKLIST_LOINC = frozenset({
     "I",
