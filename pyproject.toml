@@ -78,6 +78,12 @@ include = [
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["src"]
+markers = [
+    "realdb: requires umls_current.duckdb + reports/fhir4px baseline (set MEDTERM4DS_REGRESSION_DB / MEDTERM4DS_FHIR4PX_BASELINE)",
+    "slow: tests that take more than a few seconds",
+    "fhir4px_smoke: runs the full fhir4px build pipeline (subprocess)",
+]
+addopts = "-m 'not realdb and not slow and not fhir4px_smoke'"
 
 [tool.ruff]
 line-length = 100

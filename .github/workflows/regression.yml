@@ -1,0 +1,45 @@
+name: Regression
+
+on:
+  schedule:
+    # 07:17 UTC daily (off-peak, avoids round-number minute)
+    - cron: "17 7 * * *"
+  workflow_dispatch:
+
+jobs:
+  realdb-regression:
+    runs-on: [self-hosted, medterm4ds]
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install package
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[dev]"
+
+      - name: Verify DB + baseline present
+        run: |
+          test -f "${MEDTERM4DS_REGRESSION_DB}" || { echo "Missing $MEDTERM4DS_REGRESSION_DB"; exit 1; }
+          test -d "${MEDTERM4DS_FHIR4PX_BASELINE}" || { echo "Missing $MEDTERM4DS_FHIR4PX_BASELINE"; exit 1; }
+        env:
+          MEDTERM4DS_REGRESSION_DB: /mnt/d/medterm4ds/data/umls_current.duckdb
+          MEDTERM4DS_FHIR4PX_BASELINE: /mnt/d/medterm4ds/reports/fhir4px
+
+      - name: Run regression suite
+        run: pytest -m "realdb or fhir4px_smoke" -v
+        env:
+          MEDTERM4DS_REGRESSION_DB: /mnt/d/medterm4ds/data/umls_current.duckdb
+          MEDTERM4DS_FHIR4PX_BASELINE: /mnt/d/medterm4ds/reports/fhir4px
+
+      - name: Notify on failure
+        if: failure()
+        run: |
+          echo "::warning::Regression suite failed. Investigate drift between code and reports/fhir4px/ baseline."
+          echo "If changes are intentional: rebuild baseline + regenerate pinned_meta.json."

@@ -1,0 +1,15 @@
+{"source": "ICD10CM", "code": "E11", "expected_name": "Diabetes Type 2", "expected_friendly_source": "MEDLINEPLUS", "expected_match_type": "exact", "notes": "Type 2 diabetes mellitus, parent code"}
+{"source": "ICD10CM", "code": "E11.9", "expected_name": "Diabetes Type 2", "expected_friendly_source": "MEDLINEPLUS", "expected_match_type": "broader", "notes": "Type 2 DM without complications - resolves to parent"}
+{"source": "ICD10CM", "code": "A00", "expected_name": "Cholera", "expected_friendly_source": "MEDLINEPLUS", "expected_match_type": "exact", "notes": "Top-level ICD10 code"}
+{"source": "ICD10CM", "code": "I10", "expected_name": "Essential Hypertension", "expected_friendly_source": "MEDLINEPLUS", "expected_match_type": "exact", "notes": "Essential hypertension"}
+{"source": "ICD10CM", "code": "J45.909", "expected_name": "Asthma", "expected_friendly_source": "MEDLINEPLUS", "expected_match_type": "broader", "notes": "Asthma unspecified - resolves to parent"}
+{"source": "RXNORM", "code": "860975", "expected_name": "Metformin Oral Product", "expected_friendly_source": "RXNORM", "expected_match_type": "group", "notes": "SCD - 24 HR metformin 500 MG ER Oral Tablet"}
+{"source": "RXNORM", "code": "6809", "expected_name": "Metformin", "expected_friendly_source": "RXNORM", "expected_match_type": "ingredient", "notes": "IN - metformin ingredient"}
+{"source": "RXNORM", "code": "723", "expected_name": "Amoxicillin", "expected_friendly_source": "RXNORM", "expected_match_type": "ingredient", "notes": "IN - amoxicillin ingredient"}
+{"source": "RXNORM", "code": "197361", "expected_name": "Amlodipine Oral Product", "expected_friendly_source": "RXNORM", "expected_match_type": "group", "notes": "SCD - amlodipine Oral Product"}
+{"source": "SNOMEDCT_US", "code": "44054006", "expected_name": "Diabetes Type 2", "expected_friendly_source": "MEDLINEPLUS", "expected_match_type": "same_cui", "notes": "SNOMED type 2 diabetes"}
+{"source": "SNOMEDCT_US", "code": "386661006", "expected_name": "Fever", "expected_friendly_source": "MEDLINEPLUS", "expected_match_type": "same_cui", "notes": "SNOMED fever"}
+{"source": "LNC", "code": "4548-4", "expected_name": "Hemoglobin A1c/Hemoglobin.Total", "expected_friendly_source": "LNC", "expected_match_type": "first_axis", "notes": "HbA1c lab test"}
+{"source": "LNC", "code": "2345-7", "expected_name": "Glucose", "expected_friendly_source": "LNC", "expected_match_type": "first_axis", "notes": "Glucose lab test"}
+{"source": "CVX", "code": "141", "expected_name": "FLU", "expected_friendly_source": "CVX", "expected_match_type": "cvx_group", "notes": "Influenza vaccine group"}
+{"source": "CVX", "code": "207", "expected_name": "COVID-19", "expected_friendly_source": "CVX", "expected_match_type": "cvx_group", "notes": "COVID-19 vaccine group"}

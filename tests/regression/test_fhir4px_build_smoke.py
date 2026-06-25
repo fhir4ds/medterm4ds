@@ -1,0 +1,168 @@
+"""Tier 2: fhir4px build smoke tests.
+
+Validates that each build_fhir4px_*.py script produces its expected output
+file with the expected record count. The build itself runs once via the
+session-scoped `fhir4px_built` fixture; these tests inspect the result.
+
+Pinned counts live in tests/regression/fixtures/pinned_meta.json. If a count
+drifts, the test name encodes why (e.g. `_atc_standalone_not_in_spec`).
+"""
+
+from __future__ import annotations
+
+import json
+from pathlib import Path
+
+import pytest
+
+from .conftest import (
+    ASSOCIATIONS_DELIVERABLE,
+    EMBEDDING_DELIVERABLES,
+    PATIENT_FRIENDLY_CSV_DELIVERABLE,
+    PATIENT_FRIENDLY_DELIVERABLES,
+    RXNORM_INGREDIENTS_DELIVERABLE,
+)
+from .golden.normalize import (
+    EMBEDDING_CATEGORIES,
+    PATIENT_FRIENDLY_SOURCES,
+    load_canonical,
+)
+
+FIXTURES_DIR = Path(__file__).resolve().parent / "fixtures"
+PINNED_META = json.loads((FIXTURES_DIR / "pinned_meta.json").read_text())
+
+
+def _pinned_count(section: str, key: str | None = None) -> int:
+    section_data = PINNED_META[section]
+    if key is None:
+        return section_data["count"]
+    return section_data[key]["count"]
+
+
+# ---------- patient_friendly deliverables ----------
+
+_PF_BY_SOURCE = {
+    "icd10cm": "patient_friendly_icd10cm.json",
+    "icd10pcs": "patient_friendly_icd10pcs.json",
+    "snomedct_us": "patient_friendly_snomedct_us.json",
+    "rxnorm": "patient_friendly_rxnorm.json",
+    "lnc": "patient_friendly_lnc.json",
+    "cpt": "patient_friendly_cpt.json",
+    "hcpcs": "patient_friendly_hcpcs.json",
+    "cvx": "patient_friendly_cvx.json",
+}
+
+
+@pytest.mark.fhir4px_smoke
+@pytest.mark.parametrize("source", list(PATIENT_FRIENDLY_SOURCES))
+def test_patient_friendly_json_count_pinned(source: str, fhir4px_built) -> None:
+    """Per-source patient_friendly JSON record count must match pinned baseline."""
+    path = fhir4px_built.patient_friendly_jsons[source]
+    assert path.exists(), f"Missing {path}"
+    actual = len(load_canonical(path))
+    expected = _pinned_count("patient_friendly", source)
+    assert actual == expected, f"patient_friendly_{source}: {actual} != {expected}"
+
+
+@pytest.mark.fhir4px_smoke
+def test_patient_friendly_csv_count_pinned_at_1127094(fhir4px_built) -> None:
+    """Combined CSV must match pinned row count (1,127,094 as of 2026AA)."""
+    path = fhir4px_built.patient_friendly_csv
+    assert path.exists()
+    actual = len(load_canonical(path))
+    expected = _pinned_count("patient_friendly_csv")
+    assert actual == expected, f"patient_friendly_names.csv: {actual} != {expected}"
+
+
+# ---------- embedding_index deliverables ----------
+
+_EMBEDDING_MEDICATION_COUNT_NOTE = (
+    "Spec says 117,544 but actual is 124,540 — the 6,996 delta is ATC standalone "
+    "records written into embedding_index_medication.jsonl (see scripts/"
+    "build_fhir4px_embedding_index.py atc_standalone rule). Spec needs updating."
+)
+
+
+@pytest.mark.fhir4px_smoke
+@pytest.mark.parametrize("category", list(EMBEDDING_CATEGORIES))
+def test_embedding_index_count_pinned(category: str, fhir4px_built) -> None:
+    """Per-category embedding_index JSONL record count must match pinned baseline."""
+    path = fhir4px_built.embedding_jsonls[category]
+    assert path.exists(), f"Missing {path}"
+    actual = len(load_canonical(path))
+    expected = _pinned_count("embedding_index", category)
+    assert actual == expected, f"embedding_index_{category}: {actual} != {expected}"
+
+
+@pytest.mark.fhir4px_smoke
+def test_embedding_index_medication_count_pinned_at_124540_atc_standalone_not_in_spec(
+    fhir4px_built,
+) -> None:
+    """Embedding medication count pinned at 124,540 (spec stale at 117,544).
+
+    {_EMBEDDING_MEDICATION_COUNT_NOTE}
+    """
+    path = fhir4px_built.embedding_jsonls["medication"]
+    actual = len(load_canonical(path))
+    assert actual == 124540
+
+
+# ---------- associations ----------
+
+
+@pytest.mark.fhir4px_smoke
+def test_associations_count_pinned(fhir4px_built) -> None:
+    """condition_associations.json condition count must match pinned baseline."""
+    path = fhir4px_built.associations
+    assert path.exists()
+    actual = len(load_canonical(path))
+    expected = _pinned_count("associations")
+    assert actual == expected, f"condition_associations: {actual} != {expected}"
+
+
+@pytest.mark.fhir4px_smoke
+def test_associations_lab_associations_pinned_at_0_orchestrator_missing_synthea_labs_flag(
+    fhir4px_built,
+) -> None:
+    """Shipped associations file has lab_associations=0; spec says 283.
+
+    Cause: build_fhir4px_all.py does not pass --synthea-labs to the associations
+    step, so the Synthea condition-lab baseline is never merged. This test pins
+    current (broken) behavior; fix is tracked separately.
+    """
+    with fhir4px_built.associations.open() as f:
+        raw = json.load(f)
+    # When Synthea is not passed, every condition's labs list is empty.
+    total_labs = sum(len(v.get("labs", [])) for v in raw.values() if isinstance(v, dict))
+    assert total_labs == 0
+
+
+# ---------- rxnorm-ingredients ----------
+
+
+@pytest.mark.fhir4px_smoke
+def test_rxnorm_ingredients_count_pinned(fhir4px_built) -> None:
+    """rxnorm-ingredients.json product count must match pinned baseline."""
+    path = fhir4px_built.rxnorm_ingredients
+    assert path.exists()
+    actual = len(load_canonical(path))
+    expected = _pinned_count("rxnorm_ingredients")
+    assert actual == expected, f"rxnorm-ingredients: {actual} != {expected}"
+
+
+# ---------- UMLS release pin ----------
+
+
+@pytest.mark.fhir4px_smoke
+def test_umls_release_pinned(umls_release_tag: str) -> None:
+    """The DB under test must match the pinned UMLS release.
+
+    If this fails: the DB was rebuilt against a new UMLS release. Re-run
+    scripts/build_fhir4px_all.py, review the diff vs reports/fhir4px/, and
+    re-run tests/regression/regenerate_pinned_meta.py.
+    """
+    expected = PINNED_META["umls_release"]
+    assert umls_release_tag == expected, (
+        f"UMLS release changed: {expected} -> {umls_release_tag}. "
+        "Rebuild baseline and regenerate pinned_meta.json."
+    )

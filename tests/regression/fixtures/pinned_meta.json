@@ -1,0 +1,75 @@
+{
+  "umls_release": "2026AA",
+  "patient_friendly": {
+    "icd10cm": {
+      "count": 98506,
+      "sha256": "be3bd4db1153ab2771ddfd8cdaaf1852173f190a26d76365e830702908edbc15"
+    },
+    "icd10pcs": {
+      "count": 192560,
+      "sha256": "4f14069ca28b9f24012f37d5cd81824f6055a0b95f71a350a0ce64db3df37d2b"
+    },
+    "snomedct_us": {
+      "count": 386110,
+      "sha256": "312318d1c726dd0dcaa3527ca215d86384d599524e05de8e88f3ed273a31048f"
+    },
+    "rxnorm": {
+      "count": 124919,
+      "sha256": "50d7c6e7defca0009d0649149ac52c6032e2f994753166c5fdd1529aa918d7fd"
+    },
+    "lnc": {
+      "count": 301558,
+      "sha256": "d9af06bb4e0957b70f5e21ffd739e80c02e614920453c70f7c58e704d669e90e"
+    },
+    "cpt": {
+      "count": 15468,
+      "sha256": "6e36501c61603e0fcad40b6abe36aee2de4fb37a95ee2c57a0906fa68949d302"
+    },
+    "hcpcs": {
+      "count": 7685,
+      "sha256": "33c9269a87057b65094f7b3e3846f6dd4f9e3486eaf699834e74400953335039"
+    },
+    "cvx": {
+      "count": 288,
+      "sha256": "a4fcfbb0f06ac7962bf51ce5ae40c1fbdc02ae677eb015376e17bd67bfbafa52"
+    }
+  },
+  "patient_friendly_csv": {
+    "count": 1127094,
+    "sha256": "92f081f410ce49fceca167f3686d2720c92c23c1be0b4501e740f7156e1fad77"
+  },
+  "embedding_index": {
+    "condition": {
+      "count": 245425,
+      "sha256": "37f18b9606b227fa8042d351b24f52ce94decf4b3229da8a11e788a8613be9e1"
+    },
+    "lab": {
+      "count": 116498,
+      "sha256": "31f84428f40f083c33e9bc4fb03058bbf1b01b718a20d349fdf955d4f4fdbd74"
+    },
+    "medication": {
+      "count": 124540,
+      "sha256": "bb729e1478d0972f4b5b9baaf539f36d1b818d52871d14f555f143b6633dcf23"
+    },
+    "procedure": {
+      "count": 154997,
+      "sha256": "3663c5bac408eb88c9090f832c5b4a5746483c8239197b3fc62405dcc2feed87"
+    },
+    "vaccine": {
+      "count": 291,
+      "sha256": "902f46be2991f10650cc1299dc8777aac7f9bbd58cae8d1b7e6c22a225984fe5"
+    },
+    "body_structure": {
+      "count": 39995,
+      "sha256": "093465c0c3039cc4edcd4a18e9348e2cb55a70389c9584c0a77ecbccf927f09c"
+    }
+  },
+  "associations": {
+    "count": 102317,
+    "sha256": "9030c5f1f39ea27ce9f45c954344061d77bd3f93fc0a6f92dfc2ba48e4ee3310"
+  },
+  "rxnorm_ingredients": {
+    "count": 92654,
+    "sha256": "47cc06cb4dbe7112bf757540b719ec023d5be55fa02f1b2675f95f9b62384800"
+  }
+}

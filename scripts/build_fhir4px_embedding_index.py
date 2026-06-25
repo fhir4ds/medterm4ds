@@ -28,7 +28,11 @@ DEFAULT_INPUT = Path("reports/fhir4px/patient_friendly_names.csv")
 DEFAULT_OUTPUT_DIR = Path("reports/fhir4px")
 
 # ── SNOMED TUI sets ─────────────────────────────────────────────────────────
-_CONDITION_TUIS = ("T019","T020","T037","T046","T047","T048","T049","T190","T191")
+# T033 (Finding) and T184 (Symptom) are essential SNOMED condition TUIs that
+# account for the majority of clinical findings (e.g., SNOMED 404684003
+# "Clinical finding" hierarchy). Without them, ~9,000 SNOMED conditions with
+# may_treat edges appear in associations but not in the embedding index.
+_CONDITION_TUIS = ("T019","T020","T033","T037","T046","T047","T048","T049","T184","T190","T191")
 _LAB_TUIS = ("T034","T059")
 _PROCEDURE_TUIS = ("T058","T060","T061","T062","T063")
 _MEDICATION_TUIS = ("T121","T123","T200")
@@ -303,7 +307,7 @@ def main() -> int:
                 UNION SELECT * FROM atc_sbd_via_scd
             )
             SELECT code, atc_code, atc_name,
-                   ROW_NUMBER() OVER (PARTITION BY code ORDER BY atc_code) AS rn FROM all_atc
+                   ROW_NUMBER() OVER (PARTITION BY code ORDER BY atc_code, atc_name) AS rn FROM all_atc
         """).fetchall():
             if row[3] == 1 and row[0] not in atc_by_code:
                 ac = row[1]

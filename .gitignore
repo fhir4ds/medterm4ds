@@ -43,3 +43,6 @@ archive/reports/
 .idea/
 .vscode/
 *.swp
+
+# Claude Code
+.claude/

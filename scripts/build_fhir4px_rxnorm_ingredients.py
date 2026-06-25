@@ -31,27 +31,32 @@ DEFAULT_OUTPUT = Path("reports/fhir4px/rxnorm-ingredients.json")
 #   consists_of: AUI1=SCDC, AUI2=SCD
 #   has_part: AUI1=IN, AUI2=MIN
 # Multiple paths cover different TTY granularities.
+#
+# TTY scope mirrors build_fhir4px_embedding_index.py medication filter so the two
+# deliverables stay consistent. SCDC/SBDC/SBDF were previously excluded here,
+# causing 13,797 SCDC codes to have ingredients in embedding_index_medication
+# but be missing from rxnorm-ingredients entirely.
 SQL = """
 WITH RECURSIVE
 products AS (
     SELECT DISTINCT CODE, TTY, STR, AUI, CUI
     FROM mrconso
     WHERE SAB = 'RXNORM' AND SUPPRESS = 'N'
-      AND TTY IN ('SCDG', 'SCD', 'SBD', 'MIN', 'PIN', 'IN', 'BN')
+      AND TTY IN ('SCDG', 'SCD', 'SBD', 'SCDC', 'SBDC', 'SBDF', 'MIN', 'PIN', 'IN', 'BN')
 ),
 -- (a) IN is its own ingredient
 pairs_self AS (
     SELECT p.CODE AS rxnorm_code, p.CODE AS ing_code, p.STR AS ing_name
     FROM products p WHERE p.TTY = 'IN'
 ),
--- (b) SCDG/SCDC/SCDF/SBD/SBDG: direct has_ingredient from IN
+-- (b) SCDG/SCDC/SBDC/SBDF/SCD/SBD/MIN: direct has_ingredient or has_part from IN
 pairs_direct AS (
     SELECT p.CODE AS rxnorm_code, ing.CODE AS ing_code, ing.STR AS ing_name
     FROM products p
-    JOIN mrrel r ON r.AUI2 = p.AUI AND r.RELA = 'has_ingredient'
+    JOIN mrrel r ON r.AUI2 = p.AUI AND r.RELA IN ('has_ingredient', 'has_part')
     JOIN mrconso ing ON ing.AUI = r.AUI1 AND ing.SAB = 'RXNORM'
                    AND ing.SUPPRESS = 'N' AND ing.TTY = 'IN'
-    WHERE p.TTY IN ('SCDG', 'SCD', 'SBD', 'MIN')
+    WHERE p.TTY IN ('SCDG', 'SCD', 'SBD', 'SCDC', 'SBDC', 'SBDF', 'MIN')
 ),
 -- (c) SCD via SCDC: SCDC consists_of SCD, then SCDC has_ingredient IN
 pairs_scd_via_scdc AS (
@@ -122,7 +127,7 @@ def main() -> int:
         all_products = con.execute("""
             SELECT DISTINCT CODE FROM mrconso
             WHERE SAB = 'RXNORM' AND SUPPRESS = 'N'
-              AND TTY IN ('SCDG', 'SCD', 'SBD', 'MIN', 'PIN', 'IN', 'BN')
+              AND TTY IN ('SCDG', 'SCD', 'SBD', 'SCDC', 'SBDC', 'SBDF', 'MIN', 'PIN', 'IN', 'BN')
               AND CODE IS NOT NULL AND CODE != ''
         """).fetchall()
         all_product_codes = {r[0] for r in all_products}
