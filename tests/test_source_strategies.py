@@ -352,6 +352,22 @@ class TestEngineUsesCanonicalBroadNames:
             "engine._BROAD_MEDLINEPLUS_NAMES must be imported from sources.base, not redefined"
         )
 
+    def test_engine_snomed_target_priority_is_canonical(self):
+        from medterm4ds.engines.duckdb.engine import _SNOMED_TARGET_PRIORITY
+        from medterm4ds.sources.snomed import SNOMED_TARGET_PRIORITY
+
+        assert _SNOMED_TARGET_PRIORITY is SNOMED_TARGET_PRIORITY, (
+            "engine._SNOMED_TARGET_PRIORITY must be imported from sources.snomed, not redefined"
+        )
+
+    def test_engine_snomed_fallback_sources_is_canonical(self):
+        from medterm4ds.engines.duckdb.engine import _SNOMED_FALLBACK_SOURCES
+        from medterm4ds.sources.snomed import SNOMED_FALLBACK_SOURCES
+
+        assert _SNOMED_FALLBACK_SOURCES is SNOMED_FALLBACK_SOURCES, (
+            "engine._SNOMED_FALLBACK_SOURCES must be imported from sources.snomed, not redefined"
+        )
+
 
 # ---------------------------------------------------------------------------
 # Additional coverage: SNOMED constants

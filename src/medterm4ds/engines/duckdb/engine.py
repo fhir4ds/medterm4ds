@@ -39,6 +39,12 @@ from medterm4ds.sources.base import (
 from medterm4ds.sources.base import (
     BROAD_MEDLINEPLUS_NAMES as _BROAD_MEDLINEPLUS_NAMES,
 )
+from medterm4ds.sources.snomed import (
+    SNOMED_FALLBACK_SOURCES as _SNOMED_FALLBACK_SOURCES,
+)
+from medterm4ds.sources.snomed import (
+    SNOMED_TARGET_PRIORITY as _SNOMED_TARGET_PRIORITY,
+)
 from medterm4ds.sources.rxnorm import (
     RXNORM_BASE_TTY_PRIORITY as _RXNORM_BASE_TTY_PRIORITY,
 )
@@ -55,16 +61,11 @@ from medterm4ds.sources.rxnorm import (
 logger = logging.getLogger(__name__)
 T = TypeVar("T")
 
-_SNOMED_FALLBACK_SOURCES = {"ICD10CM", "ICD10PCS", "LNC", "HCPCS", "CPT", "RXNORM", "CVX"}
-_SNOMED_TARGET_PRIORITY = {
-    "CVX": 0,
-    "ICD10CM": 1,
-    "ICD10PCS": 2,
-    "LNC": 3,
-    "RXNORM": 4,
-    "CPT": 5,
-    "HCPCS": 6,
-}
+# _SNOMED_FALLBACK_SOURCES and _SNOMED_TARGET_PRIORITY are imported from
+# sources.snomed (canonical). Previously the engine redefined these with
+# different values (engine included CVX=0 and RXNORM=4 as SNOMED targets,
+# canonical excludes both -- RXNORM and CVX have their own dedicated
+# resolution paths and should not be selected via SNOMED-target mapping).
 
 # UMLS semantic types (TUI) → target source vocabularies that are semantically
 # compatible. Used by _map_snomed_codes to filter crosswalk candidates so a
@@ -4422,14 +4423,12 @@ FROM all_results
                     SELECT sn_code, target_source, target_code
                     FROM candidates
                     ORDER BY sn_code,
-                             CASE target_source WHEN 'CVX' THEN 0
-                                                WHEN 'ICD10CM' THEN 1
-                                                WHEN 'ICD10PCS' THEN 2
-                                                WHEN 'LNC' THEN 3
-                                                WHEN 'RXNORM' THEN 4
-                                                WHEN 'CPT' THEN 5
-                                                WHEN 'HCPCS' THEN 6
-                                                ELSE 7 END,
+                             CASE target_source WHEN 'ICD10CM' THEN 0
+                                                WHEN 'ICD10PCS' THEN 1
+                                                WHEN 'LNC' THEN 2
+                                                WHEN 'CPT' THEN 3
+                                                WHEN 'HCPCS' THEN 4
+                                                ELSE 5 END,
                              target_code
                     """
                 ).fetchall()
@@ -4461,14 +4460,12 @@ FROM all_results
                     SELECT sn_code, target_source, target_code
                     FROM candidates
                     ORDER BY sn_code,
-                             CASE target_source WHEN 'CVX' THEN 0
-                                                WHEN 'ICD10CM' THEN 1
-                                                WHEN 'ICD10PCS' THEN 2
-                                                WHEN 'LNC' THEN 3
-                                                WHEN 'RXNORM' THEN 4
-                                                WHEN 'CPT' THEN 5
-                                                WHEN 'HCPCS' THEN 6
-                                                ELSE 7 END,
+                             CASE target_source WHEN 'ICD10CM' THEN 0
+                                                WHEN 'ICD10PCS' THEN 1
+                                                WHEN 'LNC' THEN 2
+                                                WHEN 'CPT' THEN 3
+                                                WHEN 'HCPCS' THEN 4
+                                                ELSE 5 END,
                              target_code
                     """
                 ).fetchall()
@@ -4540,14 +4537,12 @@ FROM all_results
                                ROW_NUMBER() OVER (
                                    PARTITION BY w.input_code
                                    ORDER BY w.depth,
-                                            CASE target.SAB WHEN 'CVX' THEN 0
-                                                            WHEN 'ICD10CM' THEN 1
-                                                            WHEN 'ICD10PCS' THEN 2
-                                                            WHEN 'LNC' THEN 3
-                                                            WHEN 'RXNORM' THEN 4
-                                                            WHEN 'CPT' THEN 5
-                                                            WHEN 'HCPCS' THEN 6
-                                                            ELSE 7 END,
+                                            CASE target.SAB WHEN 'ICD10CM' THEN 0
+                                                            WHEN 'ICD10PCS' THEN 1
+                                                            WHEN 'LNC' THEN 2
+                                                            WHEN 'CPT' THEN 3
+                                                            WHEN 'HCPCS' THEN 4
+                                                            ELSE 5 END,
                                             target.CODE
                                ) AS rn
                         FROM walk w
@@ -4589,14 +4584,12 @@ FROM all_results
                                ROW_NUMBER() OVER (
                                    PARTITION BY w.input_code
                                    ORDER BY w.depth,
-                                        CASE target.SAB WHEN 'CVX' THEN 0
-                                                        WHEN 'ICD10CM' THEN 1
-                                                        WHEN 'ICD10PCS' THEN 2
-                                                        WHEN 'LNC' THEN 3
-                                                        WHEN 'RXNORM' THEN 4
-                                                        WHEN 'CPT' THEN 5
-                                                        WHEN 'HCPCS' THEN 6
-                                                        ELSE 7 END,
+                                        CASE target.SAB WHEN 'ICD10CM' THEN 0
+                                                        WHEN 'ICD10PCS' THEN 1
+                                                        WHEN 'LNC' THEN 2
+                                                        WHEN 'CPT' THEN 3
+                                                        WHEN 'HCPCS' THEN 4
+                                                        ELSE 5 END,
                                         target.CODE
                            ) AS rn
                         FROM walk w
