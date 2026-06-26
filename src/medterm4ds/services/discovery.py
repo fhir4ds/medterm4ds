@@ -55,6 +55,10 @@ def search_names(
     """Search active terminology names."""
     if not query.strip():
         raise ValueError("query must not be empty")
+    # Cap query length to prevent CPU-waste attacks via huge LIKE patterns.
+    # 256 chars is generous for any realistic terminology search.
+    if len(query) > 256:
+        raise ValueError(f"query must be at most 256 characters (got {len(query)})")
     if limit < 1:
         raise ValueError("limit must be at least 1")
     normalized_sources = normalize_sources(sources) if sources is not None else None

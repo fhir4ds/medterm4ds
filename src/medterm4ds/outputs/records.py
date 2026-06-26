@@ -78,10 +78,29 @@ def write_csv(rows: Iterable[ResultLike], path: str | Path) -> Path:
     with output_path.open("w", encoding="utf-8", newline="") as file:
         writer = csv.DictWriter(file, fieldnames=list(first.keys()), extrasaction="ignore")
         writer.writeheader()
-        writer.writerow(first)
+        writer.writerow(_sanitize_csv_record(first))
         for row in iterator:
-            writer.writerow(to_csv_record(to_record(row)))
+            writer.writerow(_sanitize_csv_record(to_csv_record(to_record(row))))
     return output_path
+
+
+# Cells starting with these characters become spreadsheet formulas when a
+# user opens the CSV in Excel/Sheets (=ADD(), +1, -1, @SUM()). UMLS STR fields
+# rarely start with these but can (e.g., drug names like "-turmeric extract").
+# Prefix with a single quote so spreadsheets render the value literally.
+_CSV_FORMULA_PREFIXES = ("=", "+", "-", "@", "\t", "\r", "\n")
+
+
+def _sanitize_csv_value(value: Any) -> Any:
+    """Prefix string values starting with formula chars to prevent injection."""
+    if isinstance(value, str) and value and value[0] in _CSV_FORMULA_PREFIXES:
+        return "'" + value
+    return value
+
+
+def _sanitize_csv_record(record: dict[str, Any]) -> dict[str, Any]:
+    """Return a copy of `record` with all string values sanitized."""
+    return {key: _sanitize_csv_value(value) for key, value in record.items()}
 
 
 def to_record(row: ResultLike) -> dict[str, Any]:

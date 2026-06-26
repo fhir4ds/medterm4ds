@@ -5,6 +5,7 @@ from __future__ import annotations
 import gzip
 import json
 import os
+import re
 import shutil
 import tempfile
 import zipfile
@@ -57,6 +58,7 @@ def download_release(
     file_name = release.get("fileName") or Path(str(download_url)).name
     if not download_url:
         raise RuntimeError(f"Release metadata did not include downloadUrl: {release}")
+    _validate_download_filename(str(file_name))
     out_dir = Path(output_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     output_path = out_dir / str(file_name)
@@ -67,8 +69,44 @@ def download_release(
     if extract and zipfile.is_zipfile(output_path):
         extract_dir = out_dir / output_path.stem
         with zipfile.ZipFile(output_path) as archive:
-            archive.extractall(extract_dir)
+            _safe_zip_extract(archive, extract_dir)
     return output_path
+
+
+# Defensive guards for download_release (Tier B security hardening, 2026-06-26).
+# The UTS release JSON drives both the output filename and (when extract=True)
+# the archive contents. A compromised or MITM'd UTS endpoint could try to:
+#   - write outside output_dir via "../../etc/x.zip" filenames
+#   - escape extract_dir via "../" zip members (zip-slip)
+# These guards refuse those inputs. Allowed chars cover the realistic UTS
+# filename space (uppercase alphanumerics, dashes, dots).
+_FILENAME_ALLOWED = re.compile(r"^[A-Za-z0-9._\-]+$")
+
+
+def _validate_download_filename(name: str) -> None:
+    if not name or not _FILENAME_ALLOWED.match(name):
+        raise RuntimeError(
+            f"Refusing download filename with disallowed characters: {name!r}. "
+            f"Allowed: uppercase/lowercase letters, digits, dot, dash, underscore."
+        )
+
+
+def _safe_zip_extract(archive: zipfile.ZipFile, extract_dir: Path) -> None:
+    """Extract archive members, refusing any that escape extract_dir.
+
+    Guards against zip-slip: a crafted archive with members like
+    "../../etc/passwd" would otherwise write outside extract_dir.
+    """
+    extract_dir_resolved = extract_dir.resolve()
+    for member in archive.namelist():
+        member_path = (extract_dir_resolved / member).resolve()
+        try:
+            member_path.relative_to(extract_dir_resolved)
+        except ValueError as exc:
+            raise RuntimeError(
+                f"Refusing to extract archive member outside target dir: {member!r}"
+            ) from exc
+        archive.extract(member, extract_dir)
 
 
 def download_umls_release(
@@ -108,7 +146,7 @@ def current_release(
         query_args["current"] = str(current).lower()
     query = urlencode(query_args)
     with urlopen(f"{RELEASES_URL}?{query}") as response:  # noqa: S310
-        payload = json.loads(response.read().decode("utf-8"))
+        payload = json.loads(_read_capped(response).decode("utf-8"))
     if isinstance(payload, list):
         if not payload:
             raise RuntimeError(f"No releases found for {release_type}.")
@@ -445,7 +483,7 @@ def prepare_derived_tables(con, *, replace: bool = True) -> dict[str, object]:
             import urllib.request
             url = 'https://www2.cdc.gov/vaccines/iis/iisstandards/downloads/VG.txt'
             with urllib.request.urlopen(url, timeout=15) as response:
-                lines = response.read().decode('utf-8').splitlines()
+                lines = _read_capped(response).decode('utf-8').splitlines()
                 for line in lines:
                     parts = line.split('|')
                     if len(parts) >= 4:
@@ -618,8 +656,43 @@ def _duckdb_columns(columns: tuple[str, ...]) -> str:
 
 
 def _sql_path_list(paths: tuple[Path, ...]) -> str:
-    return "[" + ", ".join(_sql_string(str(path)) for path in paths) + "]"
+    # Defense-in-depth (Tier B hardening): paths come from _find_rrf_files
+    # traversal of a CLI-supplied directory. An attacker with write access to
+    # that directory could otherwise name a file with characters that break
+    # out of the SQL string literal. Allow only safe path characters.
+    _PATH_ALLOWED = re.compile(r"^[A-Za-z0-9._/\-:\\]+$")
+    parts: list[str] = []
+    for path in paths:
+        path_str = str(path)
+        if not _PATH_ALLOWED.match(path_str):
+            raise RuntimeError(
+                f"Refusing SQL path with disallowed characters: {path_str!r}"
+            )
+        parts.append(_sql_string(path_str))
+    return "[" + ", ".join(parts) + "]"
 
 
 def _sql_string(value: str) -> str:
     return "'" + value.replace("'", "''") + "'"
+
+
+# Cap HTTP JSON response size so a compromised UTS or CDC endpoint cannot OOM
+# the build process by streaming an infinitely large response.
+MAX_RESPONSE_BYTES = 50 * 1024 * 1024
+
+
+def _read_capped(response) -> bytes:
+    """Read at most MAX_RESPONSE_BYTES from `response` using streaming reads."""
+    chunks: list[bytes] = []
+    total = 0
+    while True:
+        chunk = response.read(64 * 1024)
+        if not chunk:
+            break
+        total += len(chunk)
+        if total > MAX_RESPONSE_BYTES:
+            raise RuntimeError(
+                f"HTTP response exceeded {MAX_RESPONSE_BYTES} byte cap; aborting"
+            )
+        chunks.append(chunk)
+    return b"".join(chunks)

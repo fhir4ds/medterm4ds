@@ -193,12 +193,34 @@ class RemoteApiEngine:
         return _open_json(request, self.timeout)
 
 
+# Cap response body size so a compromised remote terminology server cannot
+# OOM this client by streaming an infinitely large response.
+MAX_RESPONSE_BYTES = 50 * 1024 * 1024
+
+
+def _read_capped(response) -> bytes:
+    """Read at most MAX_RESPONSE_BYTES from `response` using streaming reads."""
+    chunks: list[bytes] = []
+    total = 0
+    while True:
+        chunk = response.read(64 * 1024)
+        if not chunk:
+            break
+        total += len(chunk)
+        if total > MAX_RESPONSE_BYTES:
+            raise RuntimeError(
+                f"Remote API response exceeded {MAX_RESPONSE_BYTES} byte cap; aborting"
+            )
+        chunks.append(chunk)
+    return b"".join(chunks)
+
+
 def _open_json(request: Request, timeout: float) -> Mapping[str, Any]:
     try:
         with urlopen(request, timeout=timeout) as response:  # noqa: S310
-            payload = json.loads(response.read().decode("utf-8"))
+            payload = json.loads(_read_capped(response).decode("utf-8"))
     except HTTPError as exc:
-        detail = exc.read().decode("utf-8", errors="replace")
+        detail = _read_capped(exc).decode("utf-8", errors="replace")
         raise RuntimeError(f"Remote API request failed with HTTP {exc.code}: {detail}") from exc
     except URLError as exc:
         raise RuntimeError(f"Remote API request failed: {exc.reason}") from exc

@@ -158,8 +158,11 @@ def test_current_release_omits_current_filter_and_selects_version(monkeypatch):
         def __exit__(self, *args):
             return None
 
-        def read(self):
-            return json.dumps(
+        def __init__(self):
+            self._delivered = False
+
+        def read(self, size: int = -1):
+            payload = json.dumps(
                 [
                     {
                         "fileName": "umls-2026AA-metathesaurus-full.zip",
@@ -173,6 +176,14 @@ def test_current_release_omits_current_filter_and_selects_version(monkeypatch):
                     },
                 ]
             ).encode("utf-8")
+            # Match HTTPResponse.read semantics: with size, return one chunk;
+            # subsequent calls return empty. Without size, return full payload.
+            if size is None or size < 0:
+                return payload
+            if self._delivered:
+                return b""
+            self._delivered = True
+            return payload
 
     def fake_urlopen(url):
         captured["url"] = url

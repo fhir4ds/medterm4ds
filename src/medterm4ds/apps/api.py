@@ -74,13 +74,19 @@ class CodeInput(BaseModel):
         return CodeRef(source=self.source, code=self.code)
 
 
+# Cap the number of codes per batch request so a single misbehaving local
+# client cannot lock the read-only DuckDB connection with a 100k-code POST.
+# 10k is generous; downstream notebooks typically batch in chunks of 100-1000.
+MAX_CODES_PER_REQUEST = 10_000
+
+
 class PatientFriendlyRequest(BaseModel):
-    codes: list[CodeInput] = Field(default_factory=list)
+    codes: list[CodeInput] = Field(default_factory=list, max_length=MAX_CODES_PER_REQUEST)
     max_depth: int = Field(default=5, ge=0)
 
 
 class LookupRequest(BaseModel):
-    codes: list[CodeInput] = Field(default_factory=list)
+    codes: list[CodeInput] = Field(default_factory=list, max_length=MAX_CODES_PER_REQUEST)
     resolve_mode: str = "active_only"
 
 
@@ -94,24 +100,24 @@ class SampleCodesRequest(BaseModel):
 
 
 class CodeTtysRequest(BaseModel):
-    codes: list[CodeInput] = Field(default_factory=list)
+    codes: list[CodeInput] = Field(default_factory=list, max_length=MAX_CODES_PER_REQUEST)
 
 
 class SearchNamesRequest(BaseModel):
-    query: str = Field(min_length=1)
+    query: str = Field(min_length=1, max_length=256)
     sources: list[str] | None = None
     tty_filters: list[str] | None = None
     limit: int = Field(default=25, ge=1)
 
 
 class HierarchyRequest(BaseModel):
-    codes: list[CodeInput] = Field(default_factory=list)
+    codes: list[CodeInput] = Field(default_factory=list, max_length=MAX_CODES_PER_REQUEST)
     direction: Literal["parents", "children", "ancestors", "descendants"]
     max_depth: int = Field(default=5, ge=1)
 
 
 class MappingRequest(BaseModel):
-    codes: list[CodeInput] = Field(default_factory=list)
+    codes: list[CodeInput] = Field(default_factory=list, max_length=MAX_CODES_PER_REQUEST)
     target_sources: list[str] = Field(default_factory=list, min_length=1)
     max_results_per_code: int = Field(default=50, ge=1)
     max_depth: int = Field(default=0, ge=0)
@@ -121,18 +127,18 @@ class MappingRequest(BaseModel):
 
 
 class ConceptMapRequest(BaseModel):
-    codes: list[CodeInput] = Field(default_factory=list)
+    codes: list[CodeInput] = Field(default_factory=list, max_length=MAX_CODES_PER_REQUEST)
     max_depth: int = Field(default=5, ge=0)
     batch_size: int = Field(default=5000, ge=1)
     target_source: str = "PATIENT_FRIENDLY"
 
 
 class ResolveRequest(BaseModel):
-    codes: list[CodeInput] = Field(default_factory=list)
+    codes: list[CodeInput] = Field(default_factory=list, max_length=MAX_CODES_PER_REQUEST)
 
 
 class OptimizeRequest(BaseModel):
-    codes: list[CodeInput] = Field(default_factory=list)
+    codes: list[CodeInput] = Field(default_factory=list, max_length=MAX_CODES_PER_REQUEST)
     relationship: str | None = None
     output_format: Literal["compact", "flat"] = "compact"
     include_codes: bool = False
@@ -177,11 +183,16 @@ def create_app(settings: ApiSettings | None = None) -> FastAPI:
 
     @app.get("/health")
     async def health(request: Request) -> dict[str, Any]:
+        """Readiness check. Sanitized: does NOT leak DB filesystem path.
+
+        Local processes needing the path can read MEDTERM4DS_DB from the env
+        block they passed to the server. External probes (which shouldn't
+        reach this server -- it binds to localhost only) get only readiness.
+        """
         ready = bool(getattr(request.app.state, "ready", False))
         return {
             "status": "ok" if ready else "starting",
             "ready": ready,
-            "database": str(app_settings.db_path),
             "sources": list(app_settings.sources),
             "memory_profile": app_settings.memory_profile,
             "cache_prepared": bool(getattr(_engine(request), "cache_prepared", False)) if ready else False,
@@ -360,3 +371,41 @@ def _env_bool(name: str, default: bool) -> bool:
     if value is None:
         return default
     return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def main() -> int:
+    """Run the API server, bound to localhost by default.
+
+    Binds to 127.0.0.1 so the server is reachable from any process on the
+    same host (notebooks, scripts, MCP server, etc.) but NOT from external
+    networks. This is the documented exposure model (see SECURITY.md):
+    local-only multi-process sidecar. Do NOT pass --host 0.0.0.0 to uvicorn
+    unless you've configured an authenticating reverse proxy in front.
+
+    Override with MEDTERM4DS_API_HOST (e.g., for container-internal use
+    behind a proxy) -- the process will log a warning on startup.
+    """
+    import logging
+
+    import uvicorn
+
+    host = os.getenv("MEDTERM4DS_API_HOST", "127.0.0.1")
+    port = int(os.getenv("MEDTERM4DS_API_PORT", "8000"))
+    if host not in {"127.0.0.1", "::1", "localhost"}:
+        logging.getLogger("medterm4ds.apps.api").warning(
+            "Binding to %s -- this exposes the API to external networks. "
+            "Ensure an authenticating reverse proxy is in front, or set "
+            "MEDTERM4DS_API_HOST=127.0.0.1 for local-only access.", host
+        )
+    uvicorn.run(
+        "medterm4ds.apps.api:create_app",
+        factory=True,
+        host=host,
+        port=port,
+        reload=False,
+    )
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
