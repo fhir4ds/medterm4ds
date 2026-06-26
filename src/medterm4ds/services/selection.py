@@ -2,6 +2,21 @@
 
 Provides deterministic ranking of terminology candidates, used by
 higher-level resolution and patient-friendly workflows.
+
+Design note (Tier C Phase 6 investigation, 2026-06-26):
+These primitives (rank_candidates, select_frontier) are currently NOT
+called by any code in src/ outside this module. The patient-friendly
+prepared resolver (`services/patient_friendly_prepared.py`) does its
+own ranking inline via SQL (using best_atoms.rank and ROW_NUMBER),
+which is more efficient for batched prepared-table queries than calling
+a Python-side ranker per candidate.
+
+They remain as a public API for callers who want Python-side candidate
+ranking over a small set, and as documentation of the ranking policy
+(_TTY_PRIORITY ordering, broad-name filtering, combo-name mismatch
+detection). If patient_friendly_prepared.py ever moves away from
+SQL-side ranking, these functions are the canonical implementation
+to adopt.
 """
 from __future__ import annotations
 

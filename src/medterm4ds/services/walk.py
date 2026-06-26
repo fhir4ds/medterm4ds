@@ -2,6 +2,27 @@
 
 Provides direct access to hierarchy traversal using the ``mt4ds.walk_edges``
 prepared table, without going through the full engine layer.
+
+Design note (Tier C Phase 6 investigation, 2026-06-26):
+These functions are a LOW-LEVEL PUBLIC API for callers who want direct
+walk_edges access without engine enrichment. They intentionally do NOT
+include display-name lookup, provenance, or input-order preservation.
+
+The engine's hierarchy traversal (`engines/duckdb/hierarchy.py`) is a
+SEPARATE, richer implementation that uses walk_edges but adds best_atoms
+display lookups, Provenance tracking, and ordinal-based ordering. It is
+not a refactor target for these primitives -- forcing the engine to use
+them would require gutting their simplicity (display lookups, provenance,
+ordinals) which defeats the purpose of having a low-level API.
+
+Both implementations coexist by design:
+- `services.walk.*` -- programmatic callers wanting simple walk access
+- `engines/duckdb/hierarchy.py` -- the engine's enriched public API
+
+If you find yourself wanting the engine to use these primitives, the
+right move is to extend the primitives to support the engine's needs
+(display names, provenance) as opt-in parameters -- not to remove
+functionality from the engine.
 """
 from __future__ import annotations
 
