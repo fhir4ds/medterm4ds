@@ -40,6 +40,33 @@ class EvidenceHttpError(RuntimeError):
         self.detail = detail
 
 
+# Cap response body size so a malicious or compromised endpoint cannot OOM
+# the process by streaming an infinitely large response. 50 MB is generous
+# for openFDA / PubMed JSON responses (typical payloads are well under 1 MB).
+MAX_RESPONSE_BYTES = 50 * 1024 * 1024
+
+
+def _read_capped(response) -> bytes:
+    """Read at most MAX_RESPONSE_BYTES from `response`.
+
+    Raises RuntimeError if the response exceeds the cap. Uses streaming reads
+    so we don't buffer the full oversize payload before failing.
+    """
+    chunks: list[bytes] = []
+    total = 0
+    while True:
+        chunk = response.read(64 * 1024)
+        if not chunk:
+            break
+        total += len(chunk)
+        if total > MAX_RESPONSE_BYTES:
+            raise RuntimeError(
+                f"External evidence response exceeded {MAX_RESPONSE_BYTES} byte cap; aborting"
+            )
+        chunks.append(chunk)
+    return b"".join(chunks)
+
+
 class EvidenceHttpClient:
     """Small urllib-based HTTP client with injectable transport in tests."""
 
@@ -60,11 +87,11 @@ class EvidenceHttpClient:
         try:
             with urlopen(request, timeout=self.timeout) as response:  # noqa: S310
                 return HttpResponse(
-                    data=response.read().decode("utf-8"),
+                    data=_read_capped(response).decode("utf-8"),
                     status_code=getattr(response, "status", 200),
                 )
         except HTTPError as exc:
-            detail = exc.read().decode("utf-8", errors="replace")
+            detail = _read_capped(exc).decode("utf-8", errors="replace")
             raise EvidenceHttpError(exc.code, detail) from exc
         except URLError as exc:
             raise RuntimeError(f"Evidence HTTP request failed: {exc.reason}") from exc
@@ -450,8 +477,20 @@ def _list_field(row: Mapping[str, Any], key: str) -> list[str]:
     return [str(value)]
 
 
+# Lucene special characters that alter query semantics if unescaped.
+# Backslash must be escaped first to avoid double-escaping.
+_LUCENE_SPECIAL_CHARS = set('+-&|!(){}[]^"~*?:\\/')
+
+
 def _escape_openfda_value(value: str) -> str:
-    return str(value).replace('"', '\\"')
+    """Escape Lucene special characters so user input can't alter query semantics.
+
+    Previous version only escaped `"`, which left `:`, `(`, `)`, `\`, `AND`,
+    `OR`, `*`, `?` as injection vectors. Now escapes all Lucene metacharacters
+    by prefixing each with a backslash.
+    """
+    text = str(value)
+    return "".join("\\" + ch if ch in _LUCENE_SPECIAL_CHARS else ch for ch in text)
 
 
 def _guideline_query(query: str) -> str:

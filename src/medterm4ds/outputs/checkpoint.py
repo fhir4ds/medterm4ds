@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 from medterm4ds.core.models import CodeRef
-from medterm4ds.outputs.records import ResultLike, to_csv_record, to_record
+from medterm4ds.outputs.records import ResultLike, _sanitize_csv_record, to_csv_record, to_record
 
 OutputFormat = Literal["jsonl", "csv"]
 
@@ -162,7 +162,7 @@ def _write_csv_checkpointed(
     with output_path.open(mode, encoding="utf-8", newline="") as file:
         for row in rows:
             record = to_record(row)
-            csv_record = to_csv_record(record)
+            csv_record = _sanitize_csv_record(to_csv_record(record))
             if writer is None:
                 fieldnames = existing_header or list(csv_record.keys())
                 writer = csv.DictWriter(file, fieldnames=fieldnames, extrasaction="ignore")

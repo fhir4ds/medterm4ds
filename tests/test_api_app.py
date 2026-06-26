@@ -66,7 +66,13 @@ def _settings(db_path: Path, *, prepare_cache: bool = True) -> ApiSettings:
     )
 
 
-def test_api_health_uses_single_configured_database(tmp_path):
+def test_api_health_does_not_leak_db_path(tmp_path):
+    """Sanitized /health must not leak the DB filesystem path (Tier B).
+
+    Local processes needing the path can read MEDTERM4DS_DB. External probes
+    (which shouldn't reach this server -- it binds to localhost) get only
+    readiness, sources, and memory profile.
+    """
     db_path = tmp_path / "umls.duckdb"
     _make_duckdb(db_path)
 
@@ -75,14 +81,18 @@ def test_api_health_uses_single_configured_database(tmp_path):
         response = client.get("/health")
 
     assert response.status_code == 200
-    assert response.json() == {
+    body = response.json()
+    assert body == {
         "status": "ok",
         "ready": True,
-        "database": str(db_path),
         "sources": ["ICD10CM", "CVX"],
         "memory_profile": "low",
         "cache_prepared": True,
     }
+    # Critical: no DB path field anywhere in the response.
+    assert "database" not in body
+    assert "db_path" not in body
+    assert str(db_path) not in response.text
 
 
 def test_api_patient_friendly_endpoint(tmp_path):
