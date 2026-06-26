@@ -1,8 +1,8 @@
 # fhir4px Data Delivery Specification
 
-**Version:** 3.0 — As Built
-**Spec date:** 2026-06-21
-**Built:** 2026-06-22
+**Version:** 3.1 — As Built (Tier A refreshed)
+**Spec date:** 2026-06-26
+**Built:** 2026-06-26
 **UMLS release:** 2026AA
 **Pipeline:** `scripts/build_fhir4px_all.py`
 
@@ -50,12 +50,12 @@ One JSON record per addressable code. The app team builds BM25 inverted indexes 
 
 | File | Records | Size |
 |------|---------|------|
-| `embedding_index_condition.jsonl` | 201,447 | 136 MB |
+| `embedding_index_condition.jsonl` | 245,425 | 162 MB |
 | `embedding_index_lab.jsonl` | 116,498 | 91 MB |
-| `embedding_index_medication.jsonl` | 117,544 | 76 MB |
-| `embedding_index_procedure.jsonl` | 154,997 | 126 MB |
+| `embedding_index_medication.jsonl` | 124,540 | 99 MB |
+| `embedding_index_procedure.jsonl` | 154,997 | 127 MB |
 | `embedding_index_vaccine.jsonl` | 291 | 0.2 MB |
-| `embedding_index_body_structure.jsonl` | 39,995 | 24 MB |
+| `embedding_index_body_structure.jsonl` | 39,995 | 25 MB |
 
 **Per-source filters:**
 
@@ -63,13 +63,13 @@ One JSON record per addressable code. The app team builds BM25 inverted indexes 
 |--------|--------|-------|
 | ICD10CM | all | 98,506 |
 | ICD10PCS | leaf-only (no PAR/RB children) | 79,512 |
-| SNOMEDCT_US | TUI-filtered (condition/lab/procedure/medication/vaccine/body_structure) | 241,867 |
+| SNOMEDCT_US | TUI-filtered (condition/lab/procedure/medication/vaccine/body_structure); condition TUIs include T033 (Finding) and T184 (Symptom) | 285,845 |
 | LNC | TTY=LN only | 104,334 |
 | RXNORM | IN, MIN, SCDG, SCD, SBD, BN, PIN, SCDC, SBDC, SBDF, BPCK, GPCK | 83,112 |
 | CPT | all | 15,468 |
 | HCPCS | all | 7,685 |
 | CVX | all | 288 |
-| **Total** | | **630,772** |
+| **Total** | | **681,746** |
 
 **Record schema:**
 
@@ -116,15 +116,15 @@ One JSON record per addressable code. The app team builds BM25 inverted indexes 
 
 Condition → lab + medication associations at ingredient level.
 
-**Built from:** UMLS `may_treat` + `may_prevent` (all depths 0–5, both ICD-10 and SNOMED) + Synthea condition-lab baseline (34 conditions).
+**Built from:** UMLS `may_treat` + `may_prevent` (all depths 0–5, both ICD-10 and SNOMED) + Synthea condition-lab baseline (when `--synthea-labs` is passed to the build).
 
 **Stats:**
 
 | Metric | Value |
 |--------|-------|
-| Conditions | 102,334 |
+| Conditions | 102,317 |
 | Medication associations | 2,864,440 |
-| Lab associations | 283 (from Synthea) |
+| Lab associations | 0 (Synthea baseline not passed in default build; see "Known issues" below) |
 | File size | 220 MB |
 
 **Structure:**
@@ -133,12 +133,12 @@ Condition → lab + medication associations at ingredient level.
 {
   "_meta": {
     "schema_version": "1.0",
-    "generated_at": "2026-06-22T...",
+    "generated_at": "2026-06-26T...",
     "sources": {
-      "labs": "Synthea modules (34 conditions)",
+      "labs": "Synthea modules (if provided) + UMLS monitoring",
       "medications": "UMLS may_treat + may_prevent (all depths 0-5, ingredient-level)"
     },
-    "stats": { "conditions": 102334, "medication_associations": 2864440, "lab_associations": 283 }
+    "stats": { "conditions": 102317, "medication_associations": 2864440, "lab_associations": 0 }
   },
   "E11": {
     "labs": [
@@ -181,18 +181,18 @@ The app can filter by strength or depth at runtime. All depths are included so t
 
 Product code → ingredient codes mapping for runtime decomposition.
 
-**Stats:** 63,472 product entries, 3.7 MB.
+**Stats:** 92,654 product entries, 4.7 MB.
 
 ```json
 {
-  "_meta": { "schema_version": "1.0", "count": 63472 },
+  "_meta": { "schema_version": "1.0", "count": 92654 },
   "860975": [{"c": "6809", "n": "metformin"}],
   "1000000": [{"c": "17767", "n": "amlodipine"}, {"c": "321064", "n": "olmesartan"}],
   "1000086": []
 }
 ```
 
-Includes all RxNorm TTYs: IN, MIN, SCDG, SCD, SBD, BN, PIN. Products without ingredient edges (BN, PIN) have empty arrays `[]`.
+Includes all RxNorm TTYs: IN, MIN, SCDG, SCD, SBD, SCDC, SBDC, SBDF, BN, PIN. Products without ingredient edges (BN, PIN) have empty arrays `[]`.
 
 **Source:** UMLS MRCONSO/MRREL via multi-hop traversal (SCDC for SCD, has_tradename for SBD, has_part for MIN).
 
@@ -256,7 +256,7 @@ At BM25 build time, for each condition entry:
 2. If `icd10_code` is null but the entry has associations data → `canonical_code = own SNOMED code`, `canonical_system = "snomed"`
 3. No associations data → `canonical_code = null`
 
-**Coverage:** 110,390 of 340,373 condition/body_structure entries (32%) have a non-null `icd10_code`.
+**Coverage:** 111,256 of 285,420 condition/body_structure entries (38%) have a non-null `icd10_code`.
 
 ---
 
@@ -308,6 +308,10 @@ At BM25 build time, for each condition entry:
 |------|---------------|----------|--------|
 | Association depths | 0–4 (exclude 5) | 0–5 (all included) | User requested same depth coverage as v1, with depth field for app-side filtering |
 | Association entries | `strength` only | `strength` + `depth` | App needs raw depth to display confidence level |
-| RxNorm ingredients TTYs | IN, MIN, SCD, SBD, SCDG | + BN, PIN (with empty arrays) | Matching v1 coverage; BN/PIN have no ingredient edges but are included as empty |
+| RxNorm ingredients TTYs | IN, MIN, SCD, SBD, SCDG | + BN, PIN, SCDC, SBDC, SBDF | Aligning scope with `embedding_index_medication` TTY filter (Tier A fix, 2026-06-26). Adds 29,182 products vs original spec |
 | Category count | 5 (condition, lab, medication, procedure, vaccine) | 6 (+ body_structure) | Added body_structure for SNOMED anatomy TUIs (T023–T031) |
 | File size (associations) | ~50MB estimated | 220MB actual | Estimate was low; full ICD-10 + SNOMED at all depths is larger |
+| Condition embedding count (v3.0) | 201,447 | 245,425 | Tier A fix: added T033 (Finding) and T184 (Symptom) to `_CONDITION_TUIS` (2026-06-26). +43,978 conditions including the SNOMED "Clinical finding" hierarchy |
+| Medication embedding count (v3.0) | 117,544 | 124,540 | ATC standalone records added (6,996) — not in original spec table |
+| `atc.atc_name` determinism (v3.0) | non-deterministic | deterministic | Tier A fix: added `atc_name` to ROW_NUMBER ORDER BY (2026-06-26). 214 records previously picked names randomly from a multiset |
+| Lab associations (v3.0) | 283 (Synthea) | 0 | `build_fhir4px_all.py` orchestrator does not pass `--synthea-labs`. KNOWN ISSUE — re-run with `--synthea-labs path/to/synthea.json` to restore |
