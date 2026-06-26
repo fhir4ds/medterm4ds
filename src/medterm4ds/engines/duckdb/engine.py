@@ -1503,156 +1503,21 @@ class LocalDuckDBEngine:
         return _mappings._map_snomed_broader(self, codes=codes)
 
 
-    def _resolve_snomed(
-        self,
-        snomed_codes: Sequence[str],
-        snomed_map: Mapping[str, tuple[str, str, bool]],
-        non_snomed: Mapping[tuple[str, str], _Row],
-        max_depth: int,
-    ) -> list[_Row]:
-        rows: list[_Row] = []
-        fallback: list[tuple[str, bool, _Row | None]] = []
-        for code in snomed_codes:
-            mapped = snomed_map.get(code)
-            if mapped:
-                target_source, target_code, is_broader = mapped
-                target = non_snomed.get((target_source, target_code))
-                if target and target.match_type not in {"original", "none"}:
-                    match_type = f"broader_{target.match_type}" if is_broader else target.match_type
-                    rows.append(
-                        _Row(
-                            code=code,
-                            source="SNOMEDCT_US",
-                            name=target.name,
-                            friendly_source=target.friendly_source,
-                            match_type=match_type,
-                            match_depth=target.match_depth,
-                            technical_name=self._technical_name(code, "SNOMEDCT_US"),
-                            matched_via=Provenance.from_steps(
-                                "snomed_cross_reference",
-                                [
-                                    ProvenanceStep(op="input", source="SNOMEDCT_US", code=code),
-                                    ProvenanceStep(
-                                        op="cross_reference",
-                                        source="SNOMEDCT_US",
-                                        code=code,
-                                        target_source=target_source,
-                                        target_code=target_code,
-                                        mode="broader" if is_broader else "exact",
-                                    ),
-                                    *(target.matched_via.steps if target.matched_via else ()),
-                                ],
-                            ),
-                        )
-                    )
-                else:
-                    mapped_original = None
-                    if target:
-                        mapped_original = _Row(
-                            code=code,
-                            source="SNOMEDCT_US",
-                            name=target.name,
-                            friendly_source=target.friendly_source,
-                            match_type=f"broader_{target.match_type}" if is_broader else target.match_type,
-                            match_depth=target.match_depth,
-                            technical_name=self._technical_name(code, "SNOMEDCT_US"),
-                            matched_via=target.matched_via,
-                        )
-                    fallback.append((code, is_broader, mapped_original))
-            else:
-                fallback.append((code, False, None))
+    def _resolve_snomed(self, snomed_codes, snomed_map, non_snomed, max_depth):
+        return _patient_friendly._resolve_snomed(self, snomed_codes=snomed_codes, snomed_map=snomed_map, non_snomed=non_snomed, max_depth=max_depth)
 
-        fallback_rows = self._resolve_default_via_snomed(
-            [code for code, _is_broader, _mapped in fallback],
-            "SNOMEDCT_US",
-            max_depth,
-        )
-        for code, is_broader, mapped_original in fallback:
-            replacement = fallback_rows.get(code)
-            if replacement:
-                if is_broader:
-                    replacement.match_type = f"broader_{replacement.match_type}"
-                rows.append(replacement)
-            elif mapped_original:
-                rows.append(mapped_original)
-            else:
-                rows.append(self._make_original(code, "SNOMEDCT_US"))
-        return rows
 
-    def _display_name(self, code: str, source: str) -> str | None:
-        if source == "LNC":
-            row = self.con.execute(
-                """
-                SELECT STR
-                FROM mrconso
-                WHERE CODE = ? AND SAB = ? AND SUPPRESS = 'N'
-                LIMIT 1
-                """,
-                [code, source],
-            ).fetchone()
-            return row[0] if row else None
+    def _display_name(self, code, source):
+        return _patient_friendly._display_name(self, code=code, source=source)
 
-        atom_order_sql = _source_atom_order_sql(source)
-        row = self.con.execute(
-            f"""
-            SELECT STR
-            FROM mrconso
-            WHERE CODE = ? AND SAB = ? AND SUPPRESS = 'N'
-            ORDER BY {atom_order_sql}
-            LIMIT 1
-            """,
-            [code, source],
-        ).fetchone()
-        return row[0] if row else None
 
-    def _technical_name(self, code: str, source: str) -> str | None:
-        if source == "LNC":
-            row = self.con.execute(
-                """
-                SELECT STR
-                FROM mrconso
-                WHERE CODE = ? AND SAB = ? AND SUPPRESS = 'N'
-                LIMIT 1
-                """,
-                [code, source],
-            ).fetchone()
-            return row[0] if row else None
+    def _technical_name(self, code, source):
+        return _patient_friendly._technical_name(self, code=code, source=source)
 
-        atom_order_sql = _source_technical_atom_order_sql(source)
-        row = self.con.execute(
-            f"""
-            SELECT STR
-            FROM mrconso
-            WHERE CODE = ? AND SAB = ? AND SUPPRESS = 'N'
-            ORDER BY {atom_order_sql}
-            LIMIT 1
-            """,
-            [code, source],
-        ).fetchone()
-        return row[0] if row else None
 
-    def _make_original(
-        self,
-        code: str,
-        source: str,
-        *,
-        technical_name: str | None = None,
-        display_name: str | None = None,
-    ) -> _Row:
-        display_name = display_name or self._display_name(code, source)
-        technical_name = technical_name or self._technical_name(code, source) or display_name
-        if display_name:
-            return _Row(
-                code=code,
-                source=source,
-                name=display_name,
-                friendly_source=source,
-                match_type="original",
-                match_depth=0,
-                technical_name=technical_name,
-                matched_via=self._simple_provenance("original", source, code, display_name),
-            )
-        return self._make_none(code, source)
+    def _make_original(self, code, source, *, technical_name=None, display_name=None):
+        return _patient_friendly._make_original(self, code=code, source=source, technical_name=technical_name, display_name=display_name)
+
 
     def _make_none(self, code: str, source: str) -> _Row:
         return _Row(
