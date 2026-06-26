@@ -215,6 +215,22 @@ Tier 1 deterministic lookup: code → friendly name.
 
 Each entry: `{ "code": { "name": "...", "friendly_source": "...", "match_type": "...", "cui": "..." } }`
 
+**RxNorm-only extension** (added 2026-06-26): `patient_friendly_rxnorm.json` entries also include `tty` — the RxNorm term type code (IN, MIN, BN, SCD, SBD, SCDC, SBDC, SCDG, SBDG, GPCK, BPCK, etc.). Use this for code-selection priority when a FHIR MedicationRequest carries multiple RxNorm codes (e.g., prefer SCD over SCDG over IN). Other per-source JSONs do not include `tty` because their TTY semantics don't follow the same priority table.
+
+```json
+{
+  "1000000": {
+    "name": "Amlodipine / Hydrochlorothiazide / Olmesartan Oral Product",
+    "friendly_source": "RXNORM",
+    "match_type": "group",
+    "cui": "C2930060",
+    "tty": "SCDG"
+  }
+}
+```
+
+Observed TTY distribution (124,919 entries, 2026AA): SCD (17,557), IN (14,617), SCDC (13,797), SCDG (8,909), SBDG (8,304), SBDC (8,092), SCDF (7,478), SY (7,104), SBDF (5,807), BN (5,161), SBDFP (4,592), SCDGP (4,331), SCDFP (4,091), MIN (3,827), TMSY (3,672), PIN (3,508), PSN (2,058), SBD (1,427), GPCK (221), BPCK (189), DF/DFG/ET (~177 combined). Downstream priority tables should account for the long tail (SY, TMSY, PSN) — typically treated as lowest priority.
+
 Also available as a single CSV: `patient_friendly_names.csv` (1,127,095 rows, enriched with CUI/AUI/TTY/semantic_types).
 
 ---

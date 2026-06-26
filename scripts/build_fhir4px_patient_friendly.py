@@ -175,15 +175,23 @@ def main() -> int:
     print(f"  Wrote {n:,} rows to {csv_path} ({size_mb:.1f} MB)")
 
     # Per-system JSON files: { "code": { "name": ..., "friendly_source": ..., "cui": ... } }
+    # RxNorm entries also include "tty" (the source-vocabulary term type) so
+    # downstream code-selection can prefer more specific TTYs (SCD > SCDG > IN)
+    # when a FHIR MedicationRequest carries multiple RxNorm codes. Other
+    # sources omit "tty" because their TTY semantics don't follow the same
+    # priority table; add them per-source if a similar need arises.
     by_source: dict[str, dict] = defaultdict(dict)
     with csv_path.open() as f:
         for row in csv.DictReader(f):
-            by_source[row["source"]][row["code"]] = {
+            entry = {
                 "name": row["name"],
                 "friendly_source": row["friendly_source"],
                 "match_type": row["match_type"],
                 "cui": row.get("cui") or None,
             }
+            if row["source"] == "RXNORM":
+                entry["tty"] = row.get("source_tty") or None
+            by_source[row["source"]][row["code"]] = entry
 
     for source, entries in by_source.items():
         json_path = output_dir / f"patient_friendly_{source.lower()}.json"
