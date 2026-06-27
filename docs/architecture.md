@@ -297,8 +297,6 @@ were downloaded or built.
 
 Database role must be explicit in reports and release artifacts:
 
-- `/mnt/d/medterm/data/umls_local.duckdb`: legacy 2025AB parity fixture,
-  read-only.
 - `/mnt/d/medterm4ds/data/umls_current.duckdb`: current medterm4ds production
   candidate after the new prepared schema is implemented.
 - `/mnt/d/medterm4ds/data/umls_2025ab.duckdb`: optional medterm4ds-built 2025AB
@@ -320,12 +318,6 @@ version.
   tools with optional compact ASCII output.
 
 None of these adapters should implement terminology rules.
-
-## Compatibility
-
-`engines/medterm_baseline` is a comparison adapter for the dirty
-`/mnt/d/medterm` working tree. It is not a production engine. The parity script
-uses it to compare semantic fields and record known old-medterm failures.
 
 ## Adding New Capabilities
 

@@ -1,7 +1,7 @@
-.PHONY: test lint compile verify help benchmark-smoke parity-smoke parity-source-smoke acceptance-smoke notebook-smoke wheel-install-smoke real-data-smoke bulk-validation-smoke mapping-quality-smoke api-smoke mcp-smoke website-install website-start website-build version build publish-test publish ci
+.PHONY: test lint compile verify help benchmark-smoke acceptance-smoke notebook-smoke wheel-install-smoke real-data-smoke bulk-validation-smoke mapping-quality-smoke api-smoke mcp-smoke website-install website-start website-build version build publish-test publish ci
 
 PYTHON ?= python3
-PYTHONPATH ?= src:/mnt/d/medterm/src
+PYTHONPATH ?= src
 UMLS_DB ?= /mnt/d/medterm4ds/data/umls_current.duckdb
 SMOKE_SOURCES ?= ICD10CM,CVX
 
@@ -13,8 +13,6 @@ help:
 	  '  compile           Compile Python files.' \
 	  '  verify            Run lint, test, and compile.' \
 	  '  benchmark-smoke   Run a small local DuckDB benchmark against UMLS_DB.' \
-	  '  parity-smoke      Compare a small sample against /mnt/d/medterm.' \
-	  '  parity-source-smoke Run source-by-source parity reports.' \
 	  '  acceptance-smoke  Exercise CLI JSONL resume, CSV, and FHIR output.' \
 	  '  notebook-smoke    Execute example notebooks against a synthetic DuckDB fixture.' \
 	  '  wheel-install-smoke Build/check package and import it from a fresh venv.' \
@@ -43,39 +41,6 @@ compile:
 verify: lint test compile
 
 ci: verify notebook-smoke wheel-install-smoke
-
-benchmark-smoke:
-	PYTHONPATH=src $(PYTHON) scripts/benchmark_local_duckdb_patient_friendly.py \
-	  --db $(UMLS_DB) \
-	  --prepare-cache \
-	  --no-cache-indexes \
-	  --memory-limit 1GB \
-	  --sizes 1000 \
-	  --sample-mode balanced
-
-parity-smoke:
-	PYTHONPATH=$(PYTHONPATH) $(PYTHON) scripts/compare_patient_friendly_parity.py \
-	  --db $(UMLS_DB) \
-	  --medterm-path /mnt/d/medterm \
-	  --sources ICD10CM \
-	  --per-source 1 \
-	  --compare-batch-size 10 \
-	  --no-prepare-cache \
-	  --output-json parity_patient_friendly_smoke.json \
-	  --output-md parity_patient_friendly_smoke.md \
-	  --output-csv parity_patient_friendly_smoke.csv
-
-parity-source-smoke:
-	PYTHONPATH=$(PYTHONPATH) $(PYTHON) scripts/run_patient_friendly_parity_matrix.py \
-	  --db $(UMLS_DB) \
-	  --medterm-path /mnt/d/medterm \
-	  --sources ICD10CM,RXNORM \
-	  --per-source 1 \
-	  --rxnorm-per-source 5 \
-	  --compare-batch-size 5 \
-	  --timeout-seconds 180 \
-	  --work-dir reports/quality/patient_friendly_parity_smoke \
-	  --no-prepare-cache
 
 acceptance-smoke:
 	PYTHONPATH=src $(PYTHON) scripts/run_cli_acceptance.py \

@@ -11,7 +11,6 @@ import duckdb
 import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
-MEDTERM_BASELINE_SRC = Path("/mnt/d/medterm/src")
 
 
 def _make_duckdb(path: Path) -> None:
@@ -66,136 +65,10 @@ def _make_duckdb(path: Path) -> None:
 def _env() -> dict[str, str]:
     env = dict(os.environ)
     pythonpath = str(ROOT / "src")
-    env["PYTHONPATH"] = f"{pythonpath}:{MEDTERM_BASELINE_SRC}:{env.get('PYTHONPATH', '')}"
+    env["PYTHONPATH"] = f"{pythonpath}:{env.get('PYTHONPATH', '')}"
     return env
 
 
-def _require_medterm_baseline() -> None:
-    if not MEDTERM_BASELINE_SRC.exists():
-        pytest.skip("medterm baseline checkout is not available")
-
-    result = subprocess.run(
-        [
-            sys.executable,
-            "-c",
-            "import medterm.bulk.transforms.patient_friendly",
-        ],
-        cwd=ROOT,
-        env=_env(),
-        text=True,
-        capture_output=True,
-        check=False,
-    )
-    if result.returncode != 0:
-        detail = (result.stderr or result.stdout).strip().splitlines()
-        suffix = f": {detail[-1]}" if detail else ""
-        pytest.skip(f"medterm baseline checkout is not importable{suffix}")
-
-
-def test_parity_script_writes_json_and_markdown(tmp_path):
-    _require_medterm_baseline()
-    db_path = tmp_path / "umls.duckdb"
-    json_path = tmp_path / "parity.json"
-    markdown_path = tmp_path / "parity.md"
-    csv_path = tmp_path / "parity.csv"
-    _make_duckdb(db_path)
-
-    result = subprocess.run(
-        [
-            sys.executable,
-            str(ROOT / "scripts" / "compare_patient_friendly_parity.py"),
-            "--db",
-            str(db_path),
-            "--sources",
-            "ICD10CM",
-            "--per-source",
-            "1",
-            "--sample-mode",
-            "tty",
-            "--per-tty",
-            "1",
-            "--compare-batch-size",
-            "2",
-            "--no-prepare-cache",
-            "--output-json",
-            str(json_path),
-            "--output-md",
-            str(markdown_path),
-            "--output-csv",
-            str(csv_path),
-        ],
-        cwd=ROOT,
-        env=_env(),
-        text=True,
-        capture_output=True,
-        check=False,
-    )
-
-    assert result.returncode == 0, result.stderr
-    report = json.loads(json_path.read_text(encoding="utf-8"))
-    assert report["summary"] == {"match": 1}
-    assert report["classifications"] == {}
-    assert report["db_role"] == "unknown"
-    assert "prepared_schema_version" in report
-    assert "patient_friendly_policy_version" in report
-    assert "crosswalk_edges" in report["prepared_tables"]
-    assert isinstance(report["missing_prepared_tables"], list)
-    assert isinstance(report["schema_errors"], list)
-    assert report["sample_mode"] == "tty"
-    assert report["compare_batch_size"] == 2
-    assert report["cases"][0]["source"] == "ICD10CM"
-    assert "Parity Report" in markdown_path.read_text(encoding="utf-8")
-    parity_row = list(csv.DictReader(csv_path.open(encoding="utf-8")))[0]
-    assert parity_row["status"] == "match"
-    assert "classification" in parity_row
-
-
-def test_source_parity_runner_writes_index(tmp_path):
-    _require_medterm_baseline()
-    db_path = tmp_path / "umls.duckdb"
-    work_dir = tmp_path / "source_parity"
-    _make_duckdb(db_path)
-
-    result = subprocess.run(
-        [
-            sys.executable,
-            str(ROOT / "scripts" / "run_patient_friendly_parity_matrix.py"),
-            "--db",
-            str(db_path),
-            "--sources",
-            "ICD10CM",
-            "--per-source",
-            "1",
-            "--compare-batch-size",
-            "2",
-            "--timeout-seconds",
-            "60",
-            "--work-dir",
-            str(work_dir),
-            "--no-prepare-cache",
-        ],
-        cwd=ROOT,
-        env=_env(),
-        text=True,
-        capture_output=True,
-        check=False,
-    )
-
-    assert result.returncode == 0, result.stderr
-    index = json.loads((work_dir / "index.json").read_text(encoding="utf-8"))
-    assert index["summary"] == {"pass": 1}
-    assert index["classifications"] == {}
-    assert index["db_role"] == "unknown"
-    assert "prepared_schema_version" in index
-    assert "patient_friendly_policy_version" in index
-    assert "crosswalk_edges" in index["prepared_tables"]
-    assert isinstance(index["missing_prepared_tables"], list)
-    assert isinstance(index["schema_errors"], list)
-    assert index["source_statuses"] == {"ICD10CM": "pass"}
-    assert (work_dir / "icd10cm.csv").exists()
-    index_row = list(csv.DictReader((work_dir / "index.csv").open(encoding="utf-8")))[0]
-    assert index_row["status"] == "pass"
-    assert index_row["classifications"] == "{}"
 
 
 def test_acceptance_script_exercises_cli_outputs(tmp_path):
@@ -323,47 +196,6 @@ def test_bulk_validation_and_mapping_quality_scripts(tmp_path):
     assert quality_report["reviews"][0]["source"] == "ICD10CM"
     assert quality_report["reviews"][0]["match_types"] == {"same_cui": 1}
     assert list(csv.DictReader(quality_csv_path.open(encoding="utf-8"))) == []
-
-
-def test_local_patient_friendly_benchmark_writes_metadata_report(tmp_path):
-    db_path = tmp_path / "umls.duckdb"
-    report_path = tmp_path / "local_pf_benchmark.json"
-    _make_duckdb(db_path)
-
-    result = subprocess.run(
-        [
-            sys.executable,
-            str(ROOT / "scripts" / "benchmark_local_duckdb_patient_friendly.py"),
-            "--db",
-            str(db_path),
-            "--db-role",
-            "synthetic",
-            "--sources",
-            "ICD10CM",
-            "--sizes",
-            "1",
-            "--memory-limit",
-            "",
-            "--output-json",
-            str(report_path),
-        ],
-        cwd=ROOT,
-        env=_env(),
-        text=True,
-        capture_output=True,
-        check=False,
-    )
-
-    assert result.returncode == 0, result.stderr
-    report = json.loads(report_path.read_text(encoding="utf-8"))
-    assert report["db_role"] == "synthetic"
-    assert report["db_path"] == str(db_path)
-    assert report["threads"] is None
-    assert report["query_chunk_size"] == 5000
-    assert "crosswalk_edges" in report["prepared_tables"]
-    assert isinstance(report["missing_prepared_tables"], list)
-    assert isinstance(report["schema_errors"], list)
-    assert report["results"][0]["size_actual"] == 1
 
 
 def test_download_umls_release_requires_db_role_for_build(tmp_path):

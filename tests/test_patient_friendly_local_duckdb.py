@@ -9,9 +9,7 @@ import pytest
 from medterm4ds import CodeRef, get_patient_friendly_names
 from medterm4ds.engines.duckdb import LocalDuckDBEngine
 from medterm4ds.engines.duckdb import engine as duckdb_engine
-from medterm4ds.engines.medterm_baseline import MedtermBulkBaselineEngine
 
-MEDTERM_SRC = Path("/mnt/d/medterm/src")
 
 
 def _init_schema(con: duckdb.DuckDBPyConnection) -> None:
@@ -175,20 +173,6 @@ def _seed_patient_friendly_db(con: duckdb.DuckDBPyConnection) -> None:
     )
 
 
-def _patch_baseline_cvx(monkeypatch) -> None:
-    if not MEDTERM_SRC.exists():
-        pytest.skip("medterm baseline checkout is not available")
-    if str(MEDTERM_SRC) not in sys.path:
-        sys.path.insert(0, str(MEDTERM_SRC))
-    try:
-        import medterm.bulk.transforms.patient_friendly as baseline_pf
-    except ImportError as exc:
-        pytest.skip(f"medterm baseline checkout is not importable: {exc}")
-
-    monkeypatch.setattr(baseline_pf, "_CVX_GROUP_CACHE", {})
-    monkeypatch.setattr(baseline_pf, "_load_cvx_groups", lambda: {})
-
-
 def _semantic_rows(results):
     return {
         (r.code.source, r.code.code): {
@@ -203,33 +187,6 @@ def _semantic_rows(results):
     }
 
 
-def test_local_duckdb_matches_medterm_bulk_on_representative_codes(monkeypatch):
-    _patch_baseline_cvx(monkeypatch)
-    con = duckdb.connect(database=":memory:")
-    try:
-        _seed_patient_friendly_db(con)
-        codes = [
-            CodeRef("ICD10CM", "E11.9"),
-            CodeRef("ICD10PCS", "0FT44ZZ"),
-            CodeRef("HCPCS", "J1815"),
-            CodeRef("ICD10CM", "A00.0"),
-            CodeRef("SNOMEDCT_US", "44054006"),
-            CodeRef("RXNORM", "2611787"),
-            CodeRef("RXNORM", "990020"),
-            CodeRef("RXNORM", "393052"),
-            CodeRef("LNC", "2345-7"),
-            CodeRef("CPT", "99213"),
-            CodeRef("CVX", "208"),
-        ]
-        local = LocalDuckDBEngine(con)
-        baseline = MedtermBulkBaselineEngine(con)
-
-        local_rows = _semantic_rows(get_patient_friendly_names(codes, local))
-        baseline_rows = _semantic_rows(get_patient_friendly_names(codes, baseline))
-
-        assert local_rows == baseline_rows
-    finally:
-        con.close()
 
 
 def test_local_duckdb_adds_structured_provenance():
