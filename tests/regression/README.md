@@ -97,18 +97,38 @@ These are surfaced in test names so they show up as triage items.
 
 When you intentionally change the build output:
 
-1. Make the code change.
-2. Rebuild: `PYTHONPATH=src python3 scripts/build_fhir4px_all.py`
-3. Review the diff vs. the previous `reports/fhir4px/` outputs.
-4. Regenerate pinned metadata:
+1. **Archive the current baseline first** (see below).
+2. Make the code change.
+3. Rebuild: `PYTHONPATH=src python3 scripts/build_fhir4px_all.py`
+4. Review the diff vs. the previous `reports/fhir4px/` outputs.
+5. Regenerate pinned metadata:
    ```bash
    PYTHONPATH=tests python3 tests/regression/regenerate_pinned_meta.py
    ```
-5. Re-run the suite:
+6. Re-run the suite:
    ```bash
    pytest -m "realdb or fhir4px_smoke" -v
    ```
-6. If cross-deliverable pinned counts (Tier 2.5) drifted, update them in
+7. If cross-deliverable pinned counts (Tier 2.5) drifted, update them in
    `test_cross_deliverable_consistency.py`.
-7. Commit the code change, `tests/regression/fixtures/pinned_meta.json`, and
+8. Commit the code change, `tests/regression/fixtures/pinned_meta.json`, and
    any updated fixtures together.
+9. Tag the commit: `git tag -a v0.0.X-description -m "..."`.
+
+## Archiving baselines before rebuild
+
+`reports/fhir4px/` is gitignored and overwritten in place on each rebuild.
+To preserve reproducibility (chain-of-custody, downstream migration, audit):
+
+```bash
+# Before any baseline-affecting code change:
+cp -r reports/fhir4px reports/fhir4px_archive_$(date +%Y%m%d)
+```
+
+This creates a timestamped snapshot. Keep at most 2-3 recent archives
+(locally, not in git — they're large). The tag on the git commit documents
+which code produced which baseline.
+
+For production releases, upload the archive to the artifact store (e.g.,
+Hugging Face datasets) alongside the git tag so downstream consumers can
+pin a specific version.
