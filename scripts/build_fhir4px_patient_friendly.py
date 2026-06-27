@@ -209,6 +209,54 @@ def main() -> int:
                 entry["tty"] = row.get("source_tty") or None
             by_source[row["source"]][row["code"]] = entry
 
+    # Canonical code lookup: for SNOMED conditions, find the shortest ICD-10
+    # code sharing the same CUI (for condition_associations.json lookup).
+    # All codes get canonical_code/canonical_system; SNOMED codes without an
+    # ICD-10 equivalent default to themselves.
+    _CANONICAL_SYSTEM = {
+        "ICD10CM": "icd10", "ICD10PCS": "icd10pcs", "SNOMEDCT_US": "snomedct_us",
+        "RXNORM": "rxnorm", "LNC": "lnc", "CPT": "cpt", "HCPCS": "hcpcs", "CVX": "cvx",
+    }
+    snomed_canonicals: dict[str, str] = {}
+    if "SNOMEDCT_US" in by_source:
+        con3 = duckdb.connect(str(db_path), read_only=True)
+        try:
+            snomed_codes = list(by_source["SNOMEDCT_US"].keys())
+            chunk_size = 5000
+            for i in range(0, len(snomed_codes), chunk_size):
+                chunk = snomed_codes[i:i+chunk_size]
+                placeholders = ",".join(["?"] * len(chunk))
+                rows = con3.execute(
+                    f"""
+                    SELECT s.CODE, MIN(i.CODE) AS icd10
+                    FROM mrconso s
+                    JOIN mrconso i ON i.CUI = s.CUI
+                      AND i.SAB = 'ICD10CM' AND i.SUPPRESS = 'N'
+                      AND i.CODE IS NOT NULL AND i.CODE != ''
+                    WHERE s.SAB = 'SNOMEDCT_US' AND s.SUPPRESS = 'N'
+                      AND s.CODE IN ({placeholders})
+                    GROUP BY s.CODE
+                    """,
+                    chunk
+                ).fetchall()
+                for code, icd10 in rows:
+                    if icd10:
+                        snomed_canonicals[code] = str(icd10)
+        finally:
+            con3.close()
+    print(f"  SNOMED → ICD-10 canonicals: {len(snomed_canonicals):,}")
+
+    # Apply canonical_code/canonical_system to all entries.
+    for source, entries in by_source.items():
+        self_system = _CANONICAL_SYSTEM.get(source, source.lower())
+        for code, entry in entries.items():
+            if source == "SNOMEDCT_US" and code in snomed_canonicals:
+                entry["canonical_code"] = snomed_canonicals[code]
+                entry["canonical_system"] = "icd10"
+            else:
+                entry["canonical_code"] = code
+                entry["canonical_system"] = self_system
+
     for source, entries in by_source.items():
         json_path = output_dir / f"patient_friendly_{source.lower()}.json"
         with json_path.open("w", encoding="utf-8") as f:

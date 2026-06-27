@@ -213,21 +213,13 @@ Tier 1 deterministic lookup: code → friendly name.
 | `patient_friendly_hcpcs.json` | 7,685 |
 | `patient_friendly_cvx.json` | 288 |
 
-Each entry: `{ "code": { "name": "...", "friendly_source": "...", "match_type": "...", "cui": "..." } }`
+Each entry: `{ "code": { "name": "...", "friendly_source": "...", "match_type": "...", "cui": "...", "canonical_code": "...", "canonical_system": "..." } }`
 
-**RxNorm-only extension** (added 2026-06-26): `patient_friendly_rxnorm.json` entries also include `tty` — the RxNorm term type code (IN, MIN, BN, SCD, SBD, SCDC, SBDC, SCDG, SBDG, GPCK, BPCK, etc.). Use this for code-selection priority when a FHIR MedicationRequest carries multiple RxNorm codes (e.g., prefer SCD over SCDG over IN). Other per-source JSONs do not include `tty` because their TTY semantics don't follow the same priority table.
+**canonical_code / canonical_system** (added 2026-06-26): all entries include these fields. For SNOMED conditions, `canonical_code` is the shortest ICD-10 code sharing the same CUI (enables condition_associations.json lookup from SNOMED-coded FHIR resources). When no ICD-10 equivalent exists, `canonical_code` defaults to the source code itself. `canonical_system` uses lowercase: `icd10`, `snomedct_us`, `rxnorm`, `lnc`, `cpt`, `hcpcs`, `cvx`.
 
-```json
-{
-  "1000000": {
-    "name": "Amlodipine / Hydrochlorothiazide / Olmesartan Oral Product",
-    "friendly_source": "RXNORM",
-    "match_type": "group",
-    "cui": "C2930060",
-    "tty": "SCDG"
-  }
-}
-```
+Example: SNOMED 44054006 → `canonical_code: "E11", canonical_system: "icd10"` → app looks up `condition_associations["E11"]` directly.
+
+**RxNorm-only extension** (added 2026-06-26): `patient_friendly_rxnorm.json` entries also include `tty` — the RxNorm term type code (IN, MIN, BN, SCD, SBD, SCDC, SBDC, SCDG, SBDG, GPCK, BPCK, etc.). Use this for code-selection priority when a FHIR MedicationRequest carries multiple RxNorm codes.
 
 Observed TTY distribution (124,919 entries, 2026AA, after canonical-priority fix): SCD (17,557), IN (14,617), SCDC (14,382), SBD (9,777), SCDG (8,909), SBDC (8,617), SBDG (8,331), SCDF (7,931), SBDF (6,183), BN (5,161), SBDFP (4,592), SCDGP (4,331), SCDFP (4,091), MIN (3,827), PIN (3,624), TMSY (1,424), BPCK (743), GPCK (644), DF (126), DFG (44), ET (8). Long-tail synonym-class TTYs (TMSY/ET) make up ~1.1% of entries — these are codes where the only active atoms are synonyms/tall-man/entry-term (no preferred TTY available). TTY-FIX applied 2026-06-26; reduced synonym-class TTYs from 12,842 (10.3%) to 1,432 (1.1%).
 
