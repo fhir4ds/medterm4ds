@@ -95,16 +95,22 @@ def test_embedding_index_count_pinned(category: str, fhir4px_built) -> None:
 
 
 @pytest.mark.fhir4px_smoke
-def test_embedding_index_medication_count_pinned_at_124540_atc_standalone_not_in_spec(
+def test_embedding_index_medication_count_pinned_at_135469_post_tty_fix(
     fhir4px_built,
 ) -> None:
-    """Embedding medication count pinned at 124,540 (spec stale at 117,544).
+    """Embedding medication count pinned at 135,469 (post-TTY-FIX 2026-06-26).
 
-    {_EMBEDDING_MEDICATION_COUNT_NOTE}
+    Was 124,540 before TTY-FIX. The fix corrected 11,410 RxNorm codes' TTYs
+    from SY/TMSY/PSN (synonym-class, not in the medication TTY filter) to
+    SBD/SCD/SCDG/etc. (clinically-specific, in the filter). Those codes
+    now correctly appear in the medication embedding.
+
+    Spec still says 117,544 — original spec was stale before the TTY fix
+    and is even staler now. Update pending.
     """
     path = fhir4px_built.embedding_jsonls["medication"]
     actual = len(load_canonical(path))
-    assert actual == 124540
+    assert actual == 135469
 
 
 # ---------- associations ----------
