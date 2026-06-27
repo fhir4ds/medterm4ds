@@ -1800,6 +1800,21 @@ def _load_default_cvx_groups() -> dict[str, list[str]]:
 
 def _source_atom_order_sql(source: str) -> str:
     source = source.upper()
+    if source == "RXNORM":
+        # Use the canonical RxNorm TTY priority (same as _rxnorm_base_tty_order_sql).
+        # Without this case the function fell through to "AUI" (alphabetical),
+        # which caused the CSV enrichment to pick random atoms with respect
+        # to TTY -- surfacing SY/TMSY/PSN in the JSON for ~12,800 codes that
+        # actually have SCD/SBD/SCDG/etc. available. See TTY-FIX, 2026-06-26.
+        cases = " ".join(
+            f"WHEN '{tty}' THEN {priority}"
+            for tty, priority in _RXNORM_BASE_TTY_PRIORITY.items()
+        )
+        return f"""
+            CASE upper(TTY) {cases} ELSE 99 END,
+            LENGTH(STR),
+            AUI
+        """
     if source == "SNOMEDCT_US":
         return """
             CASE upper(TTY)

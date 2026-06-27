@@ -136,8 +136,24 @@ def main() -> int:
                                        WHEN SAB='ICD10CM' AND TTY='HT' THEN 0
                                        WHEN SAB IN ('ICD10PCS','SNOMEDCT_US','CVX','HCPCS','CPT') AND TTY='PT' THEN 0
                                        WHEN SAB='LNC' AND TTY IN ('LN','LPN','LA') THEN 0
-                                       WHEN SAB='RXNORM' AND TTY IN ('IN','MIN','SCDG','SCD') THEN 0
                                        WHEN SAB='MSH' AND TTY='MH' THEN 0
+                                       WHEN SAB='RXNORM' AND TTY='SCDG' THEN 0
+                                       WHEN SAB='RXNORM' AND TTY='SBDG' THEN 1
+                                       WHEN SAB='RXNORM' AND TTY='SCD' THEN 2
+                                       WHEN SAB='RXNORM' AND TTY='SBD' THEN 3
+                                       WHEN SAB='RXNORM' AND TTY='SCDC' THEN 4
+                                       WHEN SAB='RXNORM' AND TTY='SBDC' THEN 5
+                                       WHEN SAB='RXNORM' AND TTY='SCDF' THEN 6
+                                       WHEN SAB='RXNORM' AND TTY='SBDF' THEN 7
+                                       WHEN SAB='RXNORM' AND TTY='GPCK' THEN 8
+                                       WHEN SAB='RXNORM' AND TTY='BPCK' THEN 9
+                                       WHEN SAB='RXNORM' AND TTY='MIN' THEN 10
+                                       WHEN SAB='RXNORM' AND TTY='IN' THEN 11
+                                       WHEN SAB='RXNORM' AND TTY='PIN' THEN 12
+                                       WHEN SAB='RXNORM' AND TTY='BN' THEN 13
+                                       WHEN SAB='RXNORM' AND TTY='DF' THEN 14
+                                       WHEN SAB='RXNORM' AND TTY='DFG' THEN 15
+                                       WHEN SAB='RXNORM' THEN 99
                                        ELSE 1
                                    END,
                                    AUI

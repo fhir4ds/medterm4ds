@@ -15,7 +15,7 @@
     },
     "rxnorm": {
       "count": 124919,
-      "sha256": "59342d82310156e6d12d93ce78be3011cff2b5077f37ebdedde33469537f0bd7"
+      "sha256": "44d84fcc4fc56cd10d88d28c7ab3147621ca23fccadfa348a01cecd515e47427"
     },
     "lnc": {
       "count": 301558,
@@ -36,7 +36,7 @@
   },
   "patient_friendly_csv": {
     "count": 1127094,
-    "sha256": "92f081f410ce49fceca167f3686d2720c92c23c1be0b4501e740f7156e1fad77"
+    "sha256": "4f770f9b30a88c65e26d0faee3f86964420272a540b4afd907e977c06203a794"
   },
   "embedding_index": {
     "condition": {
@@ -48,8 +48,8 @@
       "sha256": "31f84428f40f083c33e9bc4fb03058bbf1b01b718a20d349fdf955d4f4fdbd74"
     },
     "medication": {
-      "count": 124540,
-      "sha256": "bb729e1478d0972f4b5b9baaf539f36d1b818d52871d14f555f143b6633dcf23"
+      "count": 135469,
+      "sha256": "cde7c096b7e663ddd826dc305f68d877c2084a4d59e6309eab4036d092f18fe2"
     },
     "procedure": {
       "count": 154997,

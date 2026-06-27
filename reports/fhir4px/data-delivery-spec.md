@@ -52,7 +52,7 @@ One JSON record per addressable code. The app team builds BM25 inverted indexes 
 |------|---------|------|
 | `embedding_index_condition.jsonl` | 245,425 | 162 MB |
 | `embedding_index_lab.jsonl` | 116,498 | 91 MB |
-| `embedding_index_medication.jsonl` | 124,540 | 99 MB |
+| `embedding_index_medication.jsonl` | 135,469 | 110 MB |
 | `embedding_index_procedure.jsonl` | 154,997 | 127 MB |
 | `embedding_index_vaccine.jsonl` | 291 | 0.2 MB |
 | `embedding_index_body_structure.jsonl` | 39,995 | 25 MB |
@@ -69,7 +69,7 @@ One JSON record per addressable code. The app team builds BM25 inverted indexes 
 | CPT | all | 15,468 |
 | HCPCS | all | 7,685 |
 | CVX | all | 288 |
-| **Total** | | **681,746** |
+| **Total** | | **692,675** |
 
 **Record schema:**
 
@@ -229,7 +229,7 @@ Each entry: `{ "code": { "name": "...", "friendly_source": "...", "match_type": 
 }
 ```
 
-Observed TTY distribution (124,919 entries, 2026AA): SCD (17,557), IN (14,617), SCDC (13,797), SCDG (8,909), SBDG (8,304), SBDC (8,092), SCDF (7,478), SY (7,104), SBDF (5,807), BN (5,161), SBDFP (4,592), SCDGP (4,331), SCDFP (4,091), MIN (3,827), TMSY (3,672), PIN (3,508), PSN (2,058), SBD (1,427), GPCK (221), BPCK (189), DF/DFG/ET (~177 combined). Downstream priority tables should account for the long tail (SY, TMSY, PSN) — typically treated as lowest priority.
+Observed TTY distribution (124,919 entries, 2026AA, after canonical-priority fix): SCD (17,557), IN (14,617), SCDC (14,382), SBD (9,777), SCDG (8,909), SBDC (8,617), SBDG (8,331), SCDF (7,931), SBDF (6,183), BN (5,161), SBDFP (4,592), SCDGP (4,331), SCDFP (4,091), MIN (3,827), PIN (3,624), TMSY (1,424), BPCK (743), GPCK (644), DF (126), DFG (44), ET (8). Long-tail synonym-class TTYs (TMSY/ET) make up ~1.1% of entries — these are codes where the only active atoms are synonyms/tall-man/entry-term (no preferred TTY available). TTY-FIX applied 2026-06-26; reduced synonym-class TTYs from 12,842 (10.3%) to 1,432 (1.1%).
 
 Also available as a single CSV: `patient_friendly_names.csv` (1,127,095 rows, enriched with CUI/AUI/TTY/semantic_types).
 
@@ -328,6 +328,6 @@ At BM25 build time, for each condition entry:
 | Category count | 5 (condition, lab, medication, procedure, vaccine) | 6 (+ body_structure) | Added body_structure for SNOMED anatomy TUIs (T023–T031) |
 | File size (associations) | ~50MB estimated | 220MB actual | Estimate was low; full ICD-10 + SNOMED at all depths is larger |
 | Condition embedding count (v3.0) | 201,447 | 245,425 | Tier A fix: added T033 (Finding) and T184 (Symptom) to `_CONDITION_TUIS` (2026-06-26). +43,978 conditions including the SNOMED "Clinical finding" hierarchy |
-| Medication embedding count (v3.0) | 117,544 | 124,540 | ATC standalone records added (6,996) — not in original spec table |
+| Medication embedding count (v3.0) | 117,544 | 135,469 | Post-TTY-FIX (2026-06-26): corrected 11,410 RxNorm TTYs from SY/TMSY to SBD/SCD/etc, which correctly includes them in the medication embedding filter. Previous count 124,540 included 6,996 ATC standalone records but missed the TTY-miscategorized RxNorm codes. |
 | `atc.atc_name` determinism (v3.0) | non-deterministic | deterministic | Tier A fix: added `atc_name` to ROW_NUMBER ORDER BY (2026-06-26). 214 records previously picked names randomly from a multiset |
 | Lab associations (v3.0) | 283 (Synthea) | 0 | `build_fhir4px_all.py` orchestrator does not pass `--synthea-labs`. KNOWN ISSUE — re-run with `--synthea-labs path/to/synthea.json` to restore |
