@@ -9,13 +9,24 @@ call the same service layer.
 ```text
 core/       Typed records, normalization, and configuration.
 sources/    Source-specific preparation rules and policy metadata.
-engines/    Execution backends and DuckDB prepared-schema support.
+engines/
+  duckdb/   Local DuckDB execution, split into focused modules:
+    engine.py            Dispatcher + remaining helpers (~2100 lines)
+    hierarchy.py         Parent/child/ancestor/descendant traversal
+    mappings.py          Source-to-target code mappings (same-CUI + ancestors)
+    resolution.py        Active/historical/obsolete/NDC code resolution
+    patient_friendly.py  Per-source patient-friendly name resolvers
+    indications.py       Condition->medication may_treat/may_prevent traversal
+    prepared.py          mt4ds prepared-schema builders
+  api/     Remote API engine (HTTP client for a terminology server)
 services/   Batch-first lookup, walk, crosswalk, selection, and workflows.
-outputs/    Serialization and export helpers.
+outputs/    Serialization, FHIR ConceptMap, checkpoint/resume.
 ds.py       Notebook/DataFrame-friendly wrappers over services.
-domains/    Diagnosis, lab, procedure, drug, vaccine, and compatibility helpers.
-apps/       CLI, API, and MCP adapters.
-scripts/    Benchmarks, parity checks, and acceptance checks.
+domains/    Diagnosis, lab, procedure, drug, vaccine, and evidence wrappers.
+apps/       CLI, API, and MCP adapters (thin; delegate to services).
+scripts/    fhir4px build pipeline, validation, and acceptance checks.
+tests/
+  regression/  Tier 1-4 regression suite against real DB + golden baseline.
 ```
 
 ## Core Contracts
@@ -48,10 +59,16 @@ the schema version.
 
 ## Execution Model
 
-`LocalDuckDBEngine` is the default local engine. It keeps large terminology data
-inside DuckDB and resolves codes in batches. The target runtime path queries
-prepared `mt4ds` tables rather than repeatedly joining raw UMLS `mrconso`,
-`mrrel`, and `mrsat` tables.
+`LocalDuckDBEngine` is the default local engine. It delegates to focused
+sub-modules (`hierarchy.py`, `mappings.py`, `resolution.py`,
+`patient_friendly.py`, `indications.py`) that were extracted during the Tier C
+refactor (2026-06-26) from a single 5,362-line `engine.py` into a
+~2,100-line dispatcher plus five focused modules. Each module exposes
+module-level functions that take the engine instance as their first parameter.
+
+The engine keeps large terminology data inside DuckDB and resolves codes in
+batches. The target runtime path queries prepared `mt4ds` tables rather than
+repeatedly joining raw UMLS `mrconso`, `mrrel`, and `mrsat` tables.
 
 Patient-friendly naming has an additional scale requirement: one code, an
 arbitrary list of codes, and a whole code system export must use the same
@@ -313,9 +330,10 @@ version.
 
 - CLI handles arguments, inventory, output format, and resume.
 - API owns one configured DuckDB engine per process and exposes service
-  endpoints.
+  endpoints. Binds to `127.0.0.1` by default (local-only multi-process
+  sidecar); see `SECURITY.md` for the exposure model.
 - MCP owns one configured DuckDB engine per process and registers structured
-  tools with optional compact ASCII output.
+  tools with optional compact ASCII output. Same local-only assumption.
 
 None of these adapters should implement terminology rules.
 

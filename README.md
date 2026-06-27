@@ -47,13 +47,22 @@ functions and engines directly when you need lower-level control.
 ```text
 src/medterm4ds/
   core/                  # CodeRef, CodeInfo, CodeMapping, CodeRelation models
+  sources/               # Source-specific preparation rules (TTY, hierarchy, friendly strategy)
   engines/
-    duckdb/              # local DuckDB execution
-    medterm_baseline/    # comparison adapter for /mnt/d/medterm
+    duckdb/              # local DuckDB execution, split into focused modules:
+      engine.py          #   dispatcher + remaining helpers (~2100 lines)
+      hierarchy.py       #   parent/child/ancestor/descendant traversal
+      mappings.py        #   source-to-target code mappings (same-CUI + ancestors)
+      resolution.py      #   active/historical/obsolete/NDC code resolution
+      patient_friendly.py #  per-source patient-friendly name resolvers
+      indications.py     #   condition->medication may_treat/may_prevent traversal
+      prepared.py        #   mt4ds prepared-schema builders
+    api/                 # remote API engine (HTTP client)
   services/              # public batch-first service functions
   ds.py                  # DataFrame-friendly service wrappers
-  domains/               # Diagnosis/lab/procedure/drug/vaccine wrappers
-  outputs/               # serialization/dataframe helpers
+  domains/               # Diagnosis/lab/procedure/drug/vaccine + evidence wrappers
+  outputs/               # serialization, FHIR ConceptMap, checkpoint/resume
+  apps/                  # CLI, FastAPI, MCP adapters
 ```
 
 See [docs/architecture.md](docs/architecture.md) for the design principles and

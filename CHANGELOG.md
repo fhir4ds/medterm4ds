@@ -2,6 +2,39 @@
 
 ## Unreleased
 
+### Architecture refactor (Tier C)
+- Split `engines/duckdb/engine.py` from 5,362 lines into 6 focused modules: `hierarchy.py`, `mappings.py`, `resolution.py`, `patient_friendly.py`, `indications.py`, plus a leaner `engine.py` (2,127 lines, -60%). No behavioral change; verified via full regression suite and chain-of-custody diff against pre-refactor output.
+- Moved `drugs_for_indication` SQL out of the domain layer (`domains/terminology.py`) into `engines/duckdb/indications.py`. Domain layer now calls `engine.get_drugs_for_indication()` via protocol, eliminating `getattr(engine, "con")` protocol leakage.
+- Consolidated duplicate constants: `_BROAD_CHV_NAMES`, `_BROAD_MEDLINEPLUS_NAMES` now imported from `sources.base` (was redefined in engine). Identity tests enforce the consolidation.
+- Removed `engines/medterm_baseline/` parity adapter and all 4 parity/benchmark scripts. The fhir4px regression suite replaces the old medterm comparison.
+
+### Regression test suite
+- Added `tests/regression/` with 5 tiers (80 tests): curated clinical fixtures (15), build smoke + count pins (20), cross-deliverable consistency (3), per-record invariants (17), full content golden parity (17), TTY-pinned (7), drugs_for_indication parity (1). Runs against real `umls_current.duckdb` in ~12 min; hermetic CI unaffected (markers gate inclusion).
+- Added `tests/regression/golden/` helpers for per-deliverable canonicalization (strip timestamps, sort unordered lists) and structured diff reporting.
+- Added `pinned_meta.json` with exact record counts + SHA256 hashes + UMLS release pin for every fhir4px deliverable.
+
+### Production fixes (Tier A)
+- Fixed `atc.atc_name` non-determinism in `build_fhir4px_embedding_index.py` (214 medication records swapped names between runs). Added `atc_name` to the ROW_NUMBER ORDER BY.
+- Reconciled RxNorm ingredient scope: added SCDC/SBDC/SBDF TTYs to `build_fhir4px_rxnorm_ingredients.py`. Mismatches vs embedding_index dropped from 13,797 to 0.
+- Expanded SNOMED condition TUIs: added T033 (Finding) and T184 (Symptom) to `_CONDITION_TUIS`. Condition embedding grew 201K → 245K records.
+
+### RxNorm TTY fix
+- Fixed `_source_atom_order_sql` (missing RxNorm case) and `build_fhir4px_patient_friendly.py` (incomplete inline TTY priority). 11,410 RxNorm codes corrected from SY/TMSY/PSN to canonical TTYs (SBD/SCD/SCDG/etc.). Medication embedding grew from 124,540 to 135,469 (previously-hidden codes now correctly included).
+
+### Security hardening (Tier B)
+- Fixed zip-slip in `download_release(extract=True)`: validates each archive member stays inside `extract_dir`.
+- Added HTTP body-size caps (50 MB) to all external HTTP responses (evidence.py, api/engine.py, data_setup.py) to prevent OOM from compromised endpoints.
+- Sanitized `/health` endpoint: no longer leaks DB filesystem path.
+- Added request-size caps (10k codes) to all API batch endpoints.
+- Mitigated CSV formula injection: string values starting with `=/+/-/@` are prefixed with a single quote.
+- Expanded openFDA Lucene escaping: all Lucene metacharacters escaped (was only `"`).
+- Documented API/MCP exposure model in `SECURITY.md`: localhost-only multi-process sidecar (binds to `127.0.0.1` by default).
+
+### Data deliverable updates
+- Added `tty` field to `patient_friendly_rxnorm.json` entries (RxNorm term type code for downstream code-selection priority).
+- Added `canonical_code`/`canonical_system` to all 8 `patient_friendly_*.json` files. SNOMED conditions resolve to shortest ICD-10 sharing CUI (e.g., 44054006 → E11). All other sources default to self.
+- Updated `data-delivery-spec.md` to v3.1 with current counts, TTY distribution, and new field documentation.
+
 - Added `scripts/filter_embedding_index.py` to filter an existing embedding index JSONL to a specific list of (source, code) pairs. Reads a CSV with `source` and `code` columns; useful for producing per-ValueSet indices on demand.
 - Generated the Encounter Type ValueSet lookup and index: `valueset_2.16.840.1.113762.1.4.1267.23_patient_friendly.csv` (231 of 233 codes — 99.1% — patient-friendly name coverage) and `embedding_index_valueset_encounter_type.jsonl` (231 records filtered from the full index, 0.2 MB).
 - Added T058 (Health Care Activity) to the SNOMED procedure TUI set in `scripts/build_embedding_index_full.py`. Adds 7.7K new SNOMED codes covering patient encounters, evaluations, and care-plan activities. Without this, 60 codes in the Encounter Type ValueSet were missing from the index. Full index grew from 623K to 631K records.

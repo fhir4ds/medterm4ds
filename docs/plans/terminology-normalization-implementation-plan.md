@@ -1,3 +1,7 @@
+> **Note:** This doc references the legacy `/mnt/d/medterm` project for migration context.
+> The migration is complete; the medterm_baseline adapter has been removed.
+> Requirements and architectural decisions documented here remain relevant.
+
 # Terminology Normalization Implementation Plan
 
 This plan describes how to refactor `medterm4ds` terminology logic around

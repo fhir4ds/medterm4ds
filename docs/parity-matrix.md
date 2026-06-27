@@ -1,3 +1,9 @@
+> **Historical document.** This doc references the legacy `/mnt/d/medterm` project
+> and the parity comparison that was removed in the Tier C refactor (2026-06-26).
+> The `engines/medterm_baseline/` adapter and all parity scripts have been deleted.
+> The fhir4px regression suite (`tests/regression/`) is the current quality gate.
+> Content below is preserved for historical context.
+
 # medterm parity matrix
 
 This matrix tracks the expected behavior alignment between the current

@@ -1,3 +1,7 @@
+> **Note:** This doc references the legacy `/mnt/d/medterm` project for migration context.
+> The migration is complete; the medterm_baseline adapter has been removed.
+> Requirements and architectural decisions documented here remain relevant.
+
 # Terminology Architecture Requirements
 
 This document defines the target architecture for terminology operations in
