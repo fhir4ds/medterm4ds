@@ -1,4 +1,4 @@
-.PHONY: test lint compile verify help benchmark-smoke acceptance-smoke notebook-smoke wheel-install-smoke real-data-smoke bulk-validation-smoke mapping-quality-smoke api-smoke mcp-smoke website-install website-start website-build version build publish-test publish ci
+.PHONY: test lint compile verify help benchmark-smoke acceptance-smoke notebook-smoke fhir-conformance wheel-install-smoke real-data-smoke bulk-validation-smoke mapping-quality-smoke api-smoke mcp-smoke website-install website-start website-build version build publish-test publish ci
 
 PYTHON ?= python3
 PYTHONPATH ?= src
@@ -55,6 +55,9 @@ acceptance-smoke:
 notebook-smoke:
 	PYTHONPATH=src:scripts $(PYTHON) scripts/run_notebook_smoke.py \
 	  --output-json notebook_smoke.json
+
+fhir-conformance:
+	PYTHONPATH=src $(PYTHON) -m pytest tests/fhir_conformance/ -v --tb=short
 
 wheel-install-smoke:
 	$(PYTHON) scripts/build_package.py --skip-verify
