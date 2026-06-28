@@ -258,12 +258,27 @@ class TestFhirEndpoints:
         assert resp.status_code == 503
         assert resp.json()["resourceType"] == "OperationOutcome"
 
-    def test_search_hybrid_not_implemented(self, fhir_app):
+    def test_search_hybrid_requires_indexes(self, fhir_app):
+        """Hybrid mode returns 503 when BM25 or embedding index is unavailable."""
         from starlette.testclient import TestClient
         with TestClient(fhir_app) as client:
             resp = client.get(
                 "/fhir/CodeSystem/$search",
                 params={"query": "diabetes", "searchMode": "hybrid"},
+            )
+        assert resp.status_code == 503
+
+    def test_search_semantic_requires_model(self, fhir_app):
+        """Semantic mode returns 503 when embedding model is unavailable."""
+        from pathlib import Path
+        model_dir = Path("/mnt/d/fhir4px-model/data/sapbert_finetuned")
+        if model_dir.exists():
+            pytest.skip("SapBERT model is available on this machine — cannot test 503 path.")
+        from starlette.testclient import TestClient
+        with TestClient(fhir_app) as client:
+            resp = client.get(
+                "/fhir/CodeSystem/$search",
+                params={"query": "diabetes", "searchMode": "semantic"},
             )
         assert resp.status_code == 503
 

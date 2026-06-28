@@ -416,17 +416,6 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
         count: int,
         search_mode: str,
     ):
-        if search_mode in ("hybrid", "semantic"):
-            return _fhir_error(
-                503,
-                f"searchMode '{search_mode}' is not yet implemented. Use 'lexical'.",
-            )
-        if not _bm25_indexes:
-            return _fhir_error(
-                503,
-                "BM25 search index not loaded. Set MEDTERM4DS_SEARCH_INDEX_DIR.",
-            )
-
         # Determine which categories to search
         if system_uri:
             source = fhir_uri_to_system(system_uri)
@@ -434,10 +423,61 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
                 return _fhir_error(400, f"Unrecognized system URI: {system_uri}")
             categories = _source_to_categories(source)
         else:
-            categories = list(_bm25_indexes.keys())
+            categories = list(_bm25_indexes.keys()) or [
+                "condition", "lab", "medication", "procedure", "vaccine", "body_structure"
+            ]
 
-        results = _bm25_search(query_text, categories, count)
-        return build_bundle_search(results, query=query_text, search_mode=search_mode)
+        if search_mode == "lexical":
+            if not _bm25_indexes:
+                return _fhir_error(
+                    503,
+                    "BM25 search index not loaded. Set MEDTERM4DS_SEARCH_INDEX_DIR.",
+                )
+            results = _bm25_search(query_text, categories, count)
+            return build_bundle_search(results, query=query_text, search_mode="lexical")
+
+        if search_mode == "semantic":
+            from medterm4ds.engines.fhir.semantic import get_semantic_engine
+            engine = get_semantic_engine()
+            if not engine.is_available:
+                return _fhir_error(
+                    503,
+                    "Embedding model not found. Set MEDTERM4DS_EMBEDDING_MODEL_DIR.",
+                )
+            results = engine.search(query_text, categories=categories, top_k=count)
+            # Normalize system names to FHIR URIs
+            for r in results:
+                r["system"] = system_to_fhir_uri(r["system"].upper()) or r["system"]
+            return build_bundle_search(results, query=query_text, search_mode="semantic")
+
+        if search_mode == "hybrid":
+            # Stage 1: BM25 retrieve top 50 candidates
+            if not _bm25_indexes:
+                return _fhir_error(
+                    503,
+                    "BM25 search index not loaded. Set MEDTERM4DS_SEARCH_INDEX_DIR.",
+                )
+            from medterm4ds.engines.fhir.semantic import get_semantic_engine
+            sem_engine = get_semantic_engine()
+            if not sem_engine.is_available:
+                return _fhir_error(
+                    503,
+                    "Embedding model not found. Set MEDTERM4DS_EMBEDDING_MODEL_DIR.",
+                )
+            bm25_results = _bm25_search(query_text, categories, min(count * 3, 50))
+            if not bm25_results:
+                # BM25 returned nothing — fall back to semantic
+                results = sem_engine.search(query_text, categories=categories, top_k=count)
+                for r in results:
+                    r["system"] = system_to_fhir_uri(r["system"].upper()) or r["system"]
+                return build_bundle_search(results, query=query_text, search_mode="semantic-fallback")
+            # Stage 2: SapBERT re-rank
+            reranked = sem_engine.rerank(query_text, bm25_results, top_k=count)
+            for r in reranked:
+                r["system"] = system_to_fhir_uri(str(r.get("system", "")).upper()) or r.get("system", "")
+            return build_bundle_search(reranked, query=query_text, search_mode="hybrid")
+
+        return _fhir_error(400, f"Unknown searchMode: {search_mode}")
 
     def _parse_parameters(body: dict[str, Any]) -> dict[str, str]:
         """Extract named parameters from a FHIR Parameters resource body."""
