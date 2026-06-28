@@ -247,11 +247,15 @@ def main() -> int:
     print(f"  SNOMED → ICD-10 canonicals: {len(snomed_canonicals):,}")
 
     # Apply canonical_code/canonical_system to all entries.
+    from medterm4ds.core.normalize import normalize_icd10_to_category
     for source, entries in by_source.items():
         self_system = _CANONICAL_SYSTEM.get(source, source.lower())
         for code, entry in entries.items():
             if source == "SNOMEDCT_US" and code in snomed_canonicals:
                 entry["canonical_code"] = snomed_canonicals[code]
+                entry["canonical_system"] = "icd10"
+            elif source == "ICD10CM":
+                entry["canonical_code"] = normalize_icd10_to_category(code)
                 entry["canonical_system"] = "icd10"
             else:
                 entry["canonical_code"] = code
