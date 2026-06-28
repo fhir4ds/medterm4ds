@@ -43,6 +43,7 @@ def build_parameters_lookup(
         _param("code", code_info.code.code, "valueCode"),
         _param("system", system_uri, "valueUri"),
         _param("display", code_info.name or code_info.code.code),
+        _param("abstract", False, "valueBoolean"),
     ]
     if code_info.cui:
         params.append(_property_param("cui", code_info.cui))
