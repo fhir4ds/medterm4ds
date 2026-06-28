@@ -1,0 +1,10 @@
+medterm4ds[fhir-semantic]
+duckdb>=0.9.0
+fastapi>=0.110.0
+uvicorn>=0.27.0
+torch>=2.0.0
+transformers>=4.30.0
+faiss-cpu>=1.7.0
+huggingface-hub>=0.20.0
+rank-bm25>=0.2.2
+fhir.resources>=7.0.0
