@@ -337,55 +337,206 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
         url: str | None = Query(None, description="ValueSet canonical URL"),
         filter: str | None = Query(None, description="Text filter for code display"),
         count: int = Query(20, ge=1, le=1000),
-        system: str | None = Query(None, description="System URI for intensional expansion"),
+        system: str | None = Query(None, description="System URI for filter expansion"),
     ):
-        return _do_expand(request, url, filter, count, system)
+        return _do_expand(request, url=url, filter_text=filter, count=count, system_uri=system)
 
     @app.post("/fhir/ValueSet/$expand")
     async def expand_post(request: Request, body: dict[str, Any]):
+        """Expand a ValueSet. Accepts either a ValueSet resource (intensional)
+        or a Parameters resource (filter mode)."""
+        resource_type = body.get("resourceType", "")
+        if resource_type == "ValueSet":
+            return _do_expand(request, value_set=body, count=1000)
+        # Parameters-style: extract url, filter, count
         params = _parse_parameters(body)
         return _do_expand(
             request,
-            params.get("url"),
-            params.get("filter"),
-            int(params.get("count", 20)),
-            params.get("system"),
+            url=params.get("url"),
+            filter_text=params.get("filter"),
+            count=int(params.get("count", 20)),
+            system_uri=params.get("system"),
         )
 
     def _do_expand(
         request: Request,
-        url: str | None,
-        filter_text: str | None,
-        count: int,
-        system_uri: str | None,
+        url: str | None = None,
+        filter_text: str | None = None,
+        count: int = 20,
+        system_uri: str | None = None,
+        value_set: dict[str, Any] | None = None,
     ):
-        """Expand a ValueSet. Supports text-filter mode (for EHR autocomplete)."""
+        """Expand a ValueSet.
+
+        Three modes:
+        1. Intensional (inline ValueSet with compose.include.filter) — hierarchy walk
+        2. URL-based (fhir_vs pattern) — SNOMED intensional shorthand
+        3. Filter (text search) — EHR autocomplete
+        """
         engine = _engine(request)
-        if not filter_text:
-            return _fhir_error(400, "filter parameter is required for expansion.")
-        # Determine which sources to search
+
+        # Mode 1: Inline ValueSet with compose rules
+        if value_set:
+            return _expand_intensional(engine, value_set, count)
+
+        # Mode 2: URL with fhir_vs pattern (SNOMED intensional shorthand)
+        if url and "fhir_vs" in url:
+            return _expand_url_pattern(engine, url, count)
+
+        # Mode 3: Text filter (existing EHR autocomplete)
+        if filter_text:
+            sources = _resolve_sources(system_uri)
+            if sources is None:
+                return _fhir_error(400, f"Unrecognized system URI: {system_uri}")
+            results = search_names(filter_text, engine=engine, sources=sources, limit=count)
+            contains = [
+                {
+                    "system": system_to_fhir_uri(r.code.source) or r.code.source,
+                    "code": r.code.code,
+                    "display": r.name,
+                }
+                for r in results
+            ]
+            return build_valueset_expand(contains, url=url, filter_text=filter_text)
+
+        return _fhir_error(
+            400,
+            "Provide a ValueSet body, a fhir_vs URL, or a filter parameter.",
+        )
+
+    def _expand_intensional(engine, value_set: dict[str, Any], count: int):
+        """Expand a ValueSet with compose.include/exclude rules.
+
+        Supports:
+        - Explicit concept lists (compose.include[].concept)
+        - is-a / descendant-of filters (compose.include[].filter)
+        - compose.exclude (removes codes from the expansion)
+        """
+        compose = value_set.get("compose", {})
+        contains: list[dict[str, Any]] = []
+
+        for include in compose.get("include", []):
+            inc_system = include.get("system", "")
+            source = fhir_uri_to_system(inc_system) or inc_system
+
+            # Explicit concept list
+            if "concept" in include:
+                for concept in include["concept"]:
+                    contains.append({
+                        "system": inc_system,
+                        "code": str(concept.get("code", "")),
+                        "display": concept.get("display", ""),
+                    })
+
+            # Intensional filter (is-a, descendant-of)
+            for filt in include.get("filter", []):
+                prop = filt.get("property", "")
+                op = filt.get("op", "")
+                val = filt.get("value", "")
+
+                if prop == "concept" and op in ("is-a", "descendant-of"):
+                    root_code = str(val)
+                    include_root = (op == "is-a")
+
+                    if include_root:
+                        # Add the root code itself
+                        root_infos = get_code_infos(
+                            [CodeRef(source, root_code)], engine=engine
+                        )
+                        if root_infos and root_infos[0]:
+                            contains.append({
+                                "system": inc_system,
+                                "code": root_code,
+                                "display": root_infos[0].name or root_code,
+                            })
+
+                    # Walk descendants
+                    descendants = get_descendants(
+                        [CodeRef(source, root_code)], engine=engine, max_depth=20
+                    )
+                    for d in descendants:
+                        contains.append({
+                            "system": inc_system,
+                            "code": d.target.code,
+                            "display": d.target_display or d.target.code,
+                        })
+                else:
+                    logger.debug("Unsupported filter: property=%s op=%s", prop, op)
+
+        # Apply excludes
+        for exclude in compose.get("exclude", []):
+            exc_system = exclude.get("system", "")
+            exc_codes = {c.get("code") for c in exclude.get("concept", [])}
+            if exc_system:
+                exc_source = fhir_uri_to_system(exc_system)
+                exc_codes |= {c.get("code") for c in exclude.get("concept", [])}
+            contains = [c for c in contains if c["code"] not in exc_codes]
+
+        # Deduplicate by (system, code)
+        seen: set[tuple[str, str]] = set()
+        deduped: list[dict[str, Any]] = []
+        for c in contains:
+            key = (c["system"], c["code"])
+            if key not in seen:
+                seen.add(key)
+                deduped.append(c)
+
+        truncated = len(deduped) > count
+        return build_valueset_expand(deduped[:count], url=value_set.get("url"))
+
+    def _expand_url_pattern(engine, url: str, count: int):
+        """Expand a fhir_vs URL pattern.
+
+        Supports SNOMED intensional URLs like:
+          http://snomed.info/sct/404684003?fhir_vs=isa
+          http://snomed.info/sct/404684003?fhir_vs
+        """
+        from urllib.parse import parse_qs, urlparse
+
+        parsed = urlparse(url)
+        base = f"{parsed.scheme}://{parsed.netloc}{parsed.path}"
+        # Extract code from path (e.g., /sct/404684003)
+        path_parts = parsed.path.strip("/").split("/")
+        query_params = parse_qs(parsed.query)
+        fhir_vs = query_params.get("fhir_vs", [""])[0]
+
+        # SNOMED pattern: /sct/<code>?fhir_vs[=isa|descendents]
+        if "snomed.info/sct" in base and len(path_parts) >= 2:
+            code = path_parts[-1]
+            source = "SNOMEDCT_US"
+            system_uri = "http://snomed.info/sct"
+            include_root = fhir_vs in ("", "isa", "refset")
+
+            contains: list[dict[str, Any]] = []
+            if include_root:
+                root_infos = get_code_infos([CodeRef(source, code)], engine=engine)
+                if root_infos and root_infos[0]:
+                    contains.append({
+                        "system": system_uri,
+                        "code": code,
+                        "display": root_infos[0].name or code,
+                    })
+
+            descendants = get_descendants(
+                [CodeRef(source, code)], engine=engine, max_depth=20
+            )
+            for d in descendants:
+                contains.append({
+                    "system": system_uri,
+                    "code": d.target.code,
+                    "display": d.target_display or d.target.code,
+                })
+
+            return build_valueset_expand(contains[:count], url=url)
+
+        return _fhir_error(400, f"Unsupported fhir_vs URL pattern: {url}")
+
+    def _resolve_sources(system_uri: str | None) -> list[str] | None:
+        """Resolve a FHIR system URI to a list of medterm4ds source names."""
         if system_uri:
             source = fhir_uri_to_system(system_uri)
-            if source is None:
-                return _fhir_error(400, f"Unrecognized system URI: {system_uri}")
-            sources = [source]
-        else:
-            sources = ["SNOMEDCT_US", "ICD10CM", "RXNORM", "LNC"]
-        results = search_names(
-            filter_text,
-            engine=engine,
-            sources=sources,
-            limit=count,
-        )
-        contains = [
-            {
-                "system": system_to_fhir_uri(r.code.source) or r.code.source,
-                "code": r.code.code,
-                "display": r.name,
-            }
-            for r in results
-        ]
-        return build_valueset_expand(contains, url=url, filter_text=filter_text)
+            return [source] if source else None
+        return ["SNOMEDCT_US", "ICD10CM", "RXNORM", "LNC"]
 
     # -- CodeSystem $search (custom, modeled after Patient $match) --
     @app.get("/fhir/CodeSystem/$search")

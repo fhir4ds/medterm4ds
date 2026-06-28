@@ -143,7 +143,7 @@ class TestResponseBuilders:
 
 
 def _make_fhir_db(path: Path) -> None:
-    """Create a minimal DuckDB with mrconso for FHIR tests."""
+    """Create a minimal DuckDB with mrconso + mrrel for FHIR tests."""
     con = duckdb.connect(str(path))
     con.execute(
         """CREATE TABLE mrconso (
@@ -154,10 +154,21 @@ def _make_fhir_db(path: Path) -> None:
     con.executemany(
         "INSERT INTO mrconso VALUES (?, ?, ?, ?, ?, ?, ?)",
         [
+            ("73211009", "PT", "Diabetes mellitus", "A73211009", "N", "SNOMEDCT_US", "C0011849"),
             ("44054006", "PT", "Type 2 diabetes mellitus", "A44054006", "N", "SNOMEDCT_US", "C0011847"),
             ("E11", "HT", "Type 2 diabetes mellitus", "AE11", "N", "ICD10CM", "C0011847"),
-            ("860975", "SCD", "24 HR metformin hydrochloride 500 MG Extended Release Oral Tablet", "A860975", "N", "RXNORM", "C0978484"),
+            ("860975", "SCD", "24 HR metformin 500 MG Oral Tablet", "A860975", "N", "RXNORM", "C0978484"),
         ],
+    )
+    con.execute(
+        """CREATE TABLE mrrel (
+            AUI1 VARCHAR, AUI2 VARCHAR, RELA VARCHAR, REL VARCHAR
+        )"""
+    )
+    # SNOMED hierarchy: 44054006 (Type 2 diabetes) → parent → 73211009 (Diabetes)
+    con.executemany(
+        "INSERT INTO mrrel VALUES (?, ?, ?, ?)",
+        [("A44054006", "A73211009", "isa", "PAR")],
     )
     con.close()
 
@@ -336,3 +347,117 @@ class TestFhirEndpoints:
         with TestClient(fhir_app) as client:
             resp = client.get("/fhir/ValueSet/$expand")
         assert resp.status_code == 400
+
+    def test_expand_intensional_is_a(self, fhir_app):
+        """POST a ValueSet with compose.include.filter is-a — should return
+        root code + all descendants."""
+        from starlette.testclient import TestClient
+        value_set = {
+            "resourceType": "ValueSet",
+            "compose": {
+                "include": [{
+                    "system": "http://snomed.info/sct",
+                    "filter": [{
+                        "property": "concept",
+                        "op": "is-a",
+                        "value": "73211009",
+                    }],
+                }],
+            },
+        }
+        with TestClient(fhir_app) as client:
+            resp = client.post("/fhir/ValueSet/$expand", json=value_set)
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["resourceType"] == "ValueSet"
+        codes = {c["code"] for c in body["expansion"]["contains"]}
+        # is-a includes the root (73211009) AND descendants (44054006)
+        assert "73211009" in codes
+        assert "44054006" in codes
+
+    def test_expand_intensional_descendant_of(self, fhir_app):
+        """POST a ValueSet with descendant-of filter — should return
+        descendants but NOT the root code."""
+        from starlette.testclient import TestClient
+        value_set = {
+            "resourceType": "ValueSet",
+            "compose": {
+                "include": [{
+                    "system": "http://snomed.info/sct",
+                    "filter": [{
+                        "property": "concept",
+                        "op": "descendant-of",
+                        "value": "73211009",
+                    }],
+                }],
+            },
+        }
+        with TestClient(fhir_app) as client:
+            resp = client.post("/fhir/ValueSet/$expand", json=value_set)
+        assert resp.status_code == 200
+        body = resp.json()
+        codes = {c["code"] for c in body["expansion"]["contains"]}
+        # descendant-of excludes the root (73211009), includes children (44054006)
+        assert "73211009" not in codes
+        assert "44054006" in codes
+
+    def test_expand_explicit_concepts(self, fhir_app):
+        """POST a ValueSet with explicit concept list."""
+        from starlette.testclient import TestClient
+        value_set = {
+            "resourceType": "ValueSet",
+            "compose": {
+                "include": [{
+                    "system": "http://snomed.info/sct",
+                    "concept": [
+                        {"code": "44054006", "display": "Type 2 diabetes"},
+                        {"code": "73211009", "display": "Diabetes"},
+                    ],
+                }],
+            },
+        }
+        with TestClient(fhir_app) as client:
+            resp = client.post("/fhir/ValueSet/$expand", json=value_set)
+        assert resp.status_code == 200
+        body = resp.json()
+        codes = {c["code"] for c in body["expansion"]["contains"]}
+        assert codes == {"44054006", "73211009"}
+
+    def test_expand_intensional_with_exclude(self, fhir_app):
+        """POST a ValueSet with compose.exclude — excluded codes removed."""
+        from starlette.testclient import TestClient
+        value_set = {
+            "resourceType": "ValueSet",
+            "compose": {
+                "include": [{
+                    "system": "http://snomed.info/sct",
+                    "filter": [{"property": "concept", "op": "is-a", "value": "73211009"}],
+                }],
+                "exclude": [{
+                    "system": "http://snomed.info/sct",
+                    "concept": [{"code": "44054006"}],
+                }],
+            },
+        }
+        with TestClient(fhir_app) as client:
+            resp = client.post("/fhir/ValueSet/$expand", json=value_set)
+        assert resp.status_code == 200
+        body = resp.json()
+        codes = {c["code"] for c in body["expansion"]["contains"]}
+        # Root is included, but the excluded child is removed
+        assert "73211009" in codes
+        assert "44054006" not in codes
+
+    def test_expand_fhir_vs_url_pattern(self, fhir_app):
+        """GET with SNOMED fhir_vs URL — intensional shorthand."""
+        from starlette.testclient import TestClient
+        with TestClient(fhir_app) as client:
+            resp = client.get(
+                "/fhir/ValueSet/$expand",
+                params={"url": "http://snomed.info/sct/73211009?fhir_vs=isa", "count": 100},
+            )
+        assert resp.status_code == 200
+        body = resp.json()
+        codes = {c["code"] for c in body["expansion"]["contains"]}
+        assert "73211009" in codes
+        assert "44054006" in codes
