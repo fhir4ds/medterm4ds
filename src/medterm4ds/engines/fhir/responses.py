@@ -226,6 +226,7 @@ def build_capability_statement(base_url: str = "http://127.0.0.1:8001") -> dict[
                             {"name": "lookup", "definition": f"{base_url}/OperationDefinition/cs-lookup"},
                             {"name": "validate-code", "definition": f"{base_url}/OperationDefinition/cs-validate-code"},
                             {"name": "subsumes", "definition": f"{base_url}/OperationDefinition/cs-subsumes"},
+                            {"name": "closure", "definition": f"{base_url}/OperationDefinition/cs-closure"},
                             {"name": "search", "definition": f"{base_url}/OperationDefinition/cs-search"},
                         ],
                     },

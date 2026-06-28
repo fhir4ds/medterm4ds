@@ -461,3 +461,65 @@ class TestFhirEndpoints:
         codes = {c["code"] for c in body["expansion"]["contains"]}
         assert "73211009" in codes
         assert "44054006" in codes
+
+    def test_closure_initialize(self, fhir_app):
+        """POST $closure with name but no concepts → initializes empty closure."""
+        from starlette.testclient import TestClient
+        body = {
+            "resourceType": "Parameters",
+            "parameter": [{"name": "name", "valueString": "test-closure"}],
+        }
+        with TestClient(fhir_app) as client:
+            resp = client.post("/fhir/CodeSystem/$closure", json=body)
+        assert resp.status_code == 200
+        result_body = resp.json()
+        assert result_body["resourceType"] == "Parameters"
+        return_param = [p for p in result_body["parameter"] if p["name"] == "return"]
+        assert len(return_param) == 1
+        assert return_param[0]["valueString"]  # version hash present
+
+    def test_closure_requires_name(self, fhir_app):
+        """POST $closure without name → 400."""
+        from starlette.testclient import TestClient
+        body = {"resourceType": "Parameters", "parameter": []}
+        with TestClient(fhir_app) as client:
+            resp = client.post("/fhir/CodeSystem/$closure", json=body)
+        assert resp.status_code == 400
+
+    def test_closure_add_concepts_and_check_subsumption(self, fhir_app):
+        """Add parent + child to closure, then verify subsumption via
+        the closure table's check method."""
+        from starlette.testclient import TestClient
+        from medterm4ds.engines.fhir.closure import get_closure_manager
+
+        # Add two concepts: Diabetes (73211009) and Type 2 diabetes (44054006)
+        body = {
+            "resourceType": "Parameters",
+            "parameter": [
+                {"name": "name", "valueString": "diabetes-closure"},
+                {"name": "concept", "valueCoding": {
+                    "system": "http://snomed.info/sct",
+                    "code": "73211009",
+                    "display": "Diabetes mellitus",
+                }},
+                {"name": "concept", "valueCoding": {
+                    "system": "http://snomed.info/sct",
+                    "code": "44054006",
+                    "display": "Type 2 diabetes mellitus",
+                }},
+            ],
+        }
+        with TestClient(fhir_app) as client:
+            resp = client.post("/fhir/CodeSystem/$closure", json=body)
+        assert resp.status_code == 200
+
+        # Verify the closure table recorded the subsumption
+        manager = get_closure_manager()
+        closure = manager.get("diabetes-closure")
+        assert closure is not None
+        # 73211009 (Diabetes) should subsume 44054006 (Type 2 diabetes)
+        assert closure.check("73211009", "44054006") == "subsumes"
+        # Reverse should be subsumed-by
+        assert closure.check("44054006", "73211009") == "subsumed-by"
+        # Self-subsumption
+        assert closure.check("73211009", "73211009") == "equivalent"

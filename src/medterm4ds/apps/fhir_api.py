@@ -330,6 +330,53 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
             return build_parameters_subsumes("subsumed-by")
         return build_parameters_subsumes("not-subsumed")
 
+    # -- CodeSystem $closure --
+    @app.post("/fhir/CodeSystem/$closure")
+    async def closure_post(
+        request: Request,
+        body: dict[str, Any],
+    ):
+        """Maintain a named closure table for fast subsumption checks.
+
+        If no concepts are provided, initializes/resets the closure.
+        If concepts are provided, adds them and returns the updated state.
+        """
+        from medterm4ds.engines.fhir.closure import (
+            build_closure_response,
+            get_closure_manager,
+        )
+
+        params = _parse_parameters(body)
+        name = params.get("name")
+        if not name:
+            return _fhir_error(400, "name parameter is required for $closure.")
+
+        manager = get_closure_manager()
+        engine = _engine(request)
+
+        # Extract concept list from the Parameters body
+        concepts: list[tuple[str, str, str]] = []  # (code, system, display)
+        for param in body.get("parameter", []):
+            if param.get("name") == "concept":
+                coding = param.get("valueCoding", {})
+                system_uri = coding.get("system", "")
+                code = coding.get("code", "")
+                display = coding.get("display", code)
+                if code and system_uri:
+                    source = fhir_uri_to_system(system_uri) or system_uri
+                    concepts.append((code, source, display))
+
+        if not concepts:
+            # Initialize / reset
+            closure = manager.reset(name)
+        else:
+            # Add concepts
+            closure = manager.get_or_create(name)
+            for code, source, display in concepts:
+                closure.add_concept(code, source, display, engine)
+
+        return build_closure_response(closure)
+
     # -- ValueSet $expand --
     @app.get("/fhir/ValueSet/$expand")
     async def expand_get(
