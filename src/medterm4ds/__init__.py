@@ -2,6 +2,12 @@
 
 __version__ = "0.0.1"
 
+# FHIR facade (optional — requires medterm4ds[fhir])
+try:
+    from .apps.fhir_api import create_fhir_app
+except ImportError:
+    pass
+
 from .client import Terminology, connect, connect_remote
 from .core.config import (
     LOCAL_DUCKDB_MEMORY_PROFILES,

@@ -1,0 +1,268 @@
+"""Tests for the FHIR R4 terminology facade."""
+
+from __future__ import annotations
+
+import json
+from pathlib import Path
+
+import duckdb
+import pytest
+
+from medterm4ds.engines.duckdb import LocalDuckDBEngine
+from medterm4ds.engines.fhir import (
+    FHIR_URI_TO_SYSTEM,
+    SYSTEM_TO_FHIR_URI,
+    fhir_uri_to_system,
+    system_to_fhir_uri,
+)
+from medterm4ds.engines.fhir.responses import (
+    build_bundle_search,
+    build_capability_statement,
+    build_operation_outcome,
+    build_parameters_lookup,
+    build_parameters_translate,
+    build_parameters_validate,
+)
+
+
+# ---------------------------------------------------------------------------
+# URI mapping tests
+# ---------------------------------------------------------------------------
+
+
+class TestUriMapping:
+    def test_canonical_uris_resolve(self):
+        assert fhir_uri_to_system("http://snomed.info/sct") == "SNOMEDCT_US"
+        assert fhir_uri_to_system("http://www.nlm.nih.gov/research/umls/rxnorm") == "RXNORM"
+        assert fhir_uri_to_system("http://hl7.org/fhir/sid/icd-10-cm") == "ICD10CM"
+        assert fhir_uri_to_system("http://loinc.org") == "LNC"
+
+    def test_oid_aliases_resolve(self):
+        assert fhir_uri_to_system("urn:oid:2.16.840.1.113883.6.96") == "SNOMEDCT_US"
+        assert fhir_uri_to_system("urn:oid:2.16.840.1.113883.6.1") == "LNC"
+
+    def test_trailing_slash_handled(self):
+        assert fhir_uri_to_system("http://snomed.info/sct/") == "SNOMEDCT_US"
+        assert fhir_uri_to_system("http://loinc.org/") == "LNC"
+
+    def test_unknown_uri_returns_none(self):
+        assert fhir_uri_to_system("http://example.com/fake") is None
+
+    def test_reverse_mapping(self):
+        assert system_to_fhir_uri("SNOMEDCT_US") == "http://snomed.info/sct"
+        assert system_to_fhir_uri("RXNORM") == "http://www.nlm.nih.gov/research/umls/rxnorm"
+        assert system_to_fhir_uri("UNKNOWN") is None
+
+    def test_all_mapped_sources_have_uris(self):
+        expected = {"SNOMEDCT_US", "RXNORM", "ICD10CM", "ICD10PCS", "LNC", "CPT", "HCPCS", "CVX"}
+        assert expected == set(SYSTEM_TO_FHIR_URI.keys())
+        assert len(FHIR_URI_TO_SYSTEM) == len(SYSTEM_TO_FHIR_URI)
+
+
+# ---------------------------------------------------------------------------
+# Response builder tests
+# ---------------------------------------------------------------------------
+
+
+class TestResponseBuilders:
+    def test_operation_outcome(self):
+        oo = build_operation_outcome("error", "not-found", "Code missing")
+        assert oo["resourceType"] == "OperationOutcome"
+        assert oo["issue"][0]["severity"] == "error"
+        assert oo["issue"][0]["code"] == "not-found"
+
+    def test_bundle_search_format(self):
+        results = [
+            {"code": "44054006", "system": "http://snomed.info/sct", "display": "T2DM", "score": 0.92, "match_grade": "certain"},
+            {"code": "73211009", "system": "http://snomed.info/sct", "display": "Diabetes", "score": 0.71, "match_grade": "probable"},
+        ]
+        bundle = build_bundle_search(results, query="diabetes", search_mode="lexical")
+        assert bundle["resourceType"] == "Bundle"
+        assert bundle["type"] == "searchset"
+        assert bundle["total"] == 2
+        assert bundle["entry"][0]["search"]["mode"] == "match"
+        assert bundle["entry"][0]["search"]["score"] == 0.92
+        ext = bundle["entry"][0]["search"]["extension"][0]
+        assert ext["valueCode"] == "certain"
+
+    def test_capability_statement(self):
+        cs = build_capability_statement()
+        assert cs["resourceType"] == "CapabilityStatement"
+        assert cs["fhirVersion"] == "4.0.1"
+        operations = [
+            op["name"]
+            for r in cs["rest"]
+            for res in r["resource"]
+            for op in res.get("operation", [])
+        ]
+        assert "lookup" in operations
+        assert "validate-code" in operations
+        assert "translate" in operations
+        assert "search" in operations
+
+    def test_parameters_validate_true(self):
+        params = build_parameters_validate(
+            True, system_uri="http://snomed.info/sct", code="44054006"
+        )
+        assert params["resourceType"] == "Parameters"
+        result_entry = [p for p in params["parameter"] if p["name"] == "result"][0]
+        assert result_entry["valueBoolean"] is True
+
+    def test_parameters_validate_false(self):
+        params = build_parameters_validate(
+            False, system_uri="http://snomed.info/sct", code="INVALID"
+        )
+        result_entry = [p for p in params["parameter"] if p["name"] == "result"][0]
+        assert result_entry["valueBoolean"] is False
+
+    def test_parameters_translate(self):
+        from medterm4ds.core.models import CodeMapping, CodeRef
+        mappings = [
+            CodeMapping(
+                source=CodeRef("SNOMEDCT_US", "44054006"),
+                target=CodeRef("ICD10CM", "E11"),
+                relationship="equivalent",
+                match_type="same_cui",
+                source_display="Type 2 diabetes",
+                target_display="Type 2 diabetes mellitus",
+            )
+        ]
+        params = build_parameters_translate(
+            mappings, source_system_uri="http://snomed.info/sct", source_code="44054006"
+        )
+        result = [p for p in params["parameter"] if p["name"] == "result"][0]
+        assert result["valueBoolean"] is True
+        match = [p for p in params["parameter"] if p["name"] == "match"][0]
+        concept = [part for part in match["part"] if part["name"] == "concept"][0]
+        assert concept["valueCoding"]["code"] == "E11"
+
+
+# ---------------------------------------------------------------------------
+# Endpoint tests (synthetic DB)
+# ---------------------------------------------------------------------------
+
+
+def _make_fhir_db(path: Path) -> None:
+    """Create a minimal DuckDB with mrconso for FHIR tests."""
+    con = duckdb.connect(str(path))
+    con.execute(
+        """CREATE TABLE mrconso (
+            CODE VARCHAR, TTY VARCHAR, STR VARCHAR, AUI VARCHAR,
+            SUPPRESS VARCHAR, SAB VARCHAR, CUI VARCHAR
+        )"""
+    )
+    con.executemany(
+        "INSERT INTO mrconso VALUES (?, ?, ?, ?, ?, ?, ?)",
+        [
+            ("44054006", "PT", "Type 2 diabetes mellitus", "A44054006", "N", "SNOMEDCT_US", "C0011847"),
+            ("E11", "HT", "Type 2 diabetes mellitus", "AE11", "N", "ICD10CM", "C0011847"),
+            ("860975", "SCD", "24 HR metformin hydrochloride 500 MG Extended Release Oral Tablet", "A860975", "N", "RXNORM", "C0978484"),
+        ],
+    )
+    con.close()
+
+
+fastapi = pytest.importorskip("fastapi")
+
+
+class TestFhirEndpoints:
+    @pytest.fixture
+    def fhir_app(self, tmp_path):
+        from medterm4ds.apps.fhir_api import FhirApiSettings, create_fhir_app
+        db_path = tmp_path / "umls.duckdb"
+        _make_fhir_db(db_path)
+        settings = FhirApiSettings(
+            db_path=db_path,
+            memory_profile="low",
+            search_index_dir=str(tmp_path / "nonexistent"),  # no BM25 index
+            prepare_cache=False,
+        )
+        return create_fhir_app(settings)
+
+    def test_metadata(self, fhir_app):
+        from starlette.testclient import TestClient
+        with TestClient(fhir_app) as client:
+            resp = client.get("/fhir/metadata")
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["resourceType"] == "CapabilityStatement"
+        assert body["fhirVersion"] == "4.0.1"
+
+    def test_lookup_snomed(self, fhir_app):
+        from starlette.testclient import TestClient
+        with TestClient(fhir_app) as client:
+            resp = client.get(
+                "/fhir/CodeSystem/$lookup",
+                params={"system": "http://snomed.info/sct", "code": "44054006"},
+            )
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["resourceType"] == "Parameters"
+        display = [p for p in body["parameter"] if p["name"] == "display"]
+        assert len(display) == 1
+        assert "diabetes" in display[0]["valueString"].lower()
+
+    def test_lookup_unknown_system(self, fhir_app):
+        from starlette.testclient import TestClient
+        with TestClient(fhir_app) as client:
+            resp = client.get(
+                "/fhir/CodeSystem/$lookup",
+                params={"system": "http://example.com/fake", "code": "123"},
+            )
+        assert resp.status_code == 400
+        assert resp.json()["resourceType"] == "OperationOutcome"
+
+    def test_validate_code_valid(self, fhir_app):
+        from starlette.testclient import TestClient
+        with TestClient(fhir_app) as client:
+            resp = client.get(
+                "/fhir/CodeSystem/$validate-code",
+                params={"system": "http://snomed.info/sct", "code": "44054006"},
+            )
+        assert resp.status_code == 200
+        result = [p for p in resp.json()["parameter"] if p["name"] == "result"][0]
+        assert result["valueBoolean"] is True
+
+    def test_validate_code_invalid(self, fhir_app):
+        from starlette.testclient import TestClient
+        with TestClient(fhir_app) as client:
+            resp = client.get(
+                "/fhir/CodeSystem/$validate-code",
+                params={"system": "http://snomed.info/sct", "code": "FAKE999"},
+            )
+        result = [p for p in resp.json()["parameter"] if p["name"] == "result"][0]
+        assert result["valueBoolean"] is False
+
+    def test_translate_snomed_to_icd10(self, fhir_app):
+        from starlette.testclient import TestClient
+        with TestClient(fhir_app) as client:
+            resp = client.get(
+                "/fhir/ConceptMap/$translate",
+                params={
+                    "system": "http://snomed.info/sct",
+                    "code": "44054006",
+                    "targetsystem": "http://hl7.org/fhir/sid/icd-10-cm",
+                },
+            )
+        assert resp.status_code == 200
+        result = [p for p in resp.json()["parameter"] if p["name"] == "result"]
+        assert len(result) == 1
+
+    def test_search_without_index_returns_503(self, fhir_app):
+        from starlette.testclient import TestClient
+        with TestClient(fhir_app) as client:
+            resp = client.get(
+                "/fhir/CodeSystem/$search",
+                params={"query": "diabetes"},
+            )
+        assert resp.status_code == 503
+        assert resp.json()["resourceType"] == "OperationOutcome"
+
+    def test_search_hybrid_not_implemented(self, fhir_app):
+        from starlette.testclient import TestClient
+        with TestClient(fhir_app) as client:
+            resp = client.get(
+                "/fhir/CodeSystem/$search",
+                params={"query": "diabetes", "searchMode": "hybrid"},
+            )
+        assert resp.status_code == 503
