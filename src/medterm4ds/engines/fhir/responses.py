@@ -195,6 +195,7 @@ def build_valueset_expand(
     """Build a FHIR ValueSet resource with expansion for $expand."""
     vs: dict[str, Any] = {
         "resourceType": "ValueSet",
+        "status": "active",
         "expansion": {
             "timestamp": "2026-06-27T00:00:00Z",
             "total": len(contains),
