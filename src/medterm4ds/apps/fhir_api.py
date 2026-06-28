@@ -25,10 +25,13 @@ from medterm4ds.engines.fhir.responses import (
     build_capability_statement,
     build_operation_outcome,
     build_parameters_lookup,
+    build_parameters_subsumes,
     build_parameters_translate,
     build_parameters_validate,
+    build_valueset_expand,
 )
 from medterm4ds.services.discovery import search_names
+from medterm4ds.services.hierarchy import get_descendants
 from medterm4ds.services.lookup import get_code_infos
 from medterm4ds.services.mapping import get_code_mappings
 from medterm4ds.services.patient_friendly import get_patient_friendly_names
@@ -289,6 +292,100 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
             source_system_uri=source_uri,
             source_code=code,
         )
+
+    # -- CodeSystem $subsumes --
+    @app.get("/fhir/CodeSystem/$subsumes")
+    async def subsumes_get(
+        request: Request,
+        system: str = Query(...),
+        codeA: str = Query(...),
+        codeB: str = Query(...),
+    ):
+        return _do_subsumes(request, system, codeA, codeB)
+
+    @app.post("/fhir/CodeSystem/$subsumes")
+    async def subsumes_post(request: Request, body: dict[str, Any]):
+        params = _parse_parameters(body)
+        system = params.get("system")
+        code_a = params.get("codeA")
+        code_b = params.get("codeB")
+        if not system or not code_a or not code_b:
+            return _fhir_error(400, "system, codeA, and codeB are required.")
+        return _do_subsumes(request, system, code_a, code_b)
+
+    def _do_subsumes(request: Request, system_uri: str, code_a: str, code_b: str):
+        source = fhir_uri_to_system(system_uri)
+        if source is None:
+            return _fhir_error(400, f"Unrecognized system URI: {system_uri}")
+        engine = _engine(request)
+        if code_a == code_b:
+            return build_parameters_subsumes("equivalent")
+        # Check if B is a descendant of A → A subsumes B
+        desc_of_a = get_descendants([CodeRef(source, code_a)], engine=engine, max_depth=20)
+        if any(r.target.code == code_b for r in desc_of_a):
+            return build_parameters_subsumes("subsumes")
+        # Check if A is a descendant of B → A is subsumed by B
+        desc_of_b = get_descendants([CodeRef(source, code_b)], engine=engine, max_depth=20)
+        if any(r.target.code == code_a for r in desc_of_b):
+            return build_parameters_subsumes("subsumed-by")
+        return build_parameters_subsumes("not-subsumed")
+
+    # -- ValueSet $expand --
+    @app.get("/fhir/ValueSet/$expand")
+    async def expand_get(
+        request: Request,
+        url: str | None = Query(None, description="ValueSet canonical URL"),
+        filter: str | None = Query(None, description="Text filter for code display"),
+        count: int = Query(20, ge=1, le=1000),
+        system: str | None = Query(None, description="System URI for intensional expansion"),
+    ):
+        return _do_expand(request, url, filter, count, system)
+
+    @app.post("/fhir/ValueSet/$expand")
+    async def expand_post(request: Request, body: dict[str, Any]):
+        params = _parse_parameters(body)
+        return _do_expand(
+            request,
+            params.get("url"),
+            params.get("filter"),
+            int(params.get("count", 20)),
+            params.get("system"),
+        )
+
+    def _do_expand(
+        request: Request,
+        url: str | None,
+        filter_text: str | None,
+        count: int,
+        system_uri: str | None,
+    ):
+        """Expand a ValueSet. Supports text-filter mode (for EHR autocomplete)."""
+        engine = _engine(request)
+        if not filter_text:
+            return _fhir_error(400, "filter parameter is required for expansion.")
+        # Determine which sources to search
+        if system_uri:
+            source = fhir_uri_to_system(system_uri)
+            if source is None:
+                return _fhir_error(400, f"Unrecognized system URI: {system_uri}")
+            sources = [source]
+        else:
+            sources = ["SNOMEDCT_US", "ICD10CM", "RXNORM", "LNC"]
+        results = search_names(
+            filter_text,
+            engine=engine,
+            sources=sources,
+            limit=count,
+        )
+        contains = [
+            {
+                "system": system_to_fhir_uri(r.code.source) or r.code.source,
+                "code": r.code.code,
+                "display": r.name,
+            }
+            for r in results
+        ]
+        return build_valueset_expand(contains, url=url, filter_text=filter_text)
 
     # -- CodeSystem $search (custom, modeled after Patient $match) --
     @app.get("/fhir/CodeSystem/$search")

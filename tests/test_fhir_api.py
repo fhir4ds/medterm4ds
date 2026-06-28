@@ -266,3 +266,58 @@ class TestFhirEndpoints:
                 params={"query": "diabetes", "searchMode": "hybrid"},
             )
         assert resp.status_code == 503
+
+    def test_subsumes_identical_codes(self, fhir_app):
+        """Identical codes return 'equivalent'."""
+        from starlette.testclient import TestClient
+        with TestClient(fhir_app) as client:
+            resp = client.get(
+                "/fhir/CodeSystem/$subsumes",
+                params={
+                    "system": "http://snomed.info/sct",
+                    "codeA": "44054006",
+                    "codeB": "44054006",
+                },
+            )
+        assert resp.status_code == 200
+        outcome = [p for p in resp.json()["parameter"] if p["name"] == "outcome"][0]
+        assert outcome["valueCode"] == "equivalent"
+
+    def test_subsumes_different_system(self, fhir_app):
+        """Unknown system returns 400."""
+        from starlette.testclient import TestClient
+        with TestClient(fhir_app) as client:
+            resp = client.get(
+                "/fhir/CodeSystem/$subsumes",
+                params={
+                    "system": "http://example.com/fake",
+                    "codeA": "1",
+                    "codeB": "2",
+                },
+            )
+        assert resp.status_code == 400
+
+    def test_expand_with_filter(self, fhir_app):
+        """$expand with filter returns ValueSet containing matching codes."""
+        from starlette.testclient import TestClient
+        with TestClient(fhir_app) as client:
+            resp = client.get(
+                "/fhir/ValueSet/$expand",
+                params={
+                    "filter": "diabetes",
+                    "count": 10,
+                },
+            )
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["resourceType"] == "ValueSet"
+        assert "expansion" in body
+        assert body["expansion"]["total"] >= 1
+        contains = body["expansion"]["contains"]
+        assert any("diabetes" in c.get("display", "").lower() for c in contains)
+
+    def test_expand_without_filter_returns_400(self, fhir_app):
+        from starlette.testclient import TestClient
+        with TestClient(fhir_app) as client:
+            resp = client.get("/fhir/ValueSet/$expand")
+        assert resp.status_code == 400

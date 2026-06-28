@@ -175,6 +175,37 @@ def build_operation_outcome(
     }
 
 
+def build_parameters_subsumes(outcome: str) -> dict[str, Any]:
+    """Build a FHIR Parameters resource for CodeSystem $subsumes.
+
+    outcome: "equivalent" | "subsumes" | "subsumed-by" | "not-subsumed"
+    """
+    return {
+        "resourceType": "Parameters",
+        "parameter": [{"name": "outcome", "valueCode": outcome}],
+    }
+
+
+def build_valueset_expand(
+    contains: list[dict[str, Any]],
+    *,
+    url: str | None = None,
+    filter_text: str | None = None,
+) -> dict[str, Any]:
+    """Build a FHIR ValueSet resource with expansion for $expand."""
+    vs: dict[str, Any] = {
+        "resourceType": "ValueSet",
+        "expansion": {
+            "timestamp": "2026-06-27T00:00:00Z",
+            "total": len(contains),
+            "contains": contains,
+        },
+    }
+    if url:
+        vs["url"] = url
+    return vs
+
+
 def build_capability_statement(base_url: str = "http://127.0.0.1:8001") -> dict[str, Any]:
     """Build a FHIR CapabilityStatement advertising supported operations."""
     return {
@@ -194,7 +225,14 @@ def build_capability_statement(base_url: str = "http://127.0.0.1:8001") -> dict[
                         "operation": [
                             {"name": "lookup", "definition": f"{base_url}/OperationDefinition/cs-lookup"},
                             {"name": "validate-code", "definition": f"{base_url}/OperationDefinition/cs-validate-code"},
+                            {"name": "subsumes", "definition": f"{base_url}/OperationDefinition/cs-subsumes"},
                             {"name": "search", "definition": f"{base_url}/OperationDefinition/cs-search"},
+                        ],
+                    },
+                    {
+                        "type": "ValueSet",
+                        "operation": [
+                            {"name": "expand", "definition": f"{base_url}/OperationDefinition/vs-expand"},
                         ],
                     },
                     {
