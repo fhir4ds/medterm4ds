@@ -3,35 +3,35 @@
   "patient_friendly": {
     "icd10cm": {
       "count": 98506,
-      "sha256": "be3bd4db1153ab2771ddfd8cdaaf1852173f190a26d76365e830702908edbc15"
+      "sha256": "bc52301cc00c898b0cb318a35e75bfb29341f7d1c6a1f8466a8412656800c618"
     },
     "icd10pcs": {
       "count": 192560,
-      "sha256": "4f14069ca28b9f24012f37d5cd81824f6055a0b95f71a350a0ce64db3df37d2b"
+      "sha256": "5a4f5ffea8ec9d9898b7e2f517d2c13c4a332d8093d0f4b6216ebf2cab3a2c59"
     },
     "snomedct_us": {
       "count": 386110,
-      "sha256": "312318d1c726dd0dcaa3527ca215d86384d599524e05de8e88f3ed273a31048f"
+      "sha256": "6eab5c5be3a0fec7cd87f1939d07bb09f0e4413cd6ab93963d157998f837fc2c"
     },
     "rxnorm": {
       "count": 124919,
-      "sha256": "44d84fcc4fc56cd10d88d28c7ab3147621ca23fccadfa348a01cecd515e47427"
+      "sha256": "66e08ea3470045b32c438944aa80b3f766080d07485d7f7ac32751b88848e903"
     },
     "lnc": {
       "count": 301558,
-      "sha256": "d9af06bb4e0957b70f5e21ffd739e80c02e614920453c70f7c58e704d669e90e"
+      "sha256": "aaaf47574274a24e54c0eaa52146307e5c613677f41a4c6a88bf63b13db1441a"
     },
     "cpt": {
       "count": 15468,
-      "sha256": "6e36501c61603e0fcad40b6abe36aee2de4fb37a95ee2c57a0906fa68949d302"
+      "sha256": "86dc6586466391a85bca95026441232a061fde275c9ff9f245a464d79b15ee00"
     },
     "hcpcs": {
       "count": 7685,
-      "sha256": "33c9269a87057b65094f7b3e3846f6dd4f9e3486eaf699834e74400953335039"
+      "sha256": "ae5dc504be2c064063b69567880c14aca4aeeb01db6fdc0e2b6e4ef55ecaf5be"
     },
     "cvx": {
       "count": 288,
-      "sha256": "a4fcfbb0f06ac7962bf51ce5ae40c1fbdc02ae677eb015376e17bd67bfbafa52"
+      "sha256": "13852e9f9583d6df9fa0f3b5000fcc357aae8707c5753f25994fe0f6774cad86"
     }
   },
   "patient_friendly_csv": {
@@ -65,8 +65,8 @@
     }
   },
   "associations": {
-    "count": 102317,
-    "sha256": "9030c5f1f39ea27ce9f45c954344061d77bd3f93fc0a6f92dfc2ba48e4ee3310"
+    "count": 102334,
+    "sha256": "32bee44fbdbe601b2ae5722e8940564114622e2d74e939ae078c777a50eb1573"
   },
   "rxnorm_ingredients": {
     "count": 92654,

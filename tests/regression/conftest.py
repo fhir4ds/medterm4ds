@@ -195,13 +195,17 @@ def _run_pipeline(out_dir: Path, umls_db_path: Path) -> Fhir4pxBuildResult:
         for cat in ("condition", "lab", "medication", "procedure", "vaccine", "body_structure")
     }
 
-    # Step 3: associations
+    # Step 3: associations (with Synthea labs if available)
     assoc_path = out_dir / "condition_associations.json"
+    assoc_extra_args: list[str] = ["--output", str(assoc_path)]
+    synthea_path = Path("/mnt/d/fhir4px/public/terminology/synthea_condition_lab_codes.json")
+    if synthea_path.exists():
+        assoc_extra_args += ["--synthea-labs", str(synthea_path)]
     result = run_build_script(
         "build_fhir4px_associations.py",
         out_dir,
         umls_db_path,
-        extra_args=("--output", str(assoc_path)),
+        extra_args=tuple(assoc_extra_args),
     )
     assert result.returncode == 0, f"associations build failed:\n{result.stderr}"
 

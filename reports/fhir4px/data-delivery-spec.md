@@ -124,7 +124,7 @@ Condition → lab + medication associations at ingredient level.
 |--------|-------|
 | Conditions | 102,317 |
 | Medication associations | 2,864,440 |
-| Lab associations | 0 (Synthea baseline not passed in default build; see "Known issues" below) |
+| Lab associations | 283 (from Synthea, 34 conditions) |
 | File size | 220 MB |
 
 **Structure:**
@@ -322,4 +322,4 @@ At BM25 build time, for each condition entry:
 | Condition embedding count (v3.0) | 201,447 | 245,425 | Tier A fix: added T033 (Finding) and T184 (Symptom) to `_CONDITION_TUIS` (2026-06-26). +43,978 conditions including the SNOMED "Clinical finding" hierarchy |
 | Medication embedding count (v3.0) | 117,544 | 135,469 | Post-TTY-FIX (2026-06-26): corrected 11,410 RxNorm TTYs from SY/TMSY to SBD/SCD/etc, which correctly includes them in the medication embedding filter. Previous count 124,540 included 6,996 ATC standalone records but missed the TTY-miscategorized RxNorm codes. |
 | `atc.atc_name` determinism (v3.0) | non-deterministic | deterministic | Tier A fix: added `atc_name` to ROW_NUMBER ORDER BY (2026-06-26). 214 records previously picked names randomly from a multiset |
-| Lab associations (v3.0) | 283 (Synthea) | 0 | `build_fhir4px_all.py` orchestrator does not pass `--synthea-labs`. KNOWN ISSUE — re-run with `--synthea-labs path/to/synthea.json` to restore |
+| Lab associations (v3.0→v3.1) | 283 (Synthea) | 0→283 | Fixed 2026-06-27: orchestrator now passes `--synthea-labs` by default. Use `--no-synthea` to skip. |

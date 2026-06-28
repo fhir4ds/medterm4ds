@@ -127,20 +127,18 @@ def test_associations_count_pinned(fhir4px_built) -> None:
 
 
 @pytest.mark.fhir4px_smoke
-def test_associations_lab_associations_pinned_at_0_orchestrator_missing_synthea_labs_flag(
+def test_associations_lab_associations_pinned_at_283_with_synthea(
     fhir4px_built,
 ) -> None:
-    """Shipped associations file has lab_associations=0; spec says 283.
+    """Associations file has 283 lab associations from Synthea (34 conditions).
 
-    Cause: build_fhir4px_all.py does not pass --synthea-labs to the associations
-    step, so the Synthea condition-lab baseline is never merged. This test pins
-    current (broken) behavior; fix is tracked separately.
+    Previously 0 because build_fhir4px_all.py did not pass --synthea-labs.
+    Fixed 2026-06-27: orchestrator now passes --synthea-labs by default.
     """
     with fhir4px_built.associations.open() as f:
         raw = json.load(f)
-    # When Synthea is not passed, every condition's labs list is empty.
     total_labs = sum(len(v.get("labs", [])) for v in raw.values() if isinstance(v, dict))
-    assert total_labs == 0
+    assert total_labs == 283, f"Expected 283 lab associations, got {total_labs}"
 
 
 # ---------- rxnorm-ingredients ----------
