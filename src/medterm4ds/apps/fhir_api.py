@@ -71,7 +71,15 @@ class FhirApiSettings:
 
 
 def _load_bm25_indexes(search_dir: str) -> None:
-    """Load pre-built BM25 JSON indexes on startup."""
+    """Load pre-built BM25 JSON indexes on startup.
+
+    The JSON files are pre-built inverted indexes with:
+      - postings: {token: [[rid, tf_count], ...]}
+      - idf: {token: idf_score}
+      - doc_lengths: [length_per_doc]
+      - rid_to_code, rid_to_friendly_name, rid_to_system: per-doc metadata
+      - avg_doc_length: average document length
+    """
     search_path = Path(search_dir)
     if not search_path.is_dir():
         logger.warning("BM25 search index dir not found: %s — $search will return 503", search_dir)
@@ -81,11 +89,16 @@ def _load_bm25_indexes(search_dir: str) -> None:
         if json_path.exists():
             try:
                 with json_path.open() as f:
-                    docs = json.load(f)
-                if isinstance(docs, list):
-                    _bm25_indexes[category] = docs
-                    _bm25_doc_count[category] = len(docs)
-                    logger.info("  BM25 %s: %d records", category, len(docs))
+                    index = json.load(f)
+                if isinstance(index, dict) and "postings" in index:
+                    _bm25_indexes[category] = index
+                    _bm25_doc_count[category] = index.get("num_records", 0)
+                    logger.info("  BM25 %s: %d records", category, index.get("num_records", 0))
+                elif isinstance(index, list):
+                    # Fallback: flat document list (legacy format)
+                    _bm25_indexes[category] = index
+                    _bm25_doc_count[category] = len(index)
+                    logger.info("  BM25 %s: %d records (flat)", category, len(index))
             except Exception:
                 logger.exception("Failed to load BM25 index: %s", json_path)
 
@@ -713,50 +726,134 @@ def _source_to_categories(source: str) -> list[str]:
     return mapping.get(source, [])
 
 
-def _bm25_search(query: str, categories: list[str], count: int) -> list[dict[str, Any]]:
-    """Simple lexical search across BM25 JSON indexes.
+def _stem_token(token: str) -> str:
+    """Simple Porter-like stemmer to match pre-built BM25 tokenization.
 
-    The pre-built BM25 JSON files contain per-document metadata with
-    friendly_name, technical name, and synonyms. This does a case-insensitive
-    substring + token-overlap ranking.
+    The BM25 indexes use aggressive stemming (e.g., 'diabetes' → 'diabete',
+    'infections' → 'infection', 'containing' → 'contain'). This stemmer
+    applies common English suffix stripping to approximate that.
+    """
+    token = token.lower()
+    for suffix in ("ational", "tional", "iveness", "fulness", "ousness",
+                   "ization", "ization", "ation", "ations",
+                   "izer", "ator", "alism", "iciti", "ical", "ness",
+                   "ements", "ement", "ments", "ment",
+                   "iences", "ience", "iable", "iable",
+                   "ing", "ies", "ied", "ies", "ied",
+                   "ily", "ily",
+                   "sses", "ies", "ss", "s",
+                   "y", "e"):
+        if token.endswith(suffix) and len(token) > len(suffix) + 2:
+            if suffix == "ies":
+                return token[:-3] + "i"
+            if suffix == "ied":
+                return token[:-3] + "i"
+            if suffix == "sses":
+                return token[:-2]
+            if suffix == "s" and not token.endswith("ss"):
+                return token[:-1]
+            if suffix == "e" and token.endswith("e") and len(token) > 3:
+                return token[:-1]
+            if suffix == "ing":
+                return token[:-3]
+            if suffix == "y":
+                return token[:-1] + "i"
+            return token[: -len(suffix)]
+    return token
+
+
+def _bm25_search(query: str, categories: list[str], count: int) -> list[dict[str, Any]]:
+    """BM25 lexical search using pre-built inverted indexes.
+
+    Supports two index formats:
+    1. Pre-built BM25 (dict with postings/idf/rid_to_code): proper BM25 scoring
+    2. Flat document list (legacy): token-overlap scoring
     """
     import math
-    from collections import Counter
 
-    query_tokens = set(query.lower().split())
+    query_tokens = query.lower().split()
     if not query_tokens:
         return []
 
     results: list[dict[str, Any]] = []
     for category in categories:
-        docs = _bm25_indexes.get(category, [])
-        for doc in docs:
-            # Build searchable text from document fields
-            text_parts = []
-            for field in ("friendly_name", "name", "display"):
-                val = doc.get(field)
-                if val:
-                    text_parts.append(str(val).lower())
-            for syn in (doc.get("synonyms") or []):
-                text_parts.append(str(syn).lower())
-            doc_text = " ".join(text_parts)
-            doc_tokens = set(doc_text.split())
+        index = _bm25_indexes.get(category)
+        if index is None:
+            continue
 
-            # Token overlap score (simple BM25-like)
-            overlap = len(query_tokens & doc_tokens)
-            if overlap == 0:
-                continue
-            score = overlap / math.sqrt(len(query_tokens) * len(doc_tokens or 1))
+        if isinstance(index, dict) and "postings" in index:
+            # Pre-built BM25 inverted index
+            postings = index["postings"]
+            idf = index.get("idf", {})
+            doc_lengths = index.get("doc_lengths", [])
+            avg_doc_length = index.get("avg_doc_length", 20.0) or 20.0
+            rid_to_code = index.get("rid_to_code", [])
+            rid_to_friendly = index.get("rid_to_friendly_name", [])
+            rid_to_system = index.get("rid_to_system", [])
 
-            # Get the canonical code info from the doc
-            code_info = doc.get("code") or doc
-            results.append({
-                "code": str(code_info.get("code", doc.get("id", ""))),
-                "system": system_to_fhir_uri(str(code_info.get("source", "")).upper()) or code_info.get("source", ""),
-                "display": doc.get("friendly_name") or doc.get("name") or doc.get("display", ""),
-                "score": round(score, 4),
-                "match_grade": _score_to_grade(score),
-            })
+            # Accumulate BM25 scores per document
+            scores: dict[int, float] = {}
+            for raw_token in query_tokens:
+                # Try raw token, then stemmed version
+                token = raw_token
+                if token not in postings:
+                    token = _stem_token(raw_token)
+                if token not in postings:
+                    continue
+                    continue
+                token_idf = idf.get(token, idf.get(raw_token, 1.0))
+                for entry in postings[token]:
+                    if isinstance(entry, list) and len(entry) >= 2:
+                        rid, tf = int(entry[0]), float(entry[1])
+                    else:
+                        continue
+                    doc_len = doc_lengths[rid] if rid < len(doc_lengths) else avg_doc_length
+                    # BM25 formula: k1=1.5, b=0.75
+                    k1, b = 1.5, 0.75
+                    tf_component = (tf * (k1 + 1)) / (tf + k1 * (1 - b + b * doc_len / avg_doc_length))
+                    scores[rid] = scores.get(rid, 0.0) + token_idf * tf_component
+
+            # Convert to results
+            for rid, score in sorted(scores.items(), key=lambda x: -x[1])[:count]:
+                code = rid_to_code[rid] if rid < len(rid_to_code) else str(rid)
+                display = rid_to_friendly[rid] if rid < len(rid_to_friendly) else code
+                sys_name = rid_to_system[rid] if rid < len(rid_to_system) else ""
+                system_uri = system_to_fhir_uri(sys_name.upper()) if sys_name else ""
+                # Normalize BM25 score to 0-1 range (rough: divide by max possible)
+                normalized = min(score / (sum(idf.get(t, 1.0) for t in query_tokens) * 2.5 + 0.001), 1.0)
+                results.append({
+                    "code": str(code),
+                    "system": system_uri or sys_name,
+                    "display": display,
+                    "score": round(normalized, 4),
+                    "match_grade": _score_to_grade(normalized),
+                })
+
+        elif isinstance(index, list):
+            # Legacy flat document list — token overlap scoring
+            query_token_set = set(query_tokens)
+            for doc in index:
+                text_parts = []
+                for field in ("friendly_name", "name", "display"):
+                    val = doc.get(field) if isinstance(doc, dict) else None
+                    if val:
+                        text_parts.append(str(val).lower())
+                for syn in (doc.get("synonyms") or [] if isinstance(doc, dict) else []):
+                    text_parts.append(str(syn).lower())
+                doc_text = " ".join(text_parts)
+                doc_tokens = set(doc_text.split())
+                overlap = len(query_token_set & doc_tokens)
+                if overlap == 0:
+                    continue
+                score = overlap / math.sqrt(len(query_token_set) * len(doc_tokens or 1))
+                code_info = doc.get("code", doc) if isinstance(doc, dict) else {}
+                results.append({
+                    "code": str(code_info.get("code", "")) if isinstance(code_info, dict) else str(doc.get("id", "")),
+                    "system": system_to_fhir_uri(str(code_info.get("source", "")).upper()) if isinstance(code_info, dict) else "",
+                    "display": doc.get("friendly_name") or doc.get("name", "") if isinstance(doc, dict) else "",
+                    "score": round(score, 4),
+                    "match_grade": _score_to_grade(score),
+                })
 
     results.sort(key=lambda r: r["score"], reverse=True)
     return results[:count]

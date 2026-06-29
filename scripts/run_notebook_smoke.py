@@ -70,6 +70,9 @@ def main() -> int:
     args = parse_args()
     notebook_dir = Path(args.notebook_dir)
     notebooks = sorted(notebook_dir.glob("*.ipynb"))
+    # Skip notebooks that require the real UMLS DB or external search indexes
+    SKIP_AGAINST_SYNTHETIC = {"fhir_terminology_server_demo.ipynb"}
+    notebooks = [nb for nb in notebooks if nb.name not in SKIP_AGAINST_SYNTHETIC]
     if not notebooks:
         print(f"No notebooks found in {notebook_dir}", file=sys.stderr)
         return 2
