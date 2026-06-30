@@ -24,7 +24,7 @@ High-level process:
 
 Practical guidance:
 
-- Do not commit UMLS-derived DuckDB files to a public repository.
+- Do not commit derived DuckDB files to a public repository.
 - Keep `data/` ignored in git.
 - Treat exported terminology artifacts according to source vocabulary licenses.
 - Document the source release used for downstream value sets and ConceptMaps.

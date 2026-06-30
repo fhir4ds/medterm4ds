@@ -174,9 +174,9 @@ for details.
 | Data | Source | Licensed? |
 |---|---|---|
 | `lookup.duckdb` | Built from UMLS RRF (user's NLM key) | User's own UMLS license |
-| `patient_friendly_*.json` | HF dataset (derived) | Derived from UMLS |
-| `bm25/*_bm25.json` | HF dataset (derived) | Derived from UMLS |
-| `sapbert/` | HF dataset (derived) | Fine-tuned on UMLS |
+| `patient_friendly_*.json` | HF dataset (derived) | Derived |
+| `bm25/*_bm25.json` | HF dataset (derived) | Derived |
+| `sapbert/` | HF dataset (derived) | Fine-tuned model |
 
 ## Conformance testing
 

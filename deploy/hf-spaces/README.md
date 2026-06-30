@@ -67,8 +67,8 @@ Pre-computed indexes are downloaded from the public HF dataset
 | `bm25/*_bm25.json` | ~167 MB | $search lexical mode |
 | `sapbert/` (model + FAISS) | ~2.5 GB | $search semantic/hybrid mode |
 
-These are derived data (computed from UMLS via medterm4ds pipelines), not
-raw UMLS atoms.
+These are derived data (computed via medterm4ds pipelines), not
+raw vocabulary atoms.
 
 ## Operations
 
