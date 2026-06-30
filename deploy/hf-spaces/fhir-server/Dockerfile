@@ -27,5 +27,5 @@ RUN mkdir -p /data
 EXPOSE 7860
 
 # Required: UMLS_API_KEY (builds lookup.duckdb from NLM RRF)
-# Optional: HF_TOKEN (downloads BM25 + SapBERT search indexes)
+# Optional: HF_TOKEN (only needed for private datasets or writing to HF)
 CMD ["python", "app.py"]

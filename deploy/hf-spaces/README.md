@@ -22,7 +22,7 @@ curl "http://localhost:7860/fhir/CodeSystem/\$lookup?system=http://snomed.info/s
 | Variable | Required | Description |
 |---|---|---|
 | `UMLS_API_KEY` | **Yes** | NLM UMLS API key. Used to download RRF files and build lookup.duckdb. Get one at https://uts.nlm.nih.gov/uts/edit-profile |
-| `HF_TOKEN` | Optional | HuggingFace token for downloading BM25 indexes + SapBERT model. Get one at https://huggingface.co/settings/tokens |
+| `HF_TOKEN` | No | HuggingFace token. Only needed for private datasets or writing to HF Spaces. The derived data dataset is public — downloads work without a token. |
 | `UMLS_RELEASE` | Optional | UMLS release version (default: `2026AA`) |
 | `MEDTERM4DS_DATA_DIR` | Optional | Persistent storage path (default: `/data`) |
 | `MEDTERM4DS_MEMORY_PROFILE` | Optional | DuckDB memory limit (default: `low` = 512MB) |
