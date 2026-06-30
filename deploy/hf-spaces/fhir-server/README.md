@@ -50,8 +50,8 @@ curl "https://[space-name].hf.space/fhir/ValueSet/\$expand?filter=diabetes&count
 
 ```bash
 # Build and run locally
-docker build -t fhir4ds-fhir .
-docker run -p 7860:7860 fhir4ds-fhir
+docker build -t medterm4ds-fhir .
+docker run -p 7860:7860 medterm4ds-fhir
 
 # Test
 curl http://localhost:7860/fhir/metadata

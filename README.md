@@ -85,11 +85,11 @@ python -m medterm4ds.apps.fhir_api
 
 **Docker** (builds lookup.duckdb from UMLS RRF — license-compliant):
 ```bash
-docker build -f deploy/hf-spaces/fhir-server/Dockerfile -t fhir4ds-fhir .
+docker build -f deploy/hf-spaces/fhir-server/Dockerfile -t medterm4ds-fhir .
 docker run -p 7860:7860 \
   -e UMLS_API_KEY=your_key \
   -e HF_TOKEN=your_hf_token \
-  fhir4ds-fhir
+  medterm4ds-fhir
 # Server runs on http://localhost:7860/fhir/
 ```
 

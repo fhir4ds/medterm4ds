@@ -4,13 +4,13 @@
 
 ```bash
 # Build
-docker build -f deploy/hf-spaces/fhir-server/Dockerfile -t fhir4ds-fhir .
+docker build -f deploy/hf-spaces/fhir-server/Dockerfile -t medterm4ds-fhir .
 
 # Run (requires UMLS API key — see below)
 docker run -p 7860:7860 \
   -e UMLS_API_KEY=your_umls_api_key \
   -e HF_TOKEN=your_hf_token \
-  fhir4ds-fhir
+  medterm4ds-fhir
 
 # Test
 curl http://localhost:7860/fhir/metadata
@@ -94,8 +94,8 @@ Mount `/data` to a Docker volume for caching:
 docker run -p 7860:7860 \
   -e UMLS_API_KEY=xxx \
   -e HF_TOKEN=xxx \
-  -v fhir4ds-data:/data \
-  fhir4ds-fhir
+  -v medterm4ds-data:/data \
+  medterm4ds-fhir
 ```
 
 This caches the ~3.2 GB of data across container restarts. Without it, every

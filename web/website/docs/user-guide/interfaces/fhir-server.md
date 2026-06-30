@@ -146,14 +146,14 @@ API key — fully license-compliant, no UMLS data is redistributed.
 
 ```bash
 # Build
-docker build -f deploy/hf-spaces/fhir-server/Dockerfile -t fhir4ds-fhir .
+docker build -f deploy/hf-spaces/fhir-server/Dockerfile -t medterm4ds-fhir .
 
 # Run (requires UMLS API key + optional HF token for search indexes)
 docker run -p 7860:7860 \
   -e UMLS_API_KEY=your_umls_api_key \
   -e HF_TOKEN=your_hf_token \
   -v fhir4ds-data:/data \
-  fhir4ds-fhir
+  medterm4ds-fhir
 ```
 
 First start takes ~10 minutes (download UMLS RRF from NLM + build + download
