@@ -19,6 +19,7 @@ flowchart LR
   Services --> CLI[CLI]
   Services --> API[API<br/>localhost-only]
   Services --> MCP[MCP]
+  Services --> FHIR[FHIR R4<br/>terminology server]
   Services --> Bulk[Bulk exports]
 ```
 

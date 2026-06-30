@@ -62,11 +62,57 @@ src/medterm4ds/
   ds.py                  # DataFrame-friendly service wrappers
   domains/               # Diagnosis/lab/procedure/drug/vaccine + evidence wrappers
   outputs/               # serialization, FHIR ConceptMap, checkpoint/resume
-  apps/                  # CLI, FastAPI, MCP adapters
+  apps/                  # CLI, FastAPI, MCP, FHIR R4 terminology server adapters
 ```
 
 See [docs/architecture.md](docs/architecture.md) for the design principles and
 module boundaries.
+
+## FHIR R4 Terminology Server
+
+medterm4ds includes a FHIR R4 terminology server that exposes all standard
+terminology operations plus a custom text-to-code search.
+
+### Quick start
+
+```bash
+pip install -e '.[fhir]'
+export MEDTERM4DS_DB=/mnt/d/medterm4ds/data/umls_current.duckdb
+python -m medterm4ds.apps.fhir_api
+# Server runs on http://127.0.0.1:8001/fhir/
+```
+
+### Operations
+
+| Operation | Endpoint | Description |
+|---|---|---|
+| `$lookup` | `/fhir/CodeSystem/$lookup` | Code → display + properties (patient-friendly, canonical, tty) |
+| `$validate-code` | `/fhir/CodeSystem/$validate-code` | Validate a code exists |
+| `$translate` | `/fhir/ConceptMap/$translate` | Map codes between systems |
+| `$subsumes` | `/fhir/CodeSystem/$subsumes` | Check hierarchy relationships |
+| `$expand` | `/fhir/ValueSet/$expand` | Expand ValueSets (filter, intensional, explicit) |
+| `$closure` | `/fhir/CodeSystem/$closure` | Pre-compute subsumption for O(1) checks |
+| `$search` | `/fhir/CodeSystem/$search` | Text → ranked codes (lexical / hybrid / semantic) |
+
+### Search modes
+
+`$search` supports three modes via the `searchMode` parameter:
+
+- **`lexical`** (default): BM25 token matching (~1ms). Covers 80-90% of queries.
+- **`semantic`**: Fine-tuned SapBERT embeddings + FAISS ANN (~100ms). Catches novel phrasings like "high blood sugar" → Hyperglycemia.
+- **`hybrid`**: BM25 retrieve top-50 + SapBERT re-rank (~110ms). Best accuracy.
+
+Results include a match-grade (`certain` / `probable` / `possible`), modeled after FHIR Patient `$match`.
+
+### Conformance testing
+
+```bash
+make fhir-conformance    # 34 declarative test cases, ~18 seconds
+```
+
+See the [demo notebook](notebooks/fhir_terminology_server_demo.ipynb) for a
+full walkthrough, and [deploy/hf-spaces/](deploy/hf-spaces/) for Hugging Face
+Spaces deployment.
 
 ## Development
 
@@ -91,6 +137,7 @@ Install extras as needed:
 pip install -e '.[duckdb]'
 pip install -e '.[api]'
 pip install -e '.[mcp]'
+pip install -e '.[fhir]'
 pip install -e '.[dataframe]'
 pip install -e '.[dev]'
 ```
