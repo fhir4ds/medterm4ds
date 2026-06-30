@@ -139,22 +139,44 @@ OID aliases (e.g., `urn:oid:2.16.840.1.113883.6.96` for SNOMED) are also accepte
 
 ## Deployment
 
-### Local Docker
+### Local Docker (recommended)
+
+The container builds lookup.duckdb from UMLS RRF files using your own NLM
+API key — fully license-compliant, no UMLS data is redistributed.
 
 ```bash
-python3 deploy/scripts/export_lookup_db.py --output /tmp/lookup.duckdb
-docker build -t fhir4ds-fhir deploy/hf-spaces/fhir-server/
+# Build
+docker build -f deploy/hf-spaces/fhir-server/Dockerfile -t fhir4ds-fhir .
+
+# Run (requires UMLS API key + optional HF token for search indexes)
 docker run -p 7860:7860 \
-  -v /tmp/lookup.duckdb:/data/lookup.duckdb:ro \
-  -v /mnt/d/medterm4ds/reports/fhir4px:/data/fhir4px:ro \
+  -e UMLS_API_KEY=your_umls_api_key \
+  -e HF_TOKEN=your_hf_token \
+  -v fhir4ds-data:/data \
   fhir4ds-fhir
 ```
 
+First start takes ~10 minutes (download UMLS RRF from NLM + build + download
+search indexes). Subsequent starts with cached volume: ~3 seconds.
+
+Without `HF_TOKEN`, the server still works for all operations except `$search`
+(BM25 + SapBERT indexes require HF download).
+
 ### Hugging Face Spaces
 
-The Space Dockerfile downloads data from HF datasets on first start. See
+The Dockerfile is compatible with HF Spaces (Docker SDK, port 7860). Set
+`UMLS_API_KEY` and `HF_TOKEN` as Space secrets. See
 [deploy/hf-spaces/](https://github.com/fhir4ds/medterm4ds/tree/main/deploy/hf-spaces)
-for setup instructions.
+for details.
+
+### Data licensing
+
+| Data | Source | Licensed? |
+|---|---|---|
+| `lookup.duckdb` | Built from UMLS RRF (user's NLM key) | User's own UMLS license |
+| `patient_friendly_*.json` | HF dataset (derived) | Derived from UMLS |
+| `bm25/*_bm25.json` | HF dataset (derived) | Derived from UMLS |
+| `sapbert/` | HF dataset (derived) | Fine-tuned on UMLS |
 
 ## Conformance testing
 

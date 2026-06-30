@@ -19,11 +19,13 @@ COPY scripts/ ./scripts/
 # Use PYTHONPATH instead of pip install (avoids build backend dependency)
 ENV PYTHONPATH=/app/src:/app/scripts
 
-# HF Spaces persistent storage
+# HF Spaces persistent storage (caches UMLS build + HF downloads)
 ENV MEDTERM4DS_DATA_DIR=/data
 RUN mkdir -p /data
 
 # HF Spaces listens on 7860
 EXPOSE 7860
 
+# Required: UMLS_API_KEY (builds lookup.duckdb from NLM RRF)
+# Optional: HF_TOKEN (downloads BM25 + SapBERT search indexes)
 CMD ["python", "app.py"]

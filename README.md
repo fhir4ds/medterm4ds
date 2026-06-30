@@ -75,11 +75,22 @@ terminology operations plus a custom text-to-code search.
 
 ### Quick start
 
+**Local dev** (with existing UMLS DuckDB):
 ```bash
 pip install -e '.[fhir]'
 export MEDTERM4DS_DB=/mnt/d/medterm4ds/data/umls_current.duckdb
 python -m medterm4ds.apps.fhir_api
 # Server runs on http://127.0.0.1:8001/fhir/
+```
+
+**Docker** (builds lookup.duckdb from UMLS RRF — license-compliant):
+```bash
+docker build -f deploy/hf-spaces/fhir-server/Dockerfile -t fhir4ds-fhir .
+docker run -p 7860:7860 \
+  -e UMLS_API_KEY=your_key \
+  -e HF_TOKEN=your_hf_token \
+  fhir4ds-fhir
+# Server runs on http://localhost:7860/fhir/
 ```
 
 ### Operations
@@ -111,8 +122,16 @@ make fhir-conformance    # 34 declarative test cases, ~18 seconds
 ```
 
 See the [demo notebook](notebooks/fhir_terminology_server_demo.ipynb) for a
-full walkthrough, and [deploy/hf-spaces/](deploy/hf-spaces/) for Hugging Face
-Spaces deployment.
+full walkthrough, and [deploy/hf-spaces/](deploy/hf-spaces/) for Docker /
+Hugging Face Spaces deployment.
+
+### Data licensing
+
+The Docker container builds `lookup.duckdb` from UMLS RRF files using the
+user's own NMLS API key — no UMLS data is redistributed. Derived search
+indexes (BM25, SapBERT, patient-friendly JSONs) are downloaded from
+[joelmontavon/medterm4ds-data](https://huggingface.co/datasets/joelmontavon/medterm4ds-data)
+on HuggingFace.
 
 ## Development
 
