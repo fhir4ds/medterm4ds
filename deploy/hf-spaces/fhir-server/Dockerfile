@@ -8,13 +8,16 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 # Install Python deps
-COPY requirements.txt .
+COPY deploy/hf-spaces/fhir-server/requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy the app + medterm4ds source
-COPY app.py .
+# Copy the app + medterm4ds source (build context = repo root)
+COPY deploy/hf-spaces/fhir-server/app.py .
 COPY src/ ./src/
 COPY scripts/ ./scripts/
+
+# Use PYTHONPATH instead of pip install (avoids build backend dependency)
+ENV PYTHONPATH=/app/src:/app/scripts
 
 # HF Spaces persistent storage
 ENV MEDTERM4DS_DATA_DIR=/data
