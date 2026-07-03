@@ -1,188 +1,335 @@
-# FHIR R4 Conformance Test Suite — Repeatable Process
+# Text-to-Concepts Extraction Service — Implementation Plan
 
 ## Context
 
-The FHIR R4 terminology facade is implemented (7 operations, 365 tests). The existing
-`tests/test_fhir_conformance.py` validates response builders against the FHIR schema via
-`fhir.resources`. But a true "Touchstone-level" process needs to:
+medterm4ds currently answers "given a **code**, what do we know about it?" The
+inverse — "given **free text**, what codes are in it?" — is the missing half.
+This plan adds a text extraction service that takes clinical free text and
+returns coded medical concepts, using NER + clinical NLP + the existing search
+engine (BM25 + SapBERT).
 
-1. Exercise each operation via HTTP against a running server (not just builders)
-2. Validate responses against the full FHIR R4 spec (not just pydantic schema)
-3. Cover edge cases and error paths systematically
-4. Be repeatable via a single command (`make fhir-conformance`)
-5. Work in CI (Docker-based, no manual steps)
+This is a **generic terminology capability**, not specific to any consumer
+(FHIR, CQL, ETL, notebooks). fhir4ds, the app team, or any downstream
+consumer calls medterm4ds for extraction and handles their own
+resource-specific concerns.
 
-The HL7 Touchstone service (touchstone.aegis.net) requires a publicly-accessible endpoint.
-Our facade is localhost-only. Instead of tunneling, we build a **local conformance harness**
-that uses the HAPI FHIR validator (Java/Docker) for spec-level validation and a structured
-test script for operation-level testing.
-
-## Architecture
+## Pipeline
 
 ```
-make fhir-conformance
+Free text
   │
-  ├─ scripts/run_fhir_conformance.py
-  │    │
-  │    ├─ 1. Start FHIR server (localhost:8001) or use TestClient
-  │    ├─ 2. Load test cases from tests/fhir_conformance/cases.json
-  │    ├─ 3. For each case:
-  │    │    a. Send HTTP request (method, URL, params/body)
-  │    │    b. Capture response
-  │    │    c. Validate schema via fhir.resources
-  │    │    d. Validate content (expected fields/values)
-  │    │    e. Validate via HAPI FHIR validator (Docker, optional)
-  │    └─ 4. Report: X passed, Y failed (with details)
+  ├─ 1. medspaCy preprocessing
+  │     ├── Sentence segmentation
+  │     ├── Section detection (Assessment, PMH, Problem List, etc.)
+  │     └── ConText (negation, uncertainty, temporality)
   │
-  └─ tests/fhir_conformance/
-       ├── cases.json           # Test case definitions (declarative)
-       ├── test_runner.py        # pytest-based runner for CI
-       └── README.md             # How to run + extend
+  ├─ 2. NER (token-classification model)
+  │     └── Extract entity spans with type labels
+  │
+  ├─ 3. Filtering
+  │     ├── Section allow-list (default: problem-list-equivalent sections)
+  │     └── ConText status (exclude negated, uncertain by default)
+  │
+  ├─ 4. Category mapping
+  │     └── NER type → search category (disease → condition, drug → medication, etc.)
+  │
+  ├─ 5. Code search
+  │     └── Each surviving span → SearchService.search(span, mode=hybrid)
+  │
+  ├─ 6. Confidence filtering
+  │     └── Keep results above threshold (default: match_grade='certain')
+  │
+  └─ 7. Deduplication + ranking
+        └── Same code from overlapping spans → keep highest score
 ```
 
-## Test case format
+## Result model
 
-Declarative JSON so non-developers can add cases:
+```python
+@dataclass
+class ExtractedConcept:
+    """One medical concept extracted from free text."""
 
-```json
-{
-  "id": "lookup-snomed-valid",
-  "description": "Lookup a known SNOMED code",
-  "method": "GET",
-  "path": "/fhir/CodeSystem/$lookup",
-  "params": {"system": "http://snomed.info/sct", "code": "44054006"},
-  "expected_status": 200,
-  "expected_resource_type": "Parameters",
-  "expected_fields": [
-    {"name": "display", "contains": "diabetes"},
-    {"name": "system", "equals": "http://snomed.info/sct"}
-  ],
-  "validate_schema": true
+    code: str
+    source: str            # SNOMEDCT_US, RXNORM, ICD10CM, etc.
+    display: str           # patient-friendly or canonical display
+    matched_text: str      # the NER span that triggered this concept
+    status: str            # "affirmed" | "negated" | "uncertain" | "history_of"
+    section: str | None    # medspaCy section name (e.g., "Assessment")
+    confidence: float      # search score (0.0–1.0)
+    match_grade: str       # "certain" | "probable" | "possible"
+    category: str          # "condition" | "medication" | "lab" | etc.
+    span_start: int        # character offset in source text
+    span_end: int          # character offset in source text
+
+    def to_dict(self) -> dict[str, Any]: ...
+    def to_coderef(self) -> CodeRef: ...
+```
+
+## Dependencies
+
+| Dependency | Size | Purpose | Optional? |
+|---|---|---|---|
+| `medspacy` | ~50 MB (pip) | Section detection + ConText NLP | **Required** for extraction |
+| `spacy` (medspaCy dep) | ~50 MB | Tokenization, sentence segmentation | Auto-installed with medspaCy |
+| medspaCy section model | ~20 MB | Section classification | Auto-downloaded on first use |
+| NER model (`d4data/biomedical-ner-all`) | ~440 MB | Entity span extraction | Auto-downloaded on first use |
+| Existing SearchService | — | BM25 + SapBERT code search | Already deployed |
+
+**Total additional footprint**: ~560 MB (models). No GPU required.
+
+Behind a new `[medterm4ds,extraction]` extra:
+
+```toml
+extraction = [
+    "medspacy>=1.0.0",
+    "transformers>=4.30.0",
+    # Search deps (torch, faiss) already in [fhir-semantic]
+]
+```
+
+## API design
+
+### Python (module-level)
+
+```python
+import medterm4ds as mt
+
+# Single text
+concepts = mt.extract_concepts(
+    "Patient has T2DM on metformin. No CKD. Denies chest pain.",
+    categories=["condition", "medication"],
+)
+# → [
+#   ExtractedConcept(code="44054006", display="Type 2 diabetes mellitus",
+#       matched_text="T2DM", status="affirmed", confidence=0.92, ...),
+#   ExtractedConcept(code="860975", display="Metformin Oral Product",
+#       matched_text="metformin", status="affirmed", confidence=0.95, ...),
+#   # CKD and chest pain EXCLUDED (negated)
+# ]
+
+# Batch with caching
+results = mt.extract_concepts_batch(
+    texts=[note1, note2, ...],
+    categories=["condition"],
+    mode="hybrid",
+    min_confidence=0.8,
+)
+```
+
+### Python (Terminology facade)
+
+```python
+terms = mt.connect("/path/to/umls.duckdb")
+concepts = terms.extract(
+    "History of MI, currently on lisinopril and atorvastatin",
+    categories=["condition", "medication"],
+)
+```
+
+### CLI
+
+```bash
+# From a string
+medterm4ds extract "Patient has diabetes, on metformin" --categories condition,medication
+
+# From a file
+medterm4ds extract --input clinical_notes.txt --output concepts.json
+
+# Adjust thresholds
+medterm4ds extract "..." --min-grade probable --mode semantic
+```
+
+### MCP tool
+
+```python
+extract_concepts(
+    text="Patient has T2DM on metformin",
+    categories=["condition", "medication"],
+    mode="hybrid",
+    min_grade="certain",
+    section_allowlist=["Assessment", "Problem List"],
+)
+```
+
+### FHIR operation (custom `$extract`)
+
+```
+POST /fhir/CodeSystem/$extract
+Body: Parameters {
+  text: "Patient has T2DM on metformin. No CKD.",
+  categories: ["condition", "medication"],
+  mode: "hybrid",
+  minGrade: "certain"
 }
+
+→ Bundle of Coding resources with match-grade extensions,
+  plus a `status` extension (affirmed/negated) and
+  `matched-text` extension (the NER span).
 ```
 
-Each test case specifies:
-- HTTP method + path + params/body
-- Expected status code
-- Expected resourceType
-- Expected field values (exact match, contains, or presence check)
-- Whether to run full HAPI validator (slower, optional)
+## Configuration
 
-## Test case inventory (~40 cases)
+| Env var | Default | Description |
+|---|---|---|
+| `MEDTERM4DS_SEARCH_INDEX_DIR` | `/mnt/d/fhir4px-model/dist/naming_bm25` | BM25 indexes (existing) |
+| `MEDTERM4DS_EMBEDDING_MODEL_DIR` | `/mnt/d/fhir4px-model/data/sapbert_finetuned` | SapBERT + FAISS (existing) |
+| `MEDTERM4DS_NER_MODEL` | `d4data/biomedical-ner-all` | HuggingFace NER model name |
+| `MEDTERM4DS_EXTRACTION_MODE` | `hybrid` | Default search mode for extraction |
+| `MEDTERM4DS_EXTRACTION_MIN_GRADE` | `certain` | Default minimum match grade |
+| `MEDTERM4DS_SECTION_ALLOWLIST` | `Assessment,Problem List,Past Medical History,Diagnosis` | Default section filter |
 
-### $lookup (6 cases)
-- Valid SNOMED code → Parameters with display + system + code
-- Valid RxNorm code → Parameters with tty property
-- Invalid code → OperationOutcome
-- Unknown system → OperationOutcome 400
-- Missing system param → OperationOutcome 400
-- POST with Coding body → same as GET
+## Category mapping
 
-### $validate-code (5 cases)
-- Valid code → result=true
-- Invalid code → result=false
-- Missing code param → 400
-- Unknown system → 400
-- POST variant
+NER models output generic entity types. These map to medterm4ds search categories:
 
-### $translate (5 cases)
-- SNOMED → ICD-10 → result=true with match
-- SNOMED → all targets → result=true with matches
-- No mapping available → result=false
-- Unknown source system → 400
-- Missing params → 400
+| NER type | Search category | Example |
+|---|---|---|
+| `DISEASE`, `DISORDER`, `SYMPTOM` | `condition` | "diabetes" |
+| `CHEMICAL`, `DRUG` | `medication` | "metformin" |
+| `DISEASE` (lab context) | `lab` | "HbA1c" |
+| `PROCEDURE` | `procedure` | "appendectomy" |
 
-### $subsumes (5 cases)
-- Parent subsumes child → "subsumes"
-- Child subsumed by parent → "subsumed-by"
-- Identical codes → "equivalent"
-- Unrelated codes → "not-subsumed"
-- Unknown system → 400
+Mapping table in the service, overridable via constructor.
 
-### $expand (8 cases)
-- Filter text "diabetes" → ValueSet with matches
-- Filter with system restriction → ValueSet scoped to one system
-- Intensional is-a → ValueSet with descendants
-- Intensional descendant-of → ValueSet without root
-- Explicit concept list → ValueSet with listed codes
-- compose.exclude → excluded codes removed
-- fhir_vs URL pattern → ValueSet expansion
-- Missing filter → 400
+## ConText status handling
 
-### $closure (4 cases)
-- Initialize empty → version hash + 0 concepts
-- Add concepts → version hash changes + concepts listed
-- Missing name → 400
-- Add + verify subsumption via internal check
+medspaCy ConText assigns attributes to each entity mention:
 
-### $search (4 cases)
-- Lexical query → Bundle (if BM25 available, else skip)
-- Semantic query → Bundle (if model available, else skip)
-- Hybrid query → Bundle (if both available, else skip)
-- Unsupported mode → 503
+| ConText status | Default action | Configurable? |
+|---|---|---|
+| `affirmed` (positive, current) | **Include** | Yes |
+| `negated` ("no evidence of CKD") | **Exclude** | Yes |
+| `uncertain` ("possibly pneumonia") | **Exclude** | Yes |
+| `historical` ("history of MI") | **Exclude** (for current problems) | Yes |
 
-### CapabilityStatement + metadata (3 cases)
-- /fhir/metadata → valid CapabilityStatement
-- All 7 operations advertised
-- fhirVersion = 4.0.1
+The `status` field is preserved in `ExtractedConcept` so callers can filter
+post-hoc if they want different rules (e.g., include historical for PMH lists).
 
-## HAPI FHIR validator integration (optional, Docker)
+## Caching
 
-The HAPI FHIR validator (`hapiproject/validator-api`) provides deeper validation than
-pydantic-based `fhir.resources`. It checks:
-- FHIR R4 invariants (not just schema)
-- Profile conformance (if profiles are specified)
-- Terminology binding validation
+Text-hash cache for batch processing:
 
-Integrated via Docker:
-```bash
-docker run --rm -v /path/to/response.json:/tmp/resource.json \
-  hapiproject/validator:latest \
-  /tmp/resource.json -version 4.0.1
+```sql
+CREATE TABLE IF NOT EXISTS extraction_cache (
+    text_hash VARCHAR,         -- sha256(normalized_text)
+    categories VARCHAR,        -- comma-separated category filter
+    search_mode VARCHAR,
+    index_version VARCHAR,     -- search index version
+    result_json VARCHAR,       -- JSON list[ExtractedConcept]
+    cached_at TIMESTAMP,
+    PRIMARY KEY (text_hash, categories, search_mode, index_version)
+);
 ```
 
-Wrapped in the conformance script as an optional `--deep-validate` flag. Default: schema
-validation only (fast). With `--deep-validate`: runs HAPI validator (slower, catches more).
+Cache lives in a DuckDB sidecar (default: `extraction_cache.duckdb` in the
+data directory). Normalization for hash: lowercase, strip punctuation,
+collapse whitespace.
 
-## Files to create
+## Implementation phases
 
-- `tests/fhir_conformance/__init__.py`
-- `tests/fhir_conformance/cases.json` — declarative test case definitions (~40 cases)
-- `tests/fhir_conformance/test_runner.py` — pytest parametrized runner that loads cases.json
-- `tests/fhir_conformance/conftest.py` — shared fixture (TestClient + synthetic DB)
-- `scripts/run_fhir_conformance.py` — standalone runner (starts server or uses TestClient)
-- `tests/fhir_conformance/README.md` — how to run + extend
+### Phase 1: Core extraction service (~1 day)
 
-## Makefile target
+**Files to create:**
+- `src/medterm4ds/services/extraction.py` — `ExtractionService`, `ExtractedConcept`
+- `tests/test_extraction.py` — unit tests with synthetic text
 
-```makefile
-fhir-conformance:
-	PYTHONPATH=src $(PYTHON) -m pytest tests/fhir_conformance/ -v --tb=short
+**Exit criteria:** `extract("T2DM on metformin, no CKD")` returns diabetes +
+metformin concepts, excludes CKD.
+
+### Phase 2: Wire into all surfaces (~half day)
+
+**Files to modify:**
+- `src/medterm4ds/__init__.py` — export `extract_concepts`, `extract_concepts_batch`
+- `src/medterm4ds/client.py` — `Terminology.extract()` method
+- `src/medterm4ds/apps/cli.py` — `medterm4ds extract` subcommand
+- `src/medterm4ds/apps/mcp.py` — `extract_concepts` tool
+- `src/medterm4ds/apps/fhir_api.py` — `$extract` endpoint
+
+**Exit criteria:** All four surfaces return the same results for the same text.
+
+### Phase 3: Caching + batch optimization (~half day)
+
+**Files to create:**
+- `src/medterm4ds/services/extraction_cache.py` — DuckDB-backed text-hash cache
+
+**Exit criteria:** Second call with duplicate text returns cached result in <1ms.
+
+### Phase 4: NER model optimization (optional, ~1 day)
+
+- Evaluate fine-tuned Bio_ClinicalBERT vs the default `d4data/biomedical-ner-all`
+- Benchmark precision/recall on a labeled clinical note subset
+- Make model swappable via config
+
+## NER model choice
+
+### v1: Pre-trained (`d4data/biomedical-ner-all`)
+
+- **F1**: ~80-85% out of box
+- **Latency**: ~150ms/note on CPU
+- **Size**: ~440 MB
+- **Setup**: zero training required
+- **Entity types**: disease, chemical/drug, gene, protein (multi-type)
+
+### v2: Fine-tuned (future)
+
+- **F1**: ~90-93% with labeled data
+- **Requirement**: labeled training data
+- **Selection**: when v1 precision is insufficient
+
+Model is swappable via `ExtractionService(ner_model="org/model-name")`.
+
+## Deployment considerations
+
+| Resource | v1 requirement |
+|---|---|
+| Additional disk | ~560 MB (medspaCy + NER model) |
+| Additional RAM | ~1 GB (medspaCy pipeline + NER model in memory) |
+| CPU | Fine for batch (1-3 notes/sec) |
+| GPU | Not required |
+| Cold start | ~10-15s (load medspaCy + NER model + SapBERT) |
+| Warm latency | ~250ms/note (medspaCy ~30ms + NER ~150ms + search ~100ms) |
+
+## Relationship to fhir4ds Phase 4
+
+fhir4ds's Phase 4 (Clinical Notes NER Extension) becomes a thin consumer:
+
+```python
+# In fhir4ds:
+import medterm4ds
+
+concepts = medterm4ds.extract_concepts(
+    note_text,
+    categories=["condition", "medication"],
+    mode="hybrid",
+    min_grade="certain",
+)
+
+for concept in concepts:
+    if concept.status == "affirmed":
+        condition = Condition(
+            code=CodeableConcept(coding=[Coding(
+                system=concept.system_uri,
+                code=concept.code,
+                display=concept.display,
+                userSelected=False,
+            )]),
+            subject=source_subject,
+            evidence=[Evidence(detail=[Reference(f"{source_type}/{source_id}")])],
+            verificationStatus="unconfirmed",
+        )
 ```
 
-## Verification
-
-```bash
-# Run the conformance suite
-make fhir-conformance
-
-# Or directly
-PYTHONPATH=src pytest tests/fhir_conformance/ -v
-
-# Expected output:
-# tests/fhir_conformance/test_runner.py::test_case[lookup-snomed-valid] PASSED
-# tests/fhir_conformance/test_runner.py::test_case[validate-code-invalid] PASSED
-# ...
-# 40 passed in 15.2s
-```
+fhir4ds handles: FHIR resource construction, extension attachment, CQL
+integration, note path extraction. medterm4ds handles: NER, ConText, search,
+result typing.
 
 ## Time estimate
 
-| Component | Effort |
-|---|---|
-| cases.json (~40 declarative test cases) | 2 hours |
-| test_runner.py (parametrized pytest runner) | 1 hour |
-| conftest.py (TestClient + synthetic DB with hierarchy) | 30 min |
-| run_fhir_conformance.py (standalone runner) | 30 min |
-| Makefile target + README | 15 min |
-| **Total** | **~4 hours** |
+| Phase | Effort | Deliverable |
+|---|---|---|
+| 1: Core service | 1 day | ExtractionService + ExtractedConcept + tests |
+| 2: Wire into 4 surfaces | half day | Python/CLI/MCP/FHIR all working |
+| 3: Caching | half day | Batch with text-hash cache |
+| 4: NER optimization | 1 day (optional) | Model evaluation + tuning |
+| **Total** | **~2-3 days** | Production-ready extraction service |
