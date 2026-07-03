@@ -620,6 +620,56 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
             return _fhir_error(400, "query is required.")
         return _do_search(request, str(query_text), system, count, search_mode)
 
+    # -- CodeSystem $extract (custom: NER + ConText + search) --
+    @app.get("/fhir/CodeSystem/$extract")
+    async def extract_get(
+        request: Request,
+        text: str = Query(..., description="Free text to extract concepts from"),
+        format: str = Query("codes", pattern="^(codes|terms)$"),
+        categories: str | None = Query(None, description="Comma-separated: condition,medication"),
+        mode: str = Query("hybrid", pattern="^(lexical|semantic|hybrid)$"),
+        minGrade: str = Query("certain", pattern="^(certain|probable|possible)$"),
+        includeNegated: bool = Query(False),
+    ):
+        return _do_extract(request, text, format, categories, mode, minGrade, includeNegated)
+
+    @app.post("/fhir/CodeSystem/$extract")
+    async def extract_post(request: Request, body: dict[str, Any]):
+        params = _parse_parameters(body)
+        text = params.get("text")
+        if not text:
+            return _fhir_error(400, "text is required.")
+        return _do_extract(
+            request, str(text),
+            params.get("format", "codes"),
+            params.get("categories"),
+            params.get("mode", "hybrid"),
+            params.get("minGrade", "certain"),
+            params.get("includeNegated", "false") == "true",
+        )
+
+    def _do_extract(request, text, fmt, categories_str, mode, min_grade, include_negated):
+        from medterm4ds.services.extraction import extract as extract_service
+
+        cats = categories_str.split(",") if categories_str else None
+        results = extract_service(
+            text,
+            format=fmt,
+            categories=cats,
+            mode=mode,
+            min_grade=min_grade,
+            include_negated=include_negated,
+        )
+        entries = []
+        for r in results:
+            d = r.to_dict()
+            entries.append({
+                "fullUrl": f"CodeSystem/{d.get('system', d.get('entity_type', 'unknown'))}-{d.get('code', d.get('text', ''))}",
+                "resource": d,
+                "search": {"mode": "match"},
+            })
+        return {"resourceType": "Bundle", "type": "searchset", "total": len(entries), "entry": entries}
+
     def _do_search(
         request: Request,
         query_text: str,

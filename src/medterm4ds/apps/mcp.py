@@ -673,6 +673,39 @@ def create_mcp_server(
         return {"results": [r.to_dict() for r in results]}
 
     @mcp.tool()
+    async def extract(
+        text: str,
+        format: str = "codes",
+        categories: list[str] | None = None,
+        mode: str = "hybrid",
+        min_grade: str = "certain",
+        include_negated: bool = False,
+    ) -> dict[str, Any]:
+        """Extract medical concepts from free text.
+
+        Uses NER + clinical NLP (medspaCy ConText) + terminology search
+        (BM25 + SapBERT) to find medical codes in clinical text.
+
+        Parameters:
+        - text: Free clinical text to extract from.
+        - format: 'codes' (resolve to codes) or 'terms' (text spans only).
+        - categories: Filter by category (condition, medication, lab, procedure).
+        - mode: Search mode for code resolution (lexical, semantic, hybrid).
+        - min_grade: Minimum match grade (certain, probable, possible).
+        - include_negated: Include negated mentions (default: excluded).
+        """
+        from medterm4ds.services.extraction import extract as extract_service
+        results = extract_service(
+            text,
+            format=format,
+            categories=categories,
+            mode=mode,
+            min_grade=min_grade,
+            include_negated=include_negated,
+        )
+        return {"results": [r.to_dict() for r in results]}
+
+    @mcp.tool()
     async def discover(
         source_terminology: str,
         code: str | None = None,

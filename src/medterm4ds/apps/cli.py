@@ -157,6 +157,27 @@ def build_parser() -> argparse.ArgumentParser:
     text_search.add_argument("--db", default=None, help="DuckDB path (unused — search uses indexes).")
     text_search.set_defaults(func=run_text_search)
 
+    # Text extraction (NER + ConText + code resolution)
+    extract = subparsers.add_parser(
+        "extract",
+        help="Extract medical concepts from free text (NER + ConText + search).",
+    )
+    extract.add_argument("text", help="Free text to extract concepts from.")
+    extract.add_argument(
+        "--format", default="codes", choices=["codes", "terms"],
+        help="Output format: 'codes' (resolved) or 'terms' (spans only). Default: codes.",
+    )
+    extract.add_argument(
+        "--categories", nargs="*", default=None,
+        help="Restrict to categories (condition, medication, lab, procedure).",
+    )
+    extract.add_argument("--mode", default="hybrid", choices=["lexical", "semantic", "hybrid"])
+    extract.add_argument("--min-grade", default="certain", choices=["certain", "probable", "possible"])
+    extract.add_argument("--include-negated", action="store_true", help="Include negated mentions.")
+    extract.add_argument("--output", default=None)
+    extract.add_argument("--format-output", dest="format_output", default="json", choices=["json", "csv"])
+    extract.set_defaults(func=run_extract)
+
     hierarchy = subparsers.add_parser("hierarchy", help="Traverse code hierarchies.")
     hierarchy_subparsers = hierarchy.add_subparsers(dest="direction", required=True)
     for direction in _HIERARCHY_DIRECTIONS:
@@ -1306,6 +1327,26 @@ def run_text_search(args: argparse.Namespace) -> int:
         [r.to_dict() for r in results],
         output=getattr(args, "output", None),
         output_format=getattr(args, "format", "json"),
+    )
+    return 0
+
+
+def run_extract(args: argparse.Namespace) -> int:
+    """Extract medical concepts from free text."""
+    from medterm4ds.services.extraction import extract as extract_service
+
+    results = extract_service(
+        args.text,
+        format=args.format,
+        categories=args.categories,
+        mode=args.mode,
+        min_grade=args.min_grade,
+        include_negated=args.include_negated,
+    )
+    _write_record_results(
+        [r.to_dict() for r in results],
+        output=args.output,
+        output_format=args.format_output,
     )
     return 0
 
