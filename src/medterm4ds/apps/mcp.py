@@ -652,6 +652,27 @@ def create_mcp_server(
         )
 
     @mcp.tool()
+    async def search(
+        query: str,
+        mode: str = "lexical",
+        sources: list[str] | None = None,
+        count: int = 20,
+    ) -> dict[str, Any]:
+        """Text-to-code search with BM25 (lexical), SapBERT (semantic), or both (hybrid).
+
+        Modes:
+        - 'lexical': BM25 token matching (~1ms). Best for known medical terms.
+        - 'semantic': SapBERT embeddings + FAISS (~100ms). Catches novel phrasings
+          like "high blood sugar" → Hyperglycemia.
+        - 'hybrid': BM25 retrieve + SapBERT re-rank (~110ms). Best accuracy.
+
+        Each result includes a match_grade: 'certain', 'probable', or 'possible'.
+        """
+        from medterm4ds.services.search import search as search_service
+        results = search_service(query, mode=mode, sources=sources, count=count)
+        return {"results": [r.to_dict() for r in results]}
+
+    @mcp.tool()
     async def discover(
         source_terminology: str,
         code: str | None = None,

@@ -304,8 +304,18 @@ class Terminology:
         sources: Sequence[str] | str | None = None,
         tty_filters: Sequence[str] | str | None = None,
         limit: int = 25,
+        mode: str | None = None,
     ):
-        """Search active terminology names."""
+        """Search active terminology names.
+
+        If ``mode`` is specified ('lexical', 'semantic', or 'hybrid'), uses
+        the intelligent text-to-code search service (BM25 + SapBERT).
+        If ``mode`` is None (default), uses the legacy LIKE-based search.
+        """
+        if mode:
+            from medterm4ds.services.search import search as search_service
+            src_list = [sources] if isinstance(sources, str) else list(sources) if sources else None
+            return search_service(query, mode=mode, sources=src_list, count=limit)
         return search_names(
             query,
             engine=self.engine,

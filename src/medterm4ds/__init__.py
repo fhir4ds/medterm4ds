@@ -9,6 +9,20 @@ except ImportError:
     pass
 
 from .client import Terminology, connect, connect_remote
+
+# Intelligent text-to-code search (optional — requires BM25/SapBERT indexes)
+try:
+    from .services.search import search as _search_func
+
+    def search(query, *, mode="lexical", sources=None, count=20):
+        """Text-to-code search (lexical/semantic/hybrid).
+
+        Requires BM25 indexes at MEDTERM4DS_SEARCH_INDEX_DIR and/or SapBERT
+        model at MEDTERM4DS_EMBEDDING_MODEL_DIR.
+        """
+        return _search_func(query, mode=mode, sources=sources, count=count)
+except ImportError:
+    pass
 from .core.config import (
     LOCAL_DUCKDB_MEMORY_PROFILES,
     LOCAL_LITE_MEMORY_PROFILES,

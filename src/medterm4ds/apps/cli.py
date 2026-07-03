@@ -139,6 +139,24 @@ def build_parser() -> argparse.ArgumentParser:
     _add_search_names_args(search)
     search.set_defaults(func=run_search_names)
 
+    # Intelligent text-to-code search (BM25 + SapBERT)
+    text_search = subparsers.add_parser(
+        "search",
+        help="Text-to-code search (lexical/semantic/hybrid via BM25 + SapBERT).",
+    )
+    text_search.add_argument("query", help="Free text to search for.")
+    text_search.add_argument(
+        "--mode", default="lexical", choices=["lexical", "semantic", "hybrid"],
+        help="Search mode (default: lexical).",
+    )
+    text_search.add_argument(
+        "--sources", nargs="*", default=None,
+        help="Restrict to source systems (e.g., SNOMEDCT_US RXNORM).",
+    )
+    text_search.add_argument("--limit", type=int, default=20, help="Max results (default: 20).")
+    text_search.add_argument("--db", default=None, help="DuckDB path (unused — search uses indexes).")
+    text_search.set_defaults(func=run_text_search)
+
     hierarchy = subparsers.add_parser("hierarchy", help="Traverse code hierarchies.")
     hierarchy_subparsers = hierarchy.add_subparsers(dest="direction", required=True)
     for direction in _HIERARCHY_DIRECTIONS:
@@ -1270,6 +1288,24 @@ def run_search_names(args: argparse.Namespace) -> int:
         [result.to_dict() for result in results],
         output=args.output,
         output_format=args.format,
+    )
+    return 0
+
+
+def run_text_search(args: argparse.Namespace) -> int:
+    """Run intelligent text-to-code search (BM25 + SapBERT)."""
+    from medterm4ds.services.search import search as search_service
+
+    results = search_service(
+        args.query,
+        mode=args.mode,
+        sources=args.sources,
+        count=args.limit,
+    )
+    _write_record_results(
+        [r.to_dict() for r in results],
+        output=getattr(args, "output", None),
+        output_format=getattr(args, "format", "json"),
     )
     return 0
 
