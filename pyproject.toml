@@ -55,6 +55,15 @@ all = [
     "pandas>=2.0.0",
     "polars>=0.20.0",
     "uvicorn>=0.27.0",
+    "medspacy>=1.0.0",
+    "transformers>=4.30.0",
+    "faiss-cpu>=1.7.0",
+    "torch>=2.0.0",
+    "rank-bm25>=0.2.2",
+]
+extraction = [
+    "medspacy>=1.0.0",
+    "transformers>=4.30.0",
 ]
 dev = [
     "build>=1.2.0",

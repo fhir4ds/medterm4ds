@@ -23,6 +23,29 @@ try:
         return _search_func(query, mode=mode, sources=sources, count=count)
 except ImportError:
     pass
+
+# Text extraction (optional — requires medterm4ds[extraction])
+try:
+    from .services.extraction import extract as _extract_func
+    from .services.extraction import find_terms as _find_terms_func
+    from .services.extraction import resolve_spans as _resolve_spans_func
+
+    def extract(text, *, format="codes", **kwargs):
+        """Extract medical concepts from free text.
+
+        Requires medterm4ds[extraction] (medspaCy + transformers).
+        """
+        return _extract_func(text, format=format, **kwargs)
+
+    def find_terms(text, **kwargs):
+        """Extract medical terms from text (NLP only, no code resolution)."""
+        return _find_terms_func(text, **kwargs)
+
+    def resolve_spans(spans, **kwargs):
+        """Resolve filtered spans to coded concepts via search."""
+        return _resolve_spans_func(spans, **kwargs)
+except ImportError:
+    pass
 from .core.config import (
     LOCAL_DUCKDB_MEMORY_PROFILES,
     LOCAL_LITE_MEMORY_PROFILES,
