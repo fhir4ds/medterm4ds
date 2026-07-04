@@ -58,6 +58,59 @@ _LABEL_TO_CATEGORY: dict[str, str] = {
 
 _GRADE_ORDER = {"certain": 0, "probable": 1, "possible": 2}
 
+# Common non-medical words that GLiNER may wrongly classify at threshold 0.3
+_FALSE_POSITIVE_WORDS = frozenset({
+    "patient", "patients", "male", "female", "man", "woman", "child",
+    "year", "years", "old", "age", "date", "time", "day", "days", "week",
+    "hospital", "clinic", "center", "department", "service",
+    "doctor", "nurse", "physician", "provider",
+    "family", "mother", "father", "brother", "sister",
+    "plan", "assessment", "note", "notes", "report",
+    "presents", "presenting", "admitted", "discharged",
+    "normal", "stable", "unremarkable", "well", "good",
+    "left", "right", "bilateral", "upper", "lower",
+    "yes", "no", "not", "and", "or", "with", "without",
+})
+
+# Negation/uncertainty/historical trigger patterns that GLiNER may include
+# in the entity span itself. When detected, the trigger is stripped and the
+# status is set accordingly.
+import re as _re
+
+_NEGATION_TRIGGERS = [
+    (r"^(no\s+evidence\s+of\s+|no\s+sign\s+of\s+|no\s+signs\s+of\s+|no\s+history\s+of\s+)", "negated"),
+    (r"^(no\s+|without\s+|absent\s+|negative\s+for\s+|denies?\s+|denied\s+|rules?\s+out\s+|ruled\s+out\s+|free\s+of\s+)", "negated"),
+    (r"^(possible\s+|possibly\s+|may\s+have\s+|might\s+have\s+|could\s+be\s+|suspected\s+|suspect\s+|suggestive\s+of\s+|concerning\s+for\s+|likely\s+)", "uncertain"),
+    (r"^(history\s+of\s+|hx\s+of\s+|hx\s+|past\s+|previously\s+had\s+|prior\s+|remote\s+)", "historical"),
+]
+
+
+def _detect_inline_trigger(entity_text: str) -> tuple[str, str]:
+    """Check if entity text starts with a negation/uncertainty/historical trigger.
+
+    Returns (cleaned_text, status). If no trigger found, returns (text, "affirmed").
+    """
+    lower = entity_text.lower().strip()
+    for pattern, status in _NEGATION_TRIGGERS:
+        match = _re.match(pattern, lower)
+        if match:
+            # Strip the trigger from the entity text
+            cleaned = entity_text[match.end():].strip()
+            if cleaned and len(cleaned) >= 2:
+                return cleaned, status
+    return entity_text, "affirmed"
+
+
+def _is_false_positive(text: str) -> bool:
+    """Check if an entity text is a common non-medical word."""
+    lower = text.lower().strip()
+    if lower in _FALSE_POSITIVE_WORDS:
+        return True
+    # Single short word that's not a medical term
+    if len(lower) <= 3 and not any(c.isdigit() for c in lower):
+        return True
+    return False
+
 
 @dataclass
 class FilteredSpan:
@@ -229,24 +282,37 @@ class NlpPipeline:
             ent_text = text[start:end]
             score = ent["score"]
 
-            # Check ConText status by finding the matching spaCy entity
-            status = "affirmed"
-            for spacy_ent in doc.ents:
-                if (spacy_ent.start_char <= start < spacy_ent.end_char or
-                    start <= spacy_ent.start_char < end):
-                    negated = getattr(spacy_ent._, "is_negated", False)
-                    uncertain = getattr(spacy_ent._, "is_uncertain", False)
-                    historical = getattr(spacy_ent._, "is_historical", False)
-                    if negated:
-                        status = "negated"
-                    elif uncertain:
-                        status = "uncertain"
-                    elif historical:
-                        status = "historical"
-                    break
+            # Filter false positives (non-medical words GLiNER may return)
+            if _is_false_positive(ent_text):
+                continue
+
+            # Check for negation/uncertainty/historical triggers embedded in the entity text
+            cleaned_text, inline_status = _detect_inline_trigger(ent_text)
+            if inline_status != "affirmed":
+                # The entity text started with a trigger like "No evidence of CKD"
+                # Use the cleaned text and the detected status
+                status = inline_status
+                display_text = cleaned_text
+            else:
+                # Check ConText status by finding the matching spaCy entity
+                status = "affirmed"
+                display_text = ent_text
+                for spacy_ent in doc.ents:
+                    if (spacy_ent.start_char <= start < spacy_ent.end_char or
+                        start <= spacy_ent.start_char < end):
+                        negated = getattr(spacy_ent._, "is_negated", False)
+                        uncertain = getattr(spacy_ent._, "is_uncertain", False)
+                        historical = getattr(spacy_ent._, "is_historical", False)
+                        if negated:
+                            status = "negated"
+                        elif uncertain:
+                            status = "uncertain"
+                        elif historical:
+                            status = "historical"
+                        break
 
             spans.append(FilteredSpan(
-                text=ent_text,
+                text=display_text,
                 entity_type=ent_type,
                 status=status,
                 span_start=start,
