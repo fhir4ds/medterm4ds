@@ -7,17 +7,16 @@ over standard FHIR R4 HTTP endpoints. Binds to 127.0.0.1 by default
 
 from __future__ import annotations
 
-import asyncio
 import json
 import logging
 import os
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
-from functools import partial
 from pathlib import Path
 from typing import Any
 
+from medterm4ds.apps._asyncutil import run_db as _run_db
 from medterm4ds.core.config import local_duckdb_config
 from medterm4ds.core.models import CodeRef
 from medterm4ds.engines.duckdb import LocalDuckDBEngine
@@ -48,19 +47,6 @@ _PATIENT_FRIENDLY_CACHE: dict[str, dict[str, dict[str, Any]]] = {}
 # BM25 index storage (loaded once on startup).
 _bm25_indexes: dict[str, list[dict[str, Any]]] = {}
 _bm25_doc_count: dict[str, int] = {}
-
-
-async def _run_db(executor: ThreadPoolExecutor, func, *args, **kwargs):
-    """Offload a sync handler to the given executor.
-
-    The executor is per-app (lives on app.state.db_executor) so multiple FHIR
-    apps in one process get independent worker threads instead of all
-    serializing against a shared module-global. DuckDB Python connections are
-    not thread-safe under concurrent use, so the executor must be capped at
-    max_workers=1.
-    """
-    loop = asyncio.get_running_loop()
-    return await loop.run_in_executor(executor, partial(func, *args, **kwargs))
 
 
 @dataclass(frozen=True)
@@ -288,7 +274,11 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
             yield
         finally:
             app.state.ready = False
-            db_executor.shutdown(wait=False, cancel_futures=True)
+            # wait=True so any in-flight DuckDB call finishes before con.close()
+            # runs. cancel_futures=True cancels queued-but-not-started work; the
+            # running future is uncancellable, so without wait=True the connection
+            # could be closed out from under it (segfault or hang on shutdown).
+            db_executor.shutdown(wait=True, cancel_futures=True)
             con.close()
 
     app = FastAPI(
@@ -298,9 +288,15 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
     )
 
     def _engine(request) -> LocalDuckDBEngine:
+        _check_ready(request)
+        return request.app.state.engine
+
+    def _check_ready(request) -> None:
+        """Enforce the 503 startup gate. Called by handlers that don't otherwise
+        need the engine (e.g. $search, $extract) so they 503 cleanly during
+        startup instead of running against empty caches."""
         if not getattr(request.app.state, "ready", False):
             raise _fhir_error(503, "Service is starting up.")
-        return request.app.state.engine
 
     def _executor(request) -> ThreadPoolExecutor:
         return request.app.state.db_executor
@@ -544,7 +540,7 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
         params = _parse_parameters(body)
         count = _parse_count_param(params.get("count"), default=20)
         if count is None:
-            return _fhir_error(400, f"count must be an integer (got {params.get('count')!r}).")
+            return _fhir_error(400, f"count must be an integer in [1, 1000] (got {params.get('count')!r}).")
         return await _run_db(
             _executor(request), _do_expand, _engine(request),
             url=params.get("url"),
@@ -741,16 +737,18 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
         count: int = Query(20, ge=1, le=200),
         searchMode: str = Query("lexical", pattern="^(lexical|hybrid|semantic)$"),
     ):
+        _check_ready(request)
         return await _run_db(_executor(request), _do_search, query, system, count, searchMode)
 
     @app.post("/fhir/CodeSystem/$search")
     async def search_post(request: Request, body: dict[str, Any]):
+        _check_ready(request)
         params = _parse_parameters(body)
         query_text = params.get("query") or params.get("_query")
         system = params.get("system")
         count = _parse_count_param(params.get("count"), default=20)
         if count is None:
-            return _fhir_error(400, f"count must be an integer (got {params.get('count')!r}).")
+            return _fhir_error(400, f"count must be an integer in [1, 1000] (got {params.get('count')!r}).")
         search_mode = params.get("searchMode", "lexical")
         if not query_text:
             return _fhir_error(400, "query is required.")
@@ -767,10 +765,12 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
         minGrade: str = Query("certain", pattern="^(certain|probable|possible)$"),
         includeNegated: bool = Query(False),
     ):
+        _check_ready(request)
         return await _run_db(_executor(request), _do_extract, text, format, categories, mode, minGrade, includeNegated)
 
     @app.post("/fhir/CodeSystem/$extract")
     async def extract_post(request: Request, body: dict[str, Any]):
+        _check_ready(request)
         params = _parse_parameters(body)
         text = params.get("text")
         if not text:
@@ -888,13 +888,20 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
     def _parse_count_param(value: str | None, default: int) -> int | None:
         """Parse a `count`-style parameter. Returns None on invalid input so the
         caller can return a 400 OperationOutcome instead of letting int() raise
-        ValueError inside the executor (which would surface as a 500)."""
+        ValueError inside the executor (which would surface as a 500).
+
+        Mirrors the GET handlers' `Query(ge=1, le=1000)` boundary so POST
+        can't bypass the upper limit (memory-exhaustion vector) or accept
+        count<=0 (silent empty/negative-slice results)."""
         if value is None or value == "":
             return default
         try:
-            return int(value)
+            parsed = int(value)
         except (TypeError, ValueError):
             return None
+        if parsed < 1 or parsed > 1000:
+            return None
+        return parsed
 
     def _all_systems_except(source: str) -> list[str]:
         all_sys = [
@@ -994,7 +1001,6 @@ def _bm25_search(query: str, categories: list[str], count: int) -> list[dict[str
                 if token not in postings:
                     token = _stem_token(raw_token)
                 if token not in postings:
-                    continue
                     continue
                 token_idf = idf.get(token, idf.get(raw_token, 1.0))
                 for entry in postings[token]:

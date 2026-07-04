@@ -104,18 +104,19 @@ class ClosureTable:
         """Return concept list as FHIR Parameters parameter entries."""
         from medterm4ds.engines.fhir import system_to_fhir_uri
 
-        entries: list[dict[str, Any]] = []
-        for code, info in sorted(self.concepts.items()):
-            system_uri = system_to_fhir_uri(info["system"]) or info["system"]
-            entries.append({
-                "name": "concept",
-                "valueCoding": {
-                    "system": system_uri,
-                    "code": code,
-                    "display": info.get("display", code),
-                },
-            })
-        return entries
+        with self._lock:
+            entries: list[dict[str, Any]] = []
+            for code, info in sorted(self.concepts.items()):
+                system_uri = system_to_fhir_uri(info["system"]) or info["system"]
+                entries.append({
+                    "name": "concept",
+                    "valueCoding": {
+                        "system": system_uri,
+                        "code": code,
+                        "display": info.get("display", code),
+                    },
+                })
+            return entries
 
 
 class ClosureManager:
@@ -156,15 +157,20 @@ class ClosureManager:
             return list(self._tables.keys())
 
 
-# Singleton
+# Singleton guarded by a lock so concurrent first-callers don't race on init.
+# Without this, two threads seeing `_manager is None` simultaneously would
+# each construct a ClosureManager; one wins the assignment, the other's
+# tables are orphaned, and subsequent $subsumes calls return wrong answers.
 _manager: ClosureManager | None = None
+_manager_lock = threading.Lock()
 
 
 def get_closure_manager() -> ClosureManager:
     global _manager
-    if _manager is None:
-        _manager = ClosureManager()
-    return _manager
+    with _manager_lock:
+        if _manager is None:
+            _manager = ClosureManager()
+        return _manager
 
 
 def build_closure_response(closure: ClosureTable) -> dict[str, Any]:

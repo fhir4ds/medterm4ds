@@ -8,10 +8,10 @@ from collections.abc import Sequence
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
-from functools import partial
 from pathlib import Path
 from typing import Any
 
+from medterm4ds.apps._asyncutil import run_db as _run_db_impl
 from medterm4ds.core.config import MemoryProfile, local_duckdb_config
 from medterm4ds.core.models import CodeRef
 from medterm4ds.domains import evidence as evidence_domain
@@ -38,19 +38,6 @@ try:
     from fastmcp import FastMCP
 except ImportError as exc:  # pragma: no cover - exercised only without mcp extras.
     raise ImportError("Install medterm4ds[mcp] to use medterm4ds.apps.mcp.") from exc
-
-
-# Single-worker executor for DuckDB access. DuckDB Python connections are not
-# thread-safe under concurrent use, so all server_runtime calls (which share
-# one engine connection) must serialize through this worker. Without this,
-# concurrent MCP tool calls from a fan-out client would segfault.
-_db_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="mcp-db")
-
-
-async def _run_db(func, *args, **kwargs):
-    """Offload a sync server_runtime call to the single-worker executor."""
-    loop = asyncio.get_running_loop()
-    return await loop.run_in_executor(_db_executor, partial(func, *args, **kwargs))
 
 
 @dataclass(frozen=True)
@@ -92,6 +79,7 @@ class McpRuntime:
         self.settings = settings
         self.con = None
         self.engine: LocalDuckDBEngine | None = None
+        self.db_executor: ThreadPoolExecutor | None = None
 
     @property
     def ready(self) -> bool:
@@ -111,10 +99,17 @@ class McpRuntime:
             query_chunk_size=self.settings.query_chunk_size,
         )
         self.engine = LocalDuckDBEngine(self.con, config=config)
+        self.db_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="mcp-db")
         if self.settings.prepare_cache:
             self.engine.prepare_cache(self.settings.sources, create_indexes=self.settings.cache_indexes)
 
     def close(self) -> None:
+        # Shut down the executor BEFORE closing the connection so any in-flight
+        # DuckDB call finishes (wait=True) before con.close() runs. Without this
+        # ordering, the worker thread can segfault or hang on a closed connection.
+        if self.db_executor is not None:
+            self.db_executor.shutdown(wait=True, cancel_futures=True)
+            self.db_executor = None
         if self.con is not None:
             self.con.close()
         self.con = None
@@ -542,6 +537,15 @@ def create_mcp_server(
     """Create a FastMCP server for one configured DuckDB database."""
     server_runtime = runtime or McpRuntime(settings or McpSettings.from_env())
 
+    async def _run_db(func, *args, **kwargs):
+        """Offload to this server's single-worker executor.
+
+        Shadows the module-level helper so handlers don't need to pass the
+        executor explicitly. server_runtime.db_executor is created in open()
+        and torn down in close(); handlers run between those points.
+        """
+        return await _run_db_impl(server_runtime.db_executor, func, *args, **kwargs)
+
     @asynccontextmanager
     async def lifespan(_mcp: FastMCP):
         server_runtime.open()
@@ -687,7 +691,7 @@ def create_mcp_server(
         - include_negated: Include negated mentions (default: excluded).
         """
         from medterm4ds.services.extraction import extract as extract_service
-        results = await asyncio.to_thread(
+        results = await _run_db(
             extract_service,
             text,
             format=format,
