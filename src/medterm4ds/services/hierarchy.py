@@ -26,6 +26,7 @@ def get_code_relations(
     *,
     direction: str,
     max_depth: int = 1,
+    limit: int | None = None,
 ) -> list[CodeRelation]:
     """Return hierarchy relationships for one or many codes."""
     normalized_direction = normalize_hierarchy_direction(direction)
@@ -39,6 +40,7 @@ def get_code_relations(
         normalized,
         direction=normalized_direction,
         max_depth=max_depth,
+        limit=limit,
     )
 
 
@@ -73,9 +75,10 @@ def get_descendants(
     engine: HierarchyEngine,
     *,
     max_depth: int = 5,
+    limit: int | None = None,
 ) -> list[CodeRelation]:
     """Return descendant relationships up to max_depth."""
-    return get_code_relations(codes, engine=engine, direction="descendants", max_depth=max_depth)
+    return get_code_relations(codes, engine=engine, direction="descendants", max_depth=max_depth, limit=limit)
 
 
 def normalize_hierarchy_direction(direction: str) -> HierarchyDirection:

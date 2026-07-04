@@ -715,17 +715,25 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
         Supports SNOMED intensional URLs like:
           http://snomed.info/sct/404684003?fhir_vs=isa
           http://snomed.info/sct/404684003?fhir_vs
+
+        Performance contract: descendant walk is capped at FHIR_VS_MAX_DEPTH
+        (default 5) levels. Implemented as a layer-by-layer BFS using direct
+        children queries (each layer = one batched SQL, depth N = N queries),
+        not the recursive CTE in get_descendants — that path enumerates all
+        paths through the subtree via a path-string column, which explodes
+        for wide subtrees (SNOMED Diabetes Mellitus depth<=3 alone = 10K
+        rows in 8s+; timed out at 5min for depth<=20). Depth 5 covers all
+        clinical value-set definitions; deeper needs pre-computed closure
+        (planned). Set FHIR_VS_MAX_DEPTH to override.
         """
         from urllib.parse import parse_qs, urlparse
 
         parsed = urlparse(url)
         base = f"{parsed.scheme}://{parsed.netloc}{parsed.path}"
-        # Extract code from path (e.g., /sct/404684003)
         path_parts = parsed.path.strip("/").split("/")
         query_params = parse_qs(parsed.query)
         fhir_vs = query_params.get("fhir_vs", [""])[0]
 
-        # SNOMED pattern: /sct/<code>?fhir_vs[=isa|descendents]
         if "snomed.info/sct" in base and len(path_parts) >= 2:
             code = path_parts[-1]
             source = "SNOMEDCT_US"
@@ -742,17 +750,55 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
                         "display": root_infos[0].name or code,
                     })
 
-            descendants = get_descendants(
-                [CodeRef(source, code)], engine=engine, max_depth=20
-            )
-            for d in descendants:
-                contains.append({
-                    "system": system_uri,
-                    "code": d.target.code,
-                    "display": d.target_display or d.target.code,
+            max_depth = int(os.getenv("FHIR_VS_MAX_DEPTH", "5"))
+            # Layer-by-layer BFS using direct children queries.
+            # Each layer is one batched SQL (children of all frontier codes),
+            # which is fast even for wide subtrees because get_children is
+            # depth=1 (no recursion).
+            from medterm4ds.services.hierarchy import get_children
+            visited: set[str] = {code}
+            frontier: list[str] = [code]
+            truncated = False
+            depth_cap_hit = False
+            for _depth in range(max_depth):
+                if not frontier or len(contains) >= count:
+                    break
+                refs = [CodeRef(source, c) for c in frontier]
+                children_rels = get_children(refs, engine=engine)
+                new_frontier: list[str] = []
+                seen_this_layer: set[str] = set()
+                for rel in children_rels:
+                    child_code = rel.target.code
+                    if child_code in visited or child_code in seen_this_layer:
+                        continue
+                    seen_this_layer.add(child_code)
+                    visited.add(child_code)
+                    contains.append({
+                        "system": system_uri,
+                        "code": child_code,
+                        "display": rel.target_display or child_code,
+                    })
+                    new_frontier.append(child_code)
+                    if len(contains) >= count:
+                        truncated = True
+                        break
+                frontier = new_frontier
+            else:
+                # Loop completed without break = depth cap was the limiter
+                if frontier:
+                    depth_cap_hit = True
+
+            extensions = []
+            if truncated or depth_cap_hit:
+                extensions.append({
+                    "url": "http://fhir4ds.org/fhir/StructureDefinition/valueset-expand-truncated",
+                    "valueString": (
+                        f"depth-limited at {max_depth}" if depth_cap_hit
+                        else f"count-limited at {count}"
+                    ) + "; set FHIR_VS_MAX_DEPTH to override",
                 })
 
-            return build_valueset_expand(contains[:count], url=url)
+            return build_valueset_expand(contains[:count], url=url, extensions=extensions)
 
         return _fhir_error(400, f"Unsupported fhir_vs URL pattern: {url}")
 

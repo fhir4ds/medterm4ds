@@ -40,6 +40,7 @@ class HierarchyEngine(Protocol):
         *,
         direction: HierarchyDirection,
         max_depth: int = 1,
+        limit: int | None = None,
     ) -> list[CodeRelation]:
         """Return hierarchical relationship rows for input codes."""
         ...

@@ -24,6 +24,7 @@ def get_source_code_relations(
     relationship: str,
     upward: bool,
     max_depth: int,
+    limit: int | None = None,
 ) -> list[tuple[int, CodeRelation]]:
     """Return same-source hierarchy rows for one source + chunk of codes.
 
@@ -38,6 +39,7 @@ def get_source_code_relations(
             relationship=relationship,
             upward=upward,
             max_depth=max_depth,
+            limit=limit,
         )
 
     # Late import to avoid circular dependency (engine module defines these helpers).
@@ -173,8 +175,17 @@ def get_source_code_relations_prepared(
     relationship: str,
     upward: bool,
     max_depth: int,
+    limit: int | None = None,
 ) -> list[tuple[int, CodeRelation]]:
-    """Prepared-table path: traverse mt4ds.walk_edges instead of raw mrrel."""
+    """Prepared-table path: traverse mt4ds.walk_edges instead of raw mrrel.
+
+    `limit` caps the final result rows (after deduplication). It does NOT
+    terminate the recursive walk early — DuckDB recursive CTEs don't support
+    that — but it does avoid transferring the full result set to Python and
+    building CodeRelation objects for rows the caller will discard. For
+    pathological hierarchies (e.g. SNOMED diabetes), the walk itself is the
+    bottleneck; see `_expand_url_pattern` for the depth-cap contract.
+    """
     if upward:
         first_join = "e.from_aui = s.source_aui"
         recursive_join = "e.from_aui = w.target_aui"
@@ -189,6 +200,7 @@ def get_source_code_relations_prepared(
         target_cui = "e.from_cui"
 
     with engine._temp_code_ordinals(code_ordinals) as temp:
+        limit_clause = f"LIMIT {int(limit)}" if limit is not None else ""
         rows = engine.con.execute(
             f"""
             WITH RECURSIVE
@@ -254,6 +266,7 @@ def get_source_code_relations_prepared(
              AND t.rank = 1
             WHERE r.rn = 1
             ORDER BY r.ordinal, r.depth, r.target_code, r.target_aui
+            {limit_clause}
             """,
             [source, source, source, max_depth, source],
         ).fetchall()

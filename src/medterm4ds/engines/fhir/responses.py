@@ -192,6 +192,7 @@ def build_valueset_expand(
     *,
     url: str | None = None,
     filter_text: str | None = None,
+    extensions: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Build a FHIR ValueSet resource with expansion for $expand."""
     vs: dict[str, Any] = {
@@ -205,6 +206,8 @@ def build_valueset_expand(
     }
     if url:
         vs["url"] = url
+    if extensions:
+        vs["expansion"]["extension"] = extensions
     return vs
 
 

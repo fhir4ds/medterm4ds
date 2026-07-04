@@ -1064,6 +1064,7 @@ class LocalDuckDBEngine:
         *,
         direction: str,
         max_depth: int = 1,
+        limit: int | None = None,
     ) -> list[CodeRelation]:
         """Return same-source hierarchy relationships for input codes."""
         if not codes:
@@ -1094,6 +1095,7 @@ class LocalDuckDBEngine:
                         relationship=relationship,
                         upward=upward,
                         max_depth=max_depth,
+                        limit=limit,
                     )
                 )
         return [
@@ -1419,6 +1421,7 @@ class LocalDuckDBEngine:
         relationship: str,
         upward: bool,
         max_depth: int,
+        limit: int | None = None,
     ) -> list[tuple[int, CodeRelation]]:
         return _hierarchy.get_source_code_relations(
             self,
@@ -1427,6 +1430,7 @@ class LocalDuckDBEngine:
             relationship=relationship,
             upward=upward,
             max_depth=max_depth,
+            limit=limit,
         )
 
     def _get_source_code_relations_prepared(
