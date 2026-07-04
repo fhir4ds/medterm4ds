@@ -42,6 +42,15 @@ from medterm4ds.services.patient_friendly import get_patient_friendly_names
 logger = logging.getLogger(__name__)
 
 DEFAULT_PORT = 8001
+# Cap on $extract input text length. medspaCy + GLiNER inference cost scales
+# linearly with input length; without a cap, a single megabyte-text request
+# can starve the single-worker NER executor for seconds. 100K chars is well
+# above any reasonable clinical-note size (a 50-page chart note is ~25K).
+MAX_EXTRACT_TEXT_CHARS = int(os.getenv("MEDTERM4DS_MAX_EXTRACT_TEXT_CHARS", "100000"))
+# Cap on rendered length of user-supplied strings in error messages. Defends
+# against reflected XSS in EHR clients that render OperationOutcome.diagnostics
+# as HTML, and against log-injection via control chars.
+MAX_ERROR_FIELD_CHARS = 256
 DEFAULT_SEARCH_INDEX_DIR = "/mnt/d/fhir4px-model/dist/naming_bm25"
 _PATIENT_FRIENDLY_CACHE: dict[str, dict[str, dict[str, Any]]] = {}
 
@@ -343,9 +352,16 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
         return request.app.state.ner_executor
 
     def _fhir_error(status: int, message: str) -> JSONResponse:
+        # Sanitize: strip control chars + cap length. Defends against reflected
+        # XSS in EHR clients that render OperationOutcome.diagnostics as HTML,
+        # and against log-injection via newline/control chars in user-supplied
+        # system URIs and codes.
+        clean = "".join(c for c in message if c >= " " or c == " ")
+        if len(clean) > MAX_ERROR_FIELD_CHARS:
+            clean = clean[:MAX_ERROR_FIELD_CHARS] + "…"
         return JSONResponse(
             status_code=status,
-            content=build_operation_outcome("error", "processing", message),
+            content=build_operation_outcome("error", "processing", clean),
         )
 
     # -- CapabilityStatement --
@@ -873,7 +889,7 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
     @app.get("/fhir/CodeSystem/$extract")
     async def extract_get(
         request: Request,
-        text: str = Query(..., description="Free text to extract concepts from"),
+        text: str = Query(..., max_length=MAX_EXTRACT_TEXT_CHARS, description="Free text to extract concepts from"),
         format: str = Query("codes", pattern="^(codes|terms)$"),
         categories: str | None = Query(None, description="Comma-separated: condition,medication"),
         mode: str = Query("hybrid", pattern="^(lexical|semantic|hybrid)$"),
@@ -890,6 +906,12 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
         text = params.get("text")
         if not text:
             return _fhir_error(400, "text is required.")
+        if len(text) > MAX_EXTRACT_TEXT_CHARS:
+            return _fhir_error(
+                400,
+                f"text length {len(text)} exceeds max {MAX_EXTRACT_TEXT_CHARS} chars "
+                f"(set MEDTERM4DS_MAX_EXTRACT_TEXT_CHARS to override).",
+            )
         return await _run_db(
             _ner_executor(request), _do_extract, str(text),
             params.get("format", "codes"),

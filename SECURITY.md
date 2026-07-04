@@ -58,6 +58,31 @@ MEDTERM4DS_API_HOST=0.0.0.0 python -m medterm4ds.apps.api
 The server logs a startup warning if bound to anything other than
 `127.0.0.1`/`::1`/`localhost`.
 
+## HF Spaces Docker deployment — auth divergence
+
+`deploy/hf-spaces/fhir-server/app.py` deliberately sets
+`MEDTERM4DS_API_HOST=0.0.0.0` (HF Spaces requires binding to 7860 to be
+reachable from the platform's reverse proxy). This **diverges from the
+local-only contract** above — anyone with the Space URL can call `$lookup`,
+`$validate-code`, `$translate`, `$subsumes`, `$expand`, `$closure`, `$search`,
+and `$extract` without authentication.
+
+Mitigations:
+
+- **Use a private Space** if available — HF Spaces private spaces require
+  authentication via the launching user's HF account.
+- **Front the deployment with an authenticating proxy** (Cloudflare Access,
+  OAuth2 Proxy, mTLS terminator) for any non-personal deployment.
+- **The container is intentionally read-only on the UMLS data**: even if a
+  caller reaches `$extract` or `$lookup`, they cannot corrupt or exfiltrate
+  the underlying `lookup.duckdb` (the engine opens the file read-only).
+- **No rate limiting** is applied at the FHIR layer; HF Spaces' own platform
+  limits apply. For local-only sidecars, the request size caps in Tier B
+  hardening bound individual requests.
+
+If you need to add auth to the Docker image itself, wrap the FastAPI app in
+an auth middleware before invoking `create_fhir_app()`.
+
 ## Reporting security issues
 
 If you find a vulnerability, please open a private security advisory on the

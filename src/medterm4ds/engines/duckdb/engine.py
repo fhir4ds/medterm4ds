@@ -159,6 +159,22 @@ _SNOMED_PARENT_LINKS_CACHE_TABLE = "_mt4ds_snomed_parent_links"
 _SNOMED_FALLBACK_QUERY_CHUNK_SIZE = 25
 _CVX_GROUP_URL = "https://www2.cdc.gov/vaccines/iis/iisstandards/downloads/VG.txt"
 _CVX_GROUP_CACHE: dict[str, list[str]] | None = None
+# Allowlist of hosts the engine will fetch CVX group data from. Anything else
+# (set via MEDTERM4DS_CVX_GROUP_URL env override) is rejected as an SSRF guard.
+_CVX_GROUP_HOST_ALLOWLIST = ("www2.cdc.gov", "www.cdc.gov", "cdc.gov")
+
+
+def _is_safe_cvx_url(url: str) -> bool:
+    """Validate that a CVX group URL is https and on the cdc.gov allowlist."""
+    from urllib.parse import urlparse
+    try:
+        parsed = urlparse(url)
+    except (ValueError, TypeError):
+        return False
+    if parsed.scheme != "https":
+        return False
+    host = (parsed.hostname or "").lower()
+    return host in _CVX_GROUP_HOST_ALLOWLIST
 _HIERARCHY_RELATIONSHIPS = {
     "parents": "parent",
     "children": "child",
@@ -1772,7 +1788,12 @@ def _load_default_cvx_groups() -> dict[str, list[str]]:
     """Load CDC CVX vaccine groups on demand.
 
     Set MEDTERM4DS_DISABLE_CVX_GROUPS=1 to keep CVX resolution fully offline.
-    MEDTERM4DS_CVX_GROUP_URL can point at a local test fixture or mirror.
+    MEDTERM4DS_CVX_GROUP_URL can point at a local test fixture or mirror but
+    MUST be https and MUST be on the cdc.gov allowlist (or the cdc.gov default
+    URL itself). Anything else is rejected with a warning and the cache is
+    left empty — this is an SSRF guard against attacker-controlled env vars
+    that could otherwise redirect the runtime fetch to internal hosts (cloud
+    metadata endpoints, internal services, etc.).
     """
     global _CVX_GROUP_CACHE
     if os.environ.get("MEDTERM4DS_DISABLE_CVX_GROUPS"):
@@ -1780,9 +1801,15 @@ def _load_default_cvx_groups() -> dict[str, list[str]]:
     if _CVX_GROUP_CACHE is not None:
         return _CVX_GROUP_CACHE
 
+    url = os.environ.get("MEDTERM4DS_CVX_GROUP_URL") or _CVX_GROUP_URL
+    if not _is_safe_cvx_url(url):
+        # Don't fetch — leave cache empty rather than honor an SSRF vector.
+        # Patient-friendly CVX lookups will fall back through the hierarchy.
+        _CVX_GROUP_CACHE = {}
+        return _CVX_GROUP_CACHE
+
     cache: dict[str, list[str]] = {}
     try:
-        url = os.environ.get("MEDTERM4DS_CVX_GROUP_URL", _CVX_GROUP_URL)
         with urllib.request.urlopen(url, timeout=10) as response:
             text = response.read().decode("utf-8", errors="replace")
         for line in text.splitlines():
