@@ -1,131 +1,149 @@
+import {useState} from 'react';
 import Link from '@docusaurus/Link';
 import Layout from '@theme/Layout';
 import Heading from '@theme/Heading';
 import styles from './index.module.css';
 
 const stats = [
-  {value: '2026AA', label: 'UMLS release verified'},
-  {value: '8', label: 'Core vocabularies'},
-  {value: '~1.1M', label: 'Active source codes'},
-  {value: '7.1GB', label: 'Local DuckDB build'},
+  {value: '8', label: 'Code systems'},
+  {value: '1.1M', label: 'Codes indexed'},
+  {value: '2.8M', label: 'Associations'},
+  {value: '429', label: 'Tests passing'},
+];
+
+const snippets = [
+  {
+    title: 'Lookup',
+    code: `import medterm4ds as mt
+
+terms = mt.connect("/path/to/umls.duckdb")
+info = terms.lookup("SNOMEDCT_US", "44054006")
+print(info.name)
+# → "Type 2 diabetes mellitus"
+
+friendly = terms.patient_friendly("SNOMEDCT_US", "44054006")
+print(friendly.name)
+# → "Diabetes Type 2"`,
+    desc: 'Look up any code and get its display name, properties, and patient-friendly name.',
+  },
+  {
+    title: 'Search',
+    code: `import medterm4ds as mt
+
+# Lexical: BM25 token matching (~1ms)
+results = mt.search("diabetes", mode="lexical")
+
+# Semantic: catches novel phrasings (~100ms)
+results = mt.search("high blood sugar", mode="semantic")
+# → Hyperglycemia (0.80, probable)
+
+# Hybrid: best accuracy (~110ms)
+results = mt.search("metformin pill", mode="hybrid")
+# → Metformin Pill (1.00, certain)`,
+    desc: 'Search for medical codes by natural language. BM25 for known terms, SapBERT embeddings for novel phrasings.',
+  },
+  {
+    title: 'Extract',
+    code: `import medterm4ds as mt
+
+concepts = mt.extract(
+    "65yo M with T2DM on metformin. No CKD.",
+    format="codes",
+    categories=["condition", "medication"],
+)
+for c in concepts:
+    print(f"  {c.code} {c.display} matched='{c.matched_text}'")
+# → 44054006  Type 2 diabetes  matched='T2DM'
+# → 860975    Metformin        matched='metformin'
+# CKD excluded — negated by ConText`,
+    desc: 'Extract coded concepts from clinical notes. NER + ConText negation filtering + code resolution.',
+  },
+  {
+    title: 'FHIR Server',
+    code: `pip install medterm4ds[fhir]
+python -m medterm4ds.apps.fhir_api
+
+# 7 FHIR R4 operations:
+# $lookup, $validate-code, $translate,
+# $subsumes, $expand, $closure, $search
+
+curl "http://127.0.0.1:8001/fhir/CodeSystem/\\$lookup?\\
+system=http://snomed.info/sct&code=44054006"`,
+    desc: 'Full FHIR R4 terminology server with 7 standard operations plus custom $search.',
+  },
 ];
 
 const features = [
   {
-    title: 'One terminology service layer',
-    body: 'Lookup, patient-friendly names, mapping, hierarchy, discovery, optimize, bulk exports, API, and MCP share the same service layer.',
+    icon: '\u{1F4D6}',
+    title: 'Built from UMLS',
+    body: '8 clinical code systems (SNOMED CT, ICD-10, RxNorm, LOINC, CPT, HCPCS, CVX, ICD-10-PCS). Hierarchy, mappings, and patient-friendly names for 1.1M codes.',
   },
   {
-    title: 'Local-first when it matters',
-    body: 'The local DuckDB engine keeps terminology workflows on the workstation while preserving fast startup and bounded memory profiles.',
+    icon: '\u{1F50D}',
+    title: 'Intelligent Search',
+    body: 'Text-to-code inference with BM25 (lexical, ~1ms) and fine-tuned SapBERT embeddings (semantic, ~100ms). Catches "high blood sugar" → Hyperglycemia.',
   },
   {
-    title: 'Explainable mappings',
-    body: 'Mapping results preserve match type, depth, route, source, target, and review flags so downstream teams can audit how names and crosswalks were produced.',
+    icon: '\u{1F4DD}',
+    title: 'Text Extraction',
+    body: 'Extract coded medical concepts from clinical notes. NER + medspaCy ConText (negation filtering) + code resolution. ~250ms/note on CPU.',
   },
   {
-    title: 'Data science ergonomics',
-    body: 'Python helpers return model objects or DataFrames, and CLI outputs can be JSON, JSONL, CSV, FHIR ConceptMap, compact tables, or ASCII trees.',
+    icon: '\u{1F5C4}\u{FE0F}',
+    title: 'Four Interfaces',
+    body: 'Python library, CLI, MCP server (37+ tools), and FHIR R4 terminology server. All backed by the same engine.',
   },
   {
-    title: 'Historical code handling',
-    body: 'Resolution supports active, obsolete, replacement, and NDC-to-RxCUI paths so historical data does not fall out of the pipeline.',
+    icon: '\u{1F476}',
+    title: 'Patient-Friendly',
+    body: '1.1M codes resolved to consumer-comprehensible display names. MEDLINEPLUS and CHV preferred, with hierarchy fallback.',
   },
   {
-    title: 'Production-scale exports',
-    body: 'Bulk workflows stream source inventories through shared checkpointing and output writers for ConceptMaps and patient-friendly datasets.',
+    icon: '✅',
+    title: 'FHIR R4 Conformant',
+    body: '7 standard terminology operations ($lookup, $validate-code, $translate, $subsumes, $expand, $closure). Validated against HAPI FHIR reference server.',
   },
 ];
 
-const quickstart = `import medterm4ds as mt
+function InteractiveSnippet() {
+  const [active, setActive] = useState(0);
+  const snippet = snippets[active];
 
-terms = mt.connect(
-    "/mnt/d/medterm4ds/data/umls_current.duckdb",
-    memory_profile="low",
-)
-
-friendly = terms.patient_friendly_df("ICD10CM", ["E11.9", "E11.40"])
-mapping = terms.map_df(
-    "ICD10CM",
-    ["E11.9"],
-    target_sources=["SNOMEDCT_US"],
-)
-
-friendly[["source", "code", "name", "match_type", "match_depth"]]`;
-
-export default function Home() {
   return (
-    <Layout
-      title="Medical Terminology for Data Science"
-      description="medterm4ds documentation for UMLS-backed terminology lookup, mapping, patient-friendly names, valuesets, and MCP tools">
-      <header className={styles.hero}>
-        <div className={styles.grid} />
-        <div className={styles.heroInner}>
-          <span className={styles.badge}>Python package: medterm4ds</span>
-          <Heading as="h1" className={styles.title}>
-            Medical Terminology for Data Science
-          </Heading>
-          <p className={styles.lead}>
-            UMLS-backed terminology lookup, mapping, value set optimization,
-            patient-friendly names, and interoperability outputs for Python
-            notebooks and data science workflows.
-          </p>
-          <div className={styles.actions}>
-            <Link className={styles.primaryAction} to="/docs/getting-started/quickstart">
-              Start with a code
-            </Link>
-            <Link className={styles.secondaryAction} to="/docs/workflows/valuesets">
-              Optimize valuesets
-            </Link>
-            <Link className={styles.secondaryAction} to="/docs/user-guide/interfaces/mcp-server">
-              Use MCP tools
-            </Link>
-          </div>
-        </div>
-      </header>
-
-      <section className={styles.stats}>
-        <div className="container">
-          <div className={styles.statsRow}>
-            {stats.map(stat => (
-              <div className={styles.stat} key={stat.label}>
-                <span className={styles.statValue}>{stat.value}</span>
-                <span className={styles.statLabel}>{stat.label}</span>
-              </div>
-            ))}
-          </div>
-        </div>
-      </section>
-
-      <main>
-        <section className={styles.section}>
-          <div className="container">
-            <Heading as="h2">Built around the terminology work people actually do</Heading>
+    <section className={styles.section}>
+      <div className="container">
+        <div className="row">
+          <div className="col col--5">
+            <Heading as="h2">Five capabilities, one engine</Heading>
             <p className={styles.sectionLead}>
-              The project keeps broad terminology tool coverage, but organizes
-              behavior around reusable services instead of separate local, API,
-              bulk, CLI, and MCP implementations.
+              medterm4ds handles the full terminology workflow: look up codes,
+              walk hierarchies, map between systems, search by natural language,
+              and extract concepts from clinical text. No external API calls needed.
             </p>
-            <div className={styles.featureGrid}>
-              {features.map(feature => (
-                <article className={styles.feature} key={feature.title}>
-                  <Heading as="h3">{feature.title}</Heading>
-                  <p>{feature.body}</p>
-                </article>
+            <div className={styles.snippetNav || ''} style={{display: 'flex', gap: '0.5rem', flexWrap: 'wrap', marginBottom: '1rem'}}>
+              {snippets.map((s, i) => (
+                <button
+                  key={s.title}
+                  onClick={() => setActive(i)}
+                  style={{
+                    padding: '0.5rem 1rem',
+                    border: '1px solid rgba(84, 198, 255, 0.34)',
+                    background: i === active ? 'rgba(142, 230, 193, 0.15)' : 'transparent',
+                    color: i === active ? '#8ee6c1' : '#94a8bd',
+                    borderRadius: '6px',
+                    cursor: 'pointer',
+                    fontSize: '0.9rem',
+                    fontWeight: 600,
+                  }}
+                >
+                  {s.title}
+                </button>
               ))}
             </div>
+            <p style={{color: '#a9bad0', fontSize: '0.95rem'}}>{snippet.desc}</p>
           </div>
-        </section>
-
-        <section className={styles.sectionAlt}>
-          <div className="container">
-            <Heading as="h2">Same primitives, every interface</Heading>
-            <p className={styles.sectionLead}>
-              Python, CLI, API, MCP, and bulk exports all call the same lookup,
-              mapping, hierarchy, optimize, resolution, and patient-friendly
-              service functions. Python notebooks are the primary interface;
-              CLI commands are available for file exports and automation.
-            </p>
+          <div className="col col--7">
             <div className={styles.codePanel}>
               <div className={styles.codeHeader}>
                 <span className={styles.dot} style={{background: '#ff5f56'}} />
@@ -134,30 +152,98 @@ export default function Home() {
                 <span className={styles.codeLabel}>python</span>
               </div>
               <pre>
-                <code>{quickstart}</code>
+                <code>{snippet.code}</code>
               </pre>
             </div>
           </div>
-        </section>
+        </div>
+      </div>
+    </section>
+  );
+}
 
-        <section className={styles.section}>
-          <div className="container">
-            <Heading as="h2">A compact terminology pipeline</Heading>
-            <p className={styles.sectionLead}>
-              Download UMLS, build a compact DuckDB database, run source-aware
-              services, export evidence-rich outputs, and keep quality gates
-              close to real terminology data.
-            </p>
-            <div className={styles.pipeline}>
-              <div className={styles.step}>UMLS release</div>
-              <div className={styles.step}>Local DuckDB</div>
-              <div className={styles.step}>Shared services</div>
-              <div className={styles.step}>CLI / API / MCP</div>
-              <div className={styles.step}>ConceptMap / DataFrame</div>
-            </div>
+function FeatureCard({icon, title, body}) {
+  return (
+    <div className={styles.feature}>
+      <div style={{fontSize: '2rem', marginBottom: '0.75rem'}}>{icon}</div>
+      <Heading as="h3">{title}</Heading>
+      <p>{body}</p>
+    </div>
+  );
+}
+
+export default function Home() {
+  return (
+    <Layout>
+      {/* Hero */}
+      <header className={styles.hero}>
+        <div className={styles.grid} />
+        <div className={`container ${styles.heroInner}`}>
+          <span className={styles.badge}>medterm4ds v0.0.1 · UMLS 2026AA</span>
+          <Heading as="h1" className={styles.title}>
+            Medical Terminology<br />for Data Science
+          </Heading>
+          <p className={styles.lead}>
+            UMLS-powered terminology lookup, intelligent text search, and clinical
+            text extraction. Built from the ground up for Python, CLI, MCP, and FHIR R4.
+          </p>
+          <div className={styles.actions}>
+            <Link className={styles.primaryAction} to="/docs/getting-started/quickstart">
+              Get Started
+            </Link>
+            <a className={styles.secondaryAction} href="https://github.com/fhir4ds/medterm4ds">
+              GitHub →
+            </a>
           </div>
-        </section>
-      </main>
+        </div>
+      </header>
+
+      {/* Stats */}
+      <section className={styles.stats}>
+        <div className="container">
+          <div className={styles.statsRow}>
+            {stats.map((s) => (
+              <div key={s.label} className={styles.stat}>
+                <span className={styles.statValue}>{s.value}</span>
+                <span className={styles.statLabel}>{s.label}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      </section>
+
+      {/* Interactive snippets */}
+      <InteractiveSnippet />
+
+      {/* Features */}
+      <section className={styles.sectionAlt}>
+        <div className="container">
+          <Heading as="h2">Why medterm4ds?</Heading>
+          <div className={styles.featureGrid}>
+            {features.map((f) => (
+              <FeatureCard key={f.title} {...f} />
+            ))}
+          </div>
+        </div>
+      </section>
+
+      {/* Architecture pipeline */}
+      <section className={styles.section}>
+        <div className="container">
+          <Heading as="h2">How it works</Heading>
+          <p className={styles.sectionLead}>
+            UMLS Metathesaurus data is loaded into a DuckDB engine.
+            Service functions provide the API. Four surfaces wrap the same services.
+          </p>
+          <div className={styles.pipeline}>
+            <div className={styles.step}>UMLS Data</div>
+            <div className={styles.step}>DuckDB Engine</div>
+            <div className={styles.step}>Services</div>
+            <div className={styles.step}>Interfaces</div>
+            <div className={styles.step}>Your App</div>
+          </div>
+        </div>
+      </section>
     </Layout>
   );
 }
