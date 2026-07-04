@@ -18,6 +18,9 @@ COPY scripts/ ./scripts/
 
 # Use PYTHONPATH instead of pip install (avoids build backend dependency)
 ENV PYTHONPATH=/app/src:/app/scripts
+# Unbuffered stdout/stderr so print() and log lines show up in `docker logs`
+# immediately, instead of being buffered until the buffer fills or process exits.
+ENV PYTHONUNBUFFERED=1
 
 # HF Spaces persistent storage (caches UMLS build + HF downloads)
 ENV MEDTERM4DS_DATA_DIR=/data
