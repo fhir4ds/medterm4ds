@@ -3,9 +3,9 @@
 Decomposed into two independent steps:
 
   find_terms(text) → list[FilteredSpan]
-    Clinical NLP pipeline (medspaCy + NER). Returns text spans with
-    ConText annotations (negation, uncertainty, temporality) and section
-    detection. No code resolution. Does not require SapBERT/BM25.
+    Clinical NLP pipeline (medspaCy + GLiNER NER). Returns text spans with
+    ConText annotations (negation, uncertainty, temporality). No code
+    resolution. Does not require SapBERT/BM25.
 
   resolve_spans(spans) → list[ExtractedConcept]
     Takes filtered spans and resolves each to a code via SearchService
@@ -23,15 +23,14 @@ from __future__ import annotations
 
 import logging
 import os
-import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any
 
 from medterm4ds.core.models import CodeRef
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_NER_MODEL = os.getenv("MEDTERM4DS_NER_MODEL", "d4data/biomedical-ner-all")
+DEFAULT_NER_MODEL = os.getenv("MEDTERM4DS_NER_MODEL", "E3-JSI/gliner-multi-med-ner-synthetic-v1")
 DEFAULT_SEARCH_MODE = os.getenv("MEDTERM4DS_EXTRACTION_MODE", "hybrid")
 DEFAULT_MIN_GRADE = os.getenv("MEDTERM4DS_EXTRACTION_MIN_GRADE", "certain")
 DEFAULT_SECTIONS = tuple(
@@ -43,26 +42,18 @@ DEFAULT_SECTIONS = tuple(
     if s.strip()
 )
 
-# NER entity type → search category
-DEFAULT_CATEGORY_MAP: dict[str, str] = {
-    "DISEASE": "condition",
-    "DISORDER": "condition",
-    "DISEASE_DISORDER": "condition",
-    "SYMPTOM": "condition",
-    "SIGN_SYMPTOM": "condition",
-    "DIAGNOSTIC_PROCEDURE": "condition",
-    "MEDICATION": "medication",
-    "CHEMICAL": "medication",
-    "DRUG": "medication",
-    "PHARMACOLOGIC_SUBSTANCE": "medication",
-    "CLINICAL_DRUG": "medication",
-    "LAB": "lab",
-    "LABORATORY_PROCEDURE": "lab",
-    "LABORATORY_TEST_RESULT": "lab",
-    "PROCEDURE": "procedure",
-    "THERAPEUTIC_PROCEDURE": "procedure",
-    "BIOLOGICAL_STRUCTURE": "body_structure",
-    "BODY_PART_ORGAN_ORGAN_COMPONENT": "body_structure",
+# GLiNER labels → search category
+# GLiNER is zero-shot: labels are passed at query time, not baked into the model.
+# These are the default labels; callers can override via ExtractionService(labels=...).
+DEFAULT_LABELS = ["disease", "medication", "symptom", "procedure", "lab test", "body structure"]
+
+_LABEL_TO_CATEGORY: dict[str, str] = {
+    "disease": "condition",
+    "medication": "medication",
+    "symptom": "condition",
+    "procedure": "procedure",
+    "lab test": "lab",
+    "body structure": "body_structure",
 }
 
 _GRADE_ORDER = {"certain": 0, "probable": 1, "possible": 2}
@@ -73,7 +64,7 @@ class FilteredSpan:
     """A medical term found in free text, after NLP filtering."""
 
     text: str
-    entity_type: str
+    entity_type: str  # GLiNER label (e.g., "disease", "medication")
     status: str  # "affirmed" | "negated" | "uncertain" | "historical"
     section: str | None = None
     span_start: int = 0
@@ -82,7 +73,7 @@ class FilteredSpan:
 
     @property
     def category(self) -> str:
-        return DEFAULT_CATEGORY_MAP.get(self.entity_type.upper(), "condition")
+        return _LABEL_TO_CATEGORY.get(self.entity_type.lower(), "condition")
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -143,18 +134,28 @@ class ExtractedConcept:
 
 
 class NlpPipeline:
-    """medspaCy pipeline with NER and ConText.
+    """medspaCy pipeline with GLiNER zero-shot NER.
 
-    Lazy-loaded on first use. Combines:
-    - medspaCy sentence segmentation (PyRuSH)
-    - HuggingFace NER model for entity extraction
+    Combines:
+    - GLiNER zero-shot NER for entity extraction (configurable labels)
     - medspaCy ConText for negation/uncertainty/historical detection
+    - medspaCy sentence segmentation
+
+    Lazy-loaded on first use.
     """
 
-    def __init__(self, *, ner_model: str = DEFAULT_NER_MODEL):
+    def __init__(
+        self,
+        *,
+        ner_model: str = DEFAULT_NER_MODEL,
+        labels: list[str] | None = None,
+        threshold: float = 0.3,
+    ):
         self._ner_model_name = ner_model
+        self._labels = labels or DEFAULT_LABELS
+        self._threshold = threshold
         self._nlp = None
-        self._ner_pipeline = None
+        self._ner_model = None
 
     def _ensure_loaded(self):
         if self._nlp is not None:
@@ -163,50 +164,49 @@ class NlpPipeline:
         import logging as _logging
         _logging.getLogger("PyRuSH").setLevel(_logging.WARNING)
 
-        import medspacy
-        from medspacy.target_matcher import TargetMatcher, TargetRule
+        # Load GLiNER
+        from gliner import GLiNER
+        self._ner_model = GLiNER.from_pretrained(self._ner_model_name)
 
+        # Load medspaCy for ConText (disable target_matcher — we use GLiNER instead)
+        import medspacy
         self._nlp = medspacy.load(disable=["medspacy_target_matcher"])
 
-        # Load HuggingFace NER model
-        from transformers import AutoTokenizer, AutoModelForTokenClassification, pipeline as hf_pipeline
-
-        tokenizer = AutoTokenizer.from_pretrained(self._ner_model_name)
-        model = AutoModelForTokenClassification.from_pretrained(self._ner_model_name)
-        self._ner_pipeline = hf_pipeline(
-            "ner", model=model, tokenizer=tokenizer, aggregation_strategy="simple",
-        )
-
-        logger.info("NLP pipeline loaded (medspaCy + %s)", self._ner_model_name)
+        logger.info("NLP pipeline loaded (GLiNER %s + medspaCy ConText)", self._ner_model_name)
 
     def process(self, text: str) -> list[FilteredSpan]:
         """Process text and return filtered entity spans."""
         self._ensure_loaded()
 
-        # Step 1: Run HuggingFace NER
-        raw_entities = self._ner_pipeline(text)
+        # Step 1: GLiNER zero-shot NER
+        raw_entities = self._ner_model.predict_entities(
+            text, self._labels, threshold=self._threshold
+        )
 
-        # Step 2: Post-process NER output (merge fragmented tokens)
-        entities = self._merge_entities(raw_entities, text)
+        if not raw_entities:
+            return []
 
-        # Step 3: Run through medspaCy Doc for ConText annotation
+        # Step 2: Run through medspaCy Doc for ConText annotation
         doc = self._nlp(text)
 
-        # Step 4: Add HuggingFace entities as spaCy spans so ConText can annotate them
+        # Step 3: Add GLiNER entities as spaCy spans so ConText can annotate them
         from spacy.tokens import Span
 
         spacy_spans = []
-        for ent_text, ent_type, start, end, score in entities:
-            span = doc.char_span(start, end, label=ent_type, alignment_mode="expand")
+        for ent in raw_entities:
+            span = doc.char_span(
+                ent["start"], ent["end"],
+                label=ent["label"],
+                alignment_mode="expand",
+            )
             if span is not None:
                 spacy_spans.append(span)
 
-        # Set doc.ents so ConText can process them
         if spacy_spans:
             try:
                 doc.set_ents(spacy_spans)
             except Exception:
-                # Overlapping spans — filter to non-overlapping
+                # Handle overlapping spans — keep non-overlapping subset
                 filtered = []
                 last_end = -1
                 for s in sorted(spacy_spans, key=lambda x: x.start):
@@ -220,16 +220,23 @@ class NlpPipeline:
                 context = self._nlp.get_pipe("medspacy_context")
                 context(doc)
 
-        # Step 5: Build FilteredSpan results with ConText annotations
+        # Step 4: Build FilteredSpan results with ConText annotations
         spans: list[FilteredSpan] = []
-        for i, (ent_text, ent_type, start, end, score) in enumerate(entities):
+        for ent in raw_entities:
+            start = ent["start"]
+            end = ent["end"]
+            ent_type = ent["label"]
+            ent_text = text[start:end]
+            score = ent["score"]
+
+            # Check ConText status by finding the matching spaCy entity
             status = "affirmed"
-            # Check if a matching spaCy entity has ConText annotations
-            for ent in doc.ents:
-                if ent.start_char <= start < ent.end_char or (start <= ent.start_char < end):
-                    negated = getattr(ent._, "is_negated", False)
-                    uncertain = getattr(ent._, "is_uncertain", False)
-                    historical = getattr(ent._, "is_historical", False)
+            for spacy_ent in doc.ents:
+                if (spacy_ent.start_char <= start < spacy_ent.end_char or
+                    start <= spacy_ent.start_char < end):
+                    negated = getattr(spacy_ent._, "is_negated", False)
+                    uncertain = getattr(spacy_ent._, "is_uncertain", False)
+                    historical = getattr(spacy_ent._, "is_historical", False)
                     if negated:
                         status = "negated"
                     elif uncertain:
@@ -249,68 +256,28 @@ class NlpPipeline:
 
         return spans
 
-    def _merge_entities(self, raw_entities: list[dict], text: str) -> list[tuple[str, str, int, int, float]]:
-        """Merge fragmented NER tokens into clean entity spans.
-
-        The HuggingFace NER model sometimes splits words (e.g., "metformin" →
-        "met" + "formin"). This method merges adjacent entities of the same
-        type and extracts the original text from character offsets.
-        """
-        if not raw_entities:
-            return []
-
-        merged: list[tuple[str, str, int, int, float]] = []
-        current = None
-
-        for ent in raw_entities:
-            entity_type = ent["entity_group"]
-            start = ent["start"]
-            end = ent["end"]
-            score = ent["score"]
-
-            if current and entity_type == current[1] and start <= current[3] + 1:
-                # Merge with previous
-                current = (
-                    text[current[2]:max(end, current[3])],
-                    current[1],
-                    current[2],
-                    max(end, current[3]),
-                    max(score, current[4]),
-                )
-            else:
-                if current:
-                    merged.append(current)
-                current = (text[start:end], entity_type, start, end, score)
-
-        if current:
-            merged.append(current)
-
-        # Filter out very short or low-confidence entities
-        return [(t, ty, s, e, sc) for t, ty, s, e, sc in merged if len(t) >= 2 and sc >= 0.3]
-
 
 class ExtractionService:
-    """Unified text extraction service.
-
-    find_terms(): NLP only (medspaCy + NER). No SapBERT needed.
-    resolve_spans(): code resolution via SearchService.
-    extract(): convenience wrapper calling both.
-    """
+    """Unified text extraction service."""
 
     def __init__(
         self,
         *,
         ner_model: str = DEFAULT_NER_MODEL,
+        labels: list[str] | None = None,
+        threshold: float = 0.3,
         search_mode: str = DEFAULT_SEARCH_MODE,
         min_grade: str = DEFAULT_MIN_GRADE,
         section_allowlist: tuple[str, ...] = DEFAULT_SECTIONS,
-        category_mapping: dict[str, str] | None = None,
     ):
-        self._nlp = NlpPipeline(ner_model=ner_model)
+        self._nlp = NlpPipeline(
+            ner_model=ner_model,
+            labels=labels or DEFAULT_LABELS,
+            threshold=threshold,
+        )
         self._search_mode = search_mode
         self._min_grade = min_grade
         self._section_allowlist = section_allowlist
-        self._category_map = category_mapping or DEFAULT_CATEGORY_MAP
 
     def find_terms(
         self,
@@ -320,14 +287,10 @@ class ExtractionService:
         include_negated: bool = False,
         include_uncertain: bool = False,
         include_historical: bool = False,
-        section_allowlist: tuple[str, ...] | None = None,
     ) -> list[FilteredSpan]:
         """Extract medical terms from free text.
 
-        Returns FilteredSpan objects with text, entity type, ConText status,
-        and character offsets. No code resolution — use resolve_spans() or
-        extract(format='codes') for that.
-
+        Returns FilteredSpan objects. No code resolution.
         Does NOT require SapBERT/BM25 indexes.
         """
         spans = self._nlp.process(text)
@@ -346,7 +309,7 @@ class ExtractionService:
         # Filter by category
         if categories:
             cat_set = set(categories)
-            spans = [s for s in spans if self._category_map.get(s.entity_type.upper(), "condition") in cat_set]
+            spans = [s for s in spans if s.category in cat_set]
 
         # Deduplicate by text (keep highest confidence)
         seen: dict[str, FilteredSpan] = {}
@@ -363,16 +326,8 @@ class ExtractionService:
         *,
         mode: str | None = None,
         min_grade: str | None = None,
-        count: int = 1,
     ) -> list[ExtractedConcept]:
-        """Resolve filtered spans to coded concepts via search.
-
-        Takes FilteredSpan objects and searches each span text against
-        the terminology index (BM25 + SapBERT). Returns ExtractedConcept
-        objects with code, display, confidence.
-
-        Does NOT require medspaCy/NER model.
-        """
+        """Resolve filtered spans to coded concepts via search."""
         from medterm4ds.services.search import get_search_service
 
         search = get_search_service()
@@ -381,15 +336,13 @@ class ExtractionService:
 
         concepts: list[ExtractedConcept] = []
         for span in spans:
-            category = self._category_map.get(span.entity_type.upper(), "condition")
             results = search.search(
                 span.text,
                 mode=search_mode,
-                count=count,
+                count=1,
             )
-            # Filter by category and min_grade
             for r in results:
-                if r.category and r.category != category:
+                if r.category and r.category != span.category:
                     continue
                 if _GRADE_ORDER.get(r.match_grade, 2) > _GRADE_ORDER.get(grade_threshold, 0):
                     continue
@@ -402,11 +355,11 @@ class ExtractionService:
                     section=span.section,
                     confidence=r.score,
                     match_grade=r.match_grade,
-                    category=category,
+                    category=span.category,
                     span_start=span.span_start,
                     span_end=span.span_end,
                 ))
-                break  # Only take top result per span
+                break
 
         # Deduplicate by code (keep highest confidence)
         seen: dict[str, ExtractedConcept] = {}
@@ -429,19 +382,7 @@ class ExtractionService:
         include_uncertain: bool = False,
         include_historical: bool = False,
     ) -> list[FilteredSpan] | list[ExtractedConcept]:
-        """Extract medical concepts from free text.
-
-        Parameters
-        ----------
-        text : Free clinical text.
-        format : "codes" (default) returns ExtractedConcept with resolved codes.
-                 "terms" returns FilteredSpan (text spans only, no SapBERT).
-        categories : Restrict to search categories (e.g., ["condition", "medication"]).
-        mode : Search mode for code resolution ("lexical", "semantic", "hybrid").
-        min_grade : Minimum match grade ("certain", "probable", "possible").
-        include_negated / include_uncertain / include_historical : Include
-            filtered-out ConText statuses.
-        """
+        """Extract medical concepts from free text."""
         spans = self.find_terms(
             text,
             categories=categories,
@@ -478,9 +419,5 @@ def resolve_spans(spans: list[FilteredSpan], **kwargs) -> list[ExtractedConcept]
 
 
 def extract(text: str, *, format: str = "codes", **kwargs) -> list[FilteredSpan] | list[ExtractedConcept]:
-    """Extract medical concepts from free text.
-
-    format="codes" (default): returns ExtractedConcept with resolved codes.
-    format="terms": returns FilteredSpan (text spans only).
-    """
+    """Extract medical concepts from free text."""
     return get_extraction_service().extract(text, format=format, **kwargs)
