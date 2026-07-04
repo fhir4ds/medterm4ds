@@ -49,7 +49,7 @@ curl "http://127.0.0.1:8001/fhir/CodeSystem/\$search?query=high+blood+sugar&sear
 ## Conformance
 
 ```bash
-make fhir-conformance    # 34 test cases, ~18 seconds
+make fhir-conformance    # 35 test cases covering all 7 operations + $search + $extract + error paths
 ```
 
-See the [FHIR Terminology Server](../interfaces/fhir-server.md) page for all 7 operations.
+See the [FHIR Terminology Server](../../interfaces/fhir-server.md) page for all 7 operations + custom `$search` + `$extract` + `/health`.

@@ -26,7 +26,7 @@ Build characteristics:
 
 The downloader defaults to `releaseType=umls-metathesaurus-full-subset`.
 Use `release_version` or `--release-version` for reproducible builds, for
-example `2025AB`.
+example `2026AA`.
 
 Some UMLS release packages are flat `MR*.RRF` files. Other packages may contain
 `.nlm` archives with split `MR*.RRF.*.gz` shards. Those shards are chunks of one

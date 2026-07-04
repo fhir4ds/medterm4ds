@@ -28,18 +28,19 @@ mapping = terms.map_df("ICD10CM", ["E11.9"], target_sources=["SNOMEDCT_US"])
 
 ## Input Conventions
 
-The Terminology client uses `(source, code)` tuples:
+The Terminology client and all lower-level service functions use the canonical
+`(source, code)` tuple order — same as `CodeRef(source=, code=)`, same as
+FHIR Coding `{system, code}`:
 
 ```python
 terms.lookup(("ICD10CM", "E11.9"))
-```
-
-Lower-level service functions preserve medterm's historical `(code, source)`
-tuple convention. Use `CodeRef` when passing code inputs across layers:
-
-```python
+# Same thing, more explicit:
 mt.CodeRef("ICD10CM", "E11.9")
 ```
+
+(Earlier 0.0.x releases had a `(code, source)` convention in some helpers
+that caused silent source/code swaps when refactoring between tuple and
+CodeRef forms; that was unified in v0.0.2.)
 
 All source names are normalized by `CodeRef`, so aliases such as `LOINC` and
 `ICD10-CM` normalize to the internal source names used by UMLS.

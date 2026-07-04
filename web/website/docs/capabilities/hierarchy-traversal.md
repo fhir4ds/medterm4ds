@@ -45,9 +45,11 @@ medterm4ds walks the source-native hierarchy:
 
 The engine uses prepared `mt4ds.walk_edges` tables for fast traversal when available, falling back to recursive CTEs on raw `mrrel` for unprepared databases.
 
+For wide SNOMED subtrees (e.g., descendants of Diabetes Mellitus), the recursive CTE path enumerates all paths via a path-string column and explodes. FHIR `$subsumes` and `$expand?fhir_vs=isa` use a layer-by-layer BFS that visits each node once (O(nodes) not O(paths)) — `$subsumes` on Diabetes Mellitus (was timing out at 60s+) now returns in ~750ms.
+
 ## Cycle detection
 
-All hierarchy walks use delimited path tracking (`>code>`) to prevent infinite loops. Safe on any hierarchy structure.
+All hierarchy walks use either delimited path tracking (`>code>`) on the recursive CTE path or a visited set on the BFS path. Safe on any hierarchy structure.
 
 ## FHIR $subsumes
 
@@ -58,4 +60,6 @@ curl "http://127.0.0.1:8001/fhir/CodeSystem/\$subsumes?system=http://snomed.info
 # → outcome: subsumes
 ```
 
-Outcomes: `equivalent`, `subsumes`, `subsumed-by`, `not-subsumed`.
+Outcomes: `equivalent`, `subsumes`, `subsumed-by`, `not-subsumed`. The walk
+uses BFS with early-exit (`stop_at=candidate`) so the typical 1-hop case is
+a single SQL query.

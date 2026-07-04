@@ -27,7 +27,7 @@ import medterm4ds as mt
 
 archive = mt.download_umls_release(
     output_dir="data/umls",
-    release_version="2025AB",
+    release_version="2026AA",
     extract=True,
 )
 ```
@@ -59,7 +59,7 @@ SNOMED mapping targets.
 
 ```python
 db_path = mt.build_umls_duckdb(
-    rrf_dir="data/umls/umls-2025AB-metathesaurus-full/2025AB/META",
+    rrf_dir="data/umls/umls-2026AA-metathesaurus-full/2026AA/META",
     output_db="data/umls_current.duckdb",
     replace=True,
 )
@@ -79,7 +79,7 @@ mt.annotate_umls_duckdb(
 mt.annotate_umls_duckdb(
     db_path,
     db_role="current_candidate",
-    release_version="2025AB",
+    release_version="2026AA",
 )
 ```
 

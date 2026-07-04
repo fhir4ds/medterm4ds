@@ -100,7 +100,8 @@ terms.patient_friendly_df(refs)
 ```
 
 The client accepts `(source, code)` tuples, but `CodeRef` is clearer for
-mixed-source work and avoids confusion with lower-level service tuple ordering.
+mixed-source work. Both forms use the same canonical order — `(source, code)`,
+matching FHIR Coding `{system, code}`.
 
 ## Return Behavior
 

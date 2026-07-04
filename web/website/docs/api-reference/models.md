@@ -20,8 +20,12 @@ ref.source  # "ICD10CM"
 ref.code    # "E11.9"
 ```
 
-`CodeRef.from_pair((code, source))` and `ref.as_pair()` use the lower-level
-service convention `(code, source)`.
+`CodeRef.from_pair((source, code))` and `ref.as_pair()` both use the canonical
+`(source, code)` order — same as the dataclass field order, same as the
+Terminology facade, same as FHIR Coding `{system, code}`. (Earlier 0.0.x
+releases used a legacy `(code, source)` order in some helpers; that ambiguity
+was removed because it caused silent source/code swaps when refactoring
+between tuple and CodeRef forms.)
 
 ## CodeInfo
 

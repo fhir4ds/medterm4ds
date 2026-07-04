@@ -3,8 +3,8 @@ title: Service Functions
 ---
 
 Service functions are lower-level batch APIs for applications that need direct
-engine control. They accept `CodeRef` objects or medterm-compatible
-`(code, source)` tuples.
+engine control. They accept `CodeRef` objects or `(source, code)` tuples —
+same order as `CodeRef(source=, code=)` and FHIR Coding `{system, code}`.
 
 Most notebook users should prefer the [Terminology Client](./terminology-client.md).
 

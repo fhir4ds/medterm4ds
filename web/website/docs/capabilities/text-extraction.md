@@ -29,8 +29,8 @@ for c in concepts:
 spans = mt.extract("Patient has T2DM on metformin. No CKD.", format="terms")
 for s in spans:
     print(f"  '{s.text}' type={s.entity_type} status={s.status}")
-# → 'T2DM' type=Disease_disorder status=affirmed
-# → 'metformin' type=Medication status=affirmed
+# → 'T2DM' type=disease status=affirmed
+# → 'metformin' type=medication status=affirmed
 ```
 
 ## Decomposed architecture
@@ -109,19 +109,46 @@ spans = mt.find_terms(text, include_historical=True)
 
 ## NER model
 
-Default: `d4data/biomedical-ner-all` (~80-85% F1, ~150ms/note on CPU).
+Default: `E3-JSI/gliner-multi-med-ner-synthetic-v1` (GLiNER zero-shot, ~250ms/note on CPU).
 
-Entity types: Disease/Disorder, Medication, Chemical, Diagnostic Procedure, Biological Structure.
+Switched from `d4data/biomedical-ner-all` (spaCy NER) in mid-2026 after
+testing showed d4data missed acronyms like "T2DM" and short attestations
+like "CKD" entirely. GLiNER is zero-shot — labels are passed at query time,
+not baked into the model. Default labels:
 
-Model is swappable via environment variable:
+- `disease` (mapped to category `condition`)
+- `medication` (mapped to category `medication`)
+- `symptom` (mapped to category `condition`)
+- `procedure` (mapped to category `procedure`)
+- `lab test` (mapped to category `lab`)
+- `body structure` (mapped to category `body_structure`)
+
+Override labels via `ExtractionService(labels=[...])`. Model is swappable
+via environment variable:
 ```bash
 export MEDTERM4DS_NER_MODEL="your-org/your-model"
+```
+
+A false-positive blocklist filters common non-medical words ("Patient",
+"male", "female", "year", "old") that GLiNER may emit at threshold 0.3.
+Inline negation triggers (e.g., "No evidence of CKD" extracted as one span)
+are detected via regex and the trigger stripped before code resolution.
+
+## Input length cap
+
+`$extract` input text is capped at `MEDTERM4DS_MAX_EXTRACT_TEXT_CHARS`
+(default 100000 chars — ~50 pages of clinical text). POST bodies larger
+than that return 400 with a clear OperationOutcome. Override via env var
+if you have a pipeline sending larger documents:
+
+```bash
+export MEDTERM4DS_MAX_EXTRACT_TEXT_CHARS=200000
 ```
 
 ## Dependencies
 
 ```bash
-pip install medterm4ds[extraction]  # adds medspaCy + transformers
+pip install medterm4ds[extraction]  # adds gliner + medspacy + transformers
 ```
 
-No GPU required. ~250ms/note on CPU (medspaCy ~30ms + NER ~150ms + search ~100ms).
+No GPU required. ~250ms/note on CPU (medspaCy ~30ms + GLiNER ~120ms + search ~100ms).

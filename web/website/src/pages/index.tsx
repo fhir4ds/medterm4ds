@@ -63,13 +63,14 @@ for c in concepts:
     code: `pip install medterm4ds[fhir]
 python -m medterm4ds.apps.fhir_api
 
-# 7 FHIR R4 operations:
+# 7 FHIR R4 operations + 2 custom:
 # $lookup, $validate-code, $translate,
-# $subsumes, $expand, $closure, $search
+# $subsumes, $expand, $closure
+# + $search (text→code), $extract (NER)
 
 curl "http://127.0.0.1:8001/fhir/CodeSystem/\\$lookup?\\
 system=http://snomed.info/sct&code=44054006"`,
-    desc: 'Full FHIR R4 terminology server with 7 standard operations plus custom $search.',
+    desc: 'Full FHIR R4 terminology server with 7 standard operations plus custom $search and $extract.',
   },
 ];
 
@@ -102,7 +103,7 @@ const features = [
   {
     icon: '✅',
     title: 'FHIR R4 Conformant',
-    body: '7 standard terminology operations ($lookup, $validate-code, $translate, $subsumes, $expand, $closure). Validated against HAPI FHIR reference server.',
+    body: '7 standard terminology operations ($lookup, $validate-code, $translate, $subsumes, $expand, $closure) plus custom $search and $extract. 35 declarative conformance tests covering all operations + error paths.',
   },
 ];
 

@@ -13,7 +13,7 @@ import medterm4ds as mt
 archive = mt.download_umls_release(
     output_dir="data/umls",
     api_key=os.environ["UMLS_API_KEY"],
-    release_version="2025AB",
+    release_version="2026AA",
     extract=True,
 )
 
@@ -25,14 +25,14 @@ Those releases usually extract into flat `MR*.RRF` files:
 
 ```python
 db_path = mt.build_umls_duckdb(
-    rrf_dir="data/umls/umls-2025AB-metathesaurus-full/2025AB/META",
+    rrf_dir="data/umls/umls-2026AA-metathesaurus-full/2026AA/META",
     output_db="data/umls_current.duckdb",
     replace=True,
 )
 mt.annotate_umls_duckdb(
     db_path,
     db_role="current_candidate",
-    release_version="2025AB",
+    release_version="2026AA",
     source_archive=archive,
 )
 
@@ -64,12 +64,12 @@ The builder supports:
 CLI equivalents are available for operational scripts:
 
 ```bash
-medterm4ds data download --output-dir data/umls --release-version 2025AB --extract
+medterm4ds data download --output-dir data/umls --release-version 2026AA --extract
 medterm4ds data build-duckdb \
-  --rrf-dir data/umls/umls-2025AB-metathesaurus-full/2025AB/META \
+  --rrf-dir data/umls/umls-2026AA-metathesaurus-full/2026AA/META \
   --output-db data/umls_current.duckdb \
   --db-role current_candidate \
-  --release-version 2025AB \
+  --release-version 2026AA \
   --replace
 medterm4ds data prepare-derived --db data/umls_current.duckdb --replace
 medterm4ds data verify --db data/umls_current.duckdb
@@ -79,7 +79,7 @@ The repository also includes a convenience script:
 
 ```bash
 python3 scripts/download_umls_release.py \
-  --release-version 2025AB \
+  --release-version 2026AA \
   --output-dir data/umls \
   --extract \
   --build \
@@ -88,11 +88,11 @@ python3 scripts/download_umls_release.py \
   --replace
 ```
 
-For a fixed 2025AB parity fixture from an existing archive:
+For a fixed 2026AA parity fixture from an existing archive:
 
 ```bash
 python3 scripts/download_umls_release.py \
-  --archive /mnt/d/medterm/data/umls-2025AB-metathesaurus-full.zip \
+  --archive /mnt/d/medterm/data/umls-2026AA-metathesaurus-full.zip \
   --output-dir data/umls \
   --extract \
   --build \
