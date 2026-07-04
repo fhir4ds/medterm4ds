@@ -52,11 +52,6 @@ MAX_EXTRACT_TEXT_CHARS = int(os.getenv("MEDTERM4DS_MAX_EXTRACT_TEXT_CHARS", "100
 # as HTML, and against log-injection via control chars.
 MAX_ERROR_FIELD_CHARS = 256
 DEFAULT_SEARCH_INDEX_DIR = "/mnt/d/fhir4px-model/dist/naming_bm25"
-_PATIENT_FRIENDLY_CACHE: dict[str, dict[str, dict[str, Any]]] = {}
-
-# BM25 index storage (loaded once on startup).
-_bm25_indexes: dict[str, list[dict[str, Any]]] = {}
-_bm25_doc_count: dict[str, int] = {}
 
 
 @dataclass(frozen=True)
@@ -83,10 +78,12 @@ class FhirApiSettings:
 
 
 def _load_bm25_indexes(search_dir: str) -> dict[str, Any]:
-    """Load pre-built BM25 JSON indexes on startup.
+    """Probe the BM25 search index directory and report what's available.
 
-    Returns a summary dict with `loaded` (list of categories) and `missing`
-    (list of categories) so the caller can produce a clear startup banner.
+    Does NOT load indexes into a module global — services.search.SearchService
+    owns the indexes now (single source of truth, shared across all four
+    surfaces). This function just produces a summary dict so the startup
+    banner can tell operators what's available and what's missing.
     """
     expected = ("condition", "lab", "medication", "procedure", "vaccine", "body_structure")
     search_path = Path(search_dir)
@@ -96,11 +93,11 @@ def _load_bm25_indexes(search_dir: str) -> dict[str, Any]:
             "(set MEDTERM4DS_SEARCH_INDEX_DIR to enable $search lexical/hybrid)",
             search_dir,
         )
-        return {"loaded": [], "missing": list(expected), "dir": search_dir}
+        return {"loaded": [], "missing": list(expected), "flat_format": [], "dir": search_dir}
 
     loaded: list[str] = []
     missing: list[str] = []
-    flat_format: list[str] = []  # categories loaded as legacy flat document list
+    flat_format: list[str] = []
     for category in expected:
         json_path = search_path / f"{category}_bm25.json"
         if not json_path.exists():
@@ -110,55 +107,57 @@ def _load_bm25_indexes(search_dir: str) -> dict[str, Any]:
             with json_path.open() as f:
                 index = json.load(f)
             if isinstance(index, dict) and "postings" in index:
-                _bm25_indexes[category] = index
-                _bm25_doc_count[category] = index.get("num_records", 0)
                 loaded.append(category)
+                logger.info("  BM25 %s: %d records", category, index.get("num_records", 0))
             elif isinstance(index, list):
-                _bm25_indexes[category] = index
-                _bm25_doc_count[category] = len(index)
                 loaded.append(category)
                 flat_format.append(category)
+                logger.info("  BM25 %s: %d records (flat)", category, len(index))
         except Exception:
             logger.exception("Failed to load BM25 index: %s", json_path)
             missing.append(category)
 
-    for category in loaded:
-        marker = " (flat)" if category in flat_format else ""
-        logger.info("  BM25 %s: %d records%s", category, _bm25_doc_count.get(category, 0), marker)
-
     return {"loaded": loaded, "missing": missing, "flat_format": flat_format, "dir": search_dir}
 
 
-def _load_patient_friendly_cache(db_path: Path) -> dict[str, Any]:
-    """Load patient_friendly JSONs for fast $lookup custom properties."""
-    baseline = Path(os.getenv("MEDTERM4DS_FHIR4PX_BASELINE", "/mnt/d/medterm4ds/reports/fhir4px"))
-    sources = ("snomedct_us", "rxnorm", "icd10cm", "lnc", "cvx")
-    loaded: list[str] = []
-    missing: list[str] = []
-    for source_lower in sources:
-        json_path = baseline / f"patient_friendly_{source_lower}.json"
-        if json_path.exists():
-            try:
-                with json_path.open() as f:
-                    _PATIENT_FRIENDLY_CACHE[source_lower] = json.load(f)
-                loaded.append(source_lower)
-            except Exception:
-                logger.info(
-                    "Could not parse patient_friendly JSON %s — "
-                    "patient-friendly custom properties will be skipped for %s",
-                    json_path, source_lower,
-                )
+class _PatientFriendlyCache:
+    """Per-app cache of patient-friendly JSON data.
+
+    Was a module-global dict — moved to a class so multiple FHIR apps in one
+    process get independent caches (test isolation, multi-tenant). Loaded
+    once at startup, read on every $lookup.
+    """
+
+    def __init__(self) -> None:
+        self._data: dict[str, dict[str, dict[str, Any]]] = {}
+
+    def load(self, db_path: Path) -> dict[str, Any]:
+        """Load patient_friendly JSONs. Returns a summary dict for the banner."""
+        baseline = Path(os.getenv("MEDTERM4DS_FHIR4PX_BASELINE", "/mnt/d/medterm4ds/reports/fhir4px"))
+        sources = ("snomedct_us", "rxnorm", "icd10cm", "lnc", "cvx")
+        loaded: list[str] = []
+        missing: list[str] = []
+        for source_lower in sources:
+            json_path = baseline / f"patient_friendly_{source_lower}.json"
+            if json_path.exists():
+                try:
+                    with json_path.open() as f:
+                        self._data[source_lower] = json.load(f)
+                    loaded.append(source_lower)
+                except Exception:
+                    logger.info(
+                        "Could not parse patient_friendly JSON %s — "
+                        "patient-friendly custom properties will be skipped for %s",
+                        json_path, source_lower,
+                    )
+                    missing.append(source_lower)
+            else:
                 missing.append(source_lower)
-        else:
-            missing.append(source_lower)
-    return {"loaded": loaded, "missing": missing, "dir": str(baseline)}
+        return {"loaded": loaded, "missing": missing, "dir": str(baseline)}
 
-
-def _get_patient_friendly(source: str, code: str) -> dict[str, Any] | None:
-    """Look up pre-computed patient-friendly data for a code."""
-    source_lower = source.lower()
-    cache = _PATIENT_FRIENDLY_CACHE.get(source_lower, {})
-    return cache.get(code)
+    def get(self, source: str, code: str) -> dict[str, Any] | None:
+        """Look up pre-computed patient-friendly data for a code."""
+        return self._data.get(source.lower(), {}).get(code)
 
 
 def _log_startup_banner(
@@ -283,7 +282,15 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
         app.state.ready = True
         # Load optional search + patient-friendly caches and print a startup banner.
         bm25_summary = _load_bm25_indexes(app_settings.search_index_dir)
-        pf_summary = _load_patient_friendly_cache(app_settings.db_path)
+        pf_cache = _PatientFriendlyCache()
+        pf_summary = pf_cache.load(app_settings.db_path)
+        app.state.patient_friendly_cache = pf_cache
+        # Configure the SearchService singleton with FHIR's settings. Without
+        # this, the singleton would lazily initialize from env vars on first
+        # $search call — fine in production but breaks test isolation (one
+        # test's loaded indexes pollute the next test's "should be 503" case).
+        from medterm4ds.services.search import configure_search_service
+        configure_search_service(search_index_dir=app_settings.search_index_dir)
         _log_startup_banner(app_settings, bm25_summary, pf_summary)
         try:
             yield
@@ -402,7 +409,11 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
         code: str = Query(..., description="The code to look up"),
         version: str | None = Query(None),
     ):
-        return await _run_db(_executor(request), _do_lookup, _engine(request), system, code)
+        return await _run_db(
+            _executor(request), _do_lookup, _engine(request),
+            request.app.state.patient_friendly_cache,
+            system, code,
+        )
 
     @app.post("/fhir/CodeSystem/$lookup")
     async def lookup_post(request: Request, body: dict[str, Any]):
@@ -411,9 +422,18 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
         code = params.get("code")
         if not system or not code:
             return _fhir_error(400, "system and code are required.")
-        return await _run_db(_executor(request), _do_lookup, _engine(request), system, code)
+        return await _run_db(
+            _executor(request), _do_lookup, _engine(request),
+            request.app.state.patient_friendly_cache,
+            system, code,
+        )
 
-    def _do_lookup(engine: LocalDuckDBEngine, system_uri: str, code: str):
+    def _do_lookup(
+        engine: LocalDuckDBEngine,
+        pf_cache: _PatientFriendlyCache,
+        system_uri: str,
+        code: str,
+    ):
         source = fhir_uri_to_system(system_uri)
         if source is None:
             return _fhir_error(400, f"Unrecognized system URI: {system_uri}")
@@ -422,7 +442,7 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
 
         # Enrich with patient_friendly custom properties
         custom_props: dict[str, Any] = {}
-        pf = _get_patient_friendly(source, code)
+        pf = pf_cache.get(source, code)
         if pf:
             custom_props["patient-friendly"] = pf.get("name")
             custom_props["match-type"] = pf.get("match_type")
@@ -948,68 +968,63 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
         count: int,
         search_mode: str,
     ):
-        # Determine which categories to search
+        # Delegate to services.search.SearchService — eliminates the FHIR-local
+        # BM25 + semantic duplication. SearchService is the canonical impl used
+        # by all four surfaces (lib, CLI, MCP, FHIR); we just shape its
+        # SearchResult list into a FHIR Bundle here.
+        from medterm4ds.services.search import get_search_service
+
+        # Resolve system_uri → sources list (SearchService resolves sources →
+        # categories internally via _SOURCE_TO_CATEGORIES, same mapping the old
+        # _source_to_categories used).
+        sources: list[str] | None = None
         if system_uri:
             source = fhir_uri_to_system(system_uri)
             if source is None:
                 return _fhir_error(400, f"Unrecognized system URI: {system_uri}")
-            categories = _source_to_categories(source)
-        else:
-            categories = list(_bm25_indexes.keys()) or [
-                "condition", "lab", "medication", "procedure", "vaccine", "body_structure"
-            ]
+            sources = [source]
 
-        if search_mode == "lexical":
-            if not _bm25_indexes:
+        try:
+            service = get_search_service()
+            # Probe availability up-front so we return clean 503s instead of
+            # letting SearchService raise inside the executor (would surface
+            # as 500).
+            if search_mode in ("lexical", "hybrid") and not service.lexical_available:
                 return _fhir_error(
                     503,
                     "BM25 search index not loaded. Set MEDTERM4DS_SEARCH_INDEX_DIR.",
                 )
-            results = _bm25_search(query_text, categories, count)
-            return build_bundle_search(results, query=query_text, search_mode="lexical")
-
-        if search_mode == "semantic":
-            from medterm4ds.engines.fhir.semantic import get_semantic_engine
-            engine = get_semantic_engine()
-            if not engine.is_available:
+            if search_mode == "semantic" and not service.semantic_available:
                 return _fhir_error(
                     503,
                     "Embedding model not found. Set MEDTERM4DS_EMBEDDING_MODEL_DIR.",
                 )
-            results = engine.search(query_text, categories=categories, top_k=count)
-            # Normalize system names to FHIR URIs
-            for r in results:
-                r["system"] = system_to_fhir_uri(r["system"].upper()) or r["system"]
-            return build_bundle_search(results, query=query_text, search_mode="semantic")
-
-        if search_mode == "hybrid":
-            # Stage 1: BM25 retrieve top 50 candidates
-            if not _bm25_indexes:
-                return _fhir_error(
-                    503,
-                    "BM25 search index not loaded. Set MEDTERM4DS_SEARCH_INDEX_DIR.",
-                )
-            from medterm4ds.engines.fhir.semantic import get_semantic_engine
-            sem_engine = get_semantic_engine()
-            if not sem_engine.is_available:
+            if search_mode == "hybrid" and not service.semantic_available:
                 return _fhir_error(
                     503,
                     "Embedding model not found. Set MEDTERM4DS_EMBEDDING_MODEL_DIR.",
                 )
-            bm25_results = _bm25_search(query_text, categories, min(count * 3, 50))
-            if not bm25_results:
-                # BM25 returned nothing — fall back to semantic
-                results = sem_engine.search(query_text, categories=categories, top_k=count)
-                for r in results:
-                    r["system"] = system_to_fhir_uri(r["system"].upper()) or r["system"]
-                return build_bundle_search(results, query=query_text, search_mode="semantic-fallback")
-            # Stage 2: SapBERT re-rank
-            reranked = sem_engine.rerank(query_text, bm25_results, top_k=count)
-            for r in reranked:
-                r["system"] = system_to_fhir_uri(str(r.get("system", "")).upper()) or r.get("system", "")
-            return build_bundle_search(reranked, query=query_text, search_mode="hybrid")
 
-        return _fhir_error(400, f"Unknown searchMode: {search_mode}")
+            results = service.search(
+                query_text, mode=search_mode, sources=sources, count=count,
+            )
+        except RuntimeError as exc:
+            # SearchService raises RuntimeError when indexes/models aren't
+            # available — translate to 503.
+            return _fhir_error(503, str(exc))
+
+        # Convert SearchResult list → FHIR Bundle entry dicts.
+        entries = []
+        for r in results:
+            sys_uri = system_to_fhir_uri(r.source.upper()) or r.source
+            entries.append({
+                "code": r.code,
+                "system": sys_uri,
+                "display": r.display,
+                "score": r.score,
+                "match_grade": r.match_grade,
+            })
+        return build_bundle_search(entries, query=query_text, search_mode=search_mode)
 
     def _parse_parameters(body: dict[str, Any]) -> dict[str, str]:
         """Extract named parameters from a FHIR Parameters resource body."""
@@ -1048,162 +1063,6 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
 
     app.state.ready = False
     return app
-
-
-def _source_to_categories(source: str) -> list[str]:
-    """Map an internal source name to BM25 search categories."""
-    mapping = {
-        "SNOMEDCT_US": ["condition", "lab", "medication", "procedure", "vaccine", "body_structure"],
-        "ICD10CM": ["condition"],
-        "ICD10PCS": ["procedure"],
-        "RXNORM": ["medication"],
-        "LNC": ["lab"],
-        "CPT": ["procedure"],
-        "HCPCS": ["procedure"],
-        "CVX": ["vaccine"],
-    }
-    return mapping.get(source, [])
-
-
-def _stem_token(token: str) -> str:
-    """Simple Porter-like stemmer to match pre-built BM25 tokenization.
-
-    The BM25 indexes use aggressive stemming (e.g., 'diabetes' → 'diabete',
-    'infections' → 'infection', 'containing' → 'contain'). This stemmer
-    applies common English suffix stripping to approximate that.
-    """
-    token = token.lower()
-    for suffix in ("ational", "tional", "iveness", "fulness", "ousness",
-                   "ization", "ization", "ation", "ations",
-                   "izer", "ator", "alism", "iciti", "ical", "ness",
-                   "ements", "ement", "ments", "ment",
-                   "iences", "ience", "iable", "iable",
-                   "ing", "ies", "ied", "ies", "ied",
-                   "ily", "ily",
-                   "sses", "ies", "ss", "s",
-                   "y", "e"):
-        if token.endswith(suffix) and len(token) > len(suffix) + 2:
-            if suffix == "ies":
-                return token[:-3] + "i"
-            if suffix == "ied":
-                return token[:-3] + "i"
-            if suffix == "sses":
-                return token[:-2]
-            if suffix == "s" and not token.endswith("ss"):
-                return token[:-1]
-            if suffix == "e" and token.endswith("e") and len(token) > 3:
-                return token[:-1]
-            if suffix == "ing":
-                return token[:-3]
-            if suffix == "y":
-                return token[:-1] + "i"
-            return token[: -len(suffix)]
-    return token
-
-
-def _bm25_search(query: str, categories: list[str], count: int) -> list[dict[str, Any]]:
-    """BM25 lexical search using pre-built inverted indexes.
-
-    Supports two index formats:
-    1. Pre-built BM25 (dict with postings/idf/rid_to_code): proper BM25 scoring
-    2. Flat document list (legacy): token-overlap scoring
-    """
-    import math
-
-    query_tokens = query.lower().split()
-    if not query_tokens:
-        return []
-
-    results: list[dict[str, Any]] = []
-    for category in categories:
-        index = _bm25_indexes.get(category)
-        if index is None:
-            continue
-
-        if isinstance(index, dict) and "postings" in index:
-            # Pre-built BM25 inverted index
-            postings = index["postings"]
-            idf = index.get("idf", {})
-            doc_lengths = index.get("doc_lengths", [])
-            avg_doc_length = index.get("avg_doc_length", 20.0) or 20.0
-            rid_to_code = index.get("rid_to_code", [])
-            rid_to_friendly = index.get("rid_to_friendly_name", [])
-            rid_to_system = index.get("rid_to_system", [])
-
-            # Accumulate BM25 scores per document
-            scores: dict[int, float] = {}
-            for raw_token in query_tokens:
-                # Try raw token, then stemmed version
-                token = raw_token
-                if token not in postings:
-                    token = _stem_token(raw_token)
-                if token not in postings:
-                    continue
-                token_idf = idf.get(token, idf.get(raw_token, 1.0))
-                for entry in postings[token]:
-                    if isinstance(entry, list) and len(entry) >= 2:
-                        rid, tf = int(entry[0]), float(entry[1])
-                    else:
-                        continue
-                    doc_len = doc_lengths[rid] if rid < len(doc_lengths) else avg_doc_length
-                    # BM25 formula: k1=1.5, b=0.75
-                    k1, b = 1.5, 0.75
-                    tf_component = (tf * (k1 + 1)) / (tf + k1 * (1 - b + b * doc_len / avg_doc_length))
-                    scores[rid] = scores.get(rid, 0.0) + token_idf * tf_component
-
-            # Convert to results
-            for rid, score in sorted(scores.items(), key=lambda x: -x[1])[:count]:
-                code = rid_to_code[rid] if rid < len(rid_to_code) else str(rid)
-                display = rid_to_friendly[rid] if rid < len(rid_to_friendly) else code
-                sys_name = rid_to_system[rid] if rid < len(rid_to_system) else ""
-                system_uri = system_to_fhir_uri(sys_name.upper()) if sys_name else ""
-                # Normalize BM25 score to 0-1 range (rough: divide by max possible)
-                normalized = min(score / (sum(idf.get(t, 1.0) for t in query_tokens) * 2.5 + 0.001), 1.0)
-                results.append({
-                    "code": str(code),
-                    "system": system_uri or sys_name,
-                    "display": display,
-                    "score": round(normalized, 4),
-                    "match_grade": _score_to_grade(normalized),
-                })
-
-        elif isinstance(index, list):
-            # Legacy flat document list — token overlap scoring
-            query_token_set = set(query_tokens)
-            for doc in index:
-                text_parts = []
-                for field in ("friendly_name", "name", "display"):
-                    val = doc.get(field) if isinstance(doc, dict) else None
-                    if val:
-                        text_parts.append(str(val).lower())
-                for syn in (doc.get("synonyms") or [] if isinstance(doc, dict) else []):
-                    text_parts.append(str(syn).lower())
-                doc_text = " ".join(text_parts)
-                doc_tokens = set(doc_text.split())
-                overlap = len(query_token_set & doc_tokens)
-                if overlap == 0:
-                    continue
-                score = overlap / math.sqrt(len(query_token_set) * len(doc_tokens or 1))
-                code_info = doc.get("code", doc) if isinstance(doc, dict) else {}
-                results.append({
-                    "code": str(code_info.get("code", "")) if isinstance(code_info, dict) else str(doc.get("id", "")),
-                    "system": system_to_fhir_uri(str(code_info.get("source", "")).upper()) if isinstance(code_info, dict) else "",
-                    "display": doc.get("friendly_name") or doc.get("name", "") if isinstance(doc, dict) else "",
-                    "score": round(score, 4),
-                    "match_grade": _score_to_grade(score),
-                })
-
-    results.sort(key=lambda r: r["score"], reverse=True)
-    return results[:count]
-
-
-def _score_to_grade(score: float) -> str:
-    """Map a normalized search score to a match-grade (Patient $match pattern)."""
-    if score >= 0.8:
-        return "certain"
-    if score >= 0.4:
-        return "probable"
-    return "possible"
 
 
 def main() -> int:

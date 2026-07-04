@@ -55,7 +55,7 @@ class StaticTerminologyEngine:
             )
         ]
 
-    def get_code_relations(self, codes, *, direction, max_depth=1):
+    def get_code_relations(self, codes, *, direction, max_depth=1, limit=None):
         return [
             CodeRelation(
                 source=codes[0],

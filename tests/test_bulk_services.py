@@ -47,7 +47,7 @@ class StaticEngine:
             for code in codes
         ]
 
-    def get_code_relations(self, codes, *, direction, max_depth=1):
+    def get_code_relations(self, codes, *, direction, max_depth=1, limit=None):
         self.hierarchy_batches.append(list(codes))
         return [
             CodeRelation(

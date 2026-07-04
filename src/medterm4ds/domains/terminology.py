@@ -253,7 +253,7 @@ def drugs_for_indication(
     if code is not None and not source:
         raise ValueError("source is required when code is provided.")
 
-    from medterm4ds.engines.duckdb.indications import (
+    from medterm4ds.services.indications import (
         _INDICATION_TARGET_TTYS,
         format_condition_medication_row,
         validate_indication_relationships,

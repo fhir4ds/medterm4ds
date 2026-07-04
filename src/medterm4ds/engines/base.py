@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
-from typing import Literal, Protocol
+from typing import Any, Literal, Protocol
 
 from medterm4ds.core.models import (
     CodeInfo,
@@ -130,6 +130,32 @@ class OptimizeEngine(Protocol):
         ...
 
 
+class IndicationsEngine(Protocol):
+    """Optional engine contract for indication (condition → medication) queries.
+
+    Implemented by LocalDuckDBEngine; not all engines support this. Domain
+    code should check via `isinstance(engine, IndicationsEngine)` or `hasattr`
+    before calling. Lives outside the main TerminologyEngine protocol because
+    it's a duckdb-specific feature (recursive CTE over UMLS RB/RELA edges).
+    """
+
+    def get_drugs_for_indication(
+        self,
+        candidates: Sequence[CodeRef],
+        *,
+        relationships: Sequence[str],
+        max_depth: int,
+        limit: int,
+        include_product_groups: bool,
+    ) -> list[tuple[Any, ...]]:
+        """Return raw rows for medications of the given condition candidates."""
+        ...
+
+    def get_ndcs_for_rxcuis(self, rxcuis: Sequence[str]) -> dict[str, list[str]]:
+        """Return FDA NDCs indexed by RxNorm RxNorm-ingredient code."""
+        ...
+
+
 class TerminologyEngine(
     LookupEngine,
     HierarchyEngine,
@@ -144,4 +170,9 @@ class TerminologyEngine(
 
     Engines may be local, remote, or test doubles. Service modules should depend
     on this protocol instead of a concrete execution mode.
+
+    Note: `IndicationsEngine` is intentionally NOT part of this union — it's
+    an optional duckdb-specific capability. Domain code that needs it should
+    depend on `IndicationsEngine` directly and check via `hasattr` or
+    `isinstance` since not all engines implement it.
     """

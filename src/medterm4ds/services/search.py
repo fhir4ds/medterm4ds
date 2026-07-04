@@ -344,6 +344,32 @@ def get_search_service() -> SearchService:
     return _service
 
 
+def configure_search_service(
+    *,
+    search_index_dir: str | None = None,
+    embedding_model_dir: str | None = None,
+) -> SearchService:
+    """Replace the singleton with a new instance configured with the given dirs.
+
+    Used by apps that need to override the env-var defaults at startup (e.g.
+    the FHIR server, which reads MEDTERM4DS_SEARCH_INDEX_DIR from its own
+    settings dataclass). Also useful for tests that need an isolated service.
+    """
+    global _service
+    _service = SearchService(
+        search_index_dir=search_index_dir or os.getenv("MEDTERM4DS_SEARCH_INDEX_DIR", DEFAULT_SEARCH_INDEX_DIR),
+        embedding_model_dir=embedding_model_dir or os.getenv("MEDTERM4DS_EMBEDDING_MODEL_DIR", DEFAULT_EMBEDDING_MODEL_DIR),
+    )
+    return _service
+
+
+def reset_search_service() -> None:
+    """Drop the singleton. Next get_search_service() call will create a fresh
+    instance with current env-var defaults. Used between tests."""
+    global _service
+    _service = None
+
+
 def search(
     query: str,
     *,
