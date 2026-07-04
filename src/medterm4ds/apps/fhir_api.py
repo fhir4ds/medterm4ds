@@ -7,6 +7,7 @@ over standard FHIR R4 HTTP endpoints. Binds to 127.0.0.1 by default
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
@@ -258,13 +259,18 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
         engine = LocalDuckDBEngine(con, config=config)
         if app_settings.prepare_cache:
             engine.prepare_cache(app_settings.sources, create_indexes=False)
-        # Per-app single-worker executor for DuckDB serialization. Lives on
-        # app.state so multiple FHIR apps in one process get independent
-        # workers, and so the worker is shut down cleanly on app teardown.
+        # Per-app executors. DB work serializes on one worker (DuckDB Python
+        # connections aren't thread-safe under concurrent use). NER work also
+        # serializes on one worker because medspaCy pipelines aren't
+        # thread-safe. The two are separate so a slow $extract doesn't block
+        # $lookup, $validate-code, etc. — and neither blocks the event loop,
+        # so /health and /fhir/metadata stay responsive.
         db_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="fhir-db")
+        ner_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="fhir-ner")
         app.state.con = con
         app.state.engine = engine
         app.state.db_executor = db_executor
+        app.state.ner_executor = ner_executor
         app.state.ready = True
         # Load optional search + patient-friendly caches and print a startup banner.
         bm25_summary = _load_bm25_indexes(app_settings.search_index_dir)
@@ -274,11 +280,12 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
             yield
         finally:
             app.state.ready = False
-            # wait=True so any in-flight DuckDB call finishes before con.close()
-            # runs. cancel_futures=True cancels queued-but-not-started work; the
-            # running future is uncancellable, so without wait=True the connection
-            # could be closed out from under it (segfault or hang on shutdown).
+            # wait=True so any in-flight DuckDB / NER call finishes before
+            # con.close() runs. cancel_futures=True cancels queued work; the
+            # running future is uncancellable, so without wait=True the
+            # connection could be closed out from under it.
             db_executor.shutdown(wait=True, cancel_futures=True)
+            ner_executor.shutdown(wait=True, cancel_futures=True)
             con.close()
 
     app = FastAPI(
@@ -301,6 +308,9 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
     def _executor(request) -> ThreadPoolExecutor:
         return request.app.state.db_executor
 
+    def _ner_executor(request) -> ThreadPoolExecutor:
+        return request.app.state.ner_executor
+
     def _fhir_error(status: int, message: str) -> JSONResponse:
         return JSONResponse(
             status_code=status,
@@ -311,6 +321,31 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
     @app.get("/fhir/metadata")
     async def metadata():
         return build_capability_statement(f"http://127.0.0.1:{DEFAULT_PORT}")
+
+    # -- Lightweight liveness probe --
+    # Pure async, no executor / DB / model touch. Returns instantly even when
+    # the DB or NER worker is pegging CPU and the event loop is starved.
+    # Use this for health checks; do NOT use /fhir/metadata (also fast today,
+    # but adds JSON building that could regress).
+    @app.get("/health")
+    async def health():
+        return {"status": "ok", "ready": getattr(app.state, "ready", False)}
+
+    # -- Per-request timing log --
+    # Lets us see what's actually slow under load. INFO for every request,
+    # WARNING for >1s (the threshold fhir4ds's circuit breaker cares about).
+    @app.middleware("http")
+    async def log_request_timing(request: Request, call_next):
+        import time as _time
+        t0 = _time.perf_counter()
+        response = await call_next(request)
+        elapsed_ms = (_time.perf_counter() - t0) * 1000
+        path = request.url.path
+        if elapsed_ms > 1000:
+            logger.warning("SLOW %s %s -> %d in %.0fms", request.method, path, response.status_code, elapsed_ms)
+        else:
+            logger.info("%s %s -> %d in %.0fms", request.method, path, response.status_code, elapsed_ms)
+        return response
 
     # -- CodeSystem $lookup --
     @app.get("/fhir/CodeSystem/$lookup")
@@ -729,6 +764,12 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
         return ["SNOMEDCT_US", "ICD10CM", "RXNORM", "LNC"]
 
     # -- CodeSystem $search (custom, modeled after Patient $match) --
+    # Uses asyncio.to_thread (default executor, multi-worker) because $search
+    # doesn't touch the FHIR engine's DuckDB connection — it reads
+    # module-global BM25 indexes (read-only) and the SapBERT singleton
+    # (torch models in eval mode are thread-safe). Multi-worker lets
+    # concurrent $search calls run in parallel without blocking the DB
+    # executor that $lookup etc. depend on.
     @app.get("/fhir/CodeSystem/$search")
     async def search_get(
         request: Request,
@@ -738,7 +779,7 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
         searchMode: str = Query("lexical", pattern="^(lexical|hybrid|semantic)$"),
     ):
         _check_ready(request)
-        return await _run_db(_executor(request), _do_search, query, system, count, searchMode)
+        return await asyncio.to_thread(_do_search, query, system, count, searchMode)
 
     @app.post("/fhir/CodeSystem/$search")
     async def search_post(request: Request, body: dict[str, Any]):
@@ -752,9 +793,12 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
         search_mode = params.get("searchMode", "lexical")
         if not query_text:
             return _fhir_error(400, "query is required.")
-        return await _run_db(_executor(request), _do_search, str(query_text), system, count, search_mode)
+        return await asyncio.to_thread(_do_search, str(query_text), system, count, search_mode)
 
     # -- CodeSystem $extract (custom: NER + ConText + search) --
+    # Uses a dedicated NER executor (max_workers=1) because medspaCy pipelines
+    # are not thread-safe. Separate from the DB executor so a slow $extract
+    # doesn't block $lookup, $validate-code, etc.
     @app.get("/fhir/CodeSystem/$extract")
     async def extract_get(
         request: Request,
@@ -766,7 +810,7 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
         includeNegated: bool = Query(False),
     ):
         _check_ready(request)
-        return await _run_db(_executor(request), _do_extract, text, format, categories, mode, minGrade, includeNegated)
+        return await _run_db(_ner_executor(request), _do_extract, text, format, categories, mode, minGrade, includeNegated)
 
     @app.post("/fhir/CodeSystem/$extract")
     async def extract_post(request: Request, body: dict[str, Any]):
@@ -776,7 +820,7 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
         if not text:
             return _fhir_error(400, "text is required.")
         return await _run_db(
-            _executor(request), _do_extract, str(text),
+            _ner_executor(request), _do_extract, str(text),
             params.get("format", "codes"),
             params.get("categories"),
             params.get("mode", "hybrid"),
