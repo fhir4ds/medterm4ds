@@ -34,7 +34,7 @@ from medterm4ds.engines.fhir.responses import (
     build_valueset_expand,
 )
 from medterm4ds.services.discovery import search_names
-from medterm4ds.services.hierarchy import get_descendants
+from medterm4ds.services.hierarchy import get_descendants_bfs, is_descendant
 from medterm4ds.services.lookup import get_code_infos
 from medterm4ds.services.mapping import get_code_mappings
 from medterm4ds.services.patient_friendly import get_patient_friendly_names
@@ -298,6 +298,37 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
         _check_ready(request)
         return request.app.state.engine
 
+    # Canonical HL7 extension for "expansion was truncated because it was too
+    # costly to compute fully". Per the FHIR R4 spec, this extension lives on
+    # ValueSet.expansion and uses valueBoolean=true. We add a sibling
+    # valueString with a human-readable reason (depth vs count) for clients
+    # that want to surface diagnostics; the valueBoolean is the contract.
+    TRUNCATION_EXT_URL = "http://hl7.org/fhir/StructureDefinition/valueset-toocostly"
+
+    def _truncation_extensions(
+        *,
+        count_limited: bool,
+        depth_cap_hit: bool,
+        count: int | None = None,
+        max_depth: int | None = None,
+    ) -> list[dict[str, Any]]:
+        if not (count_limited or depth_cap_hit):
+            return []
+        reasons = []
+        if count_limited and count is not None:
+            reasons.append(f"count-limited at {count}")
+        if depth_cap_hit and max_depth is not None:
+            reasons.append(f"depth-limited at {max_depth}")
+        suffix = "; set FHIR_VS_MAX_DEPTH to override" if max_depth is not None else ""
+        return [{
+            "url": TRUNCATION_EXT_URL,
+            "valueBoolean": True,
+            "extension": [{
+                "url": "reason",
+                "valueString": ", ".join(reasons) + suffix,
+            }],
+        }]
+
     def _check_ready(request) -> None:
         """Enforce the 503 startup gate. Called by handlers that don't otherwise
         need the engine (e.g. $search, $extract) so they 503 cleanly during
@@ -492,13 +523,14 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
             return _fhir_error(400, f"Unrecognized system URI: {system_uri}")
         if code_a == code_b:
             return build_parameters_subsumes("equivalent")
-        # Check if B is a descendant of A → A subsumes B
-        desc_of_a = get_descendants([CodeRef(source, code_a)], engine=engine, max_depth=20)
-        if any(r.target.code == code_b for r in desc_of_a):
+        # Use BFS with early-exit (stop_at) so the typical case (1 hop) is one
+        # SQL query. The previous recursive get_descendants(max_depth=20) walked
+        # the entire A subtree and timed out for wide SNOMED roots.
+        a_ref = CodeRef(source=source, code=code_a)
+        b_ref = CodeRef(source=source, code=code_b)
+        if is_descendant(a_ref, b_ref, engine=engine, max_depth=20):
             return build_parameters_subsumes("subsumes")
-        # Check if A is a descendant of B → A is subsumed by B
-        desc_of_b = get_descendants([CodeRef(source, code_b)], engine=engine, max_depth=20)
-        if any(r.target.code == code_a for r in desc_of_b):
+        if is_descendant(b_ref, a_ref, engine=engine, max_depth=20):
             return build_parameters_subsumes("subsumed-by")
         return build_parameters_subsumes("not-subsumed")
 
@@ -634,11 +666,17 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
 
         Supports:
         - Explicit concept lists (compose.include[].concept)
-        - is-a / descendant-of filters (compose.include[].filter)
+        - is-a / descendant-of filters (compose.include[].filter) — via BFS,
+          bounded by FHIR_VS_MAX_DEPTH (default 5)
         - compose.exclude (removes codes from the expansion)
+
+        Truncation: when count or depth is hit, emits the HL7 toocostly
+        extension (see _truncation_extensions).
         """
         compose = value_set.get("compose", {})
+        max_depth = int(os.getenv("FHIR_VS_MAX_DEPTH", "5"))
         contains: list[dict[str, Any]] = []
+        depth_cap_hit = False
 
         for include in compose.get("include", []):
             inc_system = include.get("system", "")
@@ -664,7 +702,6 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
                     include_root = (op == "is-a")
 
                     if include_root:
-                        # Add the root code itself
                         root_infos = get_code_infos(
                             [CodeRef(source, root_code)], engine=engine
                         )
@@ -675,10 +712,18 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
                                 "display": root_infos[0].name or root_code,
                             })
 
-                    # Walk descendants
-                    descendants = get_descendants(
-                        [CodeRef(source, root_code)], engine=engine, max_depth=20
+                    # BFS-bounded descendant walk (was: recursive get_descendants
+                    # with max_depth=20, which timed out for wide SNOMED roots).
+                    # Pass limit=count so BFS early-exits when the count cap is
+                    # reached, rather than walking the entire subtree.
+                    descendants, layer_depth_capped = get_descendants_bfs(
+                        CodeRef(source=source, code=root_code),
+                        engine=engine,
+                        max_depth=max_depth,
+                        limit=count,
                     )
+                    if layer_depth_capped:
+                        depth_cap_hit = True
                     for d in descendants:
                         contains.append({
                             "system": inc_system,
@@ -690,11 +735,7 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
 
         # Apply excludes
         for exclude in compose.get("exclude", []):
-            exc_system = exclude.get("system", "")
             exc_codes = {c.get("code") for c in exclude.get("concept", [])}
-            if exc_system:
-                exc_source = fhir_uri_to_system(exc_system)
-                exc_codes |= {c.get("code") for c in exclude.get("concept", [])}
             contains = [c for c in contains if c["code"] not in exc_codes]
 
         # Deduplicate by (system, code)
@@ -706,8 +747,14 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
                 seen.add(key)
                 deduped.append(c)
 
-        truncated = len(deduped) > count
-        return build_valueset_expand(deduped[:count], url=value_set.get("url"))
+        count_limited = len(deduped) > count
+        extensions = _truncation_extensions(
+            count_limited=count_limited,
+            depth_cap_hit=depth_cap_hit,
+            count=count,
+            max_depth=max_depth,
+        )
+        return build_valueset_expand(deduped[:count], url=value_set.get("url"), extensions=extensions)
 
     def _expand_url_pattern(engine, url: str, count: int):
         """Expand a fhir_vs URL pattern.
@@ -717,14 +764,13 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
           http://snomed.info/sct/404684003?fhir_vs
 
         Performance contract: descendant walk is capped at FHIR_VS_MAX_DEPTH
-        (default 5) levels. Implemented as a layer-by-layer BFS using direct
-        children queries (each layer = one batched SQL, depth N = N queries),
-        not the recursive CTE in get_descendants — that path enumerates all
-        paths through the subtree via a path-string column, which explodes
-        for wide subtrees (SNOMED Diabetes Mellitus depth<=3 alone = 10K
-        rows in 8s+; timed out at 5min for depth<=20). Depth 5 covers all
-        clinical value-set definitions; deeper needs pre-computed closure
-        (planned). Set FHIR_VS_MAX_DEPTH to override.
+        (default 5) levels. Uses services.hierarchy.get_descendants_bfs — a
+        layer-by-layer BFS that visits each node once (O(nodes)) rather than
+        the recursive CTE in get_descendants which enumerates all paths via
+        path-string cycle prevention (O(paths), explodes for wide subtrees;
+        SNOMED Diabetes Mellitus timed out at 5min via the CTE, <1s via BFS).
+        Depth 5 covers all clinical value-set definitions; deeper needs
+        pre-computed closure (planned). Set FHIR_VS_MAX_DEPTH to override.
         """
         from urllib.parse import parse_qs, urlparse
 
@@ -751,52 +797,31 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
                     })
 
             max_depth = int(os.getenv("FHIR_VS_MAX_DEPTH", "5"))
-            # Layer-by-layer BFS using direct children queries.
-            # Each layer is one batched SQL (children of all frontier codes),
-            # which is fast even for wide subtrees because get_children is
-            # depth=1 (no recursion).
-            from medterm4ds.services.hierarchy import get_children
-            visited: set[str] = {code}
-            frontier: list[str] = [code]
-            truncated = False
-            depth_cap_hit = False
-            for _depth in range(max_depth):
-                if not frontier or len(contains) >= count:
-                    break
-                refs = [CodeRef(source, c) for c in frontier]
-                children_rels = get_children(refs, engine=engine)
-                new_frontier: list[str] = []
-                seen_this_layer: set[str] = set()
-                for rel in children_rels:
-                    child_code = rel.target.code
-                    if child_code in visited or child_code in seen_this_layer:
-                        continue
-                    seen_this_layer.add(child_code)
-                    visited.add(child_code)
-                    contains.append({
-                        "system": system_uri,
-                        "code": child_code,
-                        "display": rel.target_display or child_code,
-                    })
-                    new_frontier.append(child_code)
-                    if len(contains) >= count:
-                        truncated = True
-                        break
-                frontier = new_frontier
-            else:
-                # Loop completed without break = depth cap was the limiter
-                if frontier:
-                    depth_cap_hit = True
-
-            extensions = []
-            if truncated or depth_cap_hit:
-                extensions.append({
-                    "url": "http://fhir4ds.org/fhir/StructureDefinition/valueset-expand-truncated",
-                    "valueString": (
-                        f"depth-limited at {max_depth}" if depth_cap_hit
-                        else f"count-limited at {count}"
-                    ) + "; set FHIR_VS_MAX_DEPTH to override",
+            # Reserve slots for descendants based on how many the root took.
+            descendant_budget = max(1, count - len(contains))
+            relations, depth_cap_hit = get_descendants_bfs(
+                CodeRef(source=source, code=code),
+                engine=engine,
+                max_depth=max_depth,
+                limit=descendant_budget,
+            )
+            for rel in relations:
+                contains.append({
+                    "system": system_uri,
+                    "code": rel.target.code,
+                    "display": rel.target_display or rel.target.code,
                 })
+
+            # Truncation detection. Two independent causes:
+            # - count cap: contains was clamped (response == count, descendants may exist beyond)
+            # - depth cap: BFS stopped at max_depth with frontier still non-empty
+            count_limited = len(relations) >= descendant_budget
+            extensions = _truncation_extensions(
+                count_limited=count_limited,
+                depth_cap_hit=depth_cap_hit,
+                count=count,
+                max_depth=max_depth,
+            )
 
             return build_valueset_expand(contains[:count], url=url, extensions=extensions)
 

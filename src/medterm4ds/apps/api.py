@@ -114,6 +114,7 @@ class HierarchyRequest(BaseModel):
     codes: list[CodeInput] = Field(default_factory=list, max_length=MAX_CODES_PER_REQUEST)
     direction: Literal["parents", "children", "ancestors", "descendants"]
     max_depth: int = Field(default=5, ge=1)
+    limit: int | None = Field(default=None, ge=1)
 
 
 class MappingRequest(BaseModel):
@@ -300,6 +301,7 @@ def create_app(settings: ApiSettings | None = None) -> FastAPI:
             engine=engine,
             direction=payload.direction,
             max_depth=payload.max_depth,
+            limit=payload.limit,
         )
         return {"results": [result.to_dict() for result in results]}
 

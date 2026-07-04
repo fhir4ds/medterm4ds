@@ -74,11 +74,13 @@ class RemoteApiEngine:
         *,
         direction: str,
         max_depth: int = 1,
+        limit: int | None = None,
     ) -> list[CodeRelation]:
         payload = {
             "codes": [_code_payload(code) for code in codes],
             "direction": direction,
             "max_depth": max_depth,
+            "limit": limit,
         }
         return [_code_relation(row) for row in self._results("/hierarchy", payload)]
 
