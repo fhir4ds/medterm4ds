@@ -14,6 +14,7 @@ import os
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
+from functools import partial
 from pathlib import Path
 from typing import Any
 
@@ -48,22 +49,18 @@ _PATIENT_FRIENDLY_CACHE: dict[str, dict[str, dict[str, Any]]] = {}
 _bm25_indexes: dict[str, list[dict[str, Any]]] = {}
 _bm25_doc_count: dict[str, int] = {}
 
-# Single-worker executor for DuckDB access. DuckDB Python connections are not
-# thread-safe under concurrent use, so we serialize all DB-touching handlers
-# through this one worker. The event loop is still free to interleave I/O
-# (request parsing, network, response serialization) — only the DuckDB calls
-# block on this single worker. For parallel query execution, run N uvicorn
-# workers (each opens its own read-only connection).
-_db_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="fhir-db")
 
+async def _run_db(executor: ThreadPoolExecutor, func, *args, **kwargs):
+    """Offload a sync handler to the given executor.
 
-async def _run_db(func, *args, **kwargs):
-    """Offload a sync DuckDB handler to the single-worker executor."""
+    The executor is per-app (lives on app.state.db_executor) so multiple FHIR
+    apps in one process get independent worker threads instead of all
+    serializing against a shared module-global. DuckDB Python connections are
+    not thread-safe under concurrent use, so the executor must be capped at
+    max_workers=1.
+    """
     loop = asyncio.get_running_loop()
-    if kwargs:
-        from functools import partial
-        return await loop.run_in_executor(_db_executor, partial(func, *args, **kwargs))
-    return await loop.run_in_executor(_db_executor, func, *args)
+    return await loop.run_in_executor(executor, partial(func, *args, **kwargs))
 
 
 @dataclass(frozen=True)
@@ -107,6 +104,7 @@ def _load_bm25_indexes(search_dir: str) -> dict[str, Any]:
 
     loaded: list[str] = []
     missing: list[str] = []
+    flat_format: list[str] = []  # categories loaded as legacy flat document list
     for category in expected:
         json_path = search_path / f"{category}_bm25.json"
         if not json_path.exists():
@@ -123,14 +121,16 @@ def _load_bm25_indexes(search_dir: str) -> dict[str, Any]:
                 _bm25_indexes[category] = index
                 _bm25_doc_count[category] = len(index)
                 loaded.append(category)
+                flat_format.append(category)
         except Exception:
             logger.exception("Failed to load BM25 index: %s", json_path)
             missing.append(category)
 
     for category in loaded:
-        logger.info("  BM25 %s: %d records", category, _bm25_doc_count.get(category, 0))
+        marker = " (flat)" if category in flat_format else ""
+        logger.info("  BM25 %s: %d records%s", category, _bm25_doc_count.get(category, 0), marker)
 
-    return {"loaded": loaded, "missing": missing, "dir": search_dir}
+    return {"loaded": loaded, "missing": missing, "flat_format": flat_format, "dir": search_dir}
 
 
 def _load_patient_friendly_cache(db_path: Path) -> dict[str, Any]:
@@ -147,7 +147,11 @@ def _load_patient_friendly_cache(db_path: Path) -> dict[str, Any]:
                     _PATIENT_FRIENDLY_CACHE[source_lower] = json.load(f)
                 loaded.append(source_lower)
             except Exception:
-                logger.warning("Could not parse patient_friendly JSON: %s", json_path)
+                logger.info(
+                    "Could not parse patient_friendly JSON %s — "
+                    "patient-friendly custom properties will be skipped for %s",
+                    json_path, source_lower,
+                )
                 missing.append(source_lower)
         else:
             missing.append(source_lower)
@@ -193,14 +197,31 @@ def _log_startup_banner(
         logger.info("    (missing categories: %s)", tuple(bm25_missing))
 
     # Semantic engine availability is checked lazily; report it without loading the model.
+    # Narrow the except to OSError/ImportError so real config bugs (e.g. partial install
+    # with model dir present but torch missing) surface as real tracebacks instead of
+    # being silently swallowed as "model not found".
+    sem_available = False
+    sem_error: BaseException | None = None
     try:
         from medterm4ds.engines.fhir.semantic import get_semantic_engine
         sem_available = get_semantic_engine().is_available
-    except Exception:
-        sem_available = False
+    except (OSError, ImportError) as exc:
+        sem_error = exc
+    except Exception as exc:  # pragma: no cover — surface unexpected errors loudly
+        logger.exception(
+            "Unexpected error while probing SapBERT availability; "
+            "treating semantic mode as unavailable.",
+        )
+        sem_error = exc
     if sem_available:
         logger.info("  SapBERT embedding model: available at MEDTERM4DS_EMBEDDING_MODEL_DIR")
         logger.info("    → $search semantic mode AVAILABLE")
+    elif sem_error is not None:
+        logger.warning(
+            "  SapBERT embedding model: unavailable (%s: %s). "
+            "Fix the underlying error or set MEDTERM4DS_EMBEDDING_MODEL_DIR.",
+            type(sem_error).__name__, sem_error,
+        )
     else:
         logger.warning(
             "  SapBERT embedding model: not found. "
@@ -251,8 +272,13 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
         engine = LocalDuckDBEngine(con, config=config)
         if app_settings.prepare_cache:
             engine.prepare_cache(app_settings.sources, create_indexes=False)
+        # Per-app single-worker executor for DuckDB serialization. Lives on
+        # app.state so multiple FHIR apps in one process get independent
+        # workers, and so the worker is shut down cleanly on app teardown.
+        db_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="fhir-db")
         app.state.con = con
         app.state.engine = engine
+        app.state.db_executor = db_executor
         app.state.ready = True
         # Load optional search + patient-friendly caches and print a startup banner.
         bm25_summary = _load_bm25_indexes(app_settings.search_index_dir)
@@ -262,6 +288,7 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
             yield
         finally:
             app.state.ready = False
+            db_executor.shutdown(wait=False, cancel_futures=True)
             con.close()
 
     app = FastAPI(
@@ -274,6 +301,9 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
         if not getattr(request.app.state, "ready", False):
             raise _fhir_error(503, "Service is starting up.")
         return request.app.state.engine
+
+    def _executor(request) -> ThreadPoolExecutor:
+        return request.app.state.db_executor
 
     def _fhir_error(status: int, message: str) -> JSONResponse:
         return JSONResponse(
@@ -294,7 +324,7 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
         code: str = Query(..., description="The code to look up"),
         version: str | None = Query(None),
     ):
-        return await _run_db(_do_lookup, request, system, code)
+        return await _run_db(_executor(request), _do_lookup, _engine(request), system, code)
 
     @app.post("/fhir/CodeSystem/$lookup")
     async def lookup_post(request: Request, body: dict[str, Any]):
@@ -303,13 +333,12 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
         code = params.get("code")
         if not system or not code:
             return _fhir_error(400, "system and code are required.")
-        return await _run_db(_do_lookup, request, system, code)
+        return await _run_db(_executor(request), _do_lookup, _engine(request), system, code)
 
-    def _do_lookup(request: Request, system_uri: str, code: str):
+    def _do_lookup(engine: LocalDuckDBEngine, system_uri: str, code: str):
         source = fhir_uri_to_system(system_uri)
         if source is None:
             return _fhir_error(400, f"Unrecognized system URI: {system_uri}")
-        engine = _engine(request)
         results = get_code_infos([CodeRef(source, code)], engine=engine)
         code_info = results[0] if results else None
 
@@ -338,7 +367,7 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
         system: str = Query(...),
         code: str = Query(...),
     ):
-        return await _run_db(_do_validate, request, system, code)
+        return await _run_db(_executor(request), _do_validate, _engine(request), system, code)
 
     @app.post("/fhir/CodeSystem/$validate-code")
     async def validate_post(request: Request, body: dict[str, Any]):
@@ -347,13 +376,12 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
         code = params.get("code")
         if not system or not code:
             return _fhir_error(400, "system and code are required.")
-        return await _run_db(_do_validate, request, system, code)
+        return await _run_db(_executor(request), _do_validate, _engine(request), system, code)
 
-    def _do_validate(request: Request, system_uri: str, code: str):
+    def _do_validate(engine: LocalDuckDBEngine, system_uri: str, code: str):
         source = fhir_uri_to_system(system_uri)
         if source is None:
             return _fhir_error(400, f"Unrecognized system URI: {system_uri}")
-        engine = _engine(request)
         results = get_code_infos([CodeRef(source, code)], engine=engine)
         code_info = results[0] if results else None
         return build_parameters_validate(
@@ -371,7 +399,7 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
         code: str = Query(..., description="Source code"),
         targetsystem: str | None = Query(None, description="Target system URI"),
     ):
-        return await _run_db(_do_translate, request, system, code, targetsystem)
+        return await _run_db(_executor(request), _do_translate, _engine(request), system, code, targetsystem)
 
     @app.post("/fhir/ConceptMap/$translate")
     async def translate_post(request: Request, body: dict[str, Any]):
@@ -381,13 +409,12 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
         targetsystem = params.get("targetsystem")
         if not system or not code:
             return _fhir_error(400, "system and code are required.")
-        return await _run_db(_do_translate, request, system, code, targetsystem)
+        return await _run_db(_executor(request), _do_translate, _engine(request), system, code, targetsystem)
 
-    def _do_translate(request: Request, source_uri: str, code: str, target_uri: str | None):
+    def _do_translate(engine: LocalDuckDBEngine, source_uri: str, code: str, target_uri: str | None):
         source = fhir_uri_to_system(source_uri)
         if source is None:
             return _fhir_error(400, f"Unrecognized source system URI: {source_uri}")
-        engine = _engine(request)
         target_sources = []
         if target_uri:
             target_source = fhir_uri_to_system(target_uri)
@@ -416,7 +443,7 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
         codeA: str = Query(...),
         codeB: str = Query(...),
     ):
-        return await _run_db(_do_subsumes, request, system, codeA, codeB)
+        return await _run_db(_executor(request), _do_subsumes, _engine(request), system, codeA, codeB)
 
     @app.post("/fhir/CodeSystem/$subsumes")
     async def subsumes_post(request: Request, body: dict[str, Any]):
@@ -426,13 +453,12 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
         code_b = params.get("codeB")
         if not system or not code_a or not code_b:
             return _fhir_error(400, "system, codeA, and codeB are required.")
-        return await _run_db(_do_subsumes, request, system, code_a, code_b)
+        return await _run_db(_executor(request), _do_subsumes, _engine(request), system, code_a, code_b)
 
-    def _do_subsumes(request: Request, system_uri: str, code_a: str, code_b: str):
+    def _do_subsumes(engine: LocalDuckDBEngine, system_uri: str, code_a: str, code_b: str):
         source = fhir_uri_to_system(system_uri)
         if source is None:
             return _fhir_error(400, f"Unrecognized system URI: {system_uri}")
-        engine = _engine(request)
         if code_a == code_b:
             return build_parameters_subsumes("equivalent")
         # Check if B is a descendant of A → A subsumes B
@@ -460,16 +486,15 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
         name = params.get("name")
         if not name:
             return _fhir_error(400, "name parameter is required for $closure.")
-        return await _run_db(_do_closure, request, body, name)
+        return await _run_db(_executor(request), _do_closure, _engine(request), body, name)
 
-    def _do_closure(request: Request, body: dict[str, Any], name: str):
+    def _do_closure(engine: LocalDuckDBEngine, body: dict[str, Any], name: str):
         from medterm4ds.engines.fhir.closure import (
             build_closure_response,
             get_closure_manager,
         )
 
         manager = get_closure_manager()
-        engine = _engine(request)
 
         # Extract concept list from the Parameters body
         concepts: list[tuple[str, str, str]] = []  # (code, system, display)
@@ -504,7 +529,7 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
         system: str | None = Query(None, description="System URI for filter expansion"),
     ):
         return await _run_db(
-            _do_expand, request,
+            _executor(request), _do_expand, _engine(request),
             url=url, filter_text=filter, count=count, system_uri=system,
         )
 
@@ -514,19 +539,22 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
         or a Parameters resource (filter mode)."""
         resource_type = body.get("resourceType", "")
         if resource_type == "ValueSet":
-            return await _run_db(_do_expand, request, value_set=body, count=1000)
+            return await _run_db(_executor(request), _do_expand, _engine(request), value_set=body, count=1000)
         # Parameters-style: extract url, filter, count
         params = _parse_parameters(body)
+        count = _parse_count_param(params.get("count"), default=20)
+        if count is None:
+            return _fhir_error(400, f"count must be an integer (got {params.get('count')!r}).")
         return await _run_db(
-            _do_expand, request,
+            _executor(request), _do_expand, _engine(request),
             url=params.get("url"),
             filter_text=params.get("filter"),
-            count=int(params.get("count", 20)),
+            count=count,
             system_uri=params.get("system"),
         )
 
     def _do_expand(
-        request: Request,
+        engine: LocalDuckDBEngine,
         url: str | None = None,
         filter_text: str | None = None,
         count: int = 20,
@@ -540,7 +568,6 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
         2. URL-based (fhir_vs pattern) — SNOMED intensional shorthand
         3. Filter (text search) — EHR autocomplete
         """
-        engine = _engine(request)
 
         # Mode 1: Inline ValueSet with compose rules
         if value_set:
@@ -714,18 +741,20 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
         count: int = Query(20, ge=1, le=200),
         searchMode: str = Query("lexical", pattern="^(lexical|hybrid|semantic)$"),
     ):
-        return await _run_db(_do_search, request, query, system, count, searchMode)
+        return await _run_db(_executor(request), _do_search, query, system, count, searchMode)
 
     @app.post("/fhir/CodeSystem/$search")
     async def search_post(request: Request, body: dict[str, Any]):
         params = _parse_parameters(body)
         query_text = params.get("query") or params.get("_query")
         system = params.get("system")
-        count = int(params.get("count", 20))
+        count = _parse_count_param(params.get("count"), default=20)
+        if count is None:
+            return _fhir_error(400, f"count must be an integer (got {params.get('count')!r}).")
         search_mode = params.get("searchMode", "lexical")
         if not query_text:
             return _fhir_error(400, "query is required.")
-        return await _run_db(_do_search, request, str(query_text), system, count, search_mode)
+        return await _run_db(_executor(request), _do_search, str(query_text), system, count, search_mode)
 
     # -- CodeSystem $extract (custom: NER + ConText + search) --
     @app.get("/fhir/CodeSystem/$extract")
@@ -738,7 +767,7 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
         minGrade: str = Query("certain", pattern="^(certain|probable|possible)$"),
         includeNegated: bool = Query(False),
     ):
-        return await _run_db(_do_extract, request, text, format, categories, mode, minGrade, includeNegated)
+        return await _run_db(_executor(request), _do_extract, text, format, categories, mode, minGrade, includeNegated)
 
     @app.post("/fhir/CodeSystem/$extract")
     async def extract_post(request: Request, body: dict[str, Any]):
@@ -747,7 +776,7 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
         if not text:
             return _fhir_error(400, "text is required.")
         return await _run_db(
-            _do_extract, request, str(text),
+            _executor(request), _do_extract, str(text),
             params.get("format", "codes"),
             params.get("categories"),
             params.get("mode", "hybrid"),
@@ -755,7 +784,7 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
             params.get("includeNegated", "false") == "true",
         )
 
-    def _do_extract(request, text, fmt, categories_str, mode, min_grade, include_negated):
+    def _do_extract(text, fmt, categories_str, mode, min_grade, include_negated):
         from medterm4ds.services.extraction import extract as extract_service
 
         cats = categories_str.split(",") if categories_str else None
@@ -777,9 +806,7 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
             })
         return {"resourceType": "Bundle", "type": "searchset", "total": len(entries), "entry": entries}
 
-    def _do_search(
-        request: Request,
-        query_text: str,
+    def _do_search(query_text: str,
         system_uri: str | None,
         count: int,
         search_mode: str,
@@ -857,6 +884,17 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
                     out[name] = str(param[key])
                     break
         return out
+
+    def _parse_count_param(value: str | None, default: int) -> int | None:
+        """Parse a `count`-style parameter. Returns None on invalid input so the
+        caller can return a 400 OperationOutcome instead of letting int() raise
+        ValueError inside the executor (which would surface as a 500)."""
+        if value is None or value == "":
+            return default
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return None
 
     def _all_systems_except(source: str) -> list[str]:
         all_sys = [
