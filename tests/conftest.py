@@ -53,3 +53,18 @@ def umls_release_tag(umls_db_path: Path) -> str:
     if tag is None:
         pytest.skip(f"Could not resolve UMLS release tag from {umls_db_path}")
     return tag
+
+
+@pytest.fixture(autouse=True)
+def _reset_closure_singleton():
+    """Reset the ClosureManager module-level singleton before each test.
+
+    Closure tests across test_fhir_conformance.py, test_fhir_api.py, and
+    fhir_conformance/test_runner.py all share get_closure_manager(); without
+    a reset, registrations from one test leak into the next, causing
+    order-dependent failures.
+    """
+    from medterm4ds.engines.fhir import closure
+    closure._manager = None
+    yield
+    closure._manager = None

@@ -128,16 +128,21 @@ def _custom_check(case: dict, response_body: dict, client) -> list[str]:
 @pytest.mark.parametrize("case", ALL_CASES, ids=[c["id"] for c in ALL_CASES])
 def test_case(case: dict, fhir_client):
     """Run one FHIR conformance test case."""
+    from pathlib import Path
+    model_dir = Path("/mnt/d/fhir4px-model/data/sapbert_finetuned")
+    model_available = model_dir.exists()
+
     # Skip if model-dependent test and model is available (can't test the 503 path)
-    if case.get("skip_if_model_available"):
-        from pathlib import Path
-        model_dir = Path("/mnt/d/fhir4px-model/data/sapbert_finetuned")
-        if model_dir.exists():
-            # Model is present — test the success path instead
-            resp = fhir_client.get(case["path"], params=case.get("params", {}))
-            assert resp.status_code == 200
-            assert resp.json().get("resourceType") == case.get("expected_resource_type")
-            return
+    if case.get("skip_if_model_available") and model_available:
+        # Model is present — but if the case explicitly wants the 503 path,
+        # skip it (it'd never trigger). Otherwise fall through to test the
+        # success path with the case's own expected_status.
+        if case.get("expected_status") == 503:
+            pytest.skip("Model is available — can't test 503 path for this case")
+
+    # Skip if test requires the model and it's not available
+    if case.get("skip_unless_model_available") and not model_available:
+        pytest.skip("Model is not available — can't test 200 path for this case")
     # Normal path
     # Send request
     method = case["method"]

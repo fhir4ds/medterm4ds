@@ -373,7 +373,14 @@ def query_ndcs_for_rxcuis(con, rxcuis: Sequence[str]) -> dict[str, list[str]]:
             """,
             list(rxcuis),
         ).fetchall()
-    except Exception:
+    except Exception as exc:
+        # NDC enrichment isn't critical — drug results are still returned
+        # without NDCs. But log so a real schema/query bug doesn't hide.
+        import logging as _logging
+        _logging.getLogger(__name__).warning(
+            "NDC lookup failed (continuing without NDC enrichment): %s: %s",
+            type(exc).__name__, exc,
+        )
         return {}
     output: dict[str, list[str]] = {}
     for rxcui, ndc in rows:

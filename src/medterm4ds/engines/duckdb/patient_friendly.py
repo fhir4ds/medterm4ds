@@ -891,7 +891,15 @@ def _resolve_cvx(engine, codes: Sequence[str]) -> list[_Row]:
                         str(short_name) if short_name else None,
                     )
                 )
-        except Exception:
+        except Exception as exc:
+            # CVX group enrichment isn't critical — code resolution still
+            # works without it. But surface the failure so config / data
+            # quality issues (corrupt CVX cache, schema drift) don't hide.
+            import logging as _logging
+            _logging.getLogger(__name__).warning(
+                "CVX group metadata enrichment failed (continuing without it): %s: %s",
+                type(exc).__name__, exc,
+            )
             metadata = {}
 
     needs_external_groups = any(code not in metadata for code in codes)

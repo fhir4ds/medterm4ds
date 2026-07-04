@@ -491,8 +491,17 @@ def prepare_derived_tables(con, *, replace: bool = True) -> dict[str, object]:
 
             if cvx_rows:
                 con.executemany("INSERT INTO cvx_metadata VALUES (?, ?, ?)", cvx_rows)
-        except Exception:
-            pass # Silently fail if network is down or CDC file changes
+        except Exception as exc:
+            # Don't fail the build if the CDC fetch is unavailable (offline
+            # build, network down, format change). But log at warning so a
+            # real bug (404, format change, malformed data) doesn't hide
+            # silently — patient_friendly CVX lookups will fall back through
+            # the hierarchy either way.
+            import logging as _logging
+            _logging.getLogger(__name__).warning(
+                "CVX metadata fetch failed (continuing without it): %s: %s",
+                type(exc).__name__, exc,
+            )
 
         row = con.execute("SELECT COUNT(*) FROM cvx_metadata").fetchone()
         results["cvx_metadata"] = {

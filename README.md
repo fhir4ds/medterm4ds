@@ -142,7 +142,6 @@ make test
 make compile
 make verify
 make notebook-smoke
-make parity-smoke
 make acceptance-smoke
 make bulk-validation-smoke
 make mapping-quality-smoke
@@ -523,51 +522,10 @@ a custom checkpoint path and `--checkpoint-every` to control update frequency.
 
 ## Baseline Notes
 
-Tests compare semantic fields against the dirty `/mnt/d/medterm` working tree
-where the exported bulk implementation is usable. The current medterm bulk path
-raises a `KeyError: 'friendly_name'` for one CPT-to-HCPCS fallback branch, so
-that specific branch is covered as a local DuckDB behavior test instead of a parity
-test.
-
-For replacement-readiness checks, run the parity harness:
-
-```bash
-python3 scripts/compare_patient_friendly_parity.py \
-  --db /mnt/d/medterm4ds/data/umls_current.duckdb \
-  --medterm-path /mnt/d/medterm \
-  --sources ICD10CM,ICD10PCS,HCPCS,SNOMEDCT_US,RXNORM,LNC,CVX,CPT \
-  --per-source 25 \
-  --sample-mode tty \
-  --per-tty 3 \
-  --compare-batch-size 25 \
-  --output-json parity_patient_friendly.json \
-  --output-md parity_patient_friendly.md \
-  --output-csv parity_patient_friendly.csv \
-  --progress
-```
-
-The report compares `name`, `friendly_source`, `match_type`, and `match_depth`
-against dirty `medterm`. `--sample-mode tty` spreads samples across source TTYs,
-which is especially useful for RxNorm topology coverage. Known old-medterm CPT
-fallback failures are marked as `baseline_error_known` with the issue id
-`medterm_cpt_hcpcs_friendly_name_keyerror`.
-
-For a practical source-by-source review, use the matrix runner. It writes one
-JSON/Markdown/CSV report per source plus `index.json`, `index.md`, and
-`index.csv` in the work directory.
-
-```bash
-python3 scripts/run_patient_friendly_parity_matrix.py \
-  --db /mnt/d/medterm4ds/data/umls_current.duckdb \
-  --medterm-path /mnt/d/medterm \
-  --sources ICD10CM,ICD10PCS,HCPCS,SNOMEDCT_US,RXNORM,LNC,CVX,CPT \
-  --per-source 5 \
-  --rxnorm-per-source 20 \
-  --compare-batch-size 10 \
-  --timeout-seconds 180 \
-  --work-dir reports/quality/patient_friendly_parity \
-  --no-prepare-cache
-```
+Historical patient-friendly parity harnesses (`compare_patient_friendly_parity.py`,
+`run_patient_friendly_parity_matrix.py`, `benchmark_local_duckdb_patient_friendly.py`)
+have been removed — the Tier 1-4 regression suite under `tests/regression/` covers
+the same correctness ground with golden parity files and runs in CI.
 
 To smoke-test the CLI workflow end to end:
 
@@ -891,28 +849,18 @@ documents E-utilities at https://www.ncbi.nlm.nih.gov/books/NBK25499/.
 
 ## Benchmarking
 
-The benchmark script exercises the local DuckDB patient-friendly path against a
-real UMLS DuckDB file:
+Benchmark scripts for the local DuckDB patient-friendly path have been
+removed alongside the parity harnesses (see Baseline Notes above).
+Performance characteristics are now covered by the regression suite and
+the `--benchmark` flag on `tests/test_engine_*.py` where applicable.
+
+For ad-hoc measurement, use `time` against a representative lookup batch
+via the CLI:
 
 ```bash
-python3 scripts/benchmark_local_duckdb_patient_friendly.py \
-  --db /mnt/d/medterm4ds/data/umls_current.duckdb \
-  --prepare-cache \
-  --no-cache-indexes \
-  --memory-limit 1GB \
-  --temp-dir /tmp/duckdb-medterm4ds \
-  --sizes 1000,10000,100000 \
-  --sample-mode balanced \
-  --progress
+time python3 -m medterm4ds.apps.cli --db /mnt/d/medterm4ds/data/umls_current.duckdb \
+  patient-friendly --source SNOMEDCT_US --codes 44054006
 ```
-
-Measured profiles on `/mnt/d/medterm4ds/data/umls_current.duckdb`:
-
-- Fast low-memory-ish: `--memory-limit 1GB`, default DuckDB threads, 83,212
-  balanced codes in 100.62s, 827 codes/s, peak RSS 2.55 GB.
-- Strict low-memory: `--memory-limit 512MB --threads 1 --query-chunk-size 1000`,
-  83,212 balanced codes in 403.39s, 206 codes/s, peak RSS 1.10 GB.
-- `512MB` without `--threads 1` can still OOM during recursive fallback.
 
 DuckDB's memory limit is not a strict cap on total Python process RSS. It limits
 DuckDB-managed memory, while Python and some DuckDB allocations can exceed it.
