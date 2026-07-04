@@ -5,8 +5,10 @@ from __future__ import annotations
 import asyncio
 import os
 from collections.abc import Sequence
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
+from functools import partial
 from pathlib import Path
 from typing import Any
 
@@ -36,6 +38,19 @@ try:
     from fastmcp import FastMCP
 except ImportError as exc:  # pragma: no cover - exercised only without mcp extras.
     raise ImportError("Install medterm4ds[mcp] to use medterm4ds.apps.mcp.") from exc
+
+
+# Single-worker executor for DuckDB access. DuckDB Python connections are not
+# thread-safe under concurrent use, so all server_runtime calls (which share
+# one engine connection) must serialize through this worker. Without this,
+# concurrent MCP tool calls from a fan-out client would segfault.
+_db_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="mcp-db")
+
+
+async def _run_db(func, *args, **kwargs):
+    """Offload a sync server_runtime call to the single-worker executor."""
+    loop = asyncio.get_running_loop()
+    return await loop.run_in_executor(_db_executor, partial(func, *args, **kwargs))
 
 
 @dataclass(frozen=True)
@@ -544,7 +559,7 @@ def create_mcp_server(
     @mcp.tool()
     async def health() -> dict[str, Any]:
         """Return MCP terminology engine readiness and configuration."""
-        return await asyncio.to_thread(lambda: server_runtime.health())
+        return await _run_db(server_runtime.health)
 
     @mcp.tool()
     async def patient_friendly_name(
@@ -554,7 +569,7 @@ def create_mcp_server(
         output_format: str = "dict",
     ) -> dict[str, Any] | str:
         """Resolve one clinical code to a patient-friendly name."""
-        return await asyncio.to_thread(lambda: server_runtime.patient_friendly_name( code=code, source=source, max_depth=max_depth, output_format=output_format, ))
+        return await _run_db(server_runtime.patient_friendly_name, code=code, source=source, max_depth=max_depth, output_format=output_format)
 
     @mcp.tool()
     async def lookup_code(
@@ -564,7 +579,7 @@ def create_mcp_server(
         output_format: str = "dict",
     ) -> dict[str, Any] | str | None:
         """Look up canonical atom information for one clinical code."""
-        return await asyncio.to_thread(lambda: server_runtime.lookup_code( code=code, source=source, resolve_mode=resolve_mode, output_format=output_format, ))
+        return await _run_db(server_runtime.lookup_code, code=code, source=source, resolve_mode=resolve_mode, output_format=output_format)
 
     @mcp.tool()
     async def lookup_codes(
@@ -577,7 +592,7 @@ def create_mcp_server(
 
         `sources` can contain one source for all codes, or one source per code.
         """
-        return await asyncio.to_thread(lambda: server_runtime.lookup_codes( codes=codes, sources=sources, resolve_mode=resolve_mode, output_format=output_format, ))
+        return await _run_db(server_runtime.lookup_codes, codes=codes, sources=sources, resolve_mode=resolve_mode, output_format=output_format)
 
     @mcp.tool()
     async def resolve_codes(
@@ -586,21 +601,21 @@ def create_mcp_server(
         output_format: str = "dict",
     ) -> dict[str, Any] | str:
         """Resolve active, historical, obsolete, and NDC code inputs."""
-        return await asyncio.to_thread(lambda: server_runtime.resolve_codes( codes=codes, sources=sources, output_format=output_format, ))
+        return await _run_db(server_runtime.resolve_codes, codes=codes, sources=sources, output_format=output_format)
 
     @mcp.tool()
     async def sources(
         sources: list[str] | None = None,
     ) -> dict[str, Any]:
         """Return active code and atom counts by source."""
-        return await asyncio.to_thread(lambda: server_runtime.source_stats(sources=sources))
+        return await _run_db(server_runtime.source_stats, sources=sources)
 
     @mcp.tool()
     async def source_stats(
         sources: list[str] | None = None,
     ) -> dict[str, Any]:
         """Return active code and atom counts by source."""
-        return await asyncio.to_thread(lambda: server_runtime.source_stats(sources=sources))
+        return await _run_db(server_runtime.source_stats, sources=sources)
 
     @mcp.tool()
     async def sample_codes(
@@ -608,7 +623,7 @@ def create_mcp_server(
         per_source: int = 10,
     ) -> dict[str, Any]:
         """Return sample active codes by source."""
-        return await asyncio.to_thread(lambda: server_runtime.sample_codes(sources=sources, per_source=per_source))
+        return await _run_db(server_runtime.sample_codes, sources=sources, per_source=per_source)
 
     @mcp.tool()
     async def code_ttys(
@@ -616,7 +631,7 @@ def create_mcp_server(
         sources: list[str],
     ) -> dict[str, Any]:
         """Return active UMLS atoms and term types for clinical codes."""
-        return await asyncio.to_thread(lambda: server_runtime.code_ttys(codes=codes, sources=sources))
+        return await _run_db(server_runtime.code_ttys, codes=codes, sources=sources)
 
     @mcp.tool()
     async def search_names(
@@ -626,7 +641,7 @@ def create_mcp_server(
         limit: int = 25,
     ) -> dict[str, Any]:
         """Search active terminology names."""
-        return await asyncio.to_thread(lambda: server_runtime.search_names( query=query, sources=sources, tty_filters=tty_filters, limit=limit, ))
+        return await _run_db(server_runtime.search_names, query=query, sources=sources, tty_filters=tty_filters, limit=limit)
 
     @mcp.tool()
     async def search(
@@ -646,7 +661,7 @@ def create_mcp_server(
         Each result includes a match_grade: 'certain', 'probable', or 'possible'.
         """
         from medterm4ds.services.search import search as search_service
-        results = await asyncio.to_thread(lambda: search_service(query, mode=mode, sources=sources, count=count))
+        results = await _run_db(search_service, query, mode=mode, sources=sources, count=count)
         return {"results": [r.to_dict() for r in results]}
 
     @mcp.tool()
@@ -692,7 +707,7 @@ def create_mcp_server(
         limit: int = 20,
     ) -> dict[str, Any]:
         """Browse a source or a code's local hierarchy."""
-        return await asyncio.to_thread(lambda: server_runtime.discover( source_terminology=source_terminology, code=code, depth=depth, include_ancestors=include_ancestors, limit=limit, ))
+        return await _run_db(server_runtime.discover, source_terminology=source_terminology, code=code, depth=depth, include_ancestors=include_ancestors, limit=limit)
 
     @mcp.tool()
     async def cross_reference(
@@ -704,7 +719,7 @@ def create_mcp_server(
         max_results_per_code: int = 50,
     ) -> dict[str, Any]:
         """Map one code to target terminology sources."""
-        return await asyncio.to_thread(lambda: server_runtime.cross_reference( code=code, from_source=from_source, to_sources=to_sources, mode=mode, max_depth=max_depth, max_results_per_code=max_results_per_code, ))
+        return await _run_db(server_runtime.cross_reference, code=code, from_source=from_source, to_sources=to_sources, mode=mode, max_depth=max_depth, max_results_per_code=max_results_per_code)
 
     @mcp.tool()
     async def diagnosis_codes(
@@ -714,17 +729,17 @@ def create_mcp_server(
         include_ancestors: bool | None = None,
     ) -> dict[str, Any]:
         """Search diagnosis-oriented ICD-10-CM and SNOMED CT codes."""
-        return await asyncio.to_thread(lambda: server_runtime.diagnosis_codes( condition=condition, limit=limit, descendant_depth=descendant_depth, include_ancestors=include_ancestors, ))
+        return await _run_db(server_runtime.diagnosis_codes, condition=condition, limit=limit, descendant_depth=descendant_depth, include_ancestors=include_ancestors)
 
     @mcp.tool()
     async def lab_codes(lab_test: str, limit: int = 20) -> dict[str, Any]:
         """Search lab test terminology sources."""
-        return await asyncio.to_thread(lambda: server_runtime.lab_codes(lab_test=lab_test, limit=limit))
+        return await _run_db(server_runtime.lab_codes, lab_test=lab_test, limit=limit)
 
     @mcp.tool()
     async def lab_value_codes(clinical_value: str, limit: int = 20) -> dict[str, Any]:
         """Search lab value or clinical finding terminology sources."""
-        return await asyncio.to_thread(lambda: server_runtime.lab_value_codes(clinical_value=clinical_value, limit=limit))
+        return await _run_db(server_runtime.lab_value_codes, clinical_value=clinical_value, limit=limit)
 
     @mcp.tool()
     async def procedure_codes(
@@ -734,17 +749,17 @@ def create_mcp_server(
         include_ancestors: bool | None = None,
     ) -> dict[str, Any]:
         """Search procedure terminology sources."""
-        return await asyncio.to_thread(lambda: server_runtime.procedure_codes( procedure=procedure, limit=limit, descendant_depth=descendant_depth, include_ancestors=include_ancestors, ))
+        return await _run_db(server_runtime.procedure_codes, procedure=procedure, limit=limit, descendant_depth=descendant_depth, include_ancestors=include_ancestors)
 
     @mcp.tool()
     async def hcpcs_drugs(drug_name: str, limit: int = 20) -> dict[str, Any]:
         """Search HCPCS drug/device codes."""
-        return await asyncio.to_thread(lambda: server_runtime.hcpcs_drugs(drug_name=drug_name, limit=limit))
+        return await _run_db(server_runtime.hcpcs_drugs, drug_name=drug_name, limit=limit)
 
     @mcp.tool()
     async def vaccine_codes(vaccine: str, limit: int = 20) -> dict[str, Any]:
         """Search vaccine-oriented CVX, RxNorm, and HCPCS codes."""
-        return await asyncio.to_thread(lambda: server_runtime.vaccine_codes(vaccine=vaccine, limit=limit))
+        return await _run_db(server_runtime.vaccine_codes, vaccine=vaccine, limit=limit)
 
     @mcp.tool()
     async def search_drug(
@@ -755,12 +770,12 @@ def create_mcp_server(
         include_ndc: bool = False,
     ) -> dict[str, Any]:
         """Search RxNorm drug names."""
-        return await asyncio.to_thread(lambda: server_runtime.search_drug( drug_name=drug_name, limit=limit, tty_filters=tty_filters, include_equivalents=include_equivalents, include_ndc=include_ndc, ))
+        return await _run_db(server_runtime.search_drug, drug_name=drug_name, limit=limit, tty_filters=tty_filters, include_equivalents=include_equivalents, include_ndc=include_ndc)
 
     @mcp.tool()
     async def drugs_by_class(class_id: str, limit: int = 20) -> dict[str, Any]:
         """Search ATC/RxNorm class names or class identifiers."""
-        return await asyncio.to_thread(lambda: server_runtime.drugs_by_class(class_id=class_id, limit=limit))
+        return await _run_db(server_runtime.drugs_by_class, class_id=class_id, limit=limit)
 
     @mcp.tool()
     async def drugs_for_indication(
@@ -773,37 +788,37 @@ def create_mcp_server(
         include_product_groups: bool = True,
     ) -> dict[str, Any]:
         """Return UMLS relationship-backed medications for a condition."""
-        return await asyncio.to_thread(lambda: server_runtime.drugs_for_indication( condition=condition, limit=limit, source=source, code=code, relationship_types=relationship_types, max_depth=max_depth, include_product_groups=include_product_groups, ))
+        return await _run_db(server_runtime.drugs_for_indication, condition=condition, limit=limit, source=source, code=code, relationship_types=relationship_types, max_depth=max_depth, include_product_groups=include_product_groups)
 
     @mcp.tool()
     async def indication_search(indication: str, limit: int = 20) -> dict[str, Any]:
         """Search indication evidence when an external evidence adapter is available."""
-        return await asyncio.to_thread(lambda: server_runtime.indication_search(indication=indication, limit=limit))
+        return await _run_db(server_runtime.indication_search, indication=indication, limit=limit)
 
     @mcp.tool()
     async def fda_label_by_rxcui(rxcui: str) -> dict[str, Any]:
         """Fetch FDA label evidence when an external evidence adapter is available."""
-        return await asyncio.to_thread(lambda: server_runtime.fda_label_by_rxcui(rxcui=rxcui))
+        return await _run_db(server_runtime.fda_label_by_rxcui, rxcui=rxcui)
 
     @mcp.tool()
     async def guideline_search(query: str, limit: int = 20) -> dict[str, Any]:
         """Search guideline evidence when an external evidence adapter is available."""
-        return await asyncio.to_thread(lambda: server_runtime.guideline_search(query=query, limit=limit))
+        return await _run_db(server_runtime.guideline_search, query=query, limit=limit)
 
     @mcp.tool()
     async def guideline_recommendations(topic: str, limit: int = 20) -> dict[str, Any]:
         """Fetch guideline recommendations when an external evidence adapter is available."""
-        return await asyncio.to_thread(lambda: server_runtime.guideline_recommendations(topic=topic, limit=limit))
+        return await _run_db(server_runtime.guideline_recommendations, topic=topic, limit=limit)
 
     @mcp.tool()
     async def guideline_fulltext(guideline_id: str) -> dict[str, Any]:
         """Fetch guideline full text when an external evidence adapter is available."""
-        return await asyncio.to_thread(lambda: server_runtime.guideline_fulltext(guideline_id=guideline_id))
+        return await _run_db(server_runtime.guideline_fulltext, guideline_id=guideline_id)
 
     @mcp.tool()
     async def guidelines_for_code(code: str, source: str, limit: int = 20) -> dict[str, Any]:
         """Fetch guideline evidence for a code when an external adapter is available."""
-        return await asyncio.to_thread(lambda: server_runtime.guidelines_for_code(code=code, source=source, limit=limit))
+        return await _run_db(server_runtime.guidelines_for_code, code=code, source=source, limit=limit)
 
     @mcp.tool()
     async def code_relations(
@@ -813,7 +828,7 @@ def create_mcp_server(
         max_depth: int = 5,
     ) -> dict[str, Any]:
         """Return parent, child, ancestor, or descendant relationships."""
-        return await asyncio.to_thread(lambda: server_runtime.code_relations( codes=codes, sources=sources, direction=direction, max_depth=max_depth, ))
+        return await _run_db(server_runtime.code_relations, codes=codes, sources=sources, direction=direction, max_depth=max_depth)
 
     @mcp.tool()
     async def map_codes(
@@ -828,7 +843,7 @@ def create_mcp_server(
         output_format: str = "dict",
     ) -> dict[str, Any] | str:
         """Map clinical codes to target vocabularies using active same-CUI atoms."""
-        return await asyncio.to_thread(lambda: server_runtime.map_codes( codes=codes, sources=sources, target_sources=target_sources, max_results_per_code=max_results_per_code, max_depth=max_depth, include_target_ancestors=include_target_ancestors, include_target_descendants=include_target_descendants, resolve_mode=resolve_mode, output_format=output_format, ))
+        return await _run_db(server_runtime.map_codes, codes=codes, sources=sources, target_sources=target_sources, max_results_per_code=max_results_per_code, max_depth=max_depth, include_target_ancestors=include_target_ancestors, include_target_descendants=include_target_descendants, resolve_mode=resolve_mode, output_format=output_format)
 
     @mcp.tool()
     async def optimize(
@@ -840,7 +855,7 @@ def create_mcp_server(
         include_codes: bool = False,
     ) -> dict[str, Any] | str:
         """Optimize a valueset into compact hierarchy include/exclude rules."""
-        return await asyncio.to_thread(lambda: server_runtime.optimize( codes=codes, source=source, relationship=relationship, output_format=output_format, rule_format=rule_format, include_codes=include_codes, ))
+        return await _run_db(server_runtime.optimize, codes=codes, source=source, relationship=relationship, output_format=output_format, rule_format=rule_format, include_codes=include_codes)
 
     @mcp.tool()
     async def get_parents(
@@ -848,7 +863,7 @@ def create_mcp_server(
         sources: list[str],
     ) -> dict[str, Any]:
         """Return direct parent relationships for clinical codes."""
-        return await asyncio.to_thread(lambda: server_runtime.parents(codes=codes, sources=sources))
+        return await _run_db(server_runtime.parents, codes=codes, sources=sources)
 
     @mcp.tool()
     async def get_children(
@@ -856,7 +871,7 @@ def create_mcp_server(
         sources: list[str],
     ) -> dict[str, Any]:
         """Return direct child relationships for clinical codes."""
-        return await asyncio.to_thread(lambda: server_runtime.children(codes=codes, sources=sources))
+        return await _run_db(server_runtime.children, codes=codes, sources=sources)
 
     @mcp.tool()
     async def get_ancestors(
@@ -865,7 +880,7 @@ def create_mcp_server(
         max_depth: int = 5,
     ) -> dict[str, Any]:
         """Return ancestor relationships for clinical codes."""
-        return await asyncio.to_thread(lambda: server_runtime.ancestors(codes=codes, sources=sources, max_depth=max_depth))
+        return await _run_db(server_runtime.ancestors, codes=codes, sources=sources, max_depth=max_depth)
 
     @mcp.tool()
     async def get_descendants(
@@ -874,7 +889,7 @@ def create_mcp_server(
         max_depth: int = 5,
     ) -> dict[str, Any]:
         """Return descendant relationships for clinical codes."""
-        return await asyncio.to_thread(lambda: server_runtime.descendants(codes=codes, sources=sources, max_depth=max_depth))
+        return await _run_db(server_runtime.descendants, codes=codes, sources=sources, max_depth=max_depth)
 
     @mcp.tool()
     async def patient_friendly_names(
@@ -887,7 +902,7 @@ def create_mcp_server(
 
         `sources` can contain one source for all codes, or one source per code.
         """
-        return await asyncio.to_thread(lambda: server_runtime.patient_friendly_names( codes=codes, sources=sources, max_depth=max_depth, output_format=output_format, ))
+        return await _run_db(server_runtime.patient_friendly_names, codes=codes, sources=sources, max_depth=max_depth, output_format=output_format)
 
     @mcp.tool()
     async def patient_friendly_concept_map(
@@ -898,7 +913,7 @@ def create_mcp_server(
         target_source: str = "PATIENT_FRIENDLY",
     ) -> dict[str, Any]:
         """Generate patient-friendly ConceptMap rows for clinical codes."""
-        return await asyncio.to_thread(lambda: server_runtime.patient_friendly_concept_map( codes=codes, sources=sources, max_depth=max_depth, batch_size=batch_size, target_source=target_source, ))
+        return await _run_db(server_runtime.patient_friendly_concept_map, codes=codes, sources=sources, max_depth=max_depth, batch_size=batch_size, target_source=target_source)
 
     return mcp
 
