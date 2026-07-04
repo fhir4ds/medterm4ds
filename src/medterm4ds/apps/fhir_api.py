@@ -7,9 +7,11 @@ over standard FHIR R4 HTTP endpoints. Binds to 127.0.0.1 by default
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from pathlib import Path
@@ -45,6 +47,23 @@ _PATIENT_FRIENDLY_CACHE: dict[str, dict[str, dict[str, Any]]] = {}
 # BM25 index storage (loaded once on startup).
 _bm25_indexes: dict[str, list[dict[str, Any]]] = {}
 _bm25_doc_count: dict[str, int] = {}
+
+# Single-worker executor for DuckDB access. DuckDB Python connections are not
+# thread-safe under concurrent use, so we serialize all DB-touching handlers
+# through this one worker. The event loop is still free to interleave I/O
+# (request parsing, network, response serialization) — only the DuckDB calls
+# block on this single worker. For parallel query execution, run N uvicorn
+# workers (each opens its own read-only connection).
+_db_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="fhir-db")
+
+
+async def _run_db(func, *args, **kwargs):
+    """Offload a sync DuckDB handler to the single-worker executor."""
+    loop = asyncio.get_running_loop()
+    if kwargs:
+        from functools import partial
+        return await loop.run_in_executor(_db_executor, partial(func, *args, **kwargs))
+    return await loop.run_in_executor(_db_executor, func, *args)
 
 
 @dataclass(frozen=True)
@@ -275,7 +294,7 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
         code: str = Query(..., description="The code to look up"),
         version: str | None = Query(None),
     ):
-        return _do_lookup(request, system, code)
+        return await _run_db(_do_lookup, request, system, code)
 
     @app.post("/fhir/CodeSystem/$lookup")
     async def lookup_post(request: Request, body: dict[str, Any]):
@@ -284,7 +303,7 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
         code = params.get("code")
         if not system or not code:
             return _fhir_error(400, "system and code are required.")
-        return _do_lookup(request, system, code)
+        return await _run_db(_do_lookup, request, system, code)
 
     def _do_lookup(request: Request, system_uri: str, code: str):
         source = fhir_uri_to_system(system_uri)
@@ -319,7 +338,7 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
         system: str = Query(...),
         code: str = Query(...),
     ):
-        return _do_validate(request, system, code)
+        return await _run_db(_do_validate, request, system, code)
 
     @app.post("/fhir/CodeSystem/$validate-code")
     async def validate_post(request: Request, body: dict[str, Any]):
@@ -328,7 +347,7 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
         code = params.get("code")
         if not system or not code:
             return _fhir_error(400, "system and code are required.")
-        return _do_validate(request, system, code)
+        return await _run_db(_do_validate, request, system, code)
 
     def _do_validate(request: Request, system_uri: str, code: str):
         source = fhir_uri_to_system(system_uri)
@@ -352,7 +371,7 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
         code: str = Query(..., description="Source code"),
         targetsystem: str | None = Query(None, description="Target system URI"),
     ):
-        return _do_translate(request, system, code, targetsystem)
+        return await _run_db(_do_translate, request, system, code, targetsystem)
 
     @app.post("/fhir/ConceptMap/$translate")
     async def translate_post(request: Request, body: dict[str, Any]):
@@ -362,7 +381,7 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
         targetsystem = params.get("targetsystem")
         if not system or not code:
             return _fhir_error(400, "system and code are required.")
-        return _do_translate(request, system, code, targetsystem)
+        return await _run_db(_do_translate, request, system, code, targetsystem)
 
     def _do_translate(request: Request, source_uri: str, code: str, target_uri: str | None):
         source = fhir_uri_to_system(source_uri)
@@ -397,7 +416,7 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
         codeA: str = Query(...),
         codeB: str = Query(...),
     ):
-        return _do_subsumes(request, system, codeA, codeB)
+        return await _run_db(_do_subsumes, request, system, codeA, codeB)
 
     @app.post("/fhir/CodeSystem/$subsumes")
     async def subsumes_post(request: Request, body: dict[str, Any]):
@@ -407,7 +426,7 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
         code_b = params.get("codeB")
         if not system or not code_a or not code_b:
             return _fhir_error(400, "system, codeA, and codeB are required.")
-        return _do_subsumes(request, system, code_a, code_b)
+        return await _run_db(_do_subsumes, request, system, code_a, code_b)
 
     def _do_subsumes(request: Request, system_uri: str, code_a: str, code_b: str):
         source = fhir_uri_to_system(system_uri)
@@ -437,15 +456,17 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
         If no concepts are provided, initializes/resets the closure.
         If concepts are provided, adds them and returns the updated state.
         """
-        from medterm4ds.engines.fhir.closure import (
-            build_closure_response,
-            get_closure_manager,
-        )
-
         params = _parse_parameters(body)
         name = params.get("name")
         if not name:
             return _fhir_error(400, "name parameter is required for $closure.")
+        return await _run_db(_do_closure, request, body, name)
+
+    def _do_closure(request: Request, body: dict[str, Any], name: str):
+        from medterm4ds.engines.fhir.closure import (
+            build_closure_response,
+            get_closure_manager,
+        )
 
         manager = get_closure_manager()
         engine = _engine(request)
@@ -482,7 +503,10 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
         count: int = Query(20, ge=1, le=1000),
         system: str | None = Query(None, description="System URI for filter expansion"),
     ):
-        return _do_expand(request, url=url, filter_text=filter, count=count, system_uri=system)
+        return await _run_db(
+            _do_expand, request,
+            url=url, filter_text=filter, count=count, system_uri=system,
+        )
 
     @app.post("/fhir/ValueSet/$expand")
     async def expand_post(request: Request, body: dict[str, Any]):
@@ -490,11 +514,11 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
         or a Parameters resource (filter mode)."""
         resource_type = body.get("resourceType", "")
         if resource_type == "ValueSet":
-            return _do_expand(request, value_set=body, count=1000)
+            return await _run_db(_do_expand, request, value_set=body, count=1000)
         # Parameters-style: extract url, filter, count
         params = _parse_parameters(body)
-        return _do_expand(
-            request,
+        return await _run_db(
+            _do_expand, request,
             url=params.get("url"),
             filter_text=params.get("filter"),
             count=int(params.get("count", 20)),
@@ -690,7 +714,7 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
         count: int = Query(20, ge=1, le=200),
         searchMode: str = Query("lexical", pattern="^(lexical|hybrid|semantic)$"),
     ):
-        return _do_search(request, query, system, count, searchMode)
+        return await _run_db(_do_search, request, query, system, count, searchMode)
 
     @app.post("/fhir/CodeSystem/$search")
     async def search_post(request: Request, body: dict[str, Any]):
@@ -701,7 +725,7 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
         search_mode = params.get("searchMode", "lexical")
         if not query_text:
             return _fhir_error(400, "query is required.")
-        return _do_search(request, str(query_text), system, count, search_mode)
+        return await _run_db(_do_search, request, str(query_text), system, count, search_mode)
 
     # -- CodeSystem $extract (custom: NER + ConText + search) --
     @app.get("/fhir/CodeSystem/$extract")
@@ -714,7 +738,7 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
         minGrade: str = Query("certain", pattern="^(certain|probable|possible)$"),
         includeNegated: bool = Query(False),
     ):
-        return _do_extract(request, text, format, categories, mode, minGrade, includeNegated)
+        return await _run_db(_do_extract, request, text, format, categories, mode, minGrade, includeNegated)
 
     @app.post("/fhir/CodeSystem/$extract")
     async def extract_post(request: Request, body: dict[str, Any]):
@@ -722,8 +746,8 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
         text = params.get("text")
         if not text:
             return _fhir_error(400, "text is required.")
-        return _do_extract(
-            request, str(text),
+        return await _run_db(
+            _do_extract, request, str(text),
             params.get("format", "codes"),
             params.get("categories"),
             params.get("mode", "hybrid"),
