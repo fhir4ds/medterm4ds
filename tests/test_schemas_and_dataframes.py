@@ -164,7 +164,7 @@ def test_ds_wrappers_return_dataframes_with_service_rows():
     engine = StaticEngine()
 
     lookup_df = lookup_dataframe(
-        [("E11.9", "ICD10CM"), ("NOPE", "CVX")],
+        [("ICD10CM", "E11.9"), ("CVX", "NOPE")],
         engine=engine,
     )
     map_df = map_dataframe(

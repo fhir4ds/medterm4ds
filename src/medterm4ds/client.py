@@ -41,10 +41,11 @@ class Terminology:
     """Convenience facade for notebook and application workflows.
 
     The facade delegates to the same service functions used by the CLI, API,
-    and MCP interfaces. Tuple code inputs use the facade convention
-    ``(source, code)``. Use ``CodeRef`` when sharing inputs with lower-level
-    service functions, which also support medterm's historical ``(code, source)``
-    tuple convention.
+    and MCP interfaces. Tuple code inputs use the canonical ``(source, code)``
+    order — same as ``CodeRef(source, code)`` constructor, same as FHIR
+    Coding ``{system, code}``. ``CodeRef.from_pair`` and ``as_pair`` use the
+    same order; the legacy ``(code, source)`` tuple convention was removed
+    in v0.0.2 to eliminate the silent source/code swap footgun.
     """
 
     def __init__(self, engine: TerminologyEngine, *, connection: Any | None = None):

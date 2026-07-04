@@ -93,9 +93,9 @@ def test_get_concept_map_batches_patient_friendly_rows():
 
     rows = get_concept_map(
         [
-            ("E11.9", "ICD10CM"),
+            ("ICD10CM", "E11.9"),
             CodeRef("SNOMEDCT_US", "123"),
-            ("208", "CVX"),
+            ("CVX", "208"),
         ],
         engine=engine,
         batch_size=2,
@@ -161,7 +161,7 @@ def test_mapping_concept_map_preserves_mapping_provenance():
 
 def test_output_helpers_write_concept_map_records(tmp_path):
     row = get_concept_map(
-        [("E11.9", "ICD10CM")],
+        [("ICD10CM", "E11.9")],
         engine=StaticEngine(
             {
                 ("ICD10CM", "E11.9"): _friendly("ICD10CM", "E11.9", "Diabetes", "exact"),

@@ -23,11 +23,21 @@ class CodeRef:
 
     @classmethod
     def from_pair(cls, pair: tuple[str, str]) -> CodeRef:
-        code, source = pair
+        """Construct from a ``(source, code)`` tuple.
+
+        Tuple order is ``(source, code)`` — same as the dataclass field order,
+        same as the Terminology facade, same as FHIR Coding ``{system, code}``.
+        Historically this method accepted ``(code, source)`` (the legacy
+        medterm convention); that ambiguity was removed in v0.0.2 because it
+        caused silent source/code swaps when refactoring between tuple and
+        CodeRef forms.
+        """
+        source, code = pair
         return cls(source=source, code=code)
 
     def as_pair(self) -> tuple[str, str]:
-        return (self.code, self.source)
+        """Return ``(source, code)`` tuple (matches from_pair order)."""
+        return (self.source, self.code)
 
 
 @dataclass(frozen=True)

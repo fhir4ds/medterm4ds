@@ -1053,8 +1053,8 @@ def run_lookup(args: argparse.Namespace) -> int:
         con.close()
 
     rows = [
-        info.to_dict() if info else _missing_code_info(code=code, source=source)
-        for info, (code, source) in zip(infos, refs, strict=True)
+        info.to_dict() if info else _missing_code_info(source=source, code=code)
+        for info, (source, code) in zip(infos, refs, strict=True)
     ]
     _write_record_results(rows, output=args.output, output_format=args.format)
     return 0
@@ -1560,11 +1560,17 @@ def _bulk_record_format_from_path(path: Path) -> str:
 
 
 def _code_source_pairs(codes: list[str], sources: list[str]) -> list[tuple[str, str]]:
+    """Return ``(source, code)`` tuples matching CodeRef.from_pair convention.
+
+    Was ``zip(codes, sources)`` (returning ``(code, source)``) under the
+    legacy medterm tuple convention; flipped to ``(source, code)`` in
+    v0.0.2 to match CodeRef's field order and the Terminology facade.
+    """
     if len(sources) == 1 and len(codes) > 1:
         sources = sources * len(codes)
     if len(sources) != len(codes):
         raise SystemExit("--source must be provided once for all codes or once per --code")
-    return list(zip(codes, sources, strict=True))
+    return list(zip(sources, codes, strict=True))
 
 
 def _write_record_results(

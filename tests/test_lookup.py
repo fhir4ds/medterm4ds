@@ -52,10 +52,10 @@ def test_get_code_infos_preserves_order_and_missing_values():
         infos = get_code_infos(
             [
                 CodeRef("CVX", "208"),
-                ("E11.9", "ICD10-CM"),
+                ("ICD10-CM", "E11.9"),
                 CodeRef("ICD10CM", "NOPE"),
                 CodeRef("ICD10CM", "S1"),
-                ("2345-7", "LOINC"),
+                ("LOINC", "2345-7"),
             ],
             engine=engine,
         )

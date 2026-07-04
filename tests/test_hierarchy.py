@@ -64,7 +64,7 @@ def test_direct_parents_and_children():
         _make_hierarchy_db(con)
         engine = LocalDuckDBEngine(con)
 
-        parents = get_parents([("E11.9", "ICD10-CM")], engine=engine)
+        parents = get_parents([("ICD10CM", "E11.9")], engine=engine)
         children = get_children([CodeRef("ICD10CM", "E11")], engine=engine)
     finally:
         con.close()

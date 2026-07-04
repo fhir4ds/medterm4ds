@@ -86,7 +86,7 @@ def test_get_code_mappings_returns_same_cui_active_targets_in_input_order():
         rows = get_code_mappings(
             [
                 CodeRef("CVX", "208"),
-                ("E11.9", "ICD10-CM"),
+                ("ICD10-CM", "E11.9"),
                 CodeRef("ICD10CM", "NOPE"),
                 CodeRef("ICD10CM", "S1"),
             ],
