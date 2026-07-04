@@ -70,50 +70,69 @@ class FhirApiSettings:
         )
 
 
-def _load_bm25_indexes(search_dir: str) -> None:
+def _load_bm25_indexes(search_dir: str) -> dict[str, Any]:
     """Load pre-built BM25 JSON indexes on startup.
 
-    The JSON files are pre-built inverted indexes with:
-      - postings: {token: [[rid, tf_count], ...]}
-      - idf: {token: idf_score}
-      - doc_lengths: [length_per_doc]
-      - rid_to_code, rid_to_friendly_name, rid_to_system: per-doc metadata
-      - avg_doc_length: average document length
+    Returns a summary dict with `loaded` (list of categories) and `missing`
+    (list of categories) so the caller can produce a clear startup banner.
     """
+    expected = ("condition", "lab", "medication", "procedure", "vaccine", "body_structure")
     search_path = Path(search_dir)
     if not search_path.is_dir():
-        logger.warning("BM25 search index dir not found: %s — $search will return 503", search_dir)
-        return
-    for category in ("condition", "lab", "medication", "procedure", "vaccine", "body_structure"):
+        logger.warning(
+            "BM25 search index directory not found: %s "
+            "(set MEDTERM4DS_SEARCH_INDEX_DIR to enable $search lexical/hybrid)",
+            search_dir,
+        )
+        return {"loaded": [], "missing": list(expected), "dir": search_dir}
+
+    loaded: list[str] = []
+    missing: list[str] = []
+    for category in expected:
         json_path = search_path / f"{category}_bm25.json"
-        if json_path.exists():
-            try:
-                with json_path.open() as f:
-                    index = json.load(f)
-                if isinstance(index, dict) and "postings" in index:
-                    _bm25_indexes[category] = index
-                    _bm25_doc_count[category] = index.get("num_records", 0)
-                    logger.info("  BM25 %s: %d records", category, index.get("num_records", 0))
-                elif isinstance(index, list):
-                    # Fallback: flat document list (legacy format)
-                    _bm25_indexes[category] = index
-                    _bm25_doc_count[category] = len(index)
-                    logger.info("  BM25 %s: %d records (flat)", category, len(index))
-            except Exception:
-                logger.exception("Failed to load BM25 index: %s", json_path)
+        if not json_path.exists():
+            missing.append(category)
+            continue
+        try:
+            with json_path.open() as f:
+                index = json.load(f)
+            if isinstance(index, dict) and "postings" in index:
+                _bm25_indexes[category] = index
+                _bm25_doc_count[category] = index.get("num_records", 0)
+                loaded.append(category)
+            elif isinstance(index, list):
+                _bm25_indexes[category] = index
+                _bm25_doc_count[category] = len(index)
+                loaded.append(category)
+        except Exception:
+            logger.exception("Failed to load BM25 index: %s", json_path)
+            missing.append(category)
+
+    for category in loaded:
+        logger.info("  BM25 %s: %d records", category, _bm25_doc_count.get(category, 0))
+
+    return {"loaded": loaded, "missing": missing, "dir": search_dir}
 
 
-def _load_patient_friendly_cache(db_path: Path) -> None:
+def _load_patient_friendly_cache(db_path: Path) -> dict[str, Any]:
     """Load patient_friendly JSONs for fast $lookup custom properties."""
     baseline = Path(os.getenv("MEDTERM4DS_FHIR4PX_BASELINE", "/mnt/d/medterm4ds/reports/fhir4px"))
-    for source_lower in ("snomedct_us", "rxnorm", "icd10cm", "lnc", "cvx"):
+    sources = ("snomedct_us", "rxnorm", "icd10cm", "lnc", "cvx")
+    loaded: list[str] = []
+    missing: list[str] = []
+    for source_lower in sources:
         json_path = baseline / f"patient_friendly_{source_lower}.json"
         if json_path.exists():
             try:
                 with json_path.open() as f:
                     _PATIENT_FRIENDLY_CACHE[source_lower] = json.load(f)
+                loaded.append(source_lower)
             except Exception:
-                logger.debug("Could not load %s", json_path)
+                logger.warning("Could not parse patient_friendly JSON: %s", json_path)
+                missing.append(source_lower)
+        else:
+            missing.append(source_lower)
+    return {"loaded": loaded, "missing": missing, "dir": str(baseline)}
 
 
 def _get_patient_friendly(source: str, code: str) -> dict[str, Any] | None:
@@ -121,6 +140,70 @@ def _get_patient_friendly(source: str, code: str) -> dict[str, Any] | None:
     source_lower = source.lower()
     cache = _PATIENT_FRIENDLY_CACHE.get(source_lower, {})
     return cache.get(code)
+
+
+def _log_startup_banner(
+    settings: FhirApiSettings,
+    bm25_summary: dict[str, Any],
+    pf_summary: dict[str, Any],
+) -> None:
+    """Print a clear startup banner: what's available, what's missing, and how to enable it."""
+    logger.info("=" * 72)
+    logger.info("medterm4ds FHIR Terminology Server starting up")
+    logger.info("  Database: %s", settings.db_path)
+
+    bm25_loaded = bm25_summary.get("loaded", [])
+    bm25_missing = bm25_summary.get("missing", [])
+    if bm25_loaded:
+        logger.info(
+            "  BM25 search indexes: %d category/categories loaded %s",
+            len(bm25_loaded), tuple(bm25_loaded),
+        )
+        logger.info("    → $search lexical and hybrid modes AVAILABLE")
+    else:
+        logger.warning(
+            "  BM25 search indexes: NONE loaded (looked in %s)",
+            bm25_summary.get("dir"),
+        )
+        logger.warning(
+            "    → $search lexical/hybrid will return 503. "
+            "Set MEDTERM4DS_SEARCH_INDEX_DIR to the directory containing "
+            "<category>_bm25.json files.",
+        )
+    if bm25_missing and bm25_loaded:
+        logger.info("    (missing categories: %s)", tuple(bm25_missing))
+
+    # Semantic engine availability is checked lazily; report it without loading the model.
+    try:
+        from medterm4ds.engines.fhir.semantic import get_semantic_engine
+        sem_available = get_semantic_engine().is_available
+    except Exception:
+        sem_available = False
+    if sem_available:
+        logger.info("  SapBERT embedding model: available at MEDTERM4DS_EMBEDDING_MODEL_DIR")
+        logger.info("    → $search semantic mode AVAILABLE")
+    else:
+        logger.warning(
+            "  SapBERT embedding model: not found. "
+            "Set MEDTERM4DS_EMBEDDING_MODEL_DIR to enable $search semantic mode.",
+        )
+
+    pf_loaded = pf_summary.get("loaded", [])
+    pf_missing = pf_summary.get("missing", [])
+    if pf_loaded:
+        logger.info(
+            "  Patient-friendly names: %d source(s) loaded %s",
+            len(pf_loaded), tuple(pf_loaded),
+        )
+    if pf_missing:
+        logger.info(
+            "  Patient-friendly names: missing for %d source(s) %s "
+            "(looked in %s; set MEDTERM4DS_FHIR4PX_BASELINE to override)",
+            len(pf_missing), tuple(pf_missing), pf_summary.get("dir"),
+        )
+
+    logger.info("FHIR API ready on 127.0.0.1:%d", DEFAULT_PORT)
+    logger.info("=" * 72)
 
 
 try:
@@ -152,10 +235,10 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
         app.state.con = con
         app.state.engine = engine
         app.state.ready = True
-        # Load BM25 + patient_friendly caches
-        _load_bm25_indexes(app_settings.search_index_dir)
-        _load_patient_friendly_cache(app_settings.db_path)
-        logger.info("FHIR API ready on 127.0.0.1:%d", DEFAULT_PORT)
+        # Load optional search + patient-friendly caches and print a startup banner.
+        bm25_summary = _load_bm25_indexes(app_settings.search_index_dir)
+        pf_summary = _load_patient_friendly_cache(app_settings.db_path)
+        _log_startup_banner(app_settings, bm25_summary, pf_summary)
         try:
             yield
         finally:
