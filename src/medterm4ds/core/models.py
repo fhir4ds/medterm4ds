@@ -28,7 +28,7 @@ class CodeRef:
         Tuple order is ``(source, code)`` — same as the dataclass field order,
         same as the Terminology facade, same as FHIR Coding ``{system, code}``.
         Historically this method accepted ``(code, source)`` (the legacy
-        medterm convention); that ambiguity was removed in v0.0.2 because it
+        medterm convention); that ambiguity was removed in v0.0.1 because it
         caused silent source/code swaps when refactoring between tuple and
         CodeRef forms.
         """

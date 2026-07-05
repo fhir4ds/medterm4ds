@@ -1564,7 +1564,7 @@ def _code_source_pairs(codes: list[str], sources: list[str]) -> list[tuple[str, 
 
     Was ``zip(codes, sources)`` (returning ``(code, source)``) under the
     legacy medterm tuple convention; flipped to ``(source, code)`` in
-    v0.0.2 to match CodeRef's field order and the Terminology facade.
+    v0.0.1 to match CodeRef's field order and the Terminology facade.
     """
     if len(sources) == 1 and len(codes) > 1:
         sources = sources * len(codes)

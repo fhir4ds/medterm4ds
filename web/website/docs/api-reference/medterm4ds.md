@@ -40,7 +40,7 @@ mt.CodeRef("ICD10CM", "E11.9")
 
 (Earlier 0.0.x releases had a `(code, source)` convention in some helpers
 that caused silent source/code swaps when refactoring between tuple and
-CodeRef forms; that was unified in v0.0.2.)
+CodeRef forms; that was unified to eliminate the ambiguity.)
 
 All source names are normalized by `CodeRef`, so aliases such as `LOINC` and
 `ICD10-CM` normalize to the internal source names used by UMLS.

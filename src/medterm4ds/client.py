@@ -46,7 +46,7 @@ class Terminology:
     order — same as ``CodeRef(source, code)`` constructor, same as FHIR
     Coding ``{system, code}``. ``CodeRef.from_pair`` and ``as_pair`` use the
     same order; the legacy ``(code, source)`` tuple convention was removed
-    in v0.0.2 to eliminate the silent source/code swap footgun.
+    in v0.0.1 to eliminate the silent source/code swap footgun.
     """
 
     def __init__(self, engine: TerminologyEngine, *, connection: Any | None = None):

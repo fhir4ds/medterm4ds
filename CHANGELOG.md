@@ -5,7 +5,7 @@ All notable changes to medterm4ds are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.0.2] — 2026-07-04
+## [Unreleased]
 
 ### Breaking changes
 
@@ -134,7 +134,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Recorded the current all-source patient-friendly runtime baseline: 1,127,094 reviewed production codes in 3:47.17 wall time with `--memory-profile fast`.
 - Refreshed CI compatibility by updating stale display expectations and lint issues.
 
-## [0.0.1] — 2026-06-01
+### Initial codebase
 
 - Added Medical Terminology for Data Science package identity and GPL-3.0-only license metadata.
 - Added a notebook-first `Terminology` facade with `connect(...)`, `connect_remote(...)`, typed result methods, and DataFrame helpers.

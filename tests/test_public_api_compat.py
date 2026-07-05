@@ -15,7 +15,7 @@ def test_local_duckdb_compatibility_aliases():
         local_lite_config,
     )
 
-    assert mt.__version__ == "0.0.2"
+    assert mt.__version__ == "0.0.1"
     assert LocalLiteEngine is LocalDuckDBEngine
     assert LocalLiteConfig is LocalDuckDBConfig
     assert LOCAL_LITE_MEMORY_PROFILES is LOCAL_DUCKDB_MEMORY_PROFILES
