@@ -178,46 +178,52 @@ class TestGroupTtys:
 # ---------------------------------------------------------------------------
 
 class TestHierarchySql:
+    """Pin the exact hierarchy_edge_sql each strategy returns.
+
+    Earlier versions asserted only that the SQL contained a magic substring
+    ('PAR', 'isa') — a refactor that returned the literal token 'PAR' in a
+    comment or a totally wrong table would still pass. These assertions
+    pin the exact SQL string so any change in the hierarchy contract fails
+    the test loudly. Update both the strategy and the test together when
+    the contract legitimately changes.
+    """
+
     def test_rxnorm_no_hierarchy(self):
         assert RxNormStrategy().hierarchy_edge_sql() is None
 
     def test_snomed_isa_hierarchy(self):
-        sql = SnomedStrategy().hierarchy_edge_sql()
-        assert sql is not None
-        assert "isa" in sql
+        assert SnomedStrategy().hierarchy_edge_sql() == (
+            "r.REL = 'PAR' AND COALESCE(r.RELA, 'isa') IN ('isa', 'inverse_isa')"
+        )
 
     def test_icd10cm_par_hierarchy(self):
-        sql = IcdStrategy("ICD10CM").hierarchy_edge_sql()
-        assert sql is not None
-        assert "PAR" in sql
+        assert IcdStrategy("ICD10CM").hierarchy_edge_sql() == (
+            "r.REL = 'PAR' AND r.RELA IS NULL"
+        )
 
     def test_icd10pcs_par_hierarchy(self):
-        sql = IcdStrategy("ICD10PCS").hierarchy_edge_sql()
-        assert sql is not None
-        assert "PAR" in sql
+        assert IcdStrategy("ICD10PCS").hierarchy_edge_sql() == (
+            "r.REL = 'PAR' AND r.RELA IS NULL"
+        )
 
     def test_loinc_par_hierarchy(self):
-        sql = LoincStrategy().hierarchy_edge_sql()
-        assert sql is not None
-        assert "PAR" in sql
+        assert LoincStrategy().hierarchy_edge_sql() == (
+            "r.REL = 'PAR' AND r.RELA IS NULL"
+        )
 
     def test_cpt_isa_hierarchy(self):
-        sql = CptStrategy().hierarchy_edge_sql()
-        assert sql is not None
-        assert "isa" in sql
+        assert CptStrategy().hierarchy_edge_sql() == "r.RELA = 'isa'"
 
     def test_hcpcs_par_hierarchy(self):
-        sql = HcpcsStrategy().hierarchy_edge_sql()
-        assert sql is not None
-        assert "PAR" in sql
+        assert HcpcsStrategy().hierarchy_edge_sql() == (
+            "r.REL = 'PAR' AND r.RELA IS NULL"
+        )
 
     def test_cvx_no_hierarchy(self):
         assert CvxStrategy().hierarchy_edge_sql() is None
 
     def test_generic_isa_hierarchy(self):
-        sql = GenericStrategy("ATC").hierarchy_edge_sql()
-        assert sql is not None
-        assert "isa" in sql
+        assert GenericStrategy("ATC").hierarchy_edge_sql() == "r.RELA = 'isa'"
 
     def test_default_no_hierarchy(self):
         assert DefaultStrategy().hierarchy_edge_sql() is None
@@ -335,7 +341,8 @@ class TestEngineUsesCanonicalBroadNames:
 
     Regression for the duplicate-constant drift flagged in the architecture
     review. If the engine ever re-introduces a local copy, this test fails
-    on the identity check (`is`).
+    on the identity check (`is`). Content correctness of the sets themselves
+    is covered by TestBroadNameSets above.
     """
 
     def test_engine_broad_chv_names_are_canonical(self):
@@ -350,6 +357,29 @@ class TestEngineUsesCanonicalBroadNames:
 
         assert _BROAD_MEDLINEPLUS_NAMES is BROAD_MEDLINEPLUS_NAMES, (
             "engine._BROAD_MEDLINEPLUS_NAMES must be imported from sources.base, not redefined"
+        )
+
+    def test_engine_broad_names_are_actually_used_in_sql(self):
+        """Identity check alone doesn't prove the constant is referenced.
+
+        A refactor that imports BROAD_CHV_NAMES but never uses it in the
+        filter SQL would pass the identity test while silently breaking the
+        broad-name filter. Confirm the engine materializes the constants
+        into a SQL literal (the _BROAD_*_NAME_SQL strings).
+        """
+        from medterm4ds.engines.duckdb.engine import (
+            _BROAD_CHV_NAME_SQL,
+            _BROAD_MEDLINEPLUS_NAME_SQL,
+        )
+        # The SQL literal must contain at least one known content member.
+        # If the constant is imported but not rendered into SQL, this fails.
+        assert "finding" in _BROAD_CHV_NAME_SQL.lower(), (
+            "BROAD_CHV_NAMES not materialized into _BROAD_CHV_NAME_SQL — "
+            "broad-name filter would silently match nothing."
+        )
+        assert "anatomy" in _BROAD_MEDLINEPLUS_NAME_SQL.lower(), (
+            "BROAD_MEDLINEPLUS_NAMES not materialized into _BROAD_MEDLINEPLUS_NAME_SQL — "
+            "broad-name filter would silently match nothing."
         )
 
     def test_engine_snomed_target_priority_intentionally_diverges(self):

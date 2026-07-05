@@ -367,7 +367,9 @@ def _log_startup_banner(
             len(pf_missing), tuple(pf_missing), pf_summary.get("dir"),
         )
 
-    logger.info("FHIR API ready on 127.0.0.1:%d", DEFAULT_PORT)
+    _ready_host = os.getenv("MEDTERM4DS_API_HOST", "127.0.0.1")
+    _ready_port = int(os.getenv("MEDTERM4DS_FHIR_API_PORT", str(DEFAULT_PORT)))
+    logger.info("FHIR API ready on %s:%d", _ready_host, _ready_port)
     logger.info("  Tunable env vars (set before startup):")
     logger.info("    FHIR_VS_MAX_DEPTH=%s   (cap on $expand?fhir_vs=isa descendant depth)", os.getenv("FHIR_VS_MAX_DEPTH", "5"))
     logger.info("    MEDTERM4DS_MAX_EXTRACT_TEXT_CHARS=%s   (cap on $extract input length)", MAX_EXTRACT_TEXT_CHARS)
@@ -479,7 +481,13 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
     # -- CapabilityStatement --
     @app.get("/fhir/metadata")
     async def metadata():
-        return build_capability_statement(f"http://127.0.0.1:{DEFAULT_PORT}")
+        # Build the advertised URL from the same env vars main() binds to, so
+        # the statement stays correct when operators override the port
+        # (MEDTERM4DS_FHIR_API_PORT) or host (MEDTERM4DS_API_HOST) for reverse
+        # proxies or to avoid conflicts. Defaults match main()'s defaults.
+        host = os.getenv("MEDTERM4DS_API_HOST", "127.0.0.1")
+        port = int(os.getenv("MEDTERM4DS_FHIR_API_PORT", str(DEFAULT_PORT)))
+        return build_capability_statement(f"http://{host}:{port}")
 
     # -- Lightweight liveness probe --
     # Pure async, no executor / DB / model touch. Returns instantly even when

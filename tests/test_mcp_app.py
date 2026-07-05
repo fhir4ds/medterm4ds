@@ -9,7 +9,7 @@ import pytest
 
 pytest.importorskip("fastmcp")
 
-from medterm4ds.apps.mcp import McpRuntime, McpSettings, _code_refs, create_mcp_server
+from medterm4ds.apps.mcp import McpRuntime, McpSettings, build_code_refs, create_mcp_server
 
 
 def _mcp_tool_names(server) -> set[str]:
@@ -273,7 +273,7 @@ def test_mcp_server_registers_expected_tools(tmp_path):
 
 
 def test_code_refs_accepts_one_source_for_many_codes():
-    refs = _code_refs(["E11.9", "E10.9"], ["ICD10CM"])
+    refs = build_code_refs(["E11.9", "E10.9"], ["ICD10CM"])
 
     assert [(ref.source, ref.code) for ref in refs] == [
         ("ICD10CM", "E11.9"),
@@ -283,4 +283,4 @@ def test_code_refs_accepts_one_source_for_many_codes():
 
 def test_code_refs_validates_lengths():
     with pytest.raises(ValueError, match="sources must contain"):
-        _code_refs(["E11.9", "208"], ["ICD10CM", "CVX", "RXNORM"])
+        build_code_refs(["E11.9", "208"], ["ICD10CM", "CVX", "RXNORM"])

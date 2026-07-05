@@ -18,6 +18,8 @@ import logging
 import threading
 from typing import Any
 
+import duckdb
+
 from medterm4ds.core.models import CodeRef
 from medterm4ds.services.hierarchy import get_ancestors, get_descendants
 
@@ -34,6 +36,10 @@ class ClosureTable:
         # Subsumption: (code_a, code_b) -> True means "a subsumes b"
         self._subsumes: dict[tuple[str, str], bool] = {}
         self._version = 0
+        # Set to True if any ancestor/descendant walk failed since reset.
+        # Callers reading the closure can check this to know whether
+        # check() may be returning false negatives.
+        self.incomplete_since: bool = False
         self._lock = threading.RLock()
 
     def add_concept(self, code: str, source: str, display: str, engine) -> set[str]:
@@ -43,6 +49,13 @@ class ClosureTable:
 
         Uses the engine to walk ancestors and descendants, then records
         relationships for any that are already in the closure.
+
+        Failure handling: duckdb.Error (transient lock timeouts, brief
+        connection issues) is logged at WARNING and the walk continues with
+        what was collected — the closure is marked incomplete via the
+        ``incomplete_since`` attribute so callers can detect degradation.
+        Programming bugs (TypeError, AttributeError, KeyError) propagate so
+        they surface instead of producing silently-wrong subsumption answers.
         """
         with self._lock:
             self.concepts[code] = {"system": source, "display": display}
@@ -61,8 +74,16 @@ class ClosureTable:
                         self._subsumes[(anc_code, code)] = True
                         self._subsumes[(code, anc_code)] = False
                         new_relations.add(anc_code)
-            except Exception:
-                logger.debug("Ancestor walk failed for %s in closure %s", code, self.name)
+            except duckdb.Error as exc:
+                # Transient DuckDB issue — log at WARNING (not DEBUG) so an
+                # operator running $subsumes against an incomplete closure
+                # has a log line explaining why answers may be wrong.
+                logger.warning(
+                    "Ancestor walk failed for %s in closure %s: %s. "
+                    "Closure is now incomplete — $subsumes may return false negatives.",
+                    code, self.name, exc,
+                )
+                self.incomplete_since = True
 
             # Walk descendants: codes this one subsumes
             try:
@@ -74,8 +95,13 @@ class ClosureTable:
                         self._subsumes[(code, desc_code)] = True
                         self._subsumes[(desc_code, code)] = False
                         new_relations.add(desc_code)
-            except Exception:
-                logger.debug("Descendant walk failed for %s in closure %s", code, self.name)
+            except duckdb.Error as exc:
+                logger.warning(
+                    "Descendant walk failed for %s in closure %s: %s. "
+                    "Closure is now incomplete — $subsumes may return false negatives.",
+                    code, self.name, exc,
+                )
+                self.incomplete_since = True
 
             self._version += 1
             return new_relations

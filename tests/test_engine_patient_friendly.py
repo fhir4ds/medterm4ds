@@ -52,7 +52,6 @@ class TestPatientFriendly:
         )
         assert len(results) == 1
         result = results[0]
-        assert result is not None
         assert "Diabetes" in result.name
         assert result.friendly_source in ("MEDLINEPLUS", "ICD10CM")
 
@@ -66,5 +65,8 @@ class TestPatientFriendly:
             [CodeRef("ICD10CM", "FAKE999")], engine=engine
         )
         assert len(results) == 1
-        assert results[0] is not None
+        # Service contract always returns a FriendlyNameResult per input code
+        # (never None), so the load-bearing assertion is match_type — original
+        # means we fell back to the technical display name, none means no
+        # resolver could place the code at all.
         assert results[0].match_type in ("original", "none")

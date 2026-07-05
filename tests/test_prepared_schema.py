@@ -221,7 +221,13 @@ class TestVerifyMt4dsSchema:
         assert result["manifest_exists"] is True
         assert result["prepared_schema_version"] == PREPARED_SCHEMA_VERSION
         assert result["patient_friendly_policy_version"] == PATIENT_FRIENDLY_POLICY_VERSION
-        assert result["package_version"] is not None
+        # package_version comes from medterm4ds.__version__; assert a real
+        # version string, not just non-None. Catches manifest writers that
+        # silently upsert '' or 'unknown' on import failure.
+        import re
+        assert re.fullmatch(r"\d+\.\d+\.\d+[\w.\-]*", str(result["package_version"])), (
+            f"package_version looks bogus: {result['package_version']!r}"
+        )
         assert result["errors"] == []
 
         # Source tables have correct metadata.

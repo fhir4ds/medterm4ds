@@ -168,7 +168,7 @@ class McpRuntime:
         resolve_mode: str = "active_only",
         output_format: str = "dict",
     ) -> dict[str, Any] | str:
-        refs = _code_refs(codes, sources)
+        refs = build_code_refs(codes, sources)
         infos = get_code_infos(refs, engine=self._engine(), resolve_mode=resolve_mode)
         payload = {"results": [info.to_dict() if info else None for info in infos]}
         return render_output(payload, output_format=output_format)
@@ -180,7 +180,7 @@ class McpRuntime:
         sources: Sequence[str],
         output_format: str = "dict",
     ) -> dict[str, Any] | str:
-        refs = _code_refs(codes, sources)
+        refs = build_code_refs(codes, sources)
         results = resolve_codes(refs, engine=self._engine())
         payload = {"results": [result.to_dict() for result in results]}
         return render_output(payload, output_format=output_format)
@@ -212,7 +212,7 @@ class McpRuntime:
         codes: Sequence[str],
         sources: Sequence[str],
     ) -> dict[str, Any]:
-        refs = _code_refs(codes, sources)
+        refs = build_code_refs(codes, sources)
         infos = get_code_ttys(refs, engine=self._engine())
         return {"results": [info.to_dict() for info in infos]}
 
@@ -384,7 +384,7 @@ class McpRuntime:
         direction: str,
         max_depth: int = 5,
     ) -> dict[str, Any]:
-        refs = _code_refs(codes, sources)
+        refs = build_code_refs(codes, sources)
         relations = get_code_relations(
             refs,
             engine=self._engine(),
@@ -406,7 +406,7 @@ class McpRuntime:
         resolve_mode: str = "active_only",
         output_format: str = "dict",
     ) -> dict[str, Any] | str:
-        refs = _code_refs(codes, sources)
+        refs = build_code_refs(codes, sources)
         mappings = get_code_mappings(
             refs,
             engine=self._engine(),
@@ -494,7 +494,7 @@ class McpRuntime:
         max_depth: int = 5,
         output_format: str = "dict",
     ) -> dict[str, Any] | str:
-        refs = _code_refs(codes, sources)
+        refs = build_code_refs(codes, sources)
         results = get_patient_friendly_names(
             refs,
             engine=self._engine(),
@@ -513,7 +513,7 @@ class McpRuntime:
         batch_size: int = 5000,
         target_source: str = "PATIENT_FRIENDLY",
     ) -> dict[str, Any]:
-        refs = _code_refs(codes, sources)
+        refs = build_code_refs(codes, sources)
         rows = get_concept_map(
             refs,
             engine=self._engine(),
@@ -927,7 +927,7 @@ def main() -> None:
     create_mcp_server().run()
 
 
-def _code_refs(codes: Sequence[str], sources: Sequence[str]) -> list[CodeRef]:
+def build_code_refs(codes: Sequence[str], sources: Sequence[str]) -> list[CodeRef]:
     if not sources:
         raise ValueError("sources must not be empty")
     if len(sources) == 1:
