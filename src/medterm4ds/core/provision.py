@@ -21,6 +21,7 @@ import os
 import shutil
 import tempfile
 from pathlib import Path
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -265,3 +266,136 @@ def provision(
     set_env_vars(db_path, derived, memory_profile=memory_profile)
 
     return db_path
+
+
+# ============================================================================
+# Cache inspection + management
+# ============================================================================
+
+
+def cache_info() -> dict[str, Any]:
+    """Return a summary of the medterm4ds cache state.
+
+    Includes paths, sizes, UMLS versions present, and whether derived
+    artifacts are available in the HF cache.
+    """
+    import time as _time
+
+    home = resolve_cache_home()
+    cache_dir = home / "cache"
+
+    # lookup.duckdb versions
+    versions: list[dict[str, Any]] = []
+    total_lookup_size = 0
+    if cache_dir.is_dir():
+        for db_path in sorted(cache_dir.glob("lookup-*.duckdb")):
+            stat = db_path.stat()
+            version_tag = db_path.stem.replace("lookup-", "")
+            versions.append({
+                "version": version_tag,
+                "path": str(db_path),
+                "size_mb": round(stat.st_size / 1e6, 1),
+                "modified": _time.strftime(
+                    "%Y-%m-%d %H:%M", _time.localtime(stat.st_mtime)
+                ),
+            })
+            total_lookup_size += stat.st_size
+
+    # Check HF cache for derived artifacts
+    hf_cache_status = _check_hf_cache()
+
+    return {
+        "cache_home": str(home),
+        "lookup_dbs": versions,
+        "lookup_total_mb": round(total_lookup_size / 1e6, 1),
+        "derived_artifacts": hf_cache_status,
+    }
+
+
+def cache_versions() -> list[str]:
+    """Return the list of UMLS release versions cached locally."""
+    home = resolve_cache_home()
+    cache_dir = home / "cache"
+    if not cache_dir.is_dir():
+        return []
+    return sorted(
+        p.stem.replace("lookup-", "")
+        for p in cache_dir.glob("lookup-*.duckdb")
+        if p.stat().st_size > _LOOKUP_MIN_SIZE
+    )
+
+
+def cache_clear(
+    keep: str | None = None,
+    *,
+    keep_current: bool = True,
+) -> list[str]:
+    """Remove old lookup.duckdb versions from the cache.
+
+    Args:
+        keep: Version to keep (e.g., ``"2026AA"``). If None, keeps the
+            most recently modified version.
+        keep_current: If True, also keep the version that mt.connect()
+            would use by default (``DEFAULT_UMLS_RELEASE``).
+
+    Returns:
+        List of removed version tags.
+    """
+    home = resolve_cache_home()
+    cache_dir = home / "cache"
+    if not cache_dir.is_dir():
+        return []
+
+    all_dbs = sorted(
+        cache_dir.glob("lookup-*.duckdb"),
+        key=lambda p: p.stat().st_mtime,
+        reverse=True,
+    )
+    if not all_dbs:
+        return []
+
+    # Determine which to keep
+    keep_versions: set[str] = set()
+    if keep is not None:
+        keep_versions.add(keep)
+    if keep_current:
+        keep_versions.add(DEFAULT_UMLS_RELEASE)
+    # Always keep the most recent if nothing else is specified
+    if not keep_versions:
+        keep_versions.add(all_dbs[0].stem.replace("lookup-", ""))
+
+    removed: list[str] = []
+    for db_path in all_dbs:
+        version = db_path.stem.replace("lookup-", "")
+        if version in keep_versions:
+            continue
+        db_path.unlink()
+        removed.append(version)
+        logger.info("Removed cached lookup-%s.duckdb (%.0f MB)", version, db_path.stat().st_size / 1e6)
+
+    return removed
+
+
+def _check_hf_cache() -> dict[str, Any]:
+    """Check whether derived artifacts are present in the HF cache."""
+    try:
+        from huggingface_hub import HfApi
+        api = HfApi()
+        # Check if the dataset is cached locally
+        from huggingface_hub import try_scan_cache
+        cache_info = try_scan_cache()
+        medterm4ds_entries = [
+            e for e in cache_info.repositories
+            if "medterm4ds-data" in e.repo_id
+        ]
+        if medterm4ds_entries:
+            entry = medterm4ds_entries[0]
+            return {
+                "available": True,
+                "repo_id": entry.repo_id,
+                "size_mb": round(entry.size_on_disk / 1e6, 1),
+            }
+    except Exception:
+        pass
+
+    return {"available": False, "note": "Derived artifacts not found in HF cache. Run mt.connect() to download."}

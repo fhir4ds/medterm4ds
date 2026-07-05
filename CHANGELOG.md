@@ -1,6 +1,72 @@
 # Changelog
 
-## Unreleased
+All notable changes to medterm4ds are documented here.
+
+The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
+and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+
+## [0.0.2] — 2026-07-04
+
+### Breaking changes
+
+- **Tuple convention unified to `(source, code)`.** `CodeRef.from_pair()` and
+  `as_pair()` now use `(source, code)` order — same as the dataclass field order,
+  same as the Terminology facade, same as FHIR Coding `{system, code}`. The
+  legacy `(code, source)` convention that caused silent source/code swaps was
+  removed. If you pass tuples to service functions, flip the order.
+
+- **`$search` mode label simplified.** The FHIR `$search` response previously
+  returned `"semantic-fallback"` in `expansion.search.mode` when hybrid search
+  fell back to semantic-only. Now always returns the requested mode (`"hybrid"`).
+
+### Added
+
+- **`mt.connect()` auto-provisioning.** Omit `db_path` to trigger one-time
+  setup: builds `lookup.duckdb` from UMLS RRF (~8 min), downloads derived
+  artifacts from HF (~2 min), caches in `~/.medterm4ds/`.
+- **Cache management:** `mt.cache_info()`, `mt.cache_versions()`, `mt.cache_clear()`.
+- **Interactive setup wizard:** `python -m medterm4ds.setup`.
+- **`/health` endpoint** on the FHIR server — pure async liveness probe (<5ms).
+- **`$extract` endpoint** on the FHIR server — GLiNER NER + medspaCy ConText.
+- **Request-timing middleware** on the FHIR server.
+- **`FHIR_VS_MAX_DEPTH` env var** + canonical `valueset-toocostly` truncation extension.
+- **`MEDTERM4DS_MAX_EXTRACT_TEXT_CHARS` env var** — cap on `$extract` input.
+- **Docker `HEALTHCHECK`** + OCI labels.
+- **`scripts/rebuild_fhir_docker.sh`** — one-command rebuild + restart.
+- **`LocalDuckDBEngine` mixin composition** — 2173-line god class → 9 focused mixins.
+- **`get_descendants_bfs()` / `is_descendant()`** — O(nodes) BFS for hierarchy walks.
+- **GLiNER NER model** (`E3-JSI/gliner-multi-med-ner-synthetic-v1`) replaces d4data.
+- **`.github/workflows/publish.yml`** — PyPI publish on tag push via trusted publishing.
+
+### Changed
+
+- **`$subsumes` performance:** 5min+ timeout → ~750ms (BFS with early-exit).
+- **`$expand?fhir_vs=isa` performance:** 5min+ timeout → <1s (layer-by-layer BFS).
+- **`$search` consolidated** to `services.search.SearchService` (was duplicated).
+- **NER model switched to GLiNER** — catches acronyms (T2DM, CKD) d4data missed.
+- **Error messages sanitized** — control chars stripped, 256-char cap.
+- **`duckdb` + `huggingface_hub`** now hard dependencies.
+- **pyproject.toml version** bumped: 0.0.1 → 0.0.2.
+
+### Security
+
+- CVX URL SSRF guard (https + cdc.gov allowlist).
+- `$extract` input length cap (100K chars).
+- `$expand` count validation tightened (POST: reject <1 and >1000).
+- HF Spaces auth divergence documented in SECURITY.md.
+
+### Fixed
+
+- Silent truncation when `$expand` count=1 and root fills budget.
+- `_expand_intensional` truncation flag was computed but never emitted.
+- `ClosureTable.to_parameter_list` missing lock.
+- `get_closure_manager()` singleton init race.
+- Silent `except: pass` blocks → logged warnings (3 sites).
+- `RemoteAPIEngine.get_code_relations` missing `limit` param (Protocol drift).
+- MCP `extract` tool bypassing the single-worker executor.
+- FHIR startup banner not appearing in `docker logs`.
+
+### Earlier in 0.0.2 (Tier A/B/C refactor)
 
 ### Architecture refactor (Tier C)
 - Split `engines/duckdb/engine.py` from 5,362 lines into 6 focused modules: `hierarchy.py`, `mappings.py`, `resolution.py`, `patient_friendly.py`, `indications.py`, plus a leaner `engine.py` (2,127 lines, -60%). No behavioral change; verified via full regression suite and chain-of-custody diff against pre-refactor output.
@@ -68,7 +134,7 @@
 - Recorded the current all-source patient-friendly runtime baseline: 1,127,094 reviewed production codes in 3:47.17 wall time with `--memory-profile fast`.
 - Refreshed CI compatibility by updating stale display expectations and lint issues.
 
-## 0.0.1 - 2026-06-01
+## [0.0.1] — 2026-06-01
 
 - Added Medical Terminology for Data Science package identity and GPL-3.0-only license metadata.
 - Added a notebook-first `Terminology` facade with `connect(...)`, `connect_remote(...)`, typed result methods, and DataFrame helpers.

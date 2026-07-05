@@ -96,6 +96,9 @@ try:
 except ImportError:
     pass
 
+# Cache management — inspect and clean the ~/.medterm4ds/ cache
+from .core.provision import cache_clear, cache_info, cache_versions
+
 # ============================================================================
 # Types — what most call sites need
 # ============================================================================
@@ -222,6 +225,9 @@ __all__ = [
     "find_terms",
     "resolve_spans",
     "create_fhir_app",
+    "cache_clear",
+    "cache_info",
+    "cache_versions",
     # Types
     "CodeRef",
     "CodeInfo",
