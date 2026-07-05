@@ -112,64 +112,15 @@ class HcpcsStrategy(DefaultStrategy):
         return "r.REL = 'PAR' AND r.RELA IS NULL"
 
     def friendly_strategy_rows(self) -> list[dict[str, object]]:
-        """HCPCS: native hierarchy -> SNOMED fallback -> original."""
-        return [
-            {
-                "phase": "native",
-                "walk_kind": "parent",
-                "target_source": "MEDLINEPLUS",
-                "target_tty": None,
-                "match_type": "exact",
-                "priority": 0,
-                "max_depth": 5,
-                "stop_on_hit": True,
-                "guard": None,
-            },
-            {
-                "phase": "native",
-                "walk_kind": "parent",
-                "target_source": "CHV",
-                "target_tty": None,
-                "match_type": "exact",
-                "priority": 1,
-                "max_depth": 5,
-                "stop_on_hit": True,
-                "guard": None,
-            },
-            {
-                "phase": "fallback",
-                "walk_kind": "snomed",
-                "target_source": "MEDLINEPLUS",
-                "target_tty": None,
-                "match_type": "broader",
-                "priority": 2,
-                "max_depth": 5,
-                "stop_on_hit": True,
-                "guard": "snomed_top_level",
-            },
-            {
-                "phase": "fallback",
-                "walk_kind": "snomed",
-                "target_source": "CHV",
-                "target_tty": None,
-                "match_type": "broader",
-                "priority": 3,
-                "max_depth": 5,
-                "stop_on_hit": True,
-                "guard": "snomed_top_level",
-            },
-            {
-                "phase": "original",
-                "walk_kind": "none",
-                "target_source": None,
-                "target_tty": None,
-                "match_type": "original",
-                "priority": 99,
-                "max_depth": 0,
-                "stop_on_hit": True,
-                "guard": None,
-            },
-        ]
+        """HCPCS: native hierarchy -> SNOMED fallback -> original.
+
+        Composed via DefaultStrategy helpers — row schema lives in one place.
+        """
+        return (
+            self._native_rows(["MEDLINEPLUS", "CHV"]) +
+            self._snomed_fallback_rows(["MEDLINEPLUS", "CHV"], start_priority=2) +
+            [self._original_row()]
+        )
 
     def atom_display_rank(self) -> str:
         return "AUI"

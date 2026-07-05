@@ -21,30 +21,20 @@ class CvxStrategy(DefaultStrategy):
         return None
 
     def friendly_strategy_rows(self) -> list[dict[str, object]]:
-        """CVX: lookup/enrichment via vaccine group mapping."""
+        """CVX: lookup/enrichment via vaccine group mapping.
+
+        Composed via DefaultStrategy helpers — row schema lives in one place.
+        """
         return [
-            {
-                "phase": "enrichment",
-                "walk_kind": "cvx_group",
-                "target_source": "CVX",
-                "target_tty": None,
-                "match_type": "cvx_group",
-                "priority": 0,
-                "max_depth": 0,
-                "stop_on_hit": True,
-                "guard": None,
-            },
-            {
-                "phase": "original",
-                "walk_kind": "none",
-                "target_source": None,
-                "target_tty": None,
-                "match_type": "original",
-                "priority": 99,
-                "max_depth": 0,
-                "stop_on_hit": True,
-                "guard": None,
-            },
+            self._strategy_row(
+                phase="enrichment",
+                walk_kind="cvx_group",
+                target_source="CVX",
+                match_type="cvx_group",
+                priority=0,
+                max_depth=0,
+            ),
+            self._original_row(),
         ]
 
     def atom_display_rank(self) -> str:

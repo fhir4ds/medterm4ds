@@ -671,17 +671,27 @@ FROM all_results
         )
 
     fallback_rows = [row for row in by_code.values() if row.match_type == "original"]
+    # Single materialization of the output list — previously three sites
+    # (early-return on no fallback, early-return on no mapping, final return)
+    # each rebuilt the full list. Hoisted to a local for reuse.
+    materialize = lambda: [by_code.get(code) or engine._make_original(code, "CPT") for code in codes]
     if not fallback_rows:
-        return [by_code.get(code) or engine._make_original(code, "CPT") for code in codes]
+        return materialize()
 
     fallback_codes = [row.code for row in fallback_rows]
     mapping = engine._map_cpt_targets(fallback_codes)
     if not mapping:
-        return [by_code.get(code) or engine._make_original(code, "CPT") for code in codes]
+        return materialize()
 
-    hcpcs_targets = sorted({target for (src, target) in mapping.values() if src == "HCPCS"})
-    icd10_targets = sorted({target for (src, target) in mapping.values() if src == "ICD10CM"})
-    snomed_targets = sorted({target for (src, target) in mapping.values() if src == "SNOMEDCT_US"})
+    # Partition mapping.values() ONCE by target source — previously scanned
+    # three times (one per source).
+    targets_by_source: dict[str, set[str]] = {"HCPCS": set(), "ICD10CM": set(), "SNOMEDCT_US": set()}
+    for src, target in mapping.values():
+        if src in targets_by_source:
+            targets_by_source[src].add(target)
+    hcpcs_targets = sorted(targets_by_source["HCPCS"])
+    icd10_targets = sorted(targets_by_source["ICD10CM"])
+    snomed_targets = sorted(targets_by_source["SNOMEDCT_US"])
 
     hcpcs_results = {
         row.code: row for row in engine._resolve_default(hcpcs_targets, "HCPCS", max_depth)
@@ -731,7 +741,7 @@ FROM all_results
             ],
         )
 
-    return [by_code.get(code) or engine._make_original(code, "CPT") for code in codes]
+    return materialize()
 
 def _resolve_cvx(engine, codes: Sequence[str]) -> list[_Row]:
     from medterm4ds.engines.duckdb.engine import (

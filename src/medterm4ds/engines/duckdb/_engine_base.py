@@ -45,6 +45,12 @@ from medterm4ds.sources.base import (
 from medterm4ds.sources.base import (
     BROAD_MEDLINEPLUS_NAMES as _BROAD_MEDLINEPLUS_NAMES,
 )
+from medterm4ds.sources.cvx import (
+    CVX_GROUP_URL as _CVX_GROUP_URL,
+)
+from medterm4ds.sources.loinc import (
+    BLACKLIST_LOINC as _BLACKLIST_LOINC,
+)
 from medterm4ds.sources.rxnorm import (
     RXNORM_BASE_TTY_PRIORITY as _RXNORM_BASE_TTY_PRIORITY,
 )
@@ -85,39 +91,13 @@ _SNOMED_TARGET_PRIORITY = {
     "HCPCS": 6,
 }
 
-# UMLS semantic types (TUI) → target source vocabularies that are semantically
-# compatible. Used by _map_snomed_codes to filter crosswalk candidates so a
-# SNOMED concept routes to a clinically appropriate target (e.g., Pharmacologic
-# Substance → RXNORM, not LNC). CVX is intentionally absent: vaccines share
-# generic substance TUIs and are detected via crosswalk existence instead.
-_SNOMED_TUI_TARGETS: dict[str, tuple[str, ...]] = {
-    # Conditions → ICD10CM
-    "T019": ("ICD10CM",),  # Congenital Abnormality
-    "T020": ("ICD10CM",),  # Acquired Abnormality
-    "T037": ("ICD10CM",),  # Injury or Poisoning
-    "T046": ("ICD10CM",),  # Pathologic Function
-    "T047": ("ICD10CM",),  # Disease or Syndrome
-    "T048": ("ICD10CM",),  # Mental or Behavioral Dysfunction
-    "T049": ("ICD10CM",),  # Cell or Molecular Dysfunction
-    "T190": ("ICD10CM",),  # Anatomical Abnormality
-    "T191": ("ICD10CM",),  # Neoplastic Process
-    # Labs → LNC
-    "T034": ("LNC",),      # Laboratory or Test Result
-    "T059": ("LNC",),      # Laboratory Procedure
-    # Substances / Drugs → RXNORM
-    # Restrictive: only pharmacologic-substance or clinical-drug TUIs trigger
-    # RXNORM routing. Endogenous proteins (T116 alone, e.g., the PMS2 gene
-    # product) and pure organic chemicals without pharmacologic semantics are
-    # excluded — they may share a CUI with a drug but aren't drugs themselves.
-    "T121": ("RXNORM",),   # Pharmacologic Substance
-    "T123": ("RXNORM",),   # Biologically Active Substance
-    "T200": ("RXNORM",),   # Clinical Drug
-    # Procedures → CPT (and ICD10PCS for surgical, priority picks ICD10PCS first)
-    "T060": ("CPT", "ICD10PCS"),  # Diagnostic Procedure
-    "T061": ("CPT", "ICD10PCS"),  # Therapeutic or Preventive Procedure
-    "T062": ("CPT", "ICD10PCS"),  # Research Activity
-    "T063": ("CPT", "ICD10PCS"),  # Molecular Biology Research Technique
-}
+# UMLS semantic types (TUI) → target source vocabularies.
+# Canonical location: sources/snomed.py.SNOMED_TUI_TARGETS (alongside the
+# other SNOMED routing data). Imported here as _SNOMED_TUI_TARGETS for
+# back-compat with existing call sites.
+from medterm4ds.sources.snomed import (
+    SNOMED_TUI_TARGETS as _SNOMED_TUI_TARGETS,
+)
 
 # All target SABs that the SNOMED crosswalk may consider when MRSTY is loaded.
 # RXNORM and CVX require TUI-based filtering (otherwise the legacy priority-only
@@ -159,7 +139,7 @@ _SNOMED_TOP_LEVEL_GUARD_DEPTH = 3
 _SNOMED_TOP_LEVEL_GUARD_EXEMPT_MATCH_TYPES = {"same_cui"}
 _SNOMED_PARENT_LINKS_CACHE_TABLE = "_mt4ds_snomed_parent_links"
 _SNOMED_FALLBACK_QUERY_CHUNK_SIZE = 25
-_CVX_GROUP_URL = "https://www2.cdc.gov/vaccines/iis/iisstandards/downloads/VG.txt"
+# _CVX_GROUP_URL imported from sources.cvx (canonical) — see imports above.
 _CVX_GROUP_CACHE: dict[str, list[str]] | None = None
 # Allowlist of hosts the engine will fetch CVX group data from. Anything else
 # (set via MEDTERM4DS_CVX_GROUP_URL env override) is rejected as an SSRF guard.
@@ -205,18 +185,7 @@ _RELA_ISA_HIERARCHY_SOURCES = frozenset({"ATC", "CPT", "MSH", "RXNORM"})
 # _BROAD_CHV_NAMES and _BROAD_MEDLINEPLUS_NAMES imported from sources.base (canonical).
 _BROAD_CHV_NAME_SQL = ", ".join(f"'{name}'" for name in sorted(_BROAD_CHV_NAMES))
 _BROAD_MEDLINEPLUS_NAME_SQL = ", ".join(f"'{name}'" for name in sorted(_BROAD_MEDLINEPLUS_NAMES))
-_BLACKLIST_LOINC = frozenset({
-    "I",
-    "A",
-    "IgE",
-    "IgG",
-    "Specimen",
-    "Activity",
-    "Multisection",
-    "Nuclear",
-    "E",
-    "G Ab",
-})
+# _BLACKLIST_LOINC imported from sources.loinc (canonical) — see imports above.
 _COMBO_SEP_HINTS = (" and ", "/", " + ", " with ")
 _COMBO_TERM_STOPWORDS = {
     "and",
@@ -326,6 +295,23 @@ def _load_default_cvx_groups() -> dict[str, list[str]]:
 
 
 def _source_atom_order_sql(source: str) -> str:
+    """SQL ORDER BY fragment for atom display selection per source.
+
+    NOTE: This function and the per-strategy atom_display_rank() methods
+    (sources/*.py) intentionally diverge for SNOMEDCT_US and RXNORM:
+
+      - SNOMEDCT_US: strategies add 'SCD' as priority 1 (between PT and FN)
+        because semantic clinical drugs should surface before fully-specified
+        names in patient-facing contexts.
+      - RXNORM: strategies add a CASE WHEN SUPPRESS='N' THEN 0 ELSE 1 END
+        second sort key so non-suppressed atoms win ties.
+
+    The engine copy predates the strategy registry and is kept for backward
+    behavior compat in hierarchy.py and patient_friendly.py call sites that
+    pin-tested the older ordering. Full consolidation (delegating to
+    get_strategy(source).atom_display_rank()) is a follow-up that needs the
+    pin test suite re-blessed against the strategy ordering.
+    """
     source = source.upper()
     if source == "RXNORM":
         # Use the canonical RxNorm TTY priority (same as _rxnorm_base_tty_order_sql).
