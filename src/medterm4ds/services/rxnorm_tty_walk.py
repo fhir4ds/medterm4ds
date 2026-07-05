@@ -31,7 +31,11 @@ _STRATEGY = "rxnorm_tty_traversal"
 
 
 def _sql_literal(value: object) -> str:
-    return "'" + str(value).replace("'", "''") + "'"
+    # Delegated to medterm4ds.core.sql so int handling matches the engine.
+    # The local copy here previously always quoted, which would produce
+    # '42' instead of 42 if a non-string ever slipped through.
+    from medterm4ds.core.sql import sql_literal
+    return sql_literal(value)
 
 
 def get_rxnorm_patient_friendly(

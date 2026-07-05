@@ -43,7 +43,9 @@ class EvidenceHttpError(RuntimeError):
 # Cap response body size so a malicious or compromised endpoint cannot OOM
 # the process by streaming an infinitely large response. 50 MB is generous
 # for openFDA / PubMed JSON responses (typical payloads are well under 1 MB).
-MAX_RESPONSE_BYTES = 50 * 1024 * 1024
+# Implementation lives in medterm4ds.core.http so the cap is shared across
+# all three HTTP-fetch paths (RemoteApiEngine, evidence, data_setup).
+from medterm4ds.core.http import MAX_RESPONSE_BYTES  # noqa: F401 — re-exported for back-compat
 
 
 def _read_capped(response) -> bytes:
@@ -52,19 +54,8 @@ def _read_capped(response) -> bytes:
     Raises RuntimeError if the response exceeds the cap. Uses streaming reads
     so we don't buffer the full oversize payload before failing.
     """
-    chunks: list[bytes] = []
-    total = 0
-    while True:
-        chunk = response.read(64 * 1024)
-        if not chunk:
-            break
-        total += len(chunk)
-        if total > MAX_RESPONSE_BYTES:
-            raise RuntimeError(
-                f"External evidence response exceeded {MAX_RESPONSE_BYTES} byte cap; aborting"
-            )
-        chunks.append(chunk)
-    return b"".join(chunks)
+    from medterm4ds.core.http import read_capped
+    return read_capped(response, source_label="External evidence response")
 
 
 class EvidenceHttpClient:

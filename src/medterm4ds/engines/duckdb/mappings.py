@@ -17,6 +17,21 @@ from collections import defaultdict
 from collections.abc import Sequence
 
 from medterm4ds.core.models import CodeMapping, CodeRef, Provenance, ProvenanceStep
+from medterm4ds.engines.duckdb._engine_base import _SNOMED_TARGET_PRIORITY
+
+
+def _snomed_target_priority_case_sql() -> str:
+    """Render _SNOMED_TARGET_PRIORITY as a SQL CASE clause on target_source.
+
+    Single source of truth: priority values live in
+    engines.duckdb._engine_base._SNOMED_TARGET_PRIORITY. Previously two
+    inline CASE statements in this file duplicated the dict as raw SQL —
+    a dict update would silently leave the SQL with the old ordering.
+    """
+    pairs = sorted(_SNOMED_TARGET_PRIORITY.items(), key=lambda kv: kv[1])
+    fallback = max(_SNOMED_TARGET_PRIORITY.values()) + 1
+    when_clauses = " ".join(f"WHEN '{src}' THEN {pri}" for src, pri in pairs)
+    return f"CASE target_source {when_clauses} ELSE {fallback} END"
 
 
 def _filter_snomed_top_level_mappings(
@@ -1080,14 +1095,7 @@ def _map_snomed_codes(engine, codes: Sequence[str]) -> dict[str, tuple[str, str,
                 SELECT sn_code, target_source, target_code
                 FROM candidates
                 ORDER BY sn_code,
-                         CASE target_source WHEN 'CVX' THEN 0
-                                            WHEN 'ICD10CM' THEN 1
-                                            WHEN 'ICD10PCS' THEN 2
-                                            WHEN 'LNC' THEN 3
-                                            WHEN 'RXNORM' THEN 4
-                                            WHEN 'CPT' THEN 5
-                                            WHEN 'HCPCS' THEN 6
-                                            ELSE 7 END,
+                         {_snomed_target_priority_case_sql()},
                          target_code
                 """
             ).fetchall()
@@ -1119,14 +1127,7 @@ def _map_snomed_codes(engine, codes: Sequence[str]) -> dict[str, tuple[str, str,
                 SELECT sn_code, target_source, target_code
                 FROM candidates
                 ORDER BY sn_code,
-                         CASE target_source WHEN 'CVX' THEN 0
-                                            WHEN 'ICD10CM' THEN 1
-                                            WHEN 'ICD10PCS' THEN 2
-                                            WHEN 'LNC' THEN 3
-                                            WHEN 'RXNORM' THEN 4
-                                            WHEN 'CPT' THEN 5
-                                            WHEN 'HCPCS' THEN 6
-                                            ELSE 7 END,
+                         {_snomed_target_priority_case_sql()},
                          target_code
                 """
             ).fetchall()

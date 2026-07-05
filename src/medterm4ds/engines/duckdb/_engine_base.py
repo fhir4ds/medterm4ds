@@ -470,24 +470,21 @@ def _rxnorm_tty_sql_rows() -> tuple[list[tuple[object, ...]], list[tuple[object,
 
 
 def _sql_values(rows: Sequence[Sequence[object]]) -> str:
-    if not rows:
-        raise ValueError("rows must not be empty")
-    return ",\n                           ".join(
-        "(" + ", ".join(_sql_literal(value) for value in row) + ")"
-        for row in rows
-    )
+    # Delegated to medterm4ds.core.sql to keep a single source of truth
+    # across engines and services. Kept here as a thin wrapper so existing
+    # call sites (and the wildcard re-export in _EngineState.py) keep working.
+    from medterm4ds.core.sql import sql_values
+    return sql_values(rows)
 
 
 def _sql_literal(value: object) -> str:
-    if isinstance(value, int):
-        return str(value)
-    text = str(value).replace("'", "''")
-    return f"'{text}'"
+    from medterm4ds.core.sql import sql_literal
+    return sql_literal(value)
 
 
 def _chunks(values: Sequence[T], size: int) -> Iterator[list[T]]:
-    for start in range(0, len(values), size):
-        yield list(values[start:start + size])
+    from medterm4ds.core.sql import chunks
+    return chunks(values, size)
 
 
 def _ndc_candidates(code: str) -> list[str]:

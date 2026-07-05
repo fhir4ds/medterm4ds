@@ -700,21 +700,12 @@ def _sql_string(value: str) -> str:
 
 # Cap HTTP JSON response size so a compromised UTS or CDC endpoint cannot OOM
 # the build process by streaming an infinitely large response.
-MAX_RESPONSE_BYTES = 50 * 1024 * 1024
+# Implementation lives in medterm4ds.core.http so the cap is shared across
+# all three HTTP-fetch paths (RemoteApiEngine, evidence, data_setup).
+from medterm4ds.core.http import MAX_RESPONSE_BYTES  # noqa: F401 — re-exported for back-compat
 
 
 def _read_capped(response) -> bytes:
     """Read at most MAX_RESPONSE_BYTES from `response` using streaming reads."""
-    chunks: list[bytes] = []
-    total = 0
-    while True:
-        chunk = response.read(64 * 1024)
-        if not chunk:
-            break
-        total += len(chunk)
-        if total > MAX_RESPONSE_BYTES:
-            raise RuntimeError(
-                f"HTTP response exceeded {MAX_RESPONSE_BYTES} byte cap; aborting"
-            )
-        chunks.append(chunk)
-    return b"".join(chunks)
+    from medterm4ds.core.http import read_capped
+    return read_capped(response, source_label="HTTP response")

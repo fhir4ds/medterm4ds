@@ -27,6 +27,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from medterm4ds.core.models import CodeRef
+from medterm4ds.core.normalize import source_label
 
 logger = logging.getLogger(__name__)
 
@@ -159,12 +160,10 @@ class ExtractedConcept:
 
     @property
     def system_label(self) -> str:
-        labels = {
-            "SNOMEDCT_US": "snomedct_us", "RXNORM": "rxnorm",
-            "ICD10CM": "icd10", "ICD10PCS": "icd10pcs",
-            "LNC": "lnc", "CPT": "cpt", "HCPCS": "hcpcs", "CVX": "cvx",
-        }
-        return labels.get(self.source, self.source.lower())
+        # Delegates to core.normalize.source_label — single source of truth
+        # shared with SearchResult.system_label. Previously had an inline
+        # dict that could drift from search.py's _SOURCE_LABELS.
+        return source_label(self.source)
 
     def to_dict(self) -> dict[str, Any]:
         return {

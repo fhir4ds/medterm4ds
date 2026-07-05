@@ -108,7 +108,9 @@ def _friendly_tty_order_sql(expr: str = "tty") -> str:
 
 
 def _sql_literal(value: object) -> str:
-    return "'" + str(value).replace("'", "''") + "'"
+    # Delegated to medterm4ds.core.sql so int handling matches the engine.
+    from medterm4ds.core.sql import sql_literal
+    return sql_literal(value)
 
 
 def _sql_literal_list(values: frozenset[str]) -> str:

@@ -1,5 +1,27 @@
 """Source vocabulary normalization."""
 
+# Lowercase source label per source — used by SearchResult.system_label and
+# ExtractionResult.system_label (previously duplicated inline in both files).
+# Adding a new source here updates both surfaces; missing one means search
+# hits and extraction hits for that source render with the raw SAB as the
+# system URL.
+SOURCE_LABELS: dict[str, str] = {
+    "SNOMEDCT_US": "snomedct_us",
+    "RXNORM": "rxnorm",
+    "ICD10CM": "icd10",
+    "ICD10PCS": "icd10pcs",
+    "LNC": "lnc",
+    "CPT": "cpt",
+    "HCPCS": "hcpcs",
+    "CVX": "cvx",
+}
+
+
+def source_label(source: str) -> str:
+    """Return the lowercase system label for a source, defaulting to lower(source)."""
+    return SOURCE_LABELS.get(source, source.lower())
+
+
 SOURCE_MAP = {
     "LOINC": "LNC",
     "LNC": "LNC",

@@ -1623,18 +1623,11 @@ def _write_payload(
 
 
 def _missing_code_info(*, code: str, source: str) -> dict[str, object]:
-    from medterm4ds.core.models import CodeRef
-
-    ref = CodeRef(source=source, code=code)
-    return {
-        "source": ref.source,
-        "code": ref.code,
-        "name": None,
-        "cui": None,
-        "aui": None,
-        "tty": None,
-        "suppress": None,
-    }
+    # Delegates to CodeInfo — see client._missing_code_info for rationale.
+    # This CLI variant takes kwargs instead of a CodeRef because some CLI
+    # paths know the source/code before they have a CodeRef in hand.
+    from medterm4ds.core.models import CodeInfo
+    return CodeInfo(code=CodeRef(source=source, code=code)).to_dict()
 
 
 def _json_dumps(data: object) -> str:

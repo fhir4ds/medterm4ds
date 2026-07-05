@@ -202,15 +202,9 @@ def _normalize_codes(codes: Sequence[CodeInput]) -> list[CodeRef]:
 
 
 def _missing_code_info(ref: CodeRef) -> dict[str, object]:
-    return {
-        "source": ref.source,
-        "code": ref.code,
-        "name": None,
-        "cui": None,
-        "aui": None,
-        "tty": None,
-        "suppress": None,
-    }
+    # Delegates to CodeInfo — see client._missing_code_info for rationale.
+    from medterm4ds.core.models import CodeInfo
+    return CodeInfo(code=ref).to_dict()
 
 
 __all__ = [

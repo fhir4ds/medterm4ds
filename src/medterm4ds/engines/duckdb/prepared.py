@@ -1449,24 +1449,81 @@ def verify_mt4ds_schema(con) -> dict[str, object]:
     # Source table metadata
     locations = _detect_raw_location(con)
     source_tables: dict[str, dict[str, object]] = {}
+    # Build one UNION-ALL query that counts all source tables at once
+    # instead of one COUNT(*) round-trip per table.
+    source_count_clauses = []
     for table in _UMLS_TABLES:
         location = locations.get(table, "")
         if location:
-            qualified = f'{location}."{table}"'
-            count = _row_count(con, qualified)
-            source_tables[table] = {"location": location, "row_count": count}
+            source_count_clauses.append((table, location))
+    source_counts: dict[str, int] = {}
+    if source_count_clauses:
+        union_sql = " UNION ALL ".join(
+            f"SELECT '{t}' AS t, COUNT(*) AS n FROM {loc}.\"{t}\""
+            for t, loc in source_count_clauses
+        )
+        try:
+            for row in con.execute(union_sql).fetchall():
+                source_counts[str(row[0])] = int(row[1])
+        except duckdb.Error as exc:
+            logging.getLogger(__name__).warning(
+                "verify_mt4ds_schema source-table count batch failed: %s. "
+                "Row counts will be reported as None.", exc,
+            )
+    for table in _UMLS_TABLES:
+        location = locations.get(table, "")
+        if location:
+            source_tables[table] = {
+                "location": location,
+                "row_count": source_counts.get(table),
+            }
         else:
             source_tables[table] = {"location": None, "row_count": None}
     result["source_tables"] = source_tables
 
     # Prepared mt4ds runtime table metadata
+    # One existence query (information_schema) + one UNION-ALL count query
+    # instead of 2 round-trips per prepared table.
+    required = list(_REQUIRED_MT4DS_TABLES)
+    placeholders = ", ".join(["?"] * len(required))
+    existing_prepared: set[str] = set()
+    try:
+        rows = con.execute(
+            f"""
+            SELECT table_name
+            FROM information_schema.tables
+            WHERE table_schema = 'mt4ds' AND table_name IN ({placeholders})
+            """,
+            required,
+        ).fetchall()
+        existing_prepared = {str(r[0]) for r in rows}
+    except duckdb.Error as exc:
+        logging.getLogger(__name__).warning(
+            "verify_mt4ds_schema prepared-table existence probe failed: %s", exc,
+        )
+
+    prepared_counts: dict[str, int] = {}
+    if existing_prepared:
+        union_sql = " UNION ALL ".join(
+            f"SELECT '{t}' AS t, COUNT(*) AS n FROM mt4ds.\"{t}\""
+            for t in sorted(existing_prepared)
+        )
+        try:
+            for row in con.execute(union_sql).fetchall():
+                prepared_counts[str(row[0])] = int(row[1])
+        except duckdb.Error as exc:
+            logging.getLogger(__name__).warning(
+                "verify_mt4ds_schema prepared-table count batch failed: %s. "
+                "Row counts will be reported as None.", exc,
+            )
+
     prepared_tables: dict[str, dict[str, object]] = {}
     missing_prepared: list[str] = []
-    for table in _REQUIRED_MT4DS_TABLES:
-        exists = _table_exists(con, "mt4ds", table)
+    for table in required:
+        exists = table in existing_prepared
         prepared_tables[table] = {
             "exists": exists,
-            "row_count": _row_count(con, f"mt4ds.{table}") if exists else None,
+            "row_count": prepared_counts.get(table) if exists else None,
         }
         if not exists:
             missing_prepared.append(table)

@@ -524,6 +524,50 @@ class Terminology:
         )
 
 
+def open_duckdb_engine(
+    db_path: str | Path,
+    *,
+    read_only: bool = True,
+    config: Any | None = None,
+    progress: Any | None = None,
+) -> tuple[Any, Any]:
+    """Open a DuckDB connection + LocalDuckDBEngine pair.
+
+    Shared by ``connect()`` (and therefore mt.connect, the CLI, MCP, API,
+    FHIR server) so the connection contract — read_only handling, config
+    validation, future pool wrappers — lives in one place. Callers own the
+    connection lifecycle (CLI uses try/finally; library users go through
+    Terminology which owns the connection).
+
+    Auto-provisioning is NOT done here — callers must pass an existing
+    db_path. Use mt.connect() (which calls this helper internally) for
+    auto-provisioning.
+
+    Args:
+        db_path: Path to a pre-built UMLS DuckDB file.
+        read_only: Open the connection read-only (default True).
+        config: A LocalDuckDBConfig from local_duckdb_config(). If None,
+            uses the 'balanced' memory profile defaults.
+        progress: Optional progress callback for prepare_cache reporting.
+
+    Returns:
+        (con, engine) — caller is responsible for con.close() on cleanup.
+    """
+    try:
+        import duckdb
+    except ImportError as exc:
+        raise RuntimeError("DuckDB is required. Install medterm4ds[duckdb].") from exc
+
+    from medterm4ds.core.config import local_duckdb_config
+    from medterm4ds.engines.duckdb import LocalDuckDBEngine
+
+    if config is None:
+        config = local_duckdb_config("balanced")
+    con = duckdb.connect(str(db_path), read_only=read_only)
+    engine = LocalDuckDBEngine(con, config=config, progress=progress)
+    return con, engine
+
+
 def connect(
     db_path: str | Path | None = None,
     *,
@@ -576,7 +620,7 @@ def connect(
         and FHIR server.
     """
     try:
-        import duckdb
+        import duckdb  # noqa: F401 — used to surface install error early
     except ImportError as exc:
         raise RuntimeError("DuckDB is required. Install medterm4ds[duckdb].") from exc
 
@@ -595,7 +639,6 @@ def connect(
             offline=resolved_offline,
         )
 
-    con = duckdb.connect(str(db_path), read_only=read_only)
     config = local_duckdb_config(
         memory_profile,
         memory_limit=memory_limit,
@@ -603,7 +646,7 @@ def connect(
         threads=threads,
         query_chunk_size=query_chunk_size,
     )
-    engine = LocalDuckDBEngine(con, config=config)
+    con, engine = open_duckdb_engine(db_path, read_only=read_only, config=config)
     if prepare_cache:
         if cache_sources is None:
             engine.prepare_cache(create_indexes=cache_indexes)
@@ -678,15 +721,13 @@ def _as_dicts(rows: Sequence[Any]) -> list[dict[str, Any]]:
 
 
 def _missing_code_info(ref: CodeRef) -> dict[str, Any]:
-    return {
-        "source": ref.source,
-        "code": ref.code,
-        "name": None,
-        "cui": None,
-        "aui": None,
-        "tty": None,
-        "suppress": None,
-    }
+    # Delegates to CodeInfo(code=ref).to_dict() — CodeInfo's defaults are all
+    # None for the optional fields, so a freshly-constructed CodeInfo produces
+    # exactly the missing-info shape. Single source of truth lives in
+    # core.models.CodeInfo; previously duplicated across client/ds/bulk/cli
+    # with drifting field sets.
+    from medterm4ds.core.models import CodeInfo
+    return CodeInfo(code=ref).to_dict()
 
 
 __all__ = ["Terminology", "connect", "connect_remote"]

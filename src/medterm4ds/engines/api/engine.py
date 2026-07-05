@@ -197,24 +197,17 @@ class RemoteApiEngine:
 
 # Cap response body size so a compromised remote terminology server cannot
 # OOM this client by streaming an infinitely large response.
-MAX_RESPONSE_BYTES = 50 * 1024 * 1024
+MAX_RESPONSE_BYTES = 50 * 1024 * 1024  # re-exported for back-compat; canonical value in core.http
 
 
 def _read_capped(response) -> bytes:
-    """Read at most MAX_RESPONSE_BYTES from `response` using streaming reads."""
-    chunks: list[bytes] = []
-    total = 0
-    while True:
-        chunk = response.read(64 * 1024)
-        if not chunk:
-            break
-        total += len(chunk)
-        if total > MAX_RESPONSE_BYTES:
-            raise RuntimeError(
-                f"Remote API response exceeded {MAX_RESPONSE_BYTES} byte cap; aborting"
-            )
-        chunks.append(chunk)
-    return b"".join(chunks)
+    """Read at most MAX_RESPONSE_BYTES from `response` using streaming reads.
+
+    Delegated to medterm4ds.core.http.read_capped so the cap lives in one
+    place across RemoteApiEngine, domains.evidence, and services.data_setup.
+    """
+    from medterm4ds.core.http import read_capped
+    return read_capped(response, source_label="Remote API response")
 
 
 def _open_json(request: Request, timeout: float) -> Mapping[str, Any]:

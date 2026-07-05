@@ -27,6 +27,7 @@ from pathlib import Path
 from typing import Any
 
 from medterm4ds.core.models import CodeRef
+from medterm4ds.core.normalize import SOURCE_LABELS
 
 logger = logging.getLogger(__name__)
 
@@ -47,14 +48,10 @@ _SOURCE_TO_CATEGORIES = {
 
 # Canonical source name → lowercase system label for SearchResult
 _SOURCE_LABELS = {
-    "SNOMEDCT_US": "snomedct_us",
-    "RXNORM": "rxnorm",
-    "ICD10CM": "icd10",
-    "ICD10PCS": "icd10pcs",
-    "LNC": "lnc",
-    "CPT": "cpt",
-    "HCPCS": "hcpcs",
-    "CVX": "cvx",
+    # Delegates to core.normalize.SOURCE_LABELS — single source of truth
+    # shared with services.extraction. Kept as a local alias for back-compat
+    # with any external code importing _SOURCE_LABELS directly.
+    **SOURCE_LABELS,
 }
 
 
@@ -227,12 +224,16 @@ class SearchService:
                     tf_comp = (tf * (k1 + 1)) / (tf + k1 * (1 - b + b * doc_len / avg_doc_length))
                     scores[rid] = scores.get(rid, 0.0) + token_idf * tf_comp
 
+            # Hoist the IDF denominator out of the per-result loop — it depends
+            # only on query_tokens and idf, both of which are constant across
+            # the top-N results. Previously recomputed once per result.
+            idf_denom = sum(idf.get(_stem_token(t), idf.get(t, 1.0)) for t in query_tokens) * 2.5 + 0.001
             for rid, score in sorted(scores.items(), key=lambda x: -x[1])[:count]:
                 code = rid_to_code[rid] if rid < len(rid_to_code) else str(rid)
                 display = rid_to_friendly[rid] if rid < len(rid_to_friendly) else code
                 sys_name = (rid_to_system[rid] if rid < len(rid_to_system) else "").upper()
                 source = _SYSTEM_LABELS_REVERSE.get(sys_name, sys_name)
-                normalized = min(score / (sum(idf.get(_stem_token(t), idf.get(t, 1.0)) for t in query_tokens) * 2.5 + 0.001), 1.0)
+                normalized = min(score / idf_denom, 1.0)
                 results.append(SearchResult(
                     code=str(code), source=source, display=display,
                     score=round(normalized, 4), match_grade=_score_to_grade(normalized),
