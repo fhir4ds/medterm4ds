@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
@@ -497,7 +498,7 @@ class Terminology:
 
 
 def connect(
-    db_path: str | Path,
+    db_path: str | Path | None = None,
     *,
     memory_profile: MemoryProfile = "balanced",
     memory_limit: str | None = None,
@@ -508,12 +509,64 @@ def connect(
     prepare_cache: bool = False,
     cache_sources: Sequence[str] | None = None,
     cache_indexes: bool = True,
+    # Auto-provisioning (only used when db_path is None):
+    umls_api_key: str | None = None,
+    version: str = "2026AA",
+    cache_dir: str | Path | None = None,
+    offline: bool | None = None,
 ) -> Terminology:
-    """Connect to a local medterm4ds DuckDB database."""
+    """Connect to a local medterm4ds DuckDB database.
+
+    Two modes:
+
+    **Direct mode** (existing): pass a ``db_path`` to open a specific
+    DuckDB file.
+
+        terms = mt.connect("/path/to/umls.duckdb")
+
+    **Auto-provisioning mode** (new): omit ``db_path`` to trigger
+    one-time setup. Builds ``lookup.duckdb`` from the user's UMLS RRF
+    download (~8 min first run), downloads derived search artifacts
+    from Hugging Face (~2 min), caches in ``~/.medterm4ds/``, and
+    returns a working Terminology instance.
+
+        terms = mt.connect()  # auto-provisions on first call
+
+    The cache is shared across all Python projects on the machine.
+    Subsequent ``connect()`` calls are instant (cache hit).
+
+    Args:
+        db_path: Path to a pre-built UMLS DuckDB file. If None, auto-provisions.
+        umls_api_key: NLM UTS API key (reads UMLS_API_KEY env var if not passed).
+            Only needed on first run (to build lookup.duckdb from UMLS RRF).
+        version: UMLS release tag (default ``2026AA``).
+        cache_dir: Override cache root (default ``~/.medterm4ds/``).
+        offline: Skip all network calls. Use existing cache only.
+            Defaults to ``MEDTERM4DS_OFFLINE`` env var if set.
+
+    Returns:
+        A ``Terminology`` instance — the same facade used by CLI, MCP,
+        and FHIR server.
+    """
     try:
         import duckdb
     except ImportError as exc:
         raise RuntimeError("DuckDB is required. Install medterm4ds[duckdb].") from exc
+
+    # Auto-provisioning: build/download if no db_path given.
+    if db_path is None:
+        from medterm4ds.core.provision import provision
+
+        resolved_offline = offline if offline is not None else bool(
+            os.getenv("MEDTERM4DS_OFFLINE")
+        )
+        db_path = provision(
+            version=version,
+            umls_api_key=umls_api_key,
+            cache_home=Path(cache_dir) if cache_dir else None,
+            memory_profile=memory_profile,
+            offline=resolved_offline,
+        )
 
     con = duckdb.connect(str(db_path), read_only=read_only)
     config = local_duckdb_config(
