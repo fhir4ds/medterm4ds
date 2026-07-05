@@ -268,6 +268,33 @@ class Terminology:
         rows = resolve_codes(codes, engine=self.engine)
         return rows[0] if single else rows
 
+    def expand_url(self, url: str, *, count: int = 1000) -> list[CodeRef]:
+        """Expand a FHIR fhir_vs URL to a list of descendant codes.
+
+        Supports SNOMED intensional URLs:
+            ``http://snomed.info/sct/73211009?fhir_vs=isa``
+
+        Returns the flat code list (root + descendants, up to ``count``).
+        Same BFS + depth cap as the HTTP ``$expand`` endpoint.
+
+        Example::
+
+            terms = mt.connect()
+            codes = terms.expand_url("http://snomed.info/sct/73211009?fhir_vs=isa")
+            # → [CodeRef(source='SNOMEDCT_US', code='73211009'), ...]
+        """
+        from medterm4ds.apps.fhir_api import expand_url_pattern
+        from medterm4ds.engines.fhir import fhir_uri_to_system
+
+        payload = expand_url_pattern(self.engine, url, count=count)
+        contains = payload.get("expansion", {}).get("contains", [])
+        result: list[CodeRef] = []
+        for c in contains:
+            source = fhir_uri_to_system(c.get("system", ""))
+            if source:
+                result.append(CodeRef(source=source, code=str(c.get("code", ""))))
+        return result
+
     def resolve_df(
         self,
         source_or_codes: str | CodeArg,

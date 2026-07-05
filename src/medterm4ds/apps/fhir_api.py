@@ -54,6 +54,121 @@ MAX_ERROR_FIELD_CHARS = 256
 DEFAULT_SEARCH_INDEX_DIR = "/mnt/d/fhir4px-model/dist/naming_bm25"
 
 
+TRUNCATION_EXT_URL = "http://hl7.org/fhir/StructureDefinition/valueset-toocostly"
+
+
+def _truncation_extensions(
+    *,
+    count_limited: bool,
+    depth_cap_hit: bool,
+    count: int | None = None,
+    max_depth: int | None = None,
+) -> list[dict[str, Any]]:
+    """Build the HL7 valueset-toocostly extension for truncated expansions."""
+    if not (count_limited or depth_cap_hit):
+        return []
+    reasons = []
+    if count_limited and count is not None:
+        reasons.append(f"count-limited at {count}")
+    if depth_cap_hit and max_depth is not None:
+        reasons.append(f"depth-limited at {max_depth}")
+    suffix = "; set FHIR_VS_MAX_DEPTH to override" if max_depth is not None else ""
+    return [{
+        "url": TRUNCATION_EXT_URL,
+        "valueBoolean": True,
+        "extension": [{
+            "url": "reason",
+            "valueString": ", ".join(reasons) + suffix,
+        }],
+    }]
+
+
+def expand_url_pattern(
+    engine,
+    url: str,
+    *,
+    count: int = 1000,
+) -> dict[str, Any]:
+    """Expand a FHIR fhir_vs URL pattern to a ValueSet expansion payload.
+
+    Standalone version of the FHIR ``$expand?url=...`` logic, callable
+    without starting the HTTP server. Used by in-process consumers (e.g.
+    fhir4ds's InProcessTerminologyEndpoint) that need the same URL
+    semantics as the HTTP sidecar.
+
+    Supports SNOMED intensional URLs:
+      ``http://snomed.info/sct/404684003?fhir_vs=isa``
+      ``http://snomed.info/sct/404684003?fhir_vs``
+
+    Performance: descendant walk uses layer-by-layer BFS (O(nodes) not
+    O(paths)), capped at ``FHIR_VS_MAX_DEPTH`` (default 5). Diabetes
+    Mellitus descendants return in <1s; was 5min+ with the old recursive CTE.
+
+    Args:
+        engine: A TerminologyEngine (typically LocalDuckDBEngine).
+        url: The fhir_vs URL to expand.
+        count: Max number of concepts in the expansion (default 1000).
+
+    Returns:
+        FHIR ValueSet expansion payload dict — same shape as the HTTP
+        ``$expand`` response.
+
+    Raises:
+        ValueError: If the URL pattern is unsupported or the system URI
+            is unrecognized.
+    """
+    from urllib.parse import parse_qs, urlparse
+
+    parsed = urlparse(url)
+    base = f"{parsed.scheme}://{parsed.netloc}{parsed.path}"
+    path_parts = parsed.path.strip("/").split("/")
+    query_params = parse_qs(parsed.query)
+    fhir_vs = query_params.get("fhir_vs", [""])[0]
+
+    if "snomed.info/sct" in base and len(path_parts) >= 2:
+        code = path_parts[-1]
+        source = "SNOMEDCT_US"
+        system_uri = "http://snomed.info/sct"
+        include_root = fhir_vs in ("", "isa", "refset")
+
+        contains: list[dict[str, Any]] = []
+        if include_root:
+            root_infos = get_code_infos([CodeRef(source, code)], engine=engine)
+            if root_infos and root_infos[0]:
+                contains.append({
+                    "system": system_uri,
+                    "code": code,
+                    "display": root_infos[0].name or code,
+                })
+
+        max_depth = int(os.getenv("FHIR_VS_MAX_DEPTH", "5"))
+        descendant_budget = max(1, count - len(contains))
+        relations, depth_cap_hit = get_descendants_bfs(
+            CodeRef(source=source, code=code),
+            engine=engine,
+            max_depth=max_depth,
+            limit=descendant_budget,
+        )
+        for rel in relations:
+            contains.append({
+                "system": system_uri,
+                "code": rel.target.code,
+                "display": rel.target_display or rel.target.code,
+            })
+
+        count_limited = len(relations) >= descendant_budget
+        extensions = _truncation_extensions(
+            count_limited=count_limited,
+            depth_cap_hit=depth_cap_hit,
+            count=count,
+            max_depth=max_depth,
+        )
+
+        return build_valueset_expand(contains[:count], url=url, extensions=extensions)
+
+    raise ValueError(f"Unsupported fhir_vs URL pattern: {url}")
+
+
 @dataclass(frozen=True)
 class FhirApiSettings:
     """FHIR facade settings."""
@@ -319,37 +434,6 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
     def _engine(request) -> LocalDuckDBEngine:
         _check_ready(request)
         return request.app.state.engine
-
-    # Canonical HL7 extension for "expansion was truncated because it was too
-    # costly to compute fully". Per the FHIR R4 spec, this extension lives on
-    # ValueSet.expansion and uses valueBoolean=true. We add a sibling
-    # valueString with a human-readable reason (depth vs count) for clients
-    # that want to surface diagnostics; the valueBoolean is the contract.
-    TRUNCATION_EXT_URL = "http://hl7.org/fhir/StructureDefinition/valueset-toocostly"
-
-    def _truncation_extensions(
-        *,
-        count_limited: bool,
-        depth_cap_hit: bool,
-        count: int | None = None,
-        max_depth: int | None = None,
-    ) -> list[dict[str, Any]]:
-        if not (count_limited or depth_cap_hit):
-            return []
-        reasons = []
-        if count_limited and count is not None:
-            reasons.append(f"count-limited at {count}")
-        if depth_cap_hit and max_depth is not None:
-            reasons.append(f"depth-limited at {max_depth}")
-        suffix = "; set FHIR_VS_MAX_DEPTH to override" if max_depth is not None else ""
-        return [{
-            "url": TRUNCATION_EXT_URL,
-            "valueBoolean": True,
-            "extension": [{
-                "url": "reason",
-                "valueString": ", ".join(reasons) + suffix,
-            }],
-        }]
 
     def _check_ready(request) -> None:
         """Enforce the 503 startup gate. Called by handlers that don't otherwise
@@ -799,75 +883,15 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
         return build_valueset_expand(deduped[:count], url=value_set.get("url"), extensions=extensions)
 
     def _expand_url_pattern(engine, url: str, count: int):
-        """Expand a fhir_vs URL pattern.
+        """HTTP-handler wrapper around the module-level expand_url_pattern.
 
-        Supports SNOMED intensional URLs like:
-          http://snomed.info/sct/404684003?fhir_vs=isa
-          http://snomed.info/sct/404684003?fhir_vs
-
-        Performance contract: descendant walk is capped at FHIR_VS_MAX_DEPTH
-        (default 5) levels. Uses services.hierarchy.get_descendants_bfs — a
-        layer-by-layer BFS that visits each node once (O(nodes)) rather than
-        the recursive CTE in get_descendants which enumerates all paths via
-        path-string cycle prevention (O(paths), explodes for wide subtrees;
-        SNOMED Diabetes Mellitus timed out at 5min via the CTE, <1s via BFS).
-        Depth 5 covers all clinical value-set definitions; deeper needs
-        pre-computed closure (planned). Set FHIR_VS_MAX_DEPTH to override.
+        Delegates to the module-level function; catches ValueError and
+        converts to a FHIR 400 OperationOutcome response.
         """
-        from urllib.parse import parse_qs, urlparse
-
-        parsed = urlparse(url)
-        base = f"{parsed.scheme}://{parsed.netloc}{parsed.path}"
-        path_parts = parsed.path.strip("/").split("/")
-        query_params = parse_qs(parsed.query)
-        fhir_vs = query_params.get("fhir_vs", [""])[0]
-
-        if "snomed.info/sct" in base and len(path_parts) >= 2:
-            code = path_parts[-1]
-            source = "SNOMEDCT_US"
-            system_uri = "http://snomed.info/sct"
-            include_root = fhir_vs in ("", "isa", "refset")
-
-            contains: list[dict[str, Any]] = []
-            if include_root:
-                root_infos = get_code_infos([CodeRef(source, code)], engine=engine)
-                if root_infos and root_infos[0]:
-                    contains.append({
-                        "system": system_uri,
-                        "code": code,
-                        "display": root_infos[0].name or code,
-                    })
-
-            max_depth = int(os.getenv("FHIR_VS_MAX_DEPTH", "5"))
-            # Reserve slots for descendants based on how many the root took.
-            descendant_budget = max(1, count - len(contains))
-            relations, depth_cap_hit = get_descendants_bfs(
-                CodeRef(source=source, code=code),
-                engine=engine,
-                max_depth=max_depth,
-                limit=descendant_budget,
-            )
-            for rel in relations:
-                contains.append({
-                    "system": system_uri,
-                    "code": rel.target.code,
-                    "display": rel.target_display or rel.target.code,
-                })
-
-            # Truncation detection. Two independent causes:
-            # - count cap: contains was clamped (response == count, descendants may exist beyond)
-            # - depth cap: BFS stopped at max_depth with frontier still non-empty
-            count_limited = len(relations) >= descendant_budget
-            extensions = _truncation_extensions(
-                count_limited=count_limited,
-                depth_cap_hit=depth_cap_hit,
-                count=count,
-                max_depth=max_depth,
-            )
-
-            return build_valueset_expand(contains[:count], url=url, extensions=extensions)
-
-        return _fhir_error(400, f"Unsupported fhir_vs URL pattern: {url}")
+        try:
+            return expand_url_pattern(engine, url, count=count)
+        except ValueError as exc:
+            return _fhir_error(400, str(exc))
 
     def _resolve_sources(system_uri: str | None) -> list[str] | None:
         """Resolve a FHIR system URI to a list of medterm4ds source names."""
