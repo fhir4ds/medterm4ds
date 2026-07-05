@@ -106,6 +106,82 @@ class ClosureTable:
             self._version += 1
             return new_relations
 
+    def add_concepts(
+        self,
+        concepts: list[tuple[str, str, str]],
+        engine,
+    ) -> None:
+        """Batch-add multiple concepts to the closure.
+
+        Equivalent to calling add_concept() in a loop, but ancestor and
+        descendant walks are batched per source — 2 walks per source
+        instead of 2 walks per concept. For a $closure POST with 2000
+        SNOMED concepts, this collapses ~4000 hierarchy queries into 2.
+
+        Args:
+            concepts: list of (code, source, display) tuples.
+            engine: terminology engine for hierarchy walks.
+
+        Side effects: updates self.concepts, self._subsumes, self._version,
+        and may set self.incomplete_since on duckdb.Error (same failure
+        semantics as add_concept).
+        """
+        if not concepts:
+            return
+
+        with self._lock:
+            # Register all concepts first so cross-closure relationships are
+            # discoverable during the walks below.
+            for code, source, display in concepts:
+                self.concepts[code] = {"system": source, "display": display}
+                self._subsumes[(code, code)] = True
+
+            # Group by source so each walk hits one source's hierarchy.
+            by_source: dict[str, list[str]] = {}
+            for code, source, _ in concepts:
+                by_source.setdefault(source, []).append(code)
+
+            for source, codes in by_source.items():
+                refs = [CodeRef(source, code) for code in codes]
+                try:
+                    ancestors = get_ancestors(refs, engine=engine, max_depth=20)
+                except duckdb.Error as exc:
+                    logger.warning(
+                        "Batched ancestor walk failed for %d %s concepts in "
+                        "closure %s: %s. Closure is incomplete — $subsumes "
+                        "may return false negatives.",
+                        len(codes), source, self.name, exc,
+                    )
+                    self.incomplete_since = True
+                    ancestors = []
+                for rel in ancestors:
+                    # rel.source.code is the input code; rel.target.code is its ancestor.
+                    input_code = rel.source.code
+                    anc_code = rel.target.code
+                    if anc_code in self.concepts:
+                        self._subsumes[(anc_code, input_code)] = True
+                        self._subsumes[(input_code, anc_code)] = False
+
+                try:
+                    descendants = get_descendants(refs, engine=engine, max_depth=20)
+                except duckdb.Error as exc:
+                    logger.warning(
+                        "Batched descendant walk failed for %d %s concepts in "
+                        "closure %s: %s. Closure is incomplete — $subsumes "
+                        "may return false negatives.",
+                        len(codes), source, self.name, exc,
+                    )
+                    self.incomplete_since = True
+                    descendants = []
+                for rel in descendants:
+                    input_code = rel.source.code
+                    desc_code = rel.target.code
+                    if desc_code in self.concepts:
+                        self._subsumes[(input_code, desc_code)] = True
+                        self._subsumes[(desc_code, input_code)] = False
+
+            self._version += 1
+
     def check(self, code_a: str, code_b: str) -> str:
         """Check subsumption via the closure table.
 

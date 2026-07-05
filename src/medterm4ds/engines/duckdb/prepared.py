@@ -64,11 +64,27 @@ def _schema_exists(con, schema: str) -> bool:
 
 
 def _row_count(con, qualified_table: str) -> int | None:
-    """Return row count for a qualified table, or None if it does not exist."""
+    """Return row count for a qualified table, or None if it does not exist.
+
+    Narrow except to duckdb.Error so programming bugs (TypeError from a
+    misused con, AttributeError on a closed connection) propagate instead
+    of silently returning None — which callers would interpret as "table
+    missing" and write NULL row counts into the manifest, indistinguishable
+    from a legitimately-absent table.
+    """
     try:
         (count,) = con.execute(f"SELECT COUNT(*) FROM {qualified_table}").fetchone()  # noqa: S608
         return int(count)
-    except Exception:
+    except duckdb.Error as exc:
+        # Real DuckDB failure (permissions, broken catalog, transient lock).
+        # Log at WARNING so an operator running prepare sees why a row count
+        # came back None rather than chasing a 'missing table' that exists.
+        logging.getLogger(__name__).warning(
+            "row count probe failed for %s: %s. Manifest will record NULL "
+            "for this table; verify the table exists and is readable.",
+            qualified_table,
+            exc,
+        )
         return None
 
 

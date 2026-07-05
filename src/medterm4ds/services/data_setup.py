@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import gzip
 import json
+import logging
 import os
 import re
 import shutil
@@ -404,8 +405,20 @@ def prepare_derived_tables(con, *, replace: bool = True) -> dict[str, object]:
             ):
                 try:
                     con.execute(ddl)
-                except Exception:
-                    pass
+                except Exception as exc:
+                    # Index creation failures (disk quota, locking, unsupported
+                    # column type) used to be silently swallowed. Without these
+                    # indexes, downstream hierarchy joins on AUI/CODE degrade to
+                    # full table scans — multi-minute queries that should be
+                    # sub-second. Log at WARNING so operators can detect the
+                    # silently-unindexed DB before it ships.
+                    logging.getLogger(__name__).warning(
+                        "Failed to create SNOMED atoms index (%s): %s. "
+                        "Hierarchy queries on mt4ds_active_snomed_atoms may "
+                        "degrade to full table scans.",
+                        ddl,
+                        exc,
+                    )
             active_codes = {
                 row[0]
                 for row in con.execute(

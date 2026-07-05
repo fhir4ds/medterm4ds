@@ -49,6 +49,11 @@ class _EngineState:
         self.cache_prepared = False
         self._snomed_parent_links_cache_prepared = False
         self._prepared_tables_available: bool | None = None
+        # Per-instance cache of (table_name -> exists). A single prepare run
+        # can issue 60-100+ _table_exists probes against information_schema;
+        # memoizing collapses that to one round-trip per unique name.
+        # Invalidate via _invalidate_table_exists_cache() after any DDL.
+        self._table_exists_cache: dict[str, bool] = {}
         self._active_source_code_cache: dict[str, set[str]] = {}
         self.con.execute(f"SET preserve_insertion_order={str(preserve_insertion_order).lower()}")
         if threads:
@@ -83,6 +88,11 @@ class _EngineState:
         """
         if self.cache_prepared:
             return
+
+        # prepare_cache creates/drops multiple temp tables and mt4ds tables;
+        # invalidate the existence cache so probes during and after prepare
+        # don't return stale state from before the schema changed.
+        self._invalidate_table_exists_cache()
 
         catalog = self._base_catalog_name()
         base_conso = f'"{catalog}".main.mrconso'
@@ -128,6 +138,9 @@ class _EngineState:
                 except Exception as exc:
                     logger.debug("Skipping local DuckDB cache index %s: %s", ddl, exc)
 
+        # prepare_cache just created temp tables (mrconso, mrrel, indexes).
+        # Invalidate again so post-prepare probes see the new state.
+        self._invalidate_table_exists_cache()
         self.cache_prepared = True
 
 
@@ -196,6 +209,19 @@ class _EngineState:
 
 
     def _table_exists(self, name: str) -> bool:
+        """Cached existence check for a table by name (any schema).
+
+        A single prepare run can probe the same table name multiple times
+        (e.g., 'crosswalk_edges' from prepared.py and from
+        _has_patient_friendly_prepared_tables). Memoize per-instance to
+        avoid redundant information_schema round-trips.
+
+        Cache is invalidated on DDL via _invalidate_table_exists_cache,
+        which prepare_cache and any CREATE TABLE site must call.
+        """
+        cached = self._table_exists_cache.get(name)
+        if cached is not None:
+            return cached
         row = self.con.execute(
             """
             SELECT 1
@@ -205,7 +231,14 @@ class _EngineState:
             """,
             [name],
         ).fetchone()
-        return bool(row)
+        result = bool(row)
+        self._table_exists_cache[name] = result
+        return result
+
+    def _invalidate_table_exists_cache(self) -> None:
+        """Clear the _table_exists cache. Call after any DDL that may have
+        created or dropped tables (prepare_cache, CREATE TEMP TABLE, etc.)."""
+        self._table_exists_cache.clear()
 
 
 

@@ -724,10 +724,9 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
             # Initialize / reset
             closure = manager.reset(name)
         else:
-            # Add concepts
+            # Add concepts (batched — 2 walks per source, not 2 per concept)
             closure = manager.get_or_create(name)
-            for code, source, display in concepts:
-                closure.add_concept(code, source, display, engine)
+            closure.add_concepts(concepts, engine)
 
         return build_closure_response(closure)
 

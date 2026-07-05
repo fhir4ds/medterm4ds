@@ -236,7 +236,10 @@ def _code_payload(code: CodeRef) -> dict[str, str]:
 
 
 def _code_ref(row: Mapping[str, Any], *, source_key: str = "source", code_key: str = "code") -> CodeRef:
-    return CodeRef(source=str(row[source_key]), code=str(row[code_key]))
+    return CodeRef(
+        source=str(row.get(source_key) or ""),
+        code=str(row.get(code_key) or ""),
+    )
 
 
 def _code_info(row: Mapping[str, Any]) -> CodeInfo:
@@ -261,7 +264,7 @@ def _source_stats(row: Mapping[str, Any]) -> SourceStats:
 def _name_search_result(row: Mapping[str, Any]) -> NameSearchResult:
     return NameSearchResult(
         code=_code_ref(row),
-        name=str(row["name"]),
+        name=str(row.get("name") or ""),
         cui=row.get("cui"),
         aui=row.get("aui"),
         tty=row.get("tty"),
@@ -273,8 +276,8 @@ def _code_mapping(row: Mapping[str, Any]) -> CodeMapping:
     return CodeMapping(
         source=_code_ref(row),
         target=_code_ref(row, source_key="target_source", code_key="target_code"),
-        relationship=str(row["relationship"]),
-        match_type=str(row["match_type"]),
+        relationship=str(row.get("relationship") or "related-to"),
+        match_type=str(row.get("match_type") or "unknown"),
         match_depth=int(row.get("match_depth") or 0),
         source_display=row.get("source_display"),
         target_display=row.get("target_display"),
@@ -291,7 +294,7 @@ def _code_relation(row: Mapping[str, Any]) -> CodeRelation:
     return CodeRelation(
         source=_code_ref(row),
         target=_code_ref(row, source_key="target_source", code_key="target_code"),
-        relationship=str(row["relationship"]),
+        relationship=str(row.get("relationship") or "related-to"),
         depth=int(row.get("depth") or 1),
         source_display=row.get("source_display"),
         target_display=row.get("target_display"),
@@ -305,11 +308,12 @@ def _code_relation(row: Mapping[str, Any]) -> CodeRelation:
 
 
 def _friendly_name_result(row: Mapping[str, Any]) -> FriendlyNameResult:
+    code = _code_ref(row)
     return FriendlyNameResult(
-        code=_code_ref(row),
-        name=str(row["name"]),
-        friendly_source=str(row["friendly_source"]),
-        match_type=str(row["match_type"]),
+        code=code,
+        name=str(row.get("name") or code.code),
+        friendly_source=str(row.get("friendly_source") or code.source),
+        match_type=str(row.get("match_type") or "unknown"),
         match_depth=int(row.get("match_depth") or 0),
         technical_name=row.get("technical_name"),
         matched_via=_provenance(row.get("matched_via")),

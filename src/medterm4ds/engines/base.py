@@ -141,14 +141,22 @@ class IndicationsEngine(Protocol):
 
     def get_drugs_for_indication(
         self,
-        candidates: Sequence[CodeRef],
+        candidates: Sequence[tuple[str, str, int]],
         *,
         relationships: Sequence[str],
         max_depth: int,
         limit: int,
         include_product_groups: bool,
     ) -> list[tuple[Any, ...]]:
-        """Return raw rows for medications of the given condition candidates."""
+        """Return raw rows for medications of the given condition candidates.
+
+        ``candidates`` is a sequence of ``(source, code, weight)`` tuples —
+        not CodeRefs — because the indications query uses the integer weight
+        as a tiebreaker when ranking matched medications across multiple
+        condition candidates. The duckdb impl and the domain-layer caller
+        (domains/terminology.drugs_for_indication) both honor this contract;
+        future engine impls must too.
+        """
         ...
 
     def get_ndcs_for_rxcuis(self, rxcuis: Sequence[str]) -> dict[str, list[str]]:
