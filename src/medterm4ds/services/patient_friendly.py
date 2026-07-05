@@ -17,7 +17,8 @@ def get_patient_friendly_names(
 ) -> list[FriendlyNameResult]:
     """Resolve patient-friendly names for one or many codes.
 
-    Tuple inputs use the medterm convention `(code, source)`.
+    Tuple inputs use the medterm convention `(source, code)` — same as
+    ``CodeRef.from_pair``.
     """
     normalized = [
         item if isinstance(item, CodeRef) else CodeRef.from_pair(item)

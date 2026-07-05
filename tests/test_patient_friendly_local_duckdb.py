@@ -226,6 +226,12 @@ def test_local_duckdb_adds_structured_provenance():
 
 
 def test_prepared_cache_matches_unprepared_local_duckdb():
+    # Parity between the prepared-cache path and the legacy raw-mrrel path for
+    # the sources where both paths still exist. LNC is intentionally excluded:
+    # the legacy _resolve_loinc was removed (it missed patient-friendly names
+    # that the prepared path finds — see scripts/loinc_legacy_prepared_diff.py
+    # and tests/regression/fixtures/patient_friendly_verified.jsonl for the
+    # LOINC-specific regression fixtures that replace parity for that source).
     con = duckdb.connect(database=":memory:")
     try:
         _seed_patient_friendly_db(con)
@@ -237,7 +243,6 @@ def test_prepared_cache_matches_unprepared_local_duckdb():
             CodeRef("SNOMEDCT_US", "44054006"),
             CodeRef("RXNORM", "2611787"),
             CodeRef("RXNORM", "393052"),
-            CodeRef("LNC", "2345-7"),
             CodeRef("CPT", "99213"),
             CodeRef("CVX", "208"),
         ]

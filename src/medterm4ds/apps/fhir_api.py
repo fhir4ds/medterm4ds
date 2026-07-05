@@ -100,6 +100,13 @@ def expand_url_pattern(
       ``http://snomed.info/sct/404684003?fhir_vs=isa``
       ``http://snomed.info/sct/404684003?fhir_vs``
 
+    Other FHIR system URIs (ICD10CM, RXNORM, LNC, etc.) are recognized via
+    ``SYSTEM_TO_FHIR_URI`` but only SNOMED has a standard intensional
+    expansion URL convention (``fhir_vs=isa``) — other systems raise
+    ValueError. The SNOMED URI itself is sourced from
+    ``medterm4ds.engines.fhir.SYSTEM_TO_FHIR_URI`` so the expansion,
+    ConceptMap export, and CapabilityStatement all reference the same URI.
+
     Performance: descendant walk uses layer-by-layer BFS (O(nodes) not
     O(paths)), capped at ``FHIR_VS_MAX_DEPTH`` (default 5). Diabetes
     Mellitus descendants return in <1s; was 5min+ with the old recursive CTE.
@@ -119,16 +126,19 @@ def expand_url_pattern(
     """
     from urllib.parse import parse_qs, urlparse
 
+    from medterm4ds.engines.fhir import SYSTEM_TO_FHIR_URI
+
     parsed = urlparse(url)
     base = f"{parsed.scheme}://{parsed.netloc}{parsed.path}"
     path_parts = parsed.path.strip("/").split("/")
     query_params = parse_qs(parsed.query)
     fhir_vs = query_params.get("fhir_vs", [""])[0]
 
-    if "snomed.info/sct" in base and len(path_parts) >= 2:
+    snomed_uri = SYSTEM_TO_FHIR_URI["SNOMEDCT_US"]
+    if snomed_uri in base and len(path_parts) >= 2:
         code = path_parts[-1]
         source = "SNOMEDCT_US"
-        system_uri = "http://snomed.info/sct"
+        system_uri = snomed_uri
         include_root = fhir_vs in ("", "isa", "refset")
 
         contains: list[dict[str, Any]] = []
@@ -166,7 +176,12 @@ def expand_url_pattern(
 
         return build_valueset_expand(contains[:count], url=url, extensions=extensions)
 
-    raise ValueError(f"Unsupported fhir_vs URL pattern: {url}")
+    raise ValueError(
+        f"Unsupported fhir_vs URL pattern: {url!r}. "
+        f"Only SNOMED CT intensional expansions ({snomed_uri}/<code>?fhir_vs=isa) "
+        "are implemented. Other FHIR system URIs are recognized by the server "
+        "but lack a standard intensional expansion URL convention."
+    )
 
 
 @dataclass(frozen=True)
@@ -968,7 +983,7 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
             params.get("categories"),
             params.get("mode", "hybrid"),
             params.get("minGrade", "certain"),
-            params.get("includeNegated", "false") == "true",
+            params.get("includeNegated", "false").lower() == "true",
         )
 
     def _do_extract(text, fmt, categories_str, mode, min_grade, include_negated):

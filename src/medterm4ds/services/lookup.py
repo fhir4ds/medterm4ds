@@ -21,7 +21,9 @@ def get_code_infos(
 ) -> list[CodeInfo | None]:
     """Look up canonical atom info for one or many codes.
 
-    Tuple inputs use the medterm convention `(code, source)`.
+    Tuple inputs use the medterm convention `(source, code)` — same as
+    ``CodeRef.from_pair``. (The `(source, code)` order matches the rest of the
+    public API: ``mt.lookup("SNOMEDCT_US", "44054006")``.)
     """
     normalized = [
         item if isinstance(item, CodeRef) else CodeRef.from_pair(item)

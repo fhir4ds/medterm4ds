@@ -54,6 +54,14 @@ __version__ = "0.0.1"
 from .client import Terminology, connect, connect_remote
 
 # Intelligent text-to-code search (optional — requires BM25/SapBERT indexes)
+# Log ImportError at WARNING so real bugs (typos, broken transitive imports)
+# surface instead of silently producing AttributeError at the user's call site.
+# Optional-deps users who expectedly lack BM25/SapBERT see one warning per
+# missing surface, which they can silence via logging config if desired.
+import logging as _logging
+
+_logger = _logging.getLogger(__name__)
+
 try:
     from .services.search import search as _search_func
 
@@ -64,8 +72,8 @@ try:
         model at MEDTERM4DS_EMBEDDING_MODEL_DIR.
         """
         return _search_func(query, mode=mode, sources=sources, count=count)
-except ImportError:
-    pass
+except ImportError as _exc:
+    _logger.warning("medterm4ds.search unavailable (install medterm4ds[search]?): %s", _exc)
 
 # Text extraction (optional — requires medterm4ds[extraction])
 try:
@@ -87,14 +95,14 @@ try:
     def resolve_spans(spans, **kwargs):
         """Resolve filtered spans to coded concepts via search."""
         return _resolve_spans_func(spans, **kwargs)
-except ImportError:
-    pass
+except ImportError as _exc:
+    _logger.warning("medterm4ds.extract unavailable (install medterm4ds[extraction]?): %s", _exc)
 
 # FHIR server (optional — requires medterm4ds[fhir])
 try:
     from .apps.fhir_api import create_fhir_app
-except ImportError:
-    pass
+except ImportError as _exc:
+    _logger.warning("medterm4ds.create_fhir_app unavailable (install medterm4ds[fhir]?): %s", _exc)
 
 # Cache management — inspect and clean the ~/.medterm4ds/ cache
 from .core.provision import cache_clear, cache_info, cache_versions

@@ -9,6 +9,8 @@ from __future__ import annotations
 import logging
 from datetime import datetime, timezone
 
+import duckdb
+
 from medterm4ds.sources import (
     BROAD_CHV_NAMES,
     BROAD_MEDLINEPLUS_NAMES,
@@ -102,12 +104,28 @@ def _raw_ref(table: str, locations: dict[str, str] | None = None, con=None) -> s
 
 
 def _current_catalog(con) -> str:
+    """Return the current DuckDB catalog (database) name, quoted for SQL.
+
+    Falls back to 'memory' only for duckdb.Error — the canonical default
+    catalog name when DuckDB is opened in-memory. Programming bugs
+    (AttributeError, TypeError from a misused con) propagate so they surface
+    instead of silently routing all subsequent SQL through a phantom catalog.
+    """
     try:
         row = con.execute("SELECT current_database()").fetchone()
         if row and row[0]:
             return str(row[0]).replace('"', '""')
-    except Exception:
-        pass
+    except duckdb.Error as exc:
+        # Real DuckDB failures (permissions, unsupported version, broken
+        # connection) — log at WARNING so an operator running prepare on a
+        # disk-backed DB with a catalog probe failure doesn't silently get
+        # 'memory'.'umls'.'mrconso' queries that return zero rows.
+        logging.getLogger(__name__).warning(
+            "DuckDB catalog probe failed; falling back to 'memory' catalog. "
+            "If this DB is disk-backed, subsequent qualified SQL will likely miss. "
+            "Error: %s",
+            exc,
+        )
     return "memory"
 
 

@@ -11,19 +11,18 @@ from typing import Any
 
 from medterm4ds.core.models import ConceptMapRow
 from medterm4ds.core.normalize import normalize_source
+from medterm4ds.engines.fhir import SYSTEM_TO_FHIR_URI
 
 PATIENT_FRIENDLY_SYSTEM = "urn:medterm4ds:CodeSystem:patient-friendly"
 DEFAULT_CONCEPT_MAP_URL = "urn:medterm4ds:ConceptMap:patient-friendly"
 
-FHIR_CODE_SYSTEMS = {
-    "ICD10CM": "http://hl7.org/fhir/sid/icd-10-cm",
-    "ICD10PCS": "http://www.cms.gov/Medicare/Coding/ICD10",
-    "HCPCS": "http://www.cms.gov/Medicare/Coding/HCPCSReleaseCodeSets",
-    "SNOMEDCT_US": "http://snomed.info/sct",
-    "RXNORM": "http://www.nlm.nih.gov/research/umls/rxnorm",
-    "LNC": "http://loinc.org",
-    "CVX": "http://hl7.org/fhir/sid/cvx",
-    "CPT": "http://www.ama-assn.org/go/cpt",
+# Single source of truth for source -> FHIR system URI lives in
+# medterm4ds.engines.fhir.SYSTEM_TO_FHIR_URI. This map composes it with the
+# internal PATIENT_FRIENDLY namespace used by patient-friendly ConceptMap
+# exports. Do not add system URIs here — add them to SYSTEM_TO_FHIR_URI so
+# the FHIR API, ConceptMap export, and CapabilityStatement all agree.
+FHIR_CODE_SYSTEMS: dict[str, str] = {
+    **SYSTEM_TO_FHIR_URI,
     "PATIENT_FRIENDLY": PATIENT_FRIENDLY_SYSTEM,
 }
 

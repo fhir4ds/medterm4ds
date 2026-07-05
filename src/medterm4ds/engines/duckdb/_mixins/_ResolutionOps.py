@@ -49,7 +49,14 @@ class _ResolutionOps:
         if source == "RXNORM":
             return self._resolve_rxnorm(codes)
         if source == "LNC":
-            return self._resolve_loinc(codes, max_depth)
+            raise NotImplementedError(
+                "LOINC patient-friendly resolution requires the prepared cache. "
+                "Call engine.prepare_cache(['LNC']) (or pass prepare_cache=True to "
+                "mt.connect / your app's settings) before querying LOINC codes. "
+                "The legacy raw-mrrel path was removed because it silently missed "
+                "patient-friendly names that the prepared path finds "
+                "(see scripts/loinc_legacy_prepared_diff.py for the audit)."
+            )
         if source == "CPT":
             return self._resolve_cpt(codes, max_depth)
         if source == "CVX":
@@ -79,11 +86,6 @@ class _ResolutionOps:
 
     def _resolve_rxnorm(self, codes):
         return _patient_friendly._resolve_rxnorm(self, codes=codes)
-
-
-
-    def _resolve_loinc(self, codes, max_depth):
-        return _patient_friendly._resolve_loinc(self, codes=codes, max_depth=max_depth)
 
 
 

@@ -3,6 +3,8 @@
 
 from __future__ import annotations
 
+import duckdb
+
 from medterm4ds.engines.duckdb._engine_base import *  # noqa: F401,F403
 from collections.abc import Sequence
 from medterm4ds.core.models import CodeRef, FriendlyNameResult
@@ -35,11 +37,22 @@ class _PatientFriendlyOps:
         #   top-level depth >= 4 and does not expand into levels 1-3.
         # - RxNorm and CVX use separate source-native strategies.
         ordered = [CodeRef(source=c.source, code=c.code) for c in codes]
-        if self._has_patient_friendly_prepared_tables({ref.source for ref in ordered}):
+        sources = {ref.source for ref in ordered}
+        if self._has_patient_friendly_prepared_tables(sources):
             try:
                 return self._get_patient_friendly_names_prepared(ordered, max_depth=max_depth)
-            except Exception as exc:
-                logger.debug("Falling back to raw patient-friendly path: %s", exc)
+            except duckdb.Error as exc:
+                # Narrow to duckdb.Error so programming bugs (KeyError, AttributeError,
+                # schema mismatches in the prepared SQL) propagate instead of silently
+                # falling back to the legacy raw-mrrel path. The legacy path no longer
+                # supports LNC (see _resolve_source), so a silent fallback there would
+                # either raise NotImplementedError or — worse — answer with the wrong
+                # resolver. WARNING because fallback means degraded results.
+                logger.warning(
+                    "Prepared patient-friendly path failed (%s); falling back to legacy "
+                    "raw-mrrel path. Legacy does not support LNC.",
+                    exc,
+                )
 
         grouped: dict[str, list[str]] = defaultdict(list)
         for ref in ordered:
