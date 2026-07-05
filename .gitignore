@@ -46,3 +46,7 @@ archive/reports/
 
 # Claude Code
 .claude/
+
+# AI Loop — private workflow state, not shared externally
+# (orphan runs, handoffs, knowledge base, schedule state)
+docs/.ai_loop/
