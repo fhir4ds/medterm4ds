@@ -172,7 +172,7 @@ JSON building that could regress.
 | ICD10PCS | `http://hl7.org/fhir/sid/icd-10-pcs` |
 | LNC | `http://loinc.org` |
 | CPT | `http://www.ama-assn.org/go/cpt` |
-| HCPCS | `http://terminology.hl7.org/CodeSystem/hcpcs-Level-II` |
+| HCPCS | `http://www.cms.gov/Medicare/Coding/HCPCSReleaseCodeSets` |
 | CVX | `http://hl7.org/fhir/sid/cvx` |
 
 OID aliases (e.g., `urn:oid:2.16.840.1.113883.6.96` for SNOMED) are also accepted.

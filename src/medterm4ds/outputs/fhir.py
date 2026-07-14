@@ -12,6 +12,10 @@ from typing import Any
 from medterm4ds.core.models import ConceptMapRow
 from medterm4ds.core.normalize import normalize_source
 from medterm4ds.engines.fhir import SYSTEM_TO_FHIR_URI
+from medterm4ds.engines.fhir.equivalence import (
+    INTERNAL_REL_TO_FHIR_EQUIVALENCE as FHIR_EQUIVALENCES,
+)
+from medterm4ds.engines.fhir.equivalence import fhir_equivalence
 
 PATIENT_FRIENDLY_SYSTEM = "urn:medterm4ds:CodeSystem:patient-friendly"
 DEFAULT_CONCEPT_MAP_URL = "urn:medterm4ds:ConceptMap:patient-friendly"
@@ -26,15 +30,16 @@ FHIR_CODE_SYSTEMS: dict[str, str] = {
     "PATIENT_FRIENDLY": PATIENT_FRIENDLY_SYSTEM,
 }
 
-FHIR_EQUIVALENCES = {
-    "equivalent": "equivalent",
-    "source-is-narrower-than-target": "wider",
-    "source-is-broader-than-target": "narrower",
-    "related-to": "relatedto",
-    "not-related-to": "disjoint",
-    "unmatched": "unmatched",
-    "not-translated": "equivalent",
-}
+# CR-024 (milestone-3 review): ``FHIR_EQUIVALENCES`` and the helper
+# ``fhir_equivalence`` are now imported from the canonical module
+# ``engines/fhir/equivalence.py``. The two parallel maps that translated the
+# same engine vocabulary (this one +
+# ``responses.py:_INTERNAL_REL_TO_FHIR_EQUIVALENCE``) have been unified;
+# future drift between the ConceptMap export surface and the $translate HTTP
+# surface is impossible because both import from the same source of truth.
+# The closed-enum membership assertion at module load
+# (``INTERNAL_REL_TO_FHIR_EQUIVALENCE.values() <=
+# FHIR_R4_CONCEPT_MAP_EQUIVALENCE``) now applies to BOTH surfaces uniformly.
 
 EXTENSION_BASE = "urn:medterm4ds:StructureDefinition"
 
@@ -144,13 +149,6 @@ def _merge_row_target(
         if extensions:
             target["extension"] = extensions
     element.setdefault("target", []).append(target)
-
-
-def fhir_equivalence(relationship: str | None) -> str:
-    """Map internal relationship labels to FHIR R4 ConceptMap equivalence codes."""
-    if not relationship:
-        return "relatedto"
-    return FHIR_EQUIVALENCES.get(relationship, "relatedto")
 
 
 def _target_extensions(row: ConceptMapRow) -> list[dict[str, Any]]:

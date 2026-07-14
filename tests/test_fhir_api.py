@@ -375,9 +375,16 @@ class TestFhirEndpoints:
         assert "73211009" in codes
         assert "44054006" in codes
 
-    def test_expand_intensional_descendant_of(self, fhir_app):
-        """POST a ValueSet with descendant-of filter — should return
-        descendants but NOT the root code."""
+    def test_expand_intensional_descendent_of(self, fhir_app):
+        """POST a ValueSet with descendent-of filter — should return
+        descendants but NOT the root code.
+
+        Note: the FHIR R4 spec enum value is "descendent-of" (Latin-derived),
+        NOT "descendant-of" (common English spelling). Found by SKEPTIC
+        iteration VS-01 (QA-054) — the prior test name + op value used the
+        off-spec spelling "descendant-of" which the implementation silently
+        honored while silently dropping the spec-correct "descendent-of".
+        """
         from starlette.testclient import TestClient
         value_set = {
             "resourceType": "ValueSet",
@@ -386,7 +393,7 @@ class TestFhirEndpoints:
                     "system": "http://snomed.info/sct",
                     "filter": [{
                         "property": "concept",
-                        "op": "descendant-of",
+                        "op": "descendent-of",
                         "value": "73211009",
                     }],
                 }],
@@ -397,7 +404,7 @@ class TestFhirEndpoints:
         assert resp.status_code == 200
         body = resp.json()
         codes = {c["code"] for c in body["expansion"]["contains"]}
-        # descendant-of excludes the root (73211009), includes children (44054006)
+        # descendent-of excludes the root (73211009), includes children (44054006)
         assert "73211009" not in codes
         assert "44054006" in codes
 

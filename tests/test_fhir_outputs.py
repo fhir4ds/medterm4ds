@@ -82,7 +82,11 @@ def test_concept_map_to_fhir_groups_by_source_and_target_system():
     assert snomed_target["equivalence"] == "wider"
 
     cvx_target = resource["group"][2]["element"][0]["target"][0]
-    assert cvx_target["equivalence"] == "equivalent"
+    # Per R4 spec a "not-translated" relationship means there is no
+    # translation in the target system. The R4 catch-all for "no mapping"
+    # is ``unmatched`` (NOT ``equivalent``). The prior assertion pinned the
+    # wrong behavior — fixed by SKEPTIC iteration CM-01 (CM01-SKEPTIC-002).
+    assert cvx_target["equivalence"] == "unmatched"
     relationship_extension = [
         extension
         for extension in cvx_target["extension"]
@@ -128,7 +132,15 @@ def test_fhir_equivalence_uses_r4_codes():
     assert fhir_equivalence("source-is-narrower-than-target") == "wider"
     assert fhir_equivalence("source-is-broader-than-target") == "narrower"
     assert fhir_equivalence("related-to") == "relatedto"
-    assert fhir_equivalence("not-related-to") == "disjoint"
+    # CR-024 (milestone-3 review): the parallel maps in ``outputs/fhir.py`` and
+    # ``responses.py`` were consolidated into ``engines/fhir/equivalence.py``.
+    # The prior divergent spellings (``not-related-to`` vs ``not-relatedto``)
+    # and values (``disjoint`` vs ``unmatched``) are now unified — both
+    # spellings map to the R4 catch-all ``unmatched`` (the conservative
+    # default for "unknown engine vocabulary token"); ``disjoint`` would
+    # wrongly imply the concepts are explicitly disconnected.
+    assert fhir_equivalence("not-related-to") == "unmatched"
+    assert fhir_equivalence("not-relatedto") == "unmatched"
     assert fhir_equivalence("unmatched") == "unmatched"
 
 

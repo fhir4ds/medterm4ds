@@ -124,7 +124,7 @@ SYSTEM_TO_FHIR_URI = {
     "ICD10PCS": "http://hl7.org/fhir/sid/icd-10-pcs",
     "LNC": "http://loinc.org",
     "CPT": "http://www.ama-assn.org/go/cpt",
-    "HCPCS": "http://terminology.hl7.org/CodeSystem/hcpcs-Level-II",
+    "HCPCS": "http://www.cms.gov/Medicare/Coding/HCPCSReleaseCodeSets",
     "CVX": "http://hl7.org/fhir/sid/cvx",
 }
 
