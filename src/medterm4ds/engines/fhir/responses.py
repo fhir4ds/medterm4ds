@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import date, datetime, timezone
 from typing import Any
 
 from medterm4ds.core.models import CodeInfo, CodeMapping
@@ -305,7 +306,10 @@ def build_valueset_expand(
         "resourceType": "ValueSet",
         "status": "active",
         "expansion": {
-            "timestamp": "2026-06-27T00:00:00Z",
+            # VR-001 (v0.0.1 code review): per FHIR R4 §4.9.2, expansion.timestamp
+            # is "Time ValueSet expansion was produced". The prior hardcoded
+            # literal reported a stale date on every response.
+            "timestamp": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
             "total": len(contains) if total is None else total,
             "contains": contains,
         },
@@ -318,7 +322,20 @@ def build_valueset_expand(
 
 
 CAPABILITY_STATEMENT_URL = "http://medterm4ds.org/fhir/CapabilityStatement/terminology-server"
-CAPABILITY_STATEMENT_VERSION = "0.0.1"
+# VR-004 (v0.0.1 code review): source from package metadata so future releases
+# don't require manual sync. Late import to avoid a circular dependency at
+# module load (medterm4ds.__init__ imports submodules).
+def _package_version() -> str:
+    try:
+        from medterm4ds import __version__
+        return __version__
+    except (ImportError, AttributeError):
+        return "0.0.1"
+CAPABILITY_STATEMENT_VERSION = _package_version()
+# VR-002 (v0.0.1 code review): per FHIR R4 §3.2.1.0.5, CapabilityStatement.date
+# is "The date this was last changed". Stale literal reported a date 9+ days in
+# the past at v0.0.1 ship time; dynamic date tracks the actual response time.
+CAPABILITY_STATEMENT_DATE = date.today().isoformat()
 CAPABILITY_STATEMENT_NAME = "Medterm4dsTerminologyServer"
 CAPABILITY_STATEMENT_TITLE = "medterm4ds FHIR Terminology Server"
 CAPABILITY_STATEMENT_DESCRIPTION = (
@@ -419,6 +436,16 @@ def build_capability_statement(base_url: str = "http://127.0.0.1:8001") -> dict[
         "rest": [
             {
                 "mode": "server",
+                # DA-6 (v0.0.1 docs audit): per FHIR R4 §3.2.1.0.4, a server
+                # that supports batch/transaction processing SHOULD advertise
+                # it via rest[].interaction. Without this, clients introspecting
+                # the CapabilityStatement can't discover the POST /fhir batch
+                # endpoint (FHIR R4 §3.7). Spec:
+                # https://hl7.org/fhir/R4/capabilitystatement-definitions.html#CapabilityStatement.rest.interaction
+                "interaction": [
+                    {"code": "batch"},
+                    {"code": "transaction"},
+                ],
                 "resource": [
                     {
                         "type": "CodeSystem",

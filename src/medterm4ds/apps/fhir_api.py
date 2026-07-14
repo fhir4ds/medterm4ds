@@ -17,12 +17,14 @@ from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
 from medterm4ds.apps._asyncutil import run_db as _run_db
 from medterm4ds.core.config import local_duckdb_config
 from medterm4ds.core.models import CodeRef
 from medterm4ds.engines.duckdb import LocalDuckDBEngine
 from medterm4ds.engines.fhir import (
+    SYSTEM_TO_FHIR_URI,
     canonical_system_uri,
     fhir_uri_to_system,
     sab_label_to_fhir_uri,
@@ -379,7 +381,7 @@ def _load_bm25_indexes(search_dir: str) -> dict[str, Any]:
                 loaded.append(category)
                 flat_format.append(category)
                 logger.info("  BM25 %s: %d records (flat)", category, len(index))
-        except Exception:
+        except (json.JSONDecodeError, OSError):
             logger.exception("Failed to load BM25 index: %s", json_path)
             missing.append(category)
 
@@ -398,9 +400,19 @@ class _PatientFriendlyCache:
         self._data: dict[str, dict[str, dict[str, Any]]] = {}
 
     def load(self, db_path: Path) -> dict[str, Any]:
-        """Load patient_friendly JSONs. Returns a summary dict for the banner."""
+        """Load patient_friendly JSONs. Returns a summary dict for the banner.
+
+        The source tuple covers every artifact shipped under
+        ``reports/fhir4px/patient_friendly_<source>.json``. CR-009/021: this
+        list previously omitted cpt/hcpcs/icd10pcs even though those JSONs
+        exist, silently disabling patient-friendly enrichment for three
+        code systems on the $lookup surface.
+        """
         baseline = Path(os.getenv("MEDTERM4DS_FHIR4PX_BASELINE", "/mnt/d/medterm4ds/reports/fhir4px"))
-        sources = ("snomedct_us", "rxnorm", "icd10cm", "lnc", "cvx")
+        sources = (
+            "snomedct_us", "rxnorm", "icd10cm", "icd10pcs",
+            "lnc", "cpt", "hcpcs", "cvx",
+        )
         loaded: list[str] = []
         missing: list[str] = []
         for source_lower in sources:
@@ -410,11 +422,17 @@ class _PatientFriendlyCache:
                     with json_path.open() as f:
                         self._data[source_lower] = json.load(f)
                     loaded.append(source_lower)
-                except Exception:
-                    logger.info(
-                        "Could not parse patient_friendly JSON %s — "
-                        "patient-friendly custom properties will be skipped for %s",
-                        json_path, source_lower,
+                except (json.JSONDecodeError, OSError) as exc:
+                    # CR-004/CR-015: this failure degrades $lookup output
+                    # (no patient-friendly custom properties for this source).
+                    # GLOBAL_RULES "Silent Fallbacks" requires WARNING+ for
+                    # output-degrading failures; the prior INFO-level swallow
+                    # made corrupted artifacts invisible to operators.
+                    logger.warning(
+                        "Could not parse patient_friendly JSON %s (%s: %s) — "
+                        "patient-friendly custom properties will be skipped for %s. "
+                        "Re-generate the artifact to restore enrichment.",
+                        json_path, type(exc).__name__, exc, source_lower,
                     )
                     missing.append(source_lower)
             else:
@@ -1383,13 +1401,26 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
         Returns count with default=20 if absent; None otherwise for absent
         optional params. Used by the batch dispatcher (HISTORIAN TS-04
         QA-039 — closed the 4-tuple coverage gap for $expand).
+
+        CR-006/CR-017 (v0.0.1 code review): the prior `count_val or 20`
+        silently substituted 20 when the client sent an INVALID count
+        (e.g. ``count="abc"``). The sibling GET handler rejects via FastAPI
+        ``Query(ge=1, le=1000)``; the batch path now matches by raising
+        ``ValueError``, which the dispatcher's existing
+        ``except ValueError`` catches and translates to a per-entry 400
+        OperationOutcome. Same shape as ``_parse_count_param`` usage on
+        the per-operation POST route.
         """
         if method == "GET":
             url_param = params.get("url")
             filter_text = params.get("filter")
             count_val = _parse_count_param(params.get("count"), default=20)
+            if count_val is None:
+                raise ValueError(
+                    f"count must be an integer in [1, 1000] (got {params.get('count')!r})."
+                )
             system_uri = params.get("system")
-            return url_param, filter_text, count_val or 20, system_uri
+            return url_param, filter_text, count_val, system_uri
         # POST: parse Parameters body. $expand also accepts a ValueSet
         # resource body but that path is operation-specific; the batch
         # dispatcher always passes a Parameters body for entry.resource.
@@ -1397,7 +1428,11 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
             return None, None, 20, None
         p = _parse_parameters(body_resource)
         count_val = _parse_count_param(p.get("count"), default=20)
-        return p.get("url"), p.get("filter"), count_val or 20, p.get("system")
+        if count_val is None:
+            raise ValueError(
+                f"count must be an integer in [1, 1000] (got {p.get('count')!r})."
+            )
+        return p.get("url"), p.get("filter"), count_val, p.get("system")
 
     # -- Lightweight liveness probe --
     # Pure async, no executor / DB / model touch. Returns instantly even when
@@ -2065,14 +2100,19 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
         # code systems must be well established"). medterm4ds has no
         # cross-system relationship map today; when either coding references a
         # different system than `system`, the server SHALL error.
-        if coding_a_pair is not None and coding_a_pair[0] != system:
+        if coding_a_pair is not None and canonical_system_uri(coding_a_pair[0]) != canonical_system_uri(system):
+            # CR-023 (v0.0.1 code review): normalize through canonical_system_uri
+            # so alias URIs (urn:oid:...) and trailing-slash variants resolve to
+            # the same canonical identity before the inequality check. The prior
+            # raw-string comparison falsely rejected same-system codings supplied
+            # via alias.
             return _fhir_error_response(
                 request,
                 400,
                 f"codingA system {coding_a_pair[0]!r} differs from subsumption "
                 f"system {system!r}; cross-system relationships are not defined.",
             )
-        if coding_b_pair is not None and coding_b_pair[0] != system:
+        if coding_b_pair is not None and canonical_system_uri(coding_b_pair[0]) != canonical_system_uri(system):
             return _fhir_error_response(
                 request,
                 400,
@@ -2320,7 +2360,7 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
 
         Supports:
         - Explicit concept lists (compose.include[].concept)
-        - is-a / descendant-of filters (compose.include[].filter) — via BFS,
+        - is-a / descendent-of filters (compose.include[].filter) — via BFS,
           bounded by FHIR_VS_MAX_DEPTH (default 5)
         - compose.exclude (removes codes from the expansion)
 
@@ -2380,7 +2420,7 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
                         "display": display,
                     })
 
-            # Intensional filter (is-a, descendant-of)
+            # Intensional filter (is-a, descendent-of)
             for filt in include.get("filter", []):
                 prop = filt.get("property", "")
                 op = filt.get("op", "")
@@ -2771,8 +2811,15 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
         entries = []
         for r in results:
             d = r.to_dict()
+            # VR-003 (v0.0.1 code review): per FHIR R4 §3.1.0.1.4,
+            # Bundle.entry.fullUrl SHALL be an absolute URL or urn:uuid.
+            # The prior relative form `CodeSystem/<system>-<code>` was
+            # non-conformant AND semantically wrong (every entity was
+            # prefixed CodeSystem/, even medications / conditions / procedures).
+            # urn:uuid is universally conformant; clients identify extracted
+            # entities by the resource body, not the fullUrl.
             entries.append({
-                "fullUrl": f"CodeSystem/{d.get('system', d.get('entity_type', 'unknown'))}-{d.get('code', d.get('text', ''))}",
+                "fullUrl": f"urn:uuid:{uuid4()}",
                 "resource": d,
                 "search": {"mode": "match"},
             })
@@ -3034,10 +3081,11 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
         return parsed
 
     def _all_systems_except(source: str) -> list[str]:
-        all_sys = [
-            "SNOMEDCT_US", "ICD10CM", "ICD10PCS", "RXNORM", "LNC", "CPT", "HCPCS", "CVX",
-        ]
-        return [s for s in all_sys if s != source]
+        # CR-008/CR-020 (v0.0.1 code review): derive from SYSTEM_TO_FHIR_URI
+        # so a future source addition is picked up automatically. The prior
+        # hardcoded list silently omitted new sources from $translate's
+        # no-targetsystem walk.
+        return [s for s in SYSTEM_TO_FHIR_URI if s != source]
 
     # -- CodeSystem/ValueSet/ConceptMap READ + SEARCH stubs --
     # Registered AFTER all $operation routes so the operation paths

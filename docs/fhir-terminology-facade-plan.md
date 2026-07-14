@@ -1,5 +1,12 @@
 # FHIR R4 Terminology Server Facade — Implementation Plan
 
+> **Historical design document (2026-Q2).** Asset paths, env-var names, and
+> final API shapes have evolved since this plan was written — see `README.md`
+> and `web/website/docs/interfaces/fhir-server.md` for current authoritative
+> documentation. This document is retained as design context for the original
+> architecture decisions.
+
+
 ## Context
 
 medterm4ds has the terminology data and logic (hierarchy, mapping, lookup, patient-friendly naming, code resolution). A FHIR R4 terminology facade exposes this via standard FHIR operations, making it consumable by any FHIR client (EHRs, CDS Hooks, SMART apps). The app team has also built BM25 indexes and embedding models for text-to-code inference; a custom `$search` operation (modeled after Patient `$match`) exposes this as a ranked, FHIR-formatted search endpoint.

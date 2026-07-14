@@ -104,6 +104,8 @@ docker run -p 7860:7860 \
 | `$expand` | `/fhir/ValueSet/$expand` | Expand ValueSets (filter, intensional, explicit) |
 | `$closure` | `/fhir/CodeSystem/$closure` | Pre-compute subsumption for O(1) checks |
 | `$search` | `/fhir/CodeSystem/$search` | Text → ranked codes (lexical / hybrid / semantic) |
+| `$extract` | `/fhir/CodeSystem/$extract` | Free-text concept extraction (NER + ConText + search) |
+| Batch | `POST /fhir` | Bundle of operations with per-entry error isolation (FHIR R4 §3.7) |
 
 ### Search modes
 
@@ -118,7 +120,7 @@ Results include a match-grade (`certain` / `probable` / `possible`), modeled aft
 ### Conformance testing
 
 ```bash
-make fhir-conformance    # 34 declarative test cases, ~18 seconds
+make fhir-conformance    # 2546 conformance probes across 18 FHIR R4 spec chunks, ~8 minutes
 ```
 
 See the [demo notebook](notebooks/fhir_terminology_server_demo.ipynb) for a

@@ -19,6 +19,51 @@ python -m medterm4ds.apps.fhir_api
 The server runs on `http://127.0.0.1:8001/fhir/` (localhost-only by default; see
 [SECURITY.md](https://github.com/fhir4ds/medterm4ds/blob/main/SECURITY.md)).
 
+## Response formats
+
+Per FHIR R4 §4.7.1.1 the server supports both JSON (default) and XML. Negotiate
+via the `_format` query parameter OR the `Accept` header:
+
+```bash
+# JSON (default)
+curl "http://127.0.0.1:8001/fhir/CodeSystem/\$lookup?system=http://snomed.info/sct&code=44054006"
+
+# XML via _format query param
+curl "http://127.0.0.1:8001/fhir/CodeSystem/\$lookup?system=http://snomed.info/sct&code=44054006&_format=xml"
+
+# XML via Accept header
+curl -H "Accept: application/fhir+xml" \
+  "http://127.0.0.1:8001/fhir/CodeSystem/\$lookup?system=http://snomed.info/sct&code=44054006"
+```
+
+The correct FHIR MIME types are used: `application/fhir+json` and
+`application/fhir+xml`. Error responses honor the same negotiation.
+
+## Capability discovery
+
+`GET /fhir/metadata` returns a FHIR R4 CapabilityStatement advertising the
+server's supported operations, code systems, and search parameters per
+§3.2.1.0. Use `?mode=terminology` for a TerminologyCapabilities resource
+per §4.7.1.1 item 5.
+
+```bash
+curl "http://127.0.0.1:8001/fhir/metadata"
+curl "http://127.0.0.1:8001/fhir/metadata?mode=terminology"
+```
+
+The CapabilityStatement includes:
+
+- `format: ["json", "xml"]` — both response formats supported.
+- `extension: capabilitystatement-supported-system` — one entry per supported
+  code system URI (sourced from the canonical `SYSTEM_TO_FHIR_URI` registry).
+- `rest[].interaction: [{code: batch}, {code: transaction}]` — the `POST /fhir`
+  batch endpoint is advertised per §3.2.1.0.4.
+- Per-resource `operation` blocks with canonical HL7 OperationDefinition URIs
+  (`http://hl7.org/fhir/OperationDefinition/CodeSystem-lookup`, etc.) so
+  clients can confirm operations are standard FHIR rather than server-local.
+- `implementation.url` reflects the deployment scheme + host + port (honors
+  `MEDTERM4DS_API_HOST`, `MEDTERM4DS_API_SCHEME`, `MEDTERM4DS_FHIR_API_PORT`).
+
 ## Supported operations
 
 ### $lookup
@@ -128,10 +173,11 @@ curl "http://127.0.0.1:8001/fhir/CodeSystem/\$search?query=metformin+pill&search
 ```
 
 Each result includes `search.score` and a match-grade extension (`certain` / `probable` / `possible`),
-modeled after FHIR Patient `$match`. The response's `expansion.search.mode` echoes
-the requested mode (`lexical`, `semantic`, or `hybrid`) — `hybrid` will internally
-fall back to semantic-only if BM25 returns no candidates, but the mode label
-stays `hybrid`.
+modeled after FHIR Patient `$match`. The response carries a **server-local**
+`expansion.search.mode` field (NOT part of the FHIR R4 ValueSet.expansion spec)
+that echoes the requested mode (`lexical`, `semantic`, or `hybrid`). `hybrid`
+will internally fall back to semantic-only if BM25 returns no candidates, but
+the mode label stays `hybrid`.
 
 ### $extract (custom operation)
 
@@ -161,6 +207,37 @@ curl "http://127.0.0.1:8001/health"
 Pure async, no DB/executor/model touch. Returns in under 5ms even under peak load.
 Use this for liveness/readiness probes — `/fhir/metadata` works too but does
 JSON building that could regress.
+
+## Batch endpoint (POST /fhir)
+
+Submit a FHIR R4 batch Bundle to execute multiple operations in one HTTP
+round-trip. Per-entry error isolation per §3.7: a malformed entry produces a
+4xx OperationOutcome for THAT entry only; other entries process independently.
+
+```bash
+curl -X POST "http://127.0.0.1:8001/fhir" \
+  -H "Content-Type: application/fhir+json" \
+  -d '{
+    "resourceType": "Bundle",
+    "type": "batch",
+    "entry": [
+      {"request": {"method": "GET", "url": "CodeSystem/$lookup?system=http://snomed.info/sct&code=44054006"}},
+      {"request": {"method": "GET", "url": "CodeSystem/$validate-code?system=http://snomed.info/sct&code=FAKE"}},
+      {"request": {"method": "GET", "url": "ValueSet/$expand?filter=diabetes&count=5"}}
+    ]
+  }'
+```
+
+The response is a Bundle with `type=batch-response`, one entry per request
+entry, in the same order. Each entry carries `response.status` and either
+`resource` (success — the FHIR resource) or `resource` (error — an
+OperationOutcome). Supported operations in batch: `$lookup`, `$validate-code`
+(CodeSystem + ValueSet), `$subsumes`, `$closure`, `$expand`, `$translate`.
+
+medterm4ds is read-only; `type=transaction` is accepted and processed as
+`batch` (no write operations to roll back). Batch processing is sequential per
+FHIR R4 §3.7 — the value is HTTP-roundtrip amortization, not throughput
+parallelism.
 
 ## System URI mapping
 
@@ -246,9 +323,13 @@ for details.
 make fhir-conformance
 ```
 
-35 declarative test cases covering all 7 operations + `$search` + `$extract` +
-error paths (400 missing params, 503 service starting, 503 search assets
-missing). Validated structurally via `fhir.resources` pydantic models.
+2546 conformance probes across 18 FHIR R4 terminology-service spec chunks
+(terminology-service.html, codesystem.html, valueset.html, conceptmap.html,
+and per-operation definition pages). Covers all 8 operations — `$lookup`,
+`$validate-code`, `$translate`, `$subsumes`, `$expand`, `$closure`, `$search`,
+`$extract` — plus error paths (400 missing params, 422 invalid count, 503
+service starting, 503 search assets missing, 404 unknown resource, 405
+write-rejection). Validated structurally via `fhir.resources` pydantic models.
 
 ## Demo notebook
 

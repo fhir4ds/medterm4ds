@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+_No unreleased changes yet. v0.0.1 shipped on 2026-07-14; subsequent work tracks
+here until the next tag._
+
+## [0.0.1] - 2026-07-14
+
 ### Breaking changes
 
 - **Tuple convention unified to `(source, code)`.** `CodeRef.from_pair()` and
@@ -21,6 +26,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **FHIR R4 terminology-service spec compliance**: 18 spec chunks across
+  terminology-service.html, codesystem.html, valueset.html, conceptmap.html,
+  and per-operation definition pages — 2546 conformance probes, 4-personality
+  QA rotation (SKEPTIC + HISTORIAN + EXPLORER + TERMINOLOGIST). All 18 chunks
+  pass across all 4 personalities; 72 bugs found, 69 fixed during the run.
+- **FHIR R4 batch endpoint** (`POST /fhir`) per §3.7 — submit a Bundle of
+  operations in one HTTP round-trip with per-entry error isolation. CapabilityStatement
+  now advertises `batch` + `transaction` in `rest[].interaction`.
+- **XML response support** via `_format=xml` query param or
+  `Accept: application/fhir+xml` header. New `engines/fhir/xml.py` serializer.
+  CapabilityStatement advertises `format: ["json", "xml"]`.
+- **CapabilityStatement** endpoint at `/fhir/metadata` (and `?mode=terminology`
+  for TerminologyCapabilities) per FHIR R4 §3.2.1.0. Advertises supported systems
+  via `capabilitystatement-supported-system` extension, canonical HL7
+  OperationDefinition URIs, and per-resource interactions + search params.
+- **Canonical `_canonical_system_uri` helper** in `engines.fhir.__init__` —
+  single source of truth for the client-input-as-canonical URI drift pattern.
+  Applied on every `_do_*` handler's Out `system` field.
+- **Canonical `_equivalence` module** (`engines/fhir/equivalence.py`) — unifies
+  the engine → R4 ConceptMapEquivalence translation across both the $translate
+  HTTP surface and the ConceptMap export surface. Closed-enum membership
+  assertion at module load applies uniformly to both.
+- **Closed-enum registries** (`FHIR_R4_CONCEPT_MAP_EQUIVALENCE`,
+  `FHIR_R4_FILTER_OPERATORS`) in `engines.fhir.__init__`, imported by both
+  production code and tests — registry-as-contract pattern eliminates
+  closed-enum drift.
 - **`mt.connect()` auto-provisioning.** Omit `db_path` to trigger one-time
   setup: builds `lookup.duckdb` from UMLS RRF (~8 min), downloads derived
   artifacts from HF (~2 min), caches in `~/.medterm4ds/`.
@@ -37,6 +68,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`get_descendants_bfs()` / `is_descendant()`** — O(nodes) BFS for hierarchy walks.
 - **GLiNER NER model** (`E3-JSI/gliner-multi-med-ner-synthetic-v1`) replaces d4data.
 - **`.github/workflows/publish.yml`** — PyPI publish on tag push via trusted publishing.
+- **Systemic `duckdb.Error` exception handler** — every per-operation `_do_*`
+  handler now has a 503-OperationOutcome boundary for transient DB failures.
 
 ### Changed
 
@@ -46,7 +79,57 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **NER model switched to GLiNER** — catches acronyms (T2DM, CKD) d4data missed.
 - **Error messages sanitized** — control chars stripped, 256-char cap.
 - **`duckdb` + `huggingface_hub`** now hard dependencies.
-- **pyproject.toml version** bumped: 0.0.1 → 0.0.2.
+- **HCPCS canonical URI** corrected from
+  `http://terminology.hl7.org/CodeSystem/hcpcs-Level-II` to
+  `http://www.cms.gov/Medicare/Coding/HCPCSReleaseCodeSets` (old URI retained
+  as alias for backwards compatibility).
+- **`canonical_system_uri`** applied to all `$lookup`/`$validate-code`/
+  `$translate`/`$expand` Out `system` fields — clients receive the canonical
+  FHIR URI regardless of input alias form.
+- **All FHIR routes funnel through `_fhir_response`** — uniform
+  `application/fhir+json` / `application/fhir+xml` Content-Type on success
+  and error paths.
+- **`expansion.timestamp` and `CapabilityStatement.date`** now dynamic
+  (were hardcoded stale literals).
+- **CapabilityStatement.version** sourced from `medterm4ds.__version__`
+  (was hardcoded).
+- **`_PatientFriendlyCache`** now loads all 8 patient-friendly artifacts
+  (cpt, cvx, hcpcs, icd10cm, icd10pcs, lnc, rxnorm, snomedct_us) — was 5.
+- **`_all_systems_except`** now derives from `SYSTEM_TO_FHIR_URI` (was hardcoded).
+- **`$subsumes` mixed-system check** normalizes through `canonical_system_uri`
+  before comparing — accepts alias URIs (urn:oid:...) as same-system.
+
+### Security
+
+- CVX URL SSRF guard (https + cdc.gov allowlist).
+- `$extract` input length cap (100K chars).
+- `$expand` count validation tightened (POST: reject <1 and >1000; batch
+  dispatcher now raises ValueError on invalid count instead of silently
+  substituting default — was CR-006/CR-017).
+- HF Spaces auth divergence documented in SECURITY.md.
+- Patient-friendly cache parse failures now log at WARNING (was INFO) —
+  output-degrading failures must be operator-visible (CR-004/CR-015).
+
+### Fixed
+
+- Silent truncation when `$expand` count=1 and root fills budget.
+- `_expand_intensional` truncation flag was computed but never emitted.
+- `ClosureTable.to_parameter_list` missing lock.
+- `get_closure_manager()` singleton init race.
+- Silent `except: pass` blocks → logged warnings (3 sites).
+- `RemoteAPIEngine.get_code_relations` missing `limit` param (Protocol drift).
+- MCP `extract` tool bypassing the single-worker executor.
+- FHIR startup banner not appearing in `docker logs`.
+- `_extract` `Bundle.entry.fullUrl` now uses `urn:uuid:<uuid4>` per FHIR R4
+  §3.1.0.1.4 (was non-conformant relative `CodeSystem/<system>-<code>` form).
+- `_load_bm25_indexes` exception narrowed to `(json.JSONDecodeError, OSError)`
+  (was broad `Exception`).
+- `_expand_intensional` docstring + comment spelling: `descendent-of` (Latin,
+  per spec) — was common-English `descendant-of`.
+
+### Earlier in 0.0.1 (Tier A/B/C refactor)
+
+### Architecture refactor (Tier C)
 
 ### Security
 
