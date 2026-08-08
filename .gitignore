@@ -14,6 +14,17 @@ venv/
 .temp/
 scratch/
 
+# Scripts, reports, and archive (one-off utilities, generated deliverables,
+# and legacy code — not part of the library)
+scripts/
+reports/
+archive/
+
+# Generated fhir4px comparison artifacts (superseded by canonical pipeline)
+docs/parity-matrix.md
+docs/intentional-differences-allowlist.*
+docs/fhir4px-data-deliverable.md
+
 # Data
 *.duckdb
 *.duckdb.wal
