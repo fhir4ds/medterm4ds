@@ -58,11 +58,12 @@ class TestFindTerms:
         for span in spans:
             assert span.status in ("affirmed", "negated", "uncertain", "historical")
 
-    def test_category_filtering(self, service):
-        spans = service.find_terms("Diabetes and metformin", categories=["medication"])
+    def test_ner_label_override(self, service):
+        # Override default labels to detect only medications.
+        spans = service.find_terms("Diabetes and metformin", ner_labels=["medication"])
         # Should only include medication entities
         for span in spans:
-            assert span.category == "medication"
+            assert span.entity_type == "medication"
 
     def test_empty_text(self, service):
         spans = service.find_terms("")

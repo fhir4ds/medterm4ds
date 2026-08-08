@@ -2,9 +2,37 @@
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
+
+
+def _detect_system_memory_gb() -> int:
+    """Best-effort detection of total system memory in GB. Falls back to 16."""
+    try:
+        # Linux: /proc/meminfo
+        with open("/proc/meminfo") as f:
+            for line in f:
+                if line.startswith("MemTotal:"):
+                    kb = int(line.split()[1])
+                    return max(kb // (1024 * 1024), 1)
+    except (OSError, ValueError, IndexError):
+        pass
+    return 16
+
+
+def _default_fast_memory_limit() -> str:
+    """Use ~50% of system memory for the 'fast' profile.
+
+    DuckDB's memory_limit is a soft cap — parallel threads + Python overhead
+    can push actual usage higher. 50% leaves headroom for the OS, Python
+    interpreter, and DuckDB's own thread-local allocations. On a 64GB machine
+    this yields ~32GB; on 16GB it yields 8GB.
+    """
+    sys_gb = _detect_system_memory_gb()
+    fast_gb = max(int(sys_gb * 0.50), 4)
+    return f"{fast_gb}GB"
 
 
 @dataclass(frozen=True)
@@ -26,14 +54,20 @@ MemoryProfile = Literal["fast", "balanced", "low"]
 
 
 LOCAL_DUCKDB_MEMORY_PROFILES: dict[str, LocalDuckDBConfig] = {
-    "fast": LocalDuckDBConfig(memory_limit="4GB", threads=None, query_chunk_size=5000),
+    # 'fast' uses ~75% of system memory by default and auto-detects threads.
+    # This is the recommended profile for development machines with adequate RAM.
+    "fast": LocalDuckDBConfig(
+        memory_limit=_default_fast_memory_limit(),
+        threads=None,  # auto-detect (uses all cores)
+        query_chunk_size=5000,
+    ),
     "balanced": LocalDuckDBConfig(memory_limit="1GB", threads=None, query_chunk_size=5000),
     "low": LocalDuckDBConfig(memory_limit="512MB", threads=1, query_chunk_size=1000),
 }
 
 
 def local_duckdb_config(
-    profile: MemoryProfile = "balanced",
+    profile: MemoryProfile = "fast",
     *,
     memory_limit: str | None = None,
     temp_directory: str | Path | None = None,

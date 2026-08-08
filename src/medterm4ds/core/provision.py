@@ -187,7 +187,7 @@ def download_derived_artifacts(
 def set_env_vars(
     db_path: Path,
     derived: dict[str, Path],
-    memory_profile: str = "balanced",
+    memory_profile: str = "fast",
 ) -> None:
     """Set MEDTERM4DS_* env vars so downstream services find the data.
 
@@ -216,7 +216,7 @@ def provision(
     umls_api_key: str | None = None,
     cache_home: Path | None = None,
     hf_token: str | None = None,
-    memory_profile: str = "balanced",
+    memory_profile: str = "fast",
     offline: bool = False,
 ) -> Path:
     """Full provisioning: build lookup.duckdb + download derived + set env vars.

@@ -3,6 +3,11 @@
 Provides direct access to same-CUI cross-source mappings using
 ``mt4ds.crosswalk_edges`` when available, with ``mt4ds.same_cui_edges`` as a
 compatibility fallback.
+
+``find_via_walk`` (Phase 1b of the canonical_anchors improvement plan) is a
+general-purpose walk + same-CUI crosswalk primitive that supports equivalent
+/ walk-up / walk-down modes via a ``direction`` parameter. Its implementation
+lives in ``services.crosswalk_walk`` and is re-exported here for discoverability.
 """
 from __future__ import annotations
 
@@ -10,10 +15,13 @@ from collections import defaultdict
 from collections.abc import Sequence
 
 from medterm4ds.core.models import CodeMapping, CodeRef
+from medterm4ds.services.crosswalk_walk import find_via_walk
 from medterm4ds.services.prepared_primitives import (
     same_cui_crosswalk_sql,
     temp_codes,
 )
+
+__all__ = ["get_same_cui_mappings", "find_via_walk"]
 
 
 def get_same_cui_mappings(

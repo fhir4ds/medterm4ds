@@ -168,8 +168,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="Output format: 'codes' (resolved) or 'terms' (spans only). Default: codes.",
     )
     extract.add_argument(
-        "--categories", nargs="*", default=None,
-        help="Restrict to categories (condition, medication, lab, procedure).",
+        "--ner-labels", nargs="*", default=None, dest="ner_labels",
+        help="GLiNER NER labels to detect (default: disease, medication, symptom, procedure, lab test, vital).",
+    )
+    extract.add_argument(
+        "--result-types", nargs="*", default=None, dest="result_types",
+        help="Filter resolved concepts by result type (condition, medication, drug_class, lab, vital, procedure, vaccine, symptom).",
     )
     extract.add_argument("--mode", default="hybrid", choices=["lexical", "semantic", "hybrid"])
     extract.add_argument("--min-grade", default="certain", choices=["certain", "probable", "possible"])
@@ -1338,7 +1342,8 @@ def run_extract(args: argparse.Namespace) -> int:
     results = extract_service(
         args.text,
         format=args.format,
-        categories=args.categories,
+        ner_labels=args.ner_labels,
+        result_types=args.result_types,
         mode=args.mode,
         min_grade=args.min_grade,
         include_negated=args.include_negated,

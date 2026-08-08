@@ -68,6 +68,58 @@ src/medterm4ds/
 See [docs/architecture.md](docs/architecture.md) for the design principles and
 module boundaries.
 
+## Canonical Anchors
+
+`medterm4ds` ships prebuilt canonical anchor artifacts at `data/canonical/`:
+
+```
+data/canonical/
+├── canonical_anchor_value_sets.json   # 47K+ anchors (conditions, labs, meds, etc.)
+├── canonical_concepts_faiss.index     # SapBERT embedding index for semantic search
+└── canonical_concepts_metadata.json   # FAISS vector → anchor metadata
+```
+
+These are produced by the **`medterm4ds-canonical`** private repo (separate
+from this one). The build pipeline — rules registry, per-domain build scripts,
+AI loop infrastructure — lives there. To rebuild or modify canonical anchors,
+clone `medterm4ds-canonical` and run its build pipeline; see
+[`docs/BUILD.md`](https://github.com/<owner>/medterm4ds-canonical/blob/main/docs/BUILD.md)
+in that repo.
+
+The runtime artifacts here are deploy outputs. Don't edit them directly.
+
+### Search API
+
+```python
+from medterm4ds.services.search import get_search_service
+
+search = get_search_service()
+
+# Free-text → canonical anchor. Sources filter optional.
+results = search.canonical("Hemoglobin A1c", sources=["LNC"], count=3)
+
+# Result type filter: clinical category, more semantic than sources.
+# Useful for SNOMED which spans conditions, procedures, and body structures.
+results = search.canonical("ACTH stimulation", result_types="procedure", count=1)
+# Returns [] — correctly no procedure anchor exists.
+
+# Multiple result types, AND-composed with sources.
+results = search.canonical("chest pain",
+                           result_types=["condition", "symptom"],
+                           sources=["SNOMEDCT_US"], count=5)
+```
+
+Valid result types: `condition`, `symptom`, `lab`, `vital`, `medication`,
+`drug_class`, `procedure`, `vaccine`. See
+[`RESULT_TYPES.md`](https://github.com/<owner>/medterm4ds-canonical/blob/main/docs/RESULT_TYPES.md).
+
+### Environment
+
+- `MEDTERM4DS_UMLS_DB` — UMLS DuckDB path (default
+  `/mnt/d/medterm4ds/data/umls_2026aa.duckdb`)
+- `MEDTERM4DS_SEARCH_INDEX_DIR` — BM25 index directory
+- `MEDTERM4DS_EMBEDDING_MODEL_DIR` — SapBERT model directory
+
 ## FHIR R4 Terminology Server
 
 medterm4ds includes a FHIR R4 terminology server that exposes all standard

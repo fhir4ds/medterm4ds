@@ -571,7 +571,7 @@ def open_duckdb_engine(
 def connect(
     db_path: str | Path | None = None,
     *,
-    memory_profile: MemoryProfile = "balanced",
+    memory_profile: MemoryProfile = "fast",
     memory_limit: str | None = None,
     temp_directory: str | Path | None = None,
     threads: int | None = None,

@@ -46,7 +46,7 @@ class McpSettings:
 
     db_path: Path
     sources: tuple[str, ...] = DEFAULT_INVENTORY_SOURCES
-    memory_profile: MemoryProfile = "balanced"
+    memory_profile: MemoryProfile = "fast"
     memory_limit: str | None = None
     temp_directory: str | Path | None = None
     threads: int | None = None
@@ -62,7 +62,7 @@ class McpSettings:
         return cls(
             db_path=Path(db_path),
             sources=normalize_sources(os.getenv("MEDTERM4DS_SOURCES")),
-            memory_profile=os.getenv("MEDTERM4DS_MEMORY_PROFILE", "balanced"),  # type: ignore[arg-type]
+            memory_profile=os.getenv("MEDTERM4DS_MEMORY_PROFILE", "fast"),  # type: ignore[arg-type]
             memory_limit=os.getenv("MEDTERM4DS_MEMORY_LIMIT") or None,
             temp_directory=os.getenv("MEDTERM4DS_TEMP_DIR") or None,
             threads=_env_int("MEDTERM4DS_THREADS"),
@@ -672,7 +672,8 @@ def create_mcp_server(
     async def extract(
         text: str,
         format: str = "codes",
-        categories: list[str] | None = None,
+        ner_labels: list[str] | None = None,
+        result_types: list[str] | None = None,
         mode: str = "hybrid",
         min_grade: str = "certain",
         include_negated: bool = False,
@@ -685,7 +686,8 @@ def create_mcp_server(
         Parameters:
         - text: Free clinical text to extract from.
         - format: 'codes' (resolve to codes) or 'terms' (text spans only).
-        - categories: Filter by category (condition, medication, lab, procedure).
+        - ner_labels: Override default GLiNER labels (disease, medication, symptom, procedure, lab test, vital).
+        - result_types: Filter resolved concepts by result type (condition, medication, drug_class, lab, vital, procedure, vaccine, symptom).
         - mode: Search mode for code resolution (lexical, semantic, hybrid).
         - min_grade: Minimum match grade (certain, probable, possible).
         - include_negated: Include negated mentions (default: excluded).
@@ -695,7 +697,8 @@ def create_mcp_server(
             extract_service,
             text,
             format=format,
-            categories=categories,
+            ner_labels=ner_labels,
+            result_types=result_types,
             mode=mode,
             min_grade=min_grade,
             include_negated=include_negated,

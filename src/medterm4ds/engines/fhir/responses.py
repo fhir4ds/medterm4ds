@@ -389,6 +389,7 @@ OPDEF_TRANSLATE = "http://hl7.org/fhir/OperationDefinition/ConceptMap-translate"
 # OperationDefinition. Use medterm4ds-local URIs and document this in the
 # operation's `documentation` field so clients can distinguish them.
 OPDEF_SEARCH = f"{CAPABILITY_STATEMENT_URL}/OperationDefinition/CodeSystem-search"
+OPDEF_EXTRACT = f"{CAPABILITY_STATEMENT_URL}/OperationDefinition/CodeSystem-extract"
 
 
 def build_capability_statement(base_url: str = "http://127.0.0.1:8001") -> dict[str, Any]:
@@ -471,7 +472,21 @@ def build_capability_statement(base_url: str = "http://127.0.0.1:8001") -> dict[
                                 "documentation": (
                                     "Custom medterm4ds operation (modeled after "
                                     "Patient $match). Not the standard FHIR search "
-                                    "interaction; supports lexical, semantic, and hybrid modes."
+                                    "interaction. Modes: lexical (BM25), semantic "
+                                    "(SapBERT), hybrid (BM25+rerank), canonical "
+                                    "(SapBERT + FAISS concept index with result_type "
+                                    "filtering). Canonical mode also accepts resultTypes "
+                                    "parameter to filter by anchor type."
+                                ),
+                            },
+                            {
+                                "name": "extract",
+                                "definition": OPDEF_EXTRACT,
+                                "documentation": (
+                                    "Custom medterm4ds operation. Extracts medical "
+                                    "concepts from free clinical text via GLiNER NER + "
+                                    "medspaCy ConText + canonical anchor resolution. "
+                                    "Supports format=codes|terms|annotated."
                                 ),
                             },
                         ],

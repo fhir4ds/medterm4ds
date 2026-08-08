@@ -14,6 +14,14 @@ from .conceptmap import (
     iter_mapping_concept_map,
 )
 from .crosswalk_prepared import get_crosswalk_mappings
+from .crosswalk_walk import find_via_walk
+from .loinc_parts import (
+    get_class_of,
+    get_component_tests,
+    get_lp_ancestors,
+    get_lp_children,
+    get_lp_descendants,
+)
 from .data_setup import (
     DEFAULT_UMLS_RELEASE_TYPE,
     DEFAULT_UMLS_VERIFY_SOURCES,
@@ -75,10 +83,12 @@ __all__ = [
     "download_release",
     "download_umls_release",
     "empty_schema_report_metadata",
+    "find_via_walk",
     "get_ancestors",
     "get_ancestors_prepared",
     "get_children",
     "get_children_prepared",
+    "get_class_of",
     "get_code_relations",
     "get_code_ttys",
     "get_code_info",
@@ -86,8 +96,12 @@ __all__ = [
     "get_code_infos",
     "get_code_infos_prepared",
     "get_code_mappings",
+    "get_component_tests",
     "get_concept_map",
     "get_crosswalk_mappings",
+    "get_lp_ancestors",
+    "get_lp_children",
+    "get_lp_descendants",
     "get_mapping_concept_map",
     "get_descendants",
     "get_descendants_prepared",

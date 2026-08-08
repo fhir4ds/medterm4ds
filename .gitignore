@@ -10,6 +10,10 @@ build/
 .venv/
 venv/
 
+# Scratch / temp (not tracked)
+.temp/
+scratch/
+
 # Data
 *.duckdb
 *.duckdb.wal
@@ -50,3 +54,7 @@ archive/reports/
 # AI Loop — private workflow state, not shared externally
 # (orphan runs, handoffs, knowledge base, schedule state)
 docs/.ai_loop/
+
+# Standalone Canonical ValueSet Anchors Project (ignored for separate repo migration)
+canonical_anchors/
+

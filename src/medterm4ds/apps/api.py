@@ -40,7 +40,7 @@ class ApiSettings:
 
     db_path: Path
     sources: tuple[str, ...] = DEFAULT_INVENTORY_SOURCES
-    memory_profile: MemoryProfile = "balanced"
+    memory_profile: MemoryProfile = "fast"
     memory_limit: str | None = None
     temp_directory: str | Path | None = None
     threads: int | None = None
@@ -56,7 +56,7 @@ class ApiSettings:
         return cls(
             db_path=Path(db_path),
             sources=normalize_sources(os.getenv("MEDTERM4DS_SOURCES")),
-            memory_profile=os.getenv("MEDTERM4DS_MEMORY_PROFILE", "balanced"),  # type: ignore[arg-type]
+            memory_profile=os.getenv("MEDTERM4DS_MEMORY_PROFILE", "fast"),  # type: ignore[arg-type]
             memory_limit=os.getenv("MEDTERM4DS_MEMORY_LIMIT") or None,
             temp_directory=os.getenv("MEDTERM4DS_TEMP_DIR") or None,
             threads=_env_int("MEDTERM4DS_THREADS"),

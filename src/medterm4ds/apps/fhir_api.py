@@ -326,7 +326,7 @@ def expand_url_pattern(
 class FhirApiSettings:
     """FHIR facade settings."""
     db_path: Path
-    memory_profile: str = "balanced"
+    memory_profile: str = "fast"
     search_index_dir: str = DEFAULT_SEARCH_INDEX_DIR
     prepare_cache: bool = True
     sources: tuple[str, ...] = (
@@ -340,7 +340,7 @@ class FhirApiSettings:
             raise RuntimeError("MEDTERM4DS_DB is required for the FHIR API.")
         return cls(
             db_path=Path(db_path),
-            memory_profile=os.getenv("MEDTERM4DS_MEMORY_PROFILE", "balanced"),
+            memory_profile=os.getenv("MEDTERM4DS_MEMORY_PROFILE", "fast"),
             search_index_dir=os.getenv("MEDTERM4DS_SEARCH_INDEX_DIR", DEFAULT_SEARCH_INDEX_DIR),
         )
 
@@ -2707,27 +2707,18 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
         query: str = Query(..., description="Text to search for"),
         system: str | None = Query(None, description="Restrict to system URI"),
         count: int = Query(20, ge=1, le=200),
-        searchMode: str = Query("lexical", pattern="^(lexical|hybrid|semantic)$"),
+        searchMode: str = Query("lexical", pattern="^(lexical|hybrid|semantic|canonical)$"),
+        resultTypes: str | None = Query(None, description="Comma-separated result types for canonical mode (condition,medication,drug_class,lab,vital,procedure,vaccine,symptom)"),
     ):
-        # CR-005 (milestone-1 review): _check_ready returns a 503 Response
-        # when the app is not ready — return it instead of raising (Response
-        # is not a BaseException; raising causes TypeError).
         not_ready = _check_ready(request)
         if not_ready is not None:
             return not_ready
-        # CR-001 (milestone-1 review): funnel through _fhir_response so the
-        # Content-Type is application/fhir+json (or application/fhir+xml when
-        # negotiated), not Starlette's application/json default. Same
-        # dispatcher pattern as $lookup/$validate-code (TS-02 QA-021).
-        # _do_search may itself return a Response (its 503-no-index path
-        # calls _fhir_error) — pass Response through as-is, matching the
-        # pattern used by $lookup/$validate-code/$translate handlers.
-        payload = await asyncio.to_thread(_do_search, query, system, count, searchMode)
+        result_types = resultTypes.split(",") if resultTypes else None
+        payload = await asyncio.to_thread(_do_search, query, system, count, searchMode, result_types)
         return payload if isinstance(payload, Response) else _fhir_response(request, payload)
 
     @app.post("/fhir/CodeSystem/$search")
     async def search_post(request: Request, body: dict[str, Any]):
-        # CR-005: return-don't-raise (see search_get).
         not_ready = _check_ready(request)
         if not_ready is not None:
             return not_ready
@@ -2740,8 +2731,9 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
         search_mode = params.get("searchMode", "lexical")
         if not query_text:
             return _fhir_error_response(request, 400, "query is required.")
-        # CR-001: see search_get — funnel through _fhir_response.
-        payload = await asyncio.to_thread(_do_search, str(query_text), system, count, search_mode)
+        result_types_str = params.get("resultTypes")
+        result_types = result_types_str.split(",") if result_types_str else None
+        payload = await asyncio.to_thread(_do_search, str(query_text), system, count, search_mode, result_types)
         return payload if isinstance(payload, Response) else _fhir_response(request, payload)
 
     # -- CodeSystem $extract (custom: NER + ConText + search) --
@@ -2752,8 +2744,9 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
     async def extract_get(
         request: Request,
         text: str = Query(..., max_length=MAX_EXTRACT_TEXT_CHARS, description="Free text to extract concepts from"),
-        format: str = Query("codes", pattern="^(codes|terms)$"),
-        categories: str | None = Query(None, description="Comma-separated: condition,medication"),
+        format: str = Query("codes", pattern="^(codes|terms|annotated)$"),
+        nerLabels: str | None = Query(None, description="Comma-separated NER labels to detect (default: lab test,vital sign,panel,therapeutic agent,therapeutic class,immunization,medical intervention,disorder,symptom)"),
+        resultTypes: str | None = Query(None, description="Comma-separated result types to filter (condition,medication,drug_class,lab,vital,procedure,vaccine,symptom)"),
         mode: str = Query("hybrid", pattern="^(lexical|semantic|hybrid)$"),
         minGrade: str = Query("certain", pattern="^(certain|probable|possible)$"),
         includeNegated: bool = Query(False),
@@ -2765,7 +2758,7 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
         # CR-001 (milestone-1 review): funnel through _fhir_response so the
         # Content-Type is application/fhir+json (or application/fhir+xml when
         # negotiated), not Starlette's application/json default.
-        payload = await _run_db(_ner_executor(request), _do_extract, text, format, categories, mode, minGrade, includeNegated)
+        payload = await _run_db(_ner_executor(request), _do_extract, text, format, nerLabels, resultTypes, mode, minGrade, includeNegated)
         return _fhir_response(request, payload)
 
     @app.post("/fhir/CodeSystem/$extract")
@@ -2789,35 +2782,36 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
         payload = await _run_db(
             _ner_executor(request), _do_extract, str(text),
             params.get("format", "codes"),
-            params.get("categories"),
+            params.get("nerLabels"),
+            params.get("resultTypes"),
             params.get("mode", "hybrid"),
             params.get("minGrade", "certain"),
             params.get("includeNegated", "false").lower() == "true",
         )
         return _fhir_response(request, payload)
 
-    def _do_extract(text, fmt, categories_str, mode, min_grade, include_negated):
+    def _do_extract(text, fmt, ner_labels_str, result_types_str, mode, min_grade, include_negated):
         from medterm4ds.services.extraction import extract as extract_service
 
-        cats = categories_str.split(",") if categories_str else None
+        ner_labels = ner_labels_str.split(",") if ner_labels_str else None
+        result_types = result_types_str.split(",") if result_types_str else None
         results = extract_service(
             text,
             format=fmt,
-            categories=cats,
+            ner_labels=ner_labels,
+            result_types=result_types,
             mode=mode,
             min_grade=min_grade,
             include_negated=include_negated,
         )
+
+        # format="annotated" returns a dict, not a list
+        if fmt == "annotated" and isinstance(results, dict):
+            return results
+
         entries = []
         for r in results:
             d = r.to_dict()
-            # VR-003 (v0.0.1 code review): per FHIR R4 §3.1.0.1.4,
-            # Bundle.entry.fullUrl SHALL be an absolute URL or urn:uuid.
-            # The prior relative form `CodeSystem/<system>-<code>` was
-            # non-conformant AND semantically wrong (every entity was
-            # prefixed CodeSystem/, even medications / conditions / procedures).
-            # urn:uuid is universally conformant; clients identify extracted
-            # entities by the resource body, not the fullUrl.
             entries.append({
                 "fullUrl": f"urn:uuid:{uuid4()}",
                 "resource": d,
@@ -2829,16 +2823,10 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
         system_uri: str | None,
         count: int,
         search_mode: str,
+        result_types: list[str] | None = None,
     ):
-        # Delegate to services.search.SearchService — eliminates the FHIR-local
-        # BM25 + semantic duplication. SearchService is the canonical impl used
-        # by all four surfaces (lib, CLI, MCP, FHIR); we just shape its
-        # SearchResult list into a FHIR Bundle here.
         from medterm4ds.services.search import get_search_service
 
-        # Resolve system_uri → sources list (SearchService resolves sources →
-        # categories internally via _SOURCE_TO_CATEGORIES, same mapping the old
-        # _source_to_categories used).
         sources: list[str] | None = None
         if system_uri:
             source = fhir_uri_to_system(system_uri)
@@ -2848,34 +2836,44 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
 
         try:
             service = get_search_service()
-            # Probe availability up-front so we return clean 503s instead of
-            # letting SearchService raise inside the executor (would surface
-            # as 500).
+
+            # Canonical mode: uses SapBERT + FAISS concept index. Returns
+            # CanonicalSearchResult (with canonical_id, result_type,
+            # combination_members) instead of SearchResult.
+            if search_mode == "canonical":
+                results = service.canonical(
+                    query_text,
+                    result_types=result_types,
+                    sources=sources,
+                    count=count,
+                )
+                entries = []
+                for r in results:
+                    sys_uri = system_to_fhir_uri(r.anchor_system.upper()) or r.anchor_system
+                    entries.append({
+                        "canonical_id": r.canonical_id,
+                        "result_type": r.result_type,
+                        "code": r.anchor_code,
+                        "system": sys_uri,
+                        "display": r.patient_friendly_name,
+                        "score": r.score,
+                        "match_grade": r.match_grade,
+                        "combination_members": r.combination_members,
+                    })
+                return build_bundle_search(entries, query=query_text, search_mode=search_mode)
+
+            # Legacy modes (lexical, semantic, hybrid): probe availability
             if search_mode in ("lexical", "hybrid") and not service.lexical_available:
-                return _fhir_error(
-                    503,
-                    "BM25 search index not loaded. Set MEDTERM4DS_SEARCH_INDEX_DIR.",
-                )
-            if search_mode == "semantic" and not service.semantic_available:
-                return _fhir_error(
-                    503,
-                    "Embedding model not found. Set MEDTERM4DS_EMBEDDING_MODEL_DIR.",
-                )
-            if search_mode == "hybrid" and not service.semantic_available:
-                return _fhir_error(
-                    503,
-                    "Embedding model not found. Set MEDTERM4DS_EMBEDDING_MODEL_DIR.",
-                )
+                return _fhir_error(503, "BM25 search index not loaded.")
+            if search_mode in ("semantic", "hybrid") and not service.semantic_available:
+                return _fhir_error(503, "Embedding model not found.")
 
             results = service.search(
                 query_text, mode=search_mode, sources=sources, count=count,
             )
         except RuntimeError as exc:
-            # SearchService raises RuntimeError when indexes/models aren't
-            # available — translate to 503.
             return _fhir_error(503, str(exc))
 
-        # Convert SearchResult list → FHIR Bundle entry dicts.
         entries = []
         for r in results:
             sys_uri = system_to_fhir_uri(r.source.upper()) or r.source
