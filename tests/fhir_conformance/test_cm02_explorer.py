@@ -131,9 +131,12 @@ def test_e11_translate_post_scalar_body_emits_fhir_json(fhir_client):
 def test_e12_translate_post_coding_body_emits_fhir_json_error_path(fhir_client):
     """EXPLORER (shape c — re-verification): POST $translate with
     ``coding`` alternative encoding (per FHIR R4 In Parameters). The
-    helper is not wired (CF-CM02-01 deferred); the response is 400 +
-    OperationOutcome + conformant Content-Type. Carry-forward-as-probe
-    pattern (CS-03 TERMINOLOGIST methodology).
+    helper is now wired (CF-CM02-01 RESOLVED by CM-01 EXPLORER QA-001);
+    the response is 200 + Parameters + conformant Content-Type.
+
+    Updated from prior 400-expecting shape when CF-CM02-01 was deferred.
+    Carry-forward-as-probe pattern (CS-03 TERMINOLOGIST methodology) —
+    methodology fired loudly on the CM-01 EXPLORER fix as designed.
     """
     r = fhir_client.post(
         "/fhir/ConceptMap/$translate",
@@ -148,14 +151,15 @@ def test_e12_translate_post_coding_body_emits_fhir_json_error_path(fhir_client):
             ],
         },
     )
-    # CF-CM02-01 current behavior: 400. When fix lands, tighten to 200.
-    assert r.status_code == 400, (
-        f"POST $translate coding body — CF-CM02-01 current behavior is 400 "
-        f"(coding silently dropped). Got {r.status_code}: {r.text}"
+    # CF-CM02-01 RESOLVED: helper now wired; coding body produces 200.
+    assert r.status_code == 200, (
+        f"POST $translate coding body — CF-CM02-01 RESOLVED requires 200 "
+        f"(coding now honored via _extract_named_coding_from_parameters). "
+        f"Got {r.status_code}: {r.text}"
     )
     assert r.headers["content-type"].startswith("application/fhir+json")
     body = r.json()
-    assert body.get("resourceType") == "OperationOutcome"
+    assert body.get("resourceType") == "Parameters"
 
 
 def test_e13_translate_post_empty_body_emits_fhir_json_error_path(fhir_client):
@@ -648,14 +652,14 @@ def test_e51_translate_post_scalar_plus_codeable_concept_scalar_wins(fhir_client
 
 def test_e52_translate_post_codeable_concept_multi_coding_silently_dropped(fhir_client):
     """EXPLORER (carry-forward-as-probe pattern): POST $translate with
-    a codeableConcept containing MULTIPLE codings. CF-CM02-01 (deferred)
-    means the helper is not wired; the request falls through to 400.
+    a codeableConcept containing MULTIPLE codings. CF-CM02-01 RESOLVED
+    by CM-01 EXPLORER QA-001 — the codeableConcept extractor is now
+    wired (single-pair semantic per _extract_codeable_concept_from_parameters);
+    the FIRST coding with both system+code is picked.
 
-    When CF-CM02-01 lands, the spec-listed semantic for $translate is
-    single-coding (per TS-02 TERMINOLOGIST QA-029 / CS-03 SKEPTIC QA-049
-    distinction). The single-pair helper would be used; the FIRST
-    coding with both system+code would be picked. The probe asserts
-    CURRENT behavior (400) and documents the future-shape transition.
+    Updated from prior 400-expecting shape when CF-CM02-01 was deferred.
+    Carry-forward-as-probe pattern (CS-03 TERMINOLOGIST methodology) —
+    methodology fired loudly on the CM-01 EXPLORER fix as designed.
     """
     r = fhir_client.post(
         "/fhir/ConceptMap/$translate",
@@ -675,13 +679,18 @@ def test_e52_translate_post_codeable_concept_multi_coding_silently_dropped(fhir_
             ],
         },
     )
-    # CF-CM02-01 current behavior: 400 (codeableConcept silently dropped).
-    assert r.status_code == 400, (
-        f"POST $translate with codeableConcept multi-coding — current "
-        f"behavior is 400 (CF-CM02-01 deferred). Got {r.status_code}: {r.text}. "
-        f"When CF-CM02-01 lands, update this probe to assert 200 + Parameters "
-        f"+ single-coding semantic (first coding with system+code wins)."
+    # CF-CM02-01 RESOLVED: codeableConcept extractor now wired.
+    # The single-pair helper picks the FIRST coding with both fields.
+    # 99999999-Z is a valid-shape coding (both system+code present); picked first.
+    # The translate succeeds (result=true or false depending on whether the
+    # code maps; either way the response is 200 Parameters).
+    assert r.status_code == 200, (
+        f"POST $translate with codeableConcept multi-coding — CF-CM02-01 "
+        f"RESOLVED requires 200 (codeableConcept now honored via "
+        f"_extract_codeable_concept_from_parameters). Got {r.status_code}: {r.text}"
     )
+    body = r.json()
+    assert body.get("resourceType") == "Parameters"
 
 
 # ===========================================================================

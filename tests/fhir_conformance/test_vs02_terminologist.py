@@ -498,17 +498,15 @@ class TestLens2TruncationHonesty:
     def test_t25_get_filter_truncation_toocostly_gap_cf_skeptic_vs02_03(
         self, fhir_client
     ):
-        """CF-SKEPTIC-VS02-03 (MEDIUM, DEFERRED): GET filter path missing
-        valueset-toocostly on truncation.
+        """CF-SKEPTIC-VS02-03 closed by VS-02 SKEPTIC resweep QA-001 fix:
+        GET filter path now emits valueset-toocostly on truncation.
 
         Spec: https://hl7.org/fhir/R4/extension-valueset-toocostly.html
-        Per GLOBAL_RULES "Silent Fallbacks": silent-truncation-without-signal
-        is a clinical-safety anti-pattern. The GET filter path calls
-        build_valueset_expand without extensions= when search_names truncates.
-
-        Carry-forward-as-probe pattern (CS-03 TERMINOLOGIST methodology).
-        When the fix lands (pass extensions= on the filter path), this probe
-        MUST be tightened to assert the extension IS present.
+        The QA-001 fix uses the ``+1 probe`` pattern (search_names(limit=
+        count+1)) to detect truncation and emits the valueset-toocostly
+        extension as the clinical-safety signal. This probe was tightened
+        from the carry-forward-as-probe pattern (skip-on-fix) to a
+        positive assertion that the extension IS present.
         """
         # filter "diabetes" matches at least 2 codes (DM + T2DM in SNOMED +
         # ICD-10-CM); count=1 truncates.
@@ -518,24 +516,22 @@ class TestLens2TruncationHonesty:
         assert status == 200, resp
         contains = resp.get("expansion", {}).get("contains", [])
         assert len(contains) == 1, contains
-        # CF-SKEPTIC-VS02-03: toocostly is NOT emitted today on the filter path
-        # When the fix lands, flip this assertion to `assert _has_toocostly(resp)`.
-        # Today the probe PINS the deferred behavior (gap documented).
-        if not _has_toocostly(resp):
-            pytest.skip(
-                "CF-SKEPTIC-VS02-03 (MEDIUM, DEFERRED): GET filter path does "
-                "NOT emit valueset-toocostly on truncation. Pin documented; "
-                "when the fix lands this skip branch will not fire and the "
-                "probe MUST be tightened."
-            )
+        # CF-SKEPTIC-VS02-03 closed: toocostly MUST be emitted on the GET
+        # filter path when truncation fires.
+        assert _has_toocostly(resp), (
+            f"GET filter path missing toocostly on truncation — "
+            f"CF-SKEPTIC-VS02-03 should be closed by QA-001 fix. Got: {resp}"
+        )
 
     def test_t26_post_filter_truncation_toocostly_gap_mirror_cf(
         self, fhir_client
     ):
-        """CF-SKEPTIC-VS02-03 mirror: POST filter path ALSO missing toocostly.
+        """CF-SKEPTIC-VS02-03 closed by VS-02 SKEPTIC resweep QA-001 fix:
+        POST filter path also emits valueset-toocostly on truncation.
 
-        The filter path's gap applies to BOTH GET and POST because both call
-        _do_expand filter mode → build_valueset_expand without extensions=.
+        The filter path's fix applies to BOTH GET and POST because both
+        call ``_do_expand`` filter mode → ``build_valueset_expand`` with
+        the new ``total=`` and ``extensions=`` keyword args.
         """
         body = {
             "resourceType": "Parameters",
@@ -548,13 +544,11 @@ class TestLens2TruncationHonesty:
         assert status == 200, resp
         contains = resp.get("expansion", {}).get("contains", [])
         assert len(contains) == 1, contains
-        # Same gap as CF-SKEPTIC-VS02-03 — pin current behavior.
-        if not _has_toocostly(resp):
-            pytest.skip(
-                "CF-SKEPTIC-VS02-03 mirror on POST filter path: same gap "
-                "documented. When GET path fix lands, POST path MUST also be "
-                "fixed (parity contract)."
-            )
+        # CF-SKEPTIC-VS02-03 closed on POST path too.
+        assert _has_toocostly(resp), (
+            f"POST filter path missing toocostly on truncation — "
+            f"CF-SKEPTIC-VS02-03 should be closed on POST too. Got: {resp}"
+        )
 
     def test_t27_toocostly_get_post_parity_on_intensional(self, fhir_client):
         """Spec: GET ↔ POST toocostly parity.

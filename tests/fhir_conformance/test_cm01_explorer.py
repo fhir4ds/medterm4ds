@@ -175,13 +175,17 @@ def test_e12_translate_post_coding_body_content_type(fhir_client):
     encoding. Per FHIR R4
     (https://hl7.org/fhir/R4/conceptmap-operation-translate.html) the
     In Parameters include ``coding`` (0..1 Coding) and ``code`` (0..1
-    code) as alternatives to system+code. The handler currently
-    accepts system+code via ``_parse_parameters`` (scalar-only), so
-    coding is silently dropped — same shape as the TS-02 HISTORIAN
-    QA-022 pattern on CodeSystem/$lookup. The probe documents the
-    CURRENT behavior: POST with coding-only body returns 400 (missing
-    system+code) with conformant Content-Type. When the helper-wiring
-    lands, tighten this probe to assert 200 + Parameters.
+    code) as alternatives to system+code.
+
+    CF-CM02-01 LANDED via CM-01 EXPLORER QA-001 (resweep) — the
+    ``_extract_named_coding_from_parameters`` helper is now wired into
+    ``_extract_translate_params`` (mirrors ``_extract_lookup_params``).
+    The handler now honors the coding alternative encoding; the response
+    is 200 + Parameters + conformant Content-Type.
+
+    Updated from prior 400-expecting shape when CF-CM02-01 was deferred.
+    Carry-forward-as-probe pattern (CS-03 TERMINOLOGIST methodology) —
+    methodology fired loudly on the CM-01 EXPLORER fix as designed.
     """
     r = fhir_client.post(
         "/fhir/ConceptMap/$translate",
@@ -198,22 +202,19 @@ def test_e12_translate_post_coding_body_content_type(fhir_client):
             ],
         },
     )
-    # Current behavior: 400 (coding silently dropped; missing system+code).
-    # When _extract_coding_from_parameters is wired into translate_post,
-    # tighten to 200 + Parameters.
-    assert r.status_code == 400, (
-        f"POST $translate with coding-only body — current behavior is 400 "
-        f"(coding silently dropped per TS-02 HISTORIAN QA-022 pattern). "
-        f"Got {r.status_code}: {r.text}"
+    # CF-CM02-01 RESOLVED: helper is wired; coding body produces 200.
+    assert r.status_code == 200, (
+        f"POST $translate with coding-only body — CF-CM02-01 RESOLVED "
+        f"requires 200 (coding now honored). Got {r.status_code}: {r.text}"
     )
     assert r.headers["content-type"].startswith("application/fhir+json"), (
-        f"Content-Type drift on error path: {r.headers['content-type']!r}; "
+        f"Content-Type drift: {r.headers['content-type']!r}; "
         f"expected application/fhir+json."
     )
     body = r.json()
-    assert body.get("resourceType") == "OperationOutcome", (
-        f"resourceType drift on error path: {body.get('resourceType')!r}; "
-        f"expected OperationOutcome."
+    assert body.get("resourceType") == "Parameters", (
+        f"resourceType drift: {body.get('resourceType')!r}; "
+        f"expected Parameters."
     )
 
 

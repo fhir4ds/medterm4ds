@@ -734,6 +734,18 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
         header (it exists for clients that cannot set headers, e.g. some XSLT
         pipelines). The values ``xml``, ``text/xml``, ``application/xml``, and
         ``application/fhir+xml`` SHALL be interpreted to mean XML.
+
+        Per §3.1.0.1.9, "Servers SHALL support server-driven content
+        negotiation as described in section 12 of the HTTP specification."
+        RFC 7231 §5.3.1 defines the q-value weight: a real number in [0, 1],
+        default 1. The higher-q MIME type wins. A q of 0 means "not acceptable"
+        (RFC 7231 §5.3.1).
+
+        Found by EXPLORER iteration TS-01 (QA-001): the prior impl used
+        substring matching (``"application/fhir+xml" in accept``) which
+        ignored q-value precedence, silently overriding the client's
+        explicit preference (e.g. ``Accept: application/fhir+xml;q=0.1,
+        application/fhir+json;q=0.9`` returned XML instead of JSON).
         """
         # _format takes precedence over Accept per §3.1.0.1.11.
         fmt = request.query_params.get("_format", "").lower().strip()
@@ -743,10 +755,60 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
             return False
         # _format absent or unrecognized → fall through to Accept header.
         accept = request.headers.get("accept", "").lower()
-        # Honor explicit fhir+xml / fhir+json. Fall back to */* → JSON.
-        if "application/fhir+xml" in accept or accept.endswith("/xml"):
-            return True
-        return False
+        if not accept:
+            return False  # No Accept header → JSON default per §3.1.0.1.11.
+
+        # Parse the Accept header into [(media_type, q_value)] per
+        # RFC 7231 §5.3.1. Each entry is "<media>;q=<float>;...". The q
+        # parameter is the weight; other parameters (charset, etc.) are
+        # ignored for format negotiation.
+        xml_q = 0.0
+        json_q = 0.0
+        for raw_entry in accept.split(","):
+            entry = raw_entry.strip().lower()
+            if not entry:
+                continue
+            parts = [p.strip() for p in entry.split(";")]
+            media = parts[0]
+            q = 1.0  # default per RFC 7231 §5.3.1
+            for p in parts[1:]:
+                if p.startswith("q="):
+                    try:
+                        q = float(p[2:])
+                    except ValueError:
+                        # Malformed q-value (e.g. "q=abc") — RFC 7231 is
+                        # silent; treat as default q=1.0 (lenient parse).
+                        q = 1.0
+            # q=0 means "not acceptable" — skip this entry.
+            if q <= 0:
+                continue
+            # Categorize the media type. Per FHIR R4 §3.1.0.1.9 the valid
+            # XML MIME types are application/fhir+xml, application/xml,
+            # text/xml; the valid JSON MIME types are application/fhir+json,
+            # application/json, text/json. */* is the wildcard.
+            if media == "*/*":
+                # Wildcard = "any format acceptable" — JSON is the server's
+                # default, so a wildcard contributes to JSON's weight.
+                if q > json_q:
+                    json_q = q
+            elif media in (
+                "application/fhir+xml", "application/xml", "text/xml"
+            ) or media.endswith("+xml") or media.endswith("/xml"):
+                if q > xml_q:
+                    xml_q = q
+            elif media in (
+                "application/fhir+json", "application/json", "text/json"
+            ) or media.endswith("+json") or media.endswith("/json"):
+                if q > json_q:
+                    json_q = q
+            # Unrecognized media types (e.g. application/fhir+turtle) are
+            # silently skipped — the spec doesn't define how to weight them
+            # against XML/JSON for format negotiation. Returning 406 is
+            # technically more correct but out of scope for this fix.
+        # Return XML only if XML is strictly preferred (higher q) over JSON.
+        # Ties (including both=0 when no recognized media was listed) go to
+        # JSON (the server's default).
+        return xml_q > json_q
 
     def _fhir_response(
         request: Request, payload: dict[str, Any], *, status: int = 200
@@ -1030,8 +1092,16 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
                     400,
                     f"POST entry requires a 'resource' (Parameters body).",
                 )
-        elif method in ("PUT", "PATCH"):
+        elif method in ("PUT", "PATCH", "DELETE"):
             # medterm4ds is read-only; write methods not supported.
+            # DELETE is a documented write operation per FHIR R4 §3.1.0.7
+            # (https://hl7.org/fhir/R4/http.html#3.1.0.7): "If the server
+            # refuses to delete resources of that type as a blanket policy,
+            # then it should return the 405 Method not allowed status code."
+            # Found by TS-04 SKEPTIC resweep QA-001 — prior code lumped
+            # DELETE into the generic "Unsupported method" else-branch
+            # returning 400; the spec-mandated status for write-method
+            # refusal on a read-only server is 405.
             return _batch_error_entry(
                 405,
                 f"Method {method} not supported on a read-only terminology server.",
@@ -1348,7 +1418,19 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
         params: dict[str, str],
         body_resource: dict[str, Any] | None,
     ) -> tuple[str | None, str | None, str | None]:
-        """Extract (system, code, targetsystem) for $translate."""
+        """Extract (system, code, targetsystem) for $translate.
+
+        Per FHIR R4 $translate In Parameters: "One (and only one) of the in
+        parameters (code, coding, codeableConcept) must be provided, to
+        identify the code that is to be translated." The scalar-only
+        ``_parse_parameters`` drops ``valueCoding`` and ``valueCodeableConcept``
+        silently (TS-02 HISTORIAN QA-022 pattern class). Consult the
+        ``coding`` and ``codeableConcept`` extractors when scalar system/code
+        are absent — same shape as ``_extract_lookup_params`` (line 1432) and
+        ``_extract_validate_params``. Found by CM-01 EXPLORER (QA-001 — 7th
+        instance of cross-handler-helper-wiring inconsistency, count=6
+        PROMOTED).
+        """
         if method == "GET":
             return (
                 params.get("system"), params.get("code"),
@@ -1357,7 +1439,20 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
         if body_resource is None:
             return None, None, None
         p = _parse_parameters(body_resource)
-        return p.get("system"), p.get("code"), p.get("targetsystem")
+        system = p.get("system")
+        code = p.get("code")
+        targetsystem = p.get("targetsystem")
+        if not system or not code:
+            coding_pair = _extract_named_coding_from_parameters(body_resource, "coding")
+            if coding_pair is not None:
+                system, code = coding_pair
+            else:
+                # codeableConcept: pick the first coding with both fields
+                # (spec allows server choice for multiple codings).
+                codeable_pair = _extract_codeable_concept_from_parameters(body_resource)
+                if codeable_pair is not None:
+                    system, code = codeable_pair
+        return system, code, targetsystem
 
     def _extract_lookup_params(
         method: str,
@@ -1463,8 +1558,14 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
     @app.get("/fhir/CodeSystem/$lookup")
     async def lookup_get(
         request: Request,
-        system: str = Query(..., description="FHIR system URI"),
-        code: str = Query(..., description="The code to look up"),
+        # min_length=1: per FHIR R4 $lookup spec prose, "a client SHALL
+        # provide both a system and a code" — an empty string is NOT
+        # "providing" a value. FastAPI's Query(..., required) treats empty
+        # string as present; without min_length=1 the handler proceeds to
+        # look up code '' and returns a 200 + not-found OperationOutcome
+        # (silent-wrong-answer). Found by SKEPTIC iteration TS-02 (QA-001).
+        system: str = Query(..., min_length=1, description="FHIR system URI"),
+        code: str = Query(..., min_length=1, description="The code to look up"),
         version: str | None = Query(None, description="Code system version (passed through)"),
     ):
         payload = await _run_db(
@@ -1635,8 +1736,14 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
     @app.get("/fhir/CodeSystem/$validate-code")
     async def validate_get(
         request: Request,
-        system: str = Query(...),
-        code: str = Query(...),
+        # min_length=1: per FHIR R4 $validate-code prose, "a client SHALL
+        # provide one (and only one) of (code+system, coding, codeableConcept)"
+        # — an empty string is NOT providing a value. Without min_length=1
+        # the handler returns 200 + result=false + message "Code  is not
+        # valid" (silent-wrong-answer). Found by SKEPTIC iteration TS-02
+        # (QA-002).
+        system: str = Query(..., min_length=1),
+        code: str = Query(..., min_length=1),
         version: str | None = Query(None, description="Code system version (passed through)"),
         display: str | None = Query(
             None,
@@ -2003,8 +2110,21 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
     @app.get("/fhir/ConceptMap/$translate")
     async def translate_get(
         request: Request,
-        system: str = Query(..., description="Source system URI"),
-        code: str = Query(..., description="Source code"),
+        # min_length=1: per FHIR R4 $translate prose, system+code are the
+        # primary input (alternatives: coding, codeableConcept). An empty
+        # string is NOT providing a value. Same silent-wrong-answer shape
+        # as TS-02 SKEPTIC QA-001/QA-002/QA-003 — applied here defensively
+        # for sibling-handler parity even though no probe currently
+        # exercises the case (the empty-string walk-through to
+        # _do_translate would return 200 + result=false).
+        system: str = Query(..., min_length=1, description="Source system URI"),
+        # QC finding 2026-08-10: FHIR R4 OperationDefinition names this
+        # parameter "sourceCode". Accept BOTH "code" (simplified shorthand)
+        # and "sourceCode" (spec name) so EHRs following the R4 spec don't
+        # get a 422 on GET. POST Parameters body already handles sourceCode
+        # via _extract_translate_params.
+        code: str | None = Query(None, min_length=1, description="Source code (shorthand)"),
+        sourceCode: str | None = Query(None, min_length=1, description="Source code (R4 spec name)"),
         targetsystem: str | None = Query(None, description="Target system URI"),
         source: str | None = Query(
             None,
@@ -2015,15 +2135,26 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
             description="Target code — used with reverse=true to find source codes mapping to this target.",
         ),
     ):
-        payload = await _run_db(_executor(request), _do_translate, _engine(request), system, code, targetsystem)
+        actual_code = code or sourceCode
+        if not actual_code:
+            return _fhir_error_response(request, 422, "Either 'code' or 'sourceCode' parameter is required.")
+        payload = await _run_db(_executor(request), _do_translate, _engine(request), system, actual_code, targetsystem)
         return payload if isinstance(payload, Response) else _fhir_response(request, payload)
 
     @app.post("/fhir/ConceptMap/$translate")
     async def translate_post(request: Request, body: dict[str, Any]):
-        params = _parse_parameters(body)
-        system = params.get("system")
-        code = params.get("code")
-        targetsystem = params.get("targetsystem")
+        # Per FHIR R4 $translate In Parameters: "One (and only one) of the in
+        # parameters (code, coding, codeableConcept) must be provided, to
+        # identify the code that is to be translated." The scalar-only
+        # ``_parse_parameters`` drops ``valueCoding`` and
+        # ``valueCodeableConcept`` silently — consult the coding and
+        # codeableConcept extractors via ``_extract_translate_params`` when
+        # scalar system/code are absent. Same shape as ``lookup_post``,
+        # ``validate_post``, ``subsumes_post``. Found by CM-01 EXPLORER
+        # (QA-001).
+        system, code, targetsystem = _extract_translate_params(
+            "POST", {}, body,
+        )
         if not system or not code:
             return _fhir_error_response(request, 400, "system and code are required.")
         payload = await _run_db(_executor(request), _do_translate, _engine(request), system, code, targetsystem)
@@ -2068,9 +2199,14 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
     @app.get("/fhir/CodeSystem/$subsumes")
     async def subsumes_get(
         request: Request,
-        system: str = Query(...),
-        codeA: str = Query(...),
-        codeB: str = Query(...),
+        # min_length=1: per FHIR R4 $subsumes prose, "a client SHALL provide
+        # both a and b codes" — an empty string is NOT providing a value.
+        # Without min_length=1 the handler returns 200 + outcome=not-
+        # subsumed (silent-wrong-answer). Found by SKEPTIC iteration TS-02
+        # (QA-003).
+        system: str = Query(..., min_length=1),
+        codeA: str = Query(..., min_length=1),
+        codeB: str = Query(..., min_length=1),
         version: str | None = Query(None, description="Code system version (passed through)"),
     ):
         payload = await _run_db(_executor(request), _do_subsumes, _engine(request), system, codeA, codeB)
@@ -2180,6 +2316,9 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
         # access boundary is the conformant fix.
         concepts: list[tuple[str, str, str]] = []  # (code, system, display)
         for param in body.get("parameter", []):
+            # isinstance guard: see _parse_parameters (CS-04 SKEPTIC QA-001).
+            if not isinstance(param, dict):
+                continue
             if param.get("name") != "concept":
                 continue
             coding = param.get("valueCoding")
@@ -2336,10 +2475,36 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
             # non-empty query — both raise ValueError. Without this catch the
             # ValueError propagates as an uncaught 500 with a non-FHIR body
             # (CPU-waste / DoS surface). Found by TS-02 EXPLORER QA-027.
+            #
+            # VS-02 SKEPTIC resweep QA-001: use the "+1 probe" pattern
+            # (mirror of the implicit-value-set path's ``LIMIT count + 1``
+            # trick at apps/fhir_api.py:2800-2853). Call search_names with
+            # limit=count+1 so we can detect truncation: when
+            # len(results) > count, the natural match count is at least
+            # count+1 (lower bound; exact count requires unbounded search
+            # per CF-HISTORIAN-VS02-01 for the BFS-capped intensional path).
+            # This lets us:
+            #   (a) pass the un-truncated lower-bound ``total`` to
+            #       build_valueset_expand per FHIR R4 §4.9.2 "The total
+            #       number of concepts in the expansion";
+            #   (b) emit the valueset-toocostly extension as the
+            #       clinical-safety signal that the expansion was truncated
+            #       (closes CF-SKEPTIC-VS02-03 in the same fix — both gaps
+            #       share the same root cause: the prior call site at line
+            #       2448 omitted ``total=`` AND ``extensions=``).
+            # The "+1 probe" is also the structural pattern used by
+            # expand_url_pattern at apps/fhir_api.py:266 (``limit =
+            # descendant_budget + 1``) per VS-04 TERMINOLOGIST QA-068.
             try:
-                results = search_names(filter_text, engine=engine, sources=sources, limit=count)
+                results = search_names(
+                    filter_text, engine=engine, sources=sources, limit=count + 1
+                )
             except ValueError as exc:
                 return _fhir_error(400, f"Invalid filter: {exc}")
+            count_limited = len(results) > count
+            # Truncate to the requested count (the +1 probe result, if
+            # any, is dropped — it served only as a truncation signal).
+            results = results[:count]
             contains = [
                 {
                     "system": system_to_fhir_uri(r.code.source) or r.code.source,
@@ -2348,7 +2513,28 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
                 }
                 for r in results
             ]
-            return build_valueset_expand(contains, url=url, filter_text=filter_text)
+            # Build the toocostly extension when truncation fired.
+            max_depth = _resolve_max_depth()
+            extensions = _truncation_extensions(
+                count_limited=count_limited,
+                depth_cap_hit=False,
+                count=count,
+                max_depth=max_depth,
+            )
+            # Per FHIR R4 §4.9.2 + VS-02 SKEPTIC QA-057 (count=3 PROMOTED
+            # at GLOBAL_RULES.md line 136): pass the UN-truncated size as
+            # ``total``. When count_limited, we know the natural match
+            # count is at least count+1; we surface that lower bound so
+            # clients paging via ``total`` know to request additional
+            # pages. When not count_limited, total == len(contains).
+            untruncated_total = len(results) + 1 if count_limited else len(results)
+            return build_valueset_expand(
+                contains,
+                url=url,
+                filter_text=filter_text,
+                extensions=extensions,
+                total=untruncated_total,
+            )
 
         return _fhir_error(
             400,
@@ -2368,11 +2554,46 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
         extension (see _truncation_extensions).
         """
         compose = value_set.get("compose", {})
+        # Per FHIR R4 §3.1.0.1.5 + §3.1.0.1.9: a malformed ValueSet body
+        # MUST produce a FHIR OperationOutcome (not a 500 + traceback). The
+        # ``isinstance(compose, dict)`` guard is load-bearing — without it,
+        # a client supplying ``compose`` as a non-dict (string, int, null,
+        # list) triggers AttributeError on the next line's
+        # ``compose.get("include", [])`` that propagates as 500 + text/plain
+        # (information-disclosure surface). Pattern-match to the 10th
+        # PROMOTED pattern "isinstance guard at untrusted-data list-iterator
+        # boundary" (count=4 PROMOTED): 5th sibling covering the PARENT
+        # data-access boundary (compose element itself), distinct from the
+        # 4 prior siblings covering the include/concept/filter/exclude
+        # iterators WITHIN the compose dict. Found by SKEPTIC iteration
+        # VS-01 resweep (QA-001) via hostile-body probe on test_s77.
+        if not isinstance(compose, dict):
+            compose = {}
         max_depth = _resolve_max_depth()
         contains: list[dict[str, Any]] = []
         depth_cap_hit = False
 
         for include in compose.get("include", []):
+            # Per FHIR R4 §3.1.0.1.5 + §3.1.0.1.9: a malformed ValueSet
+            # compose body MUST produce a FHIR OperationOutcome (not a
+            # 500 + traceback). The ``isinstance(include, dict)`` guard
+            # is load-bearing — without it, a client supplying
+            # ``compose.include[]`` entries as non-dict (string, int,
+            # null, list) triggers AttributeError that propagates as 500
+            # + text/plain (information-disclosure surface). Pattern-
+            # match to CS-04 SKEPTIC QA-001 + CF-HISTORIAN-CM03-01 +
+            # _extract_named_coding_from_parameters — 4th sibling of the
+            # isinstance-guard-at-data-access-boundary pattern (found by
+            # CS-04 HISTORIAN resweep QA-001; PROMOTED to GLOBAL_RULES.md
+            # as 10th PROMOTED pattern). The systemic duckdb.Error
+            # handler does NOT catch AttributeError (per GLOBAL_RULES.md
+            # "Silent Fallbacks" — programming bugs MUST propagate); the
+            # guard at the data-access boundary is the conformant fix.
+            # Sibling guards on filter[] and exclude[] loops below apply
+            # the same shape (per HISTORIAN L2 source-read structural
+            # audit).
+            if not isinstance(include, dict):
+                continue
             inc_system = include.get("system", "")
             source = fhir_uri_to_system(inc_system) or inc_system
             # CR-013 (milestone-2 review): re-resolve the include[].system
@@ -2394,6 +2615,10 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
             # Explicit concept list
             if "concept" in include:
                 for concept in include["concept"]:
+                    # isinstance guard: see compose.include[] loop above
+                    # (CS-04 HISTORIAN QA-001 — 4th sibling of the pattern).
+                    if not isinstance(concept, dict):
+                        continue
                     code_str = str(concept.get("code", ""))
                     # Per FHIR R4 ValueSet.expansion.contains.display
                     # (https://hl7.org/fhir/R4/valueset-definitions.html#ValueSet.expansion.contains.display):
@@ -2414,6 +2639,20 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
                         )
                         if concept_infos and concept_infos[0]:
                             display = concept_infos[0].name or code_str
+                        else:
+                            # Unknown code: get_code_infos returned empty.
+                            # Fall back to the code string itself so the
+                            # contains[] entry has a non-empty "recommended
+                            # display" per FHIR R4 §4.9.1. Without this
+                            # fallback, the entry surfaces with
+                            # ``display: ''`` — silent-wrong-answer (a CDS
+                            # hook reading the expansion would see an
+                            # unknown code with no display and no error
+                            # signal). Mirrors the descendant-loop fallback
+                            # at line 2656 (``d.target_display or d.target.code``).
+                            # Found by TERMINOLOGIST iteration VS-02
+                            # (CF-TERMINOLOGIST-VS02-04 / QA-001).
+                            display = code_str
                     contains.append({
                         "system": canonical_inc,
                         "code": code_str,
@@ -2422,6 +2661,10 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
 
             # Intensional filter (is-a, descendent-of)
             for filt in include.get("filter", []):
+                # isinstance guard: see compose.include[] loop above
+                # (CS-04 HISTORIAN QA-001 — 4th sibling of the pattern).
+                if not isinstance(filt, dict):
+                    continue
                 prop = filt.get("property", "")
                 op = filt.get("op", "")
                 val = filt.get("value", "")
@@ -2452,13 +2695,18 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
 
                     # BFS-bounded descendant walk (was: recursive get_descendants
                     # with max_depth=20, which timed out for wide SNOMED roots).
-                    # Pass limit=count so BFS early-exits when the count cap is
-                    # reached, rather than walking the entire subtree.
+                    # Pass limit=count+1 (the "+1 probe" pattern) so BFS fetches
+                    # one extra descendant beyond the requested count. This lets
+                    # count_limited = len(deduped) > count correctly detect
+                    # truncation AND gives expansion.total a lower bound of
+                    # count+1 instead of just count (matching the 3 sibling call
+                    # sites: filter mode, URL pattern, implicit value set).
+                    # CF-HISTORIAN-VS02-01 RESOLVED by this harmonization.
                     descendants, layer_depth_capped = get_descendants_bfs(
                         CodeRef(source=source, code=root_code),
                         engine=engine,
                         max_depth=max_depth,
-                        limit=count,
+                        limit=count + 1,
                     )
                     if layer_depth_capped:
                         depth_cap_hit = True
@@ -2473,7 +2721,16 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
 
         # Apply excludes
         for exclude in compose.get("exclude", []):
-            exc_codes = {c.get("code") for c in exclude.get("concept", [])}
+            # isinstance guard: see compose.include[] loop above
+            # (CS-04 HISTORIAN QA-001 — 4th sibling of the pattern).
+            if not isinstance(exclude, dict):
+                continue
+            exc_concepts = exclude.get("concept", [])
+            if not isinstance(exc_concepts, list):
+                continue
+            exc_codes = {
+                c.get("code") for c in exc_concepts if isinstance(c, dict)
+            }
             contains = [c for c in contains if c["code"] not in exc_codes]
 
         # Deduplicate by (system, code)
@@ -2614,7 +2871,24 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
                     400,
                     f"Unrecognized code system URI in implicit value set URL: {url!r}",
                 )
-            system_uri = prefix
+            # CF-HISTORIAN-VS02-02 RESOLVED (TS-03 SKEPTIC resweep QA-001):
+            # re-resolve the client-supplied prefix through
+            # ``canonical_system_uri`` so ``contains[].system`` echoes the
+            # canonical FHIR R4 URI, NOT the alias / trailing-slash variant
+            # the client supplied. Without this, e.g. a request for
+            # ``urn:oid:2.16.840.1.113883.6.96/vs`` (SNOMED urn:oid alias)
+            # returned ``contains[].system = urn:oid:...`` verbatim, which
+            # strict Coding validators reject and downstream consumers can't
+            # reliably merge across responses. The 8th (now 9th per this
+            # resweep) instance of client-input-as-canonical drift per
+            # GLOBAL_RULES.md "Code Review Time" (count=8 PROMOTED).
+            # Spec: FHIR R4 §4.7.3 Value Set Validation — the implicit value
+            # set URL identifies the code system; contains[].system MUST be
+            # the canonical URI. Sibling of CS-02 HISTORIAN QA-047
+            # (`_do_lookup` Out `system`), CS-03 HISTORIAN QA-051
+            # (`_do_validate`), and CR-025 (`_do_validate` codeableConcept
+            # branch) — same root cause, same structural fix.
+            system_uri = canonical_system_uri(prefix, source=source)
         else:
             # Form (b): SNOMED ?fhir_vs (no code)
             source = "SNOMEDCT_US"
@@ -2704,7 +2978,7 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
     @app.get("/fhir/CodeSystem/$search")
     async def search_get(
         request: Request,
-        query: str = Query(..., description="Text to search for"),
+        query: str = Query(..., min_length=1, description="Text to search for"),
         system: str | None = Query(None, description="Restrict to system URI"),
         count: int = Query(20, ge=1, le=200),
         searchMode: str = Query("lexical", pattern="^(lexical|hybrid|semantic|canonical)$"),
@@ -2743,7 +3017,7 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
     @app.get("/fhir/CodeSystem/$extract")
     async def extract_get(
         request: Request,
-        text: str = Query(..., max_length=MAX_EXTRACT_TEXT_CHARS, description="Free text to extract concepts from"),
+        text: str = Query(..., min_length=1, max_length=MAX_EXTRACT_TEXT_CHARS, description="Free text to extract concepts from"),
         format: str = Query("codes", pattern="^(codes|terms|annotated)$"),
         nerLabels: str | None = Query(None, description="Comma-separated NER labels to detect (default: lab test,vital sign,panel,therapeutic agent,therapeutic class,immunization,medical intervention,disorder,symptom)"),
         resultTypes: str | None = Query(None, description="Comma-separated result types to filter (condition,medication,drug_class,lab,vital,procedure,vaccine,symptom)"),
@@ -2898,6 +3172,21 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
         """
         out: dict[str, str] = {}
         for param in body.get("parameter", []):
+            # Per FHIR R4 §3.1.0.1.5 + §3.1.0.1.9: a malformed Parameters
+            # body MUST produce a FHIR OperationOutcome (not a 500 +
+            # traceback). The ``isinstance(param, dict)`` guard is load-
+            # bearing — without it, a client supplying ``parameter[]``
+            # entries as non-dict (string, int, null, list) triggers
+            # AttributeError that propagates as 500 + text/plain
+            # (information-disclosure surface). Pattern-match to
+            # CF-HISTORIAN-CM03-01 (the same fix shape applied to
+            # ``_do_closure``'s inline concept extraction). Found by
+            # CS-04 SKEPTIC resweep (QA-001). The systemic duckdb.Error
+            # handler does NOT catch AttributeError (per GLOBAL_RULES.md
+            # "Silent Fallbacks" — programming bugs MUST propagate); the
+            # guard at the data-access boundary is the conformant fix.
+            if not isinstance(param, dict):
+                continue
             name = param.get("name", "")
             for key in ("valueString", "valueUri", "valueCode", "valueInteger", "valueBoolean"):
                 if key in param:
@@ -2935,6 +3224,9 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
         under the named parameter, else ``None``.
         """
         for param in body.get("parameter", []):
+            # isinstance guard: see _parse_parameters (CS-04 SKEPTIC QA-001).
+            if not isinstance(param, dict):
+                continue
             if param.get("name") != name:
                 continue
             coding = param.get("valueCoding")
@@ -2971,6 +3263,9 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
         a later coding is valid).
         """
         for param in body.get("parameter", []):
+            # isinstance guard: see _parse_parameters (CS-04 SKEPTIC QA-001).
+            if not isinstance(param, dict):
+                continue
             if param.get("name") != "codeableConcept":
                 continue
             cc = param.get("valueCodeableConcept")
@@ -3007,6 +3302,9 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
         codeableConcept with at least one valid coding, else ``None``.
         """
         for param in body.get("parameter", []):
+            # isinstance guard: see _parse_parameters (CS-04 SKEPTIC QA-001).
+            if not isinstance(param, dict):
+                continue
             if param.get("name") != "codeableConcept":
                 continue
             cc = param.get("valueCodeableConcept")
@@ -3051,6 +3349,9 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
         path (graceful degradation, no crash).
         """
         for param in body.get("parameter", []):
+            # isinstance guard: see _parse_parameters (CS-04 SKEPTIC QA-001).
+            if not isinstance(param, dict):
+                continue
             if param.get("name") != "valueSet":
                 continue
             resource = param.get("resource")

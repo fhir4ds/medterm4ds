@@ -1056,13 +1056,12 @@ class TestGetPostParity:
     def test_e121_count_get_vs_post_parity(self, fhir_client):
         """count=1 on GET vs POST — same truncation behavior.
 
-        NOTE: per CF-SKEPTIC-VS02-03 (GET filter mode missing toocostly
-        extension on truncation — DEFERRED), the GET filter path with
-        count=1 truncates WITHOUT emitting the valueset-toocostly extension.
-        The probe documents the current behavior: both paths truncate, but
-        neither emits toocostly on the filter mode (the gap is shared by
-        both invocation paths because they share the same ``_do_expand``
-        filter-mode code path).
+        CF-SKEPTIC-VS02-03 closed by VS-02 SKEPTIC resweep QA-001 fix:
+        the filter-mode ``_do_expand`` call to ``build_valueset_expand``
+        now uses the ``+1 probe`` pattern (search_names(limit=count+1))
+        and emits the valueset-toocostly extension when truncation fires.
+        Both GET and POST paths inherit the fix because they share the
+        same ``_do_expand`` filter-mode code path.
         """
         # GET
         status_get, body_get, _ = _get_expand(
@@ -1082,17 +1081,13 @@ class TestGetPostParity:
         # Both truncated to <= 1.
         assert len(body_get["expansion"]["contains"]) <= 1
         assert len(body_post["expansion"]["contains"]) <= 1
-        # CF-SKEPTIC-VS02-03: filter mode does NOT emit toocostly today
-        # (the gap is shared by GET and POST because they share the same
-        # _do_expand filter-mode code path).
+        # CF-SKEPTIC-VS02-03 closed: both paths MUST emit toocostly on
+        # filter-mode truncation.
         for label, body in [("GET", body_get), ("POST", body_post)]:
             exts = body["expansion"].get("extension", [])
-            # Pinning current CF-SKEPTIC-VS02-03 behavior: no toocostly on
-            # filter mode truncation. When the CF is closed, this assertion
-            # MUST be updated to assert toocostly IS present.
-            assert not any(e.get("url") == TOOCOSTLY_URL for e in exts), (
-                f"{label} unexpectedly has toocostly — CF-SKEPTIC-VS02-03 "
-                f"may be closed: update the probe to assert presence."
+            assert any(e.get("url") == TOOCOSTLY_URL for e in exts), (
+                f"{label} filter-mode missing toocostly on truncation — "
+                f"CF-SKEPTIC-VS02-03 should be closed by QA-001 fix. Got: {exts}"
             )
 
 

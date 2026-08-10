@@ -391,20 +391,21 @@ def test_h12_xml_serializer_rejects_missing_resourceType():
 # ============================================================
 
 def test_h13_accept_header_dispatch_is_deterministic(fhir_client):
-    """The dispatcher must be deterministic for Accept:
-    application/fhir+xml, application/fhir+json;q=0.9.
+    """The dispatcher must honor q-value preference per RFC 7231 §5.3.1.
 
-    Per RFC 7231 content negotiation, the client's q-values express
-    preference. A simple substring match on 'application/fhir+xml'
-    would honor XML even if JSON had higher q-value. This isn't a
-    spec violation (FHIR doesn't mandate q-value parsing) but it's
-    a determinism check.
+    FHIR R4 §3.1.0.1.9: "Servers SHALL support server-driven content
+    negotiation as described in section 12 of the HTTP specification."
+    RFC 7231 §5.3.1 defines the q-value weight — the higher-q MIME type
+    MUST win.
+
+    Originally a documentation-of-buggy-behavior probe (HISTORIAN TS-01
+    iteration 1) asserting substring matching returned XML even when
+    JSON had higher q-value. The TS-01 EXPLORER QA-001 fix landed
+    proper q-value parsing — the probe is updated to assert the new
+    spec-correct behavior (JSON wins when q=0.9 > q=0.5).
     """
     # Both XML and JSON advertised; XML first with lower q-value than JSON.
-    # The current implementation does substring matching: 'application/fhir+xml'
-    # is present → XML wins, even though JSON has higher q-value. This is
-    # NOT a spec violation (FHIR doesn't mandate q-value parsing), but it's
-    # a determinism check worth documenting.
+    # Per RFC 7231 §5.3.1, JSON (q=0.9) MUST win over XML (q=0.5).
     accept_header = "application/fhir+xml;q=0.5, application/fhir+json;q=0.9"
     r = fhir_client.get(
         "/fhir/metadata",
@@ -413,9 +414,10 @@ def test_h13_accept_header_dispatch_is_deterministic(fhir_client):
     ct = r.headers.get("content-type", "")
     body = r.text or ""
     pytest.current_report_extra = f"ct={ct!r} body[:60]={body[:60]!r}"
-    # Document current behavior: substring match means XML wins.
-    assert "xml" in ct or body.lstrip().startswith("<"), (
-        f"Accept listed fhir+xml (substring match) but got {ct!r}"
+    # Post-fix: q-value parsing means JSON wins (q=0.9 > q=0.5).
+    assert "json" in ct, (
+        f"Accept={accept_header!r} → CT={ct!r}; expected JSON "
+        f"(q=0.9 > q=0.5 per RFC 7231 §5.3.1)"
     )
 
 

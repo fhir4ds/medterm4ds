@@ -983,11 +983,15 @@ class TestLens10CarryForwardReconfirmations:
         )
 
     def test_t102_cf_skeptic_vs02_03_filter_path_toocostly_parity(self, fhir_client):
-        """CF-SKEPTIC-VS02-03 (POST mirror per VS-02 TERMINOLOGIST strategy
-        42): both GET and POST filter paths share the same code path and
-        BOTH lack toocostly on truncation today.
+        """CF-SKEPTIC-VS02-03 closed by VS-02 SKEPTIC resweep QA-001 fix:
+        both GET and POST filter paths share the same code path and BOTH
+        now emit toocostly on truncation.
 
-        When the CF is closed on EITHER path, this probe MUST be updated.
+        The QA-001 fix uses the ``+1 probe`` pattern (search_names(limit=
+        count+1)) and emits the valueset-toocostly extension when
+        truncation fires. The fix closes CF-SKEPTIC-VS02-03 in the same
+        pass because both gaps shared the same root cause (the filter-
+        mode call site omitted both ``total=`` AND ``extensions=``).
         """
         # GET filter path with count=1.
         s_get, b_get = _get_expand(fhir_client, params={
@@ -1011,17 +1015,15 @@ class TestLens10CarryForwardReconfirmations:
         post_exts = b_post.get("expansion", {}).get("extension", [])
         post_has_toocostly = any(e.get("url") == TOOCOSTLY_URL for e in post_exts)
 
-        # Parity invariant: both paths behave identically.
-        assert get_has_toocostly == post_has_toocostly, (
-            f"GET and POST filter paths diverge on toocostly: "
-            f"GET={get_has_toocostly}, POST={post_has_toocostly}. "
-            f"CF-SKEPTIC-VS02-03 parity contract broken."
+        # Both paths MUST emit toocostly on truncation (QA-001 fix closes
+        # CF-SKEPTIC-VS02-03 in the same pass).
+        assert get_has_toocostly, (
+            f"GET filter path missing toocostly on truncation — "
+            f"CF-SKEPTIC-VS02-03 should be closed. Got: {get_exts}"
         )
-        # Current behavior: BOTH paths LACK toocostly (CF-SKEPTIC-VS02-03).
-        # When the CF is closed, this assertion MUST flip to `is True`.
-        assert get_has_toocostly is False, (
-            f"CF-SKEPTIC-VS02-03 may be closed on GET path (toocostly present). "
-            f"Update probe to assert presence."
+        assert post_has_toocostly, (
+            f"POST filter path missing toocostly on truncation — "
+            f"CF-SKEPTIC-VS02-03 should be closed. Got: {post_exts}"
         )
 
     def test_t103_cf_historian_vs02_01_bfs_cap_fixture_coincidence(self, fhir_client):

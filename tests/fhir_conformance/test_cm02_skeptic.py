@@ -616,22 +616,20 @@ def test_s41_targetsystem_absent_returns_all_known_targets(fhir_client):
     )
 
 
-def test_s42_post_coding_only_body_silently_dropped_current_behavior(fhir_client):
+def test_s42_post_coding_only_body_now_honored_via_helper(fhir_client):
     """SKEPTIC (item 2 — coding alternative encoding): POST $translate
     with a ``coding`` parameter (per FHIR R4 In Parameters) instead of
-    system+code. The current implementation uses ``_parse_parameters``
-    (scalar-only), so ``coding`` is silently dropped and the request
-    falls through to the 400 path.
+    system+code. CF-CM02-01 LANDED via CM-01 EXPLORER QA-001 —
+    ``_extract_named_coding_from_parameters`` is now wired into
+    ``_extract_translate_params`` AND ``translate_post``.
 
-    This is the SAME pattern as TS-02 HISTORIAN QA-022 on CodeSystem/$lookup.
-    CM-01 EXPLORER test_e12 already documents this. The CM-02 SKEPTIC
-    iteration re-pins the same shape and files it as DEFERRED — wiring
-    the ``_extract_coding_from_parameters`` helper into ``translate_post``
-    is a feature enhancement (parallel to the same fix on the sibling
-    $lookup / $validate-code handlers).
+    The 7th instance of cross-handler-helper-wiring inconsistency
+    (count=6 PROMOTED as of CS-04 HISTORIAN QA-052). Same pattern as
+    TS-02 HISTORIAN QA-022 on CodeSystem/$lookup.
 
-    When the fix lands, this probe MUST be tightened to assert 200 +
-    Parameters + at least one match.
+    Updated from prior 400-expecting shape when CF-CM02-01 was deferred.
+    Carry-forward-as-probe pattern (CS-03 TERMINOLOGIST methodology) —
+    methodology fired loudly on the CM-01 EXPLORER fix as designed.
     """
     r = fhir_client.post(
         "/fhir/ConceptMap/$translate",
@@ -652,32 +650,30 @@ def test_s42_post_coding_only_body_silently_dropped_current_behavior(fhir_client
             ],
         },
     )
-    # Current behavior: 400 (coding silently dropped; missing system+code).
-    # When _extract_coding_from_parameters is wired into translate_post,
-    # tighten to 200 + Parameters.
-    assert r.status_code == 400, (
-        f"POST $translate with coding-only body — current behavior is 400 "
-        f"(coding silently dropped per TS-02 HISTORIAN QA-022 pattern). "
-        f"Got {r.status_code}: {r.text}"
+    # CF-CM02-01 RESOLVED: helper is wired; coding body produces 200.
+    assert r.status_code == 200, (
+        f"POST $translate with coding-only body — CF-CM02-01 RESOLVED "
+        f"requires 200 (coding now honored). Got {r.status_code}: {r.text}"
     )
     assert r.headers["content-type"].startswith("application/fhir+json"), (
-        f"Content-Type drift on error path: {r.headers['content-type']!r}; "
+        f"Content-Type drift: {r.headers['content-type']!r}; "
         f"expected application/fhir+json."
     )
     body = r.json()
-    assert body.get("resourceType") == "OperationOutcome", (
-        f"resourceType drift on error path: {body.get('resourceType')!r}; "
-        f"expected OperationOutcome."
+    assert body.get("resourceType") == "Parameters", (
+        f"resourceType drift: {body.get('resourceType')!r}; "
+        f"expected Parameters."
     )
 
 
-def test_s43_post_codeableconcept_body_silently_dropped_current_behavior(fhir_client):
+def test_s43_post_codeableconcept_body_now_honored_via_helper(fhir_client):
     """SKEPTIC (item 2 — codeableConcept alternative encoding): POST
-    $translate with a ``codeableConcept`` parameter. Same shape as
-    test_s42 — the helper is not wired.
+    $translate with a ``codeableConcept`` parameter. CF-CM02-01 LANDED
+    via CM-01 EXPLORER QA-001 — ``_extract_codeable_concept_from_parameters``
+    is now wired into ``_extract_translate_params``.
 
     Per FHIR R4 In Parameters, ``codeableConcept`` is 0..1 CodeableConcept.
-    The current implementation does not declare it on the POST handler.
+    Updated from prior 400-expecting shape when CF-CM02-01 was deferred.
     """
     r = fhir_client.post(
         "/fhir/ConceptMap/$translate",
@@ -702,14 +698,13 @@ def test_s43_post_codeableconcept_body_silently_dropped_current_behavior(fhir_cl
             ],
         },
     )
-    # Current behavior: 400 (codeableConcept silently dropped).
-    # When _extract_codeable_concept_from_parameters is wired, tighten.
-    assert r.status_code == 400, (
-        f"POST $translate with codeableConcept body — current behavior is "
-        f"400 (codeableConcept silently dropped). Got {r.status_code}: {r.text}"
+    # CF-CM02-01 RESOLVED: codeableConcept extractor now wired.
+    assert r.status_code == 200, (
+        f"POST $translate with codeableConcept body — CF-CM02-01 RESOLVED "
+        f"requires 200 (codeableConcept now honored). Got {r.status_code}: {r.text}"
     )
     body = r.json()
-    assert body.get("resourceType") == "OperationOutcome"
+    assert body.get("resourceType") == "Parameters"
 
 
 # ===========================================================================

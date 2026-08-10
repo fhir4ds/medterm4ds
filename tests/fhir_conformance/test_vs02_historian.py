@@ -599,22 +599,32 @@ class TestLens3CanonicalSystemUriUsage:
                 f"{SNOMED_URI}, got {c['system']}"
             )
 
-    def test_h33_implicit_value_set_path_source_audit_no_canonical_helper(self):
-        """Source-reading audit: implicit VS path lacks canonical_system_uri().
+    def test_h33_implicit_value_set_path_source_audit_uses_canonical_helper(self):
+        """Source-reading audit: implicit VS path NOW calls canonical_system_uri().
 
-        Confirms CF-HISTORIAN-VS02-04: ``_expand_implicit_value_set`` does NOT
-        call ``canonical_system_uri()`` to re-resolve the client-supplied URL
-        prefix to the canonical FHIR URI. The path uses the prefix verbatim
-        for ``contains[].system``.
+        **CF-HISTORIAN-VS02-02 RESOLVED via TS-03 SKEPTIC resweep QA-001**:
+        ``_expand_implicit_value_set`` Form (a) now re-resolves the
+        client-supplied URL prefix through ``canonical_system_uri()`` so
+        ``contains[].system`` echoes the canonical FHIR URI, NOT the alias
+        / trailing-slash variant. Prior buggy behavior (documented via
+        carry-forward-as-probe pattern) asserted the ABSENCE of the helper
+        call; the TS-03 SKEPTIC resweep fix landed the helper, so this
+        probe was updated per documentation-of-buggy-behavior-as-probe
+        methodology (strategy 56, TS-01 EXPLORER resweep) to assert the
+        PRESENCE of the helper call.
+
+        Spec: FHIR R4 §4.7.3 Value Set Validation — the implicit value set
+        URL identifies the code system; ``contains[].system`` MUST be the
+        canonical FHIR R4 system URI.
         """
         source = _fhir_api_text()
         implicit_text = _function_text(source, "_expand_implicit_value_set")
         assert implicit_text, "_expand_implicit_value_set not found"
-        # The function does NOT use canonical_system_uri() — it uses the
-        # client-supplied prefix verbatim for Form (a).
-        assert "canonical_system_uri" not in implicit_text, (
-            "_expand_implicit_value_set should NOT use canonical_system_uri "
-            "(CF-HISTORIAN-VS02-04 — Form (a) prefix is used verbatim)"
+        # The function MUST now call canonical_system_uri() on Form (a).
+        assert "canonical_system_uri" in implicit_text, (
+            "_expand_implicit_value_set MUST call canonical_system_uri() "
+            "after the TS-03 SKEPTIC resweep QA-001 fix. If this assertion "
+            "fails, the fix was reverted (CF-HISTORIAN-VS02-02 regression)."
         )
 
 

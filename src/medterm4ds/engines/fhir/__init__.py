@@ -42,7 +42,36 @@ FHIR_URI_ALIASES: dict[str, str] = {
 
 
 def fhir_uri_to_system(uri: str) -> str | None:
-    """Resolve a FHIR system URI to an internal medterm4ds source name."""
+    """Resolve a FHIR system URI to an internal medterm4ds source name.
+
+    Per RFC 3986 §3.1 (referenced by FHIR R4 §3.1.0.1.9 for HTTP semantics):
+    'Although schemes are case-insensitive... An implementation should accept
+    uppercase letters as equivalent to lowercase in scheme names.' The
+    registries ``FHIR_URI_TO_SYSTEM`` and ``FHIR_URI_ALIASES`` are keyed by
+    canonical lowercase-scheme URIs; without scheme normalization, an
+    uppercase-scheme URI (e.g. ``HTTP://snomed.info/sct``) would fail the
+    exact-string lookup and be rejected. Found by EXPLORER iteration TS-03
+    (QA-001).
+
+    Note: per RFC 3986 §3.2.1 the path is case-sensitive and per §3.2.2 the
+    host is case-insensitive — but this function does NOT normalize path or
+    host case. Only the SCHEME is normalized (the narrowest fix required by
+    RFC 3986 §3.1's SHOULD). Host case-insensitivity is a separate
+    enhancement (e.g. ``HTTP://SNOMED.INFO/sct`` would still be rejected
+    because the host is uppercase).
+    """
+    from urllib.parse import urlparse
+
+    # Normalize scheme to lowercase. urlparse parses the scheme
+    # case-insensitively (``urlparse("HTTP://x").scheme == "http"``), but
+    # the ``.scheme`` attribute is already lowercased — we just need to
+    # reconstruct the URI string via ``geturl()`` so the registry lookup
+    # sees the canonical lowercase-scheme form. Reconstruct unconditionally
+    # when the URI has a scheme (cheap operation; idempotent for already-
+    # lowercase inputs).
+    parsed = urlparse(uri)
+    if parsed.scheme:
+        uri = parsed.geturl()
     if uri in FHIR_URI_TO_SYSTEM:
         return FHIR_URI_TO_SYSTEM[uri]
     if uri in FHIR_URI_ALIASES:

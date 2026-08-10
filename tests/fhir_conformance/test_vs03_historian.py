@@ -517,24 +517,31 @@ class TestCFHistorianVS02_02_SourceAudit:
       (c) The implicit path is the only one missing the helper.
     """
 
-    def test_h40_implicit_path_does_not_call_canonical_helper(self):
-        """Source-reading: ``_expand_implicit_value_set`` does NOT call
-        ``canonical_system_uri``.
+    def test_h40_implicit_path_calls_canonical_helper(self):
+        """Source-reading: ``_expand_implicit_value_set`` NOW calls
+        ``canonical_system_uri`` after the TS-03 SKEPTIC resweep fix.
+
+        **CF-HISTORIAN-VS02-02 RESOLVED via TS-03 SKEPTIC resweep QA-001**:
+        the prior buggy behavior was documented via the
+        documentation-of-buggy-behavior-as-probe pattern (strategy 56,
+        TS-01 EXPLORER resweep) — the probe asserted `system_uri = prefix`
+        was present (the client-input-echo line). The TS-03 SKEPTIC resweep
+        fix replaced `system_uri = prefix` with
+        `system_uri = canonical_system_uri(prefix, source=source)`, so this
+        probe was updated to assert the NEW spec-correct shape.
+
+        Spec: FHIR R4 §4.7.3 Value Set Validation — the implicit value set
+        URL identifies the code system; ``contains[].system`` MUST be the
+        canonical FHIR R4 system URI.
         """
         from medterm4ds.apps import fhir_api
-        # The function is nested — use inspect to grab its source.
-        # Find the function definition inside the module.
         src = inspect.getsource(fhir_api)
-        # Extract the _expand_implicit_value_set function block.
-        # The function is nested in build_app — we check the module-level
-        # source for the pattern.
-        # We assert the function exists AND contains the `system_uri = prefix`
-        # assignment (the client-input-echo line) rather than a canonical
-        # re-resolution.
+        # The function MUST exist AND contain the canonical_system_uri call.
         assert "_expand_implicit_value_set" in src
-        assert "system_uri = prefix" in src, (
-            "_expand_implicit_value_set no longer uses raw prefix — audit "
-            "whether canonical_system_uri was added"
+        assert "canonical_system_uri" in src, (
+            "_expand_implicit_value_set MUST call canonical_system_uri after "
+            "the TS-03 SKEPTIC resweep QA-001 fix. If this fails, the fix "
+            "was reverted (CF-HISTORIAN-VS02-02 regression)."
         )
 
     def test_h41_lookup_handler_uses_canonical_helper(self):

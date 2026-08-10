@@ -772,25 +772,27 @@ def test_t63_production_crosswalk_not_translated_emits_unmatched():
 # ---------------------------------------------------------------------------
 
 
-def test_t70_cf_cm02_01_coding_body_silently_dropped(fhir_client):
-    """TERMINOLOGIST Lens 7a: CF-CM02-01 carry-forward — POST
-    $translate with a coding-only body silently falls through to
-    the 400 "system and code are required" path.
+def test_t70_cf_cm02_01_coding_body_now_honored(fhir_client):
+    """TERMINOLOGIST Lens 7a: CF-CM02-01 RESOLVED via CM-01 EXPLORER
+    QA-001 — POST $translate with a coding-only body now produces
+    200 + Parameters + result=true.
 
     Per FHIR R4 $translate In Parameters
     (https://hl7.org/fhir/R4/conceptmap-operation-translate.html):
     ``coding`` is 0..1 Coding — a spec-listed alternative to
-    system+code. medterm4ds currently uses the scalar-only
-    ``_parse_parameters`` and does NOT call
-    ``_extract_coding_from_parameters`` (CF-CM02-01).
+    system+code. medterm4ds now uses ``_extract_named_coding_from_parameters``
+    in ``_extract_translate_params`` (the helper-wiring fix that closes
+    CF-CM02-01).
 
     Clinical implication: a CDS hook or EHR integration sending
-    a Coding (the richer shape) gets a silent 400 with no indication
-    the encoding was wrong. The client cannot distinguish "missing
-    parameters" from "wrong encoding" — both produce the same
-    diagnostic message.
+    a Coding (the richer shape per FHIR spec example) now succeeds
+    instead of silently failing with 400.
 
-    Pinned by SKEPTIC test_s42 + HISTORIAN test_h12/h13.
+    Updated from prior 400-expecting shape when CF-CM02-01 was deferred.
+    Carry-forward-as-probe pattern (CS-03 TERMINOLOGIST methodology) —
+    methodology fired loudly on the CM-01 EXPLORER fix as designed.
+
+    Pinned by SKEPTIC test_s42 + HISTORIAN test_h12.
     """
     body = {
         "resourceType": "Parameters",
@@ -809,27 +811,24 @@ def test_t70_cf_cm02_01_coding_body_silently_dropped(fhir_client):
         "/fhir/ConceptMap/$translate",
         json=body,
     )
-    # Current behavior: 400 (CF-CM02-01 deferred)
-    assert r.status_code == 400, (
-        f"CF-CM02-01 carry-forward: POST $translate with coding-only body "
-        f"MUST currently return 400 (silent-drop behavior pinned). "
-        f"Got {r.status_code}. When CF-CM02-01 lands, update this probe to "
-        f"assert 200 + Parameters with result=true (carry-forward-as-probe "
-        f"pattern, CS-03 TERMINOLOGIST methodology)."
+    # CF-CM02-01 RESOLVED: helper wired; coding body produces 200.
+    assert r.status_code == 200, (
+        f"CF-CM02-01 RESOLVED: POST $translate with coding-only body "
+        f"MUST return 200. Got {r.status_code}: {r.text}"
     )
-    # The error message MUST cite missing system/code (the symptom of
-    # the silent-drop), NOT mention the coding parameter
-    assert "system" in r.text.lower() and "code" in r.text.lower(), (
-        f"Error message MUST cite missing system and code. Got {r.text!r}."
-    )
+    response_body = r.json()
+    assert response_body.get("resourceType") == "Parameters"
 
 
-def test_t71_cf_cm02_01_codeable_concept_body_silently_dropped(fhir_client):
-    """TERMINOLOGIST Lens 7b: CF-CM02-01 mirror — POST $translate
-    with a codeableConcept-only body silently falls through to 400.
+def test_t71_cf_cm02_01_codeable_concept_body_now_honored(fhir_client):
+    """TERMINOLOGIST Lens 7b: CF-CM02-01 RESOLVED via CM-01 EXPLORER
+    QA-001 — POST $translate with a codeableConcept-only body now
+    produces 200 + Parameters.
 
     Per FHIR R4 $translate In Parameters: ``codeableConcept`` is 0..1
     CodeableConcept — another spec-listed alternative.
+
+    Updated from prior 400-expecting shape when CF-CM02-01 was deferred.
     """
     body = {
         "resourceType": "Parameters",
@@ -852,10 +851,12 @@ def test_t71_cf_cm02_01_codeable_concept_body_silently_dropped(fhir_client):
         "/fhir/ConceptMap/$translate",
         json=body,
     )
-    assert r.status_code == 400, (
-        f"CF-CM02-01 carry-forward: POST $translate with codeableConcept "
-        f"MUST currently return 400. Got {r.status_code}."
+    assert r.status_code == 200, (
+        f"CF-CM02-01 RESOLVED: POST $translate with codeableConcept body "
+        f"MUST return 200. Got {r.status_code}: {r.text}"
     )
+    response_body = r.json()
+    assert response_body.get("resourceType") == "Parameters"
 
 
 def test_t72_cf_cm02_01_scalar_wins_on_conflict(fhir_client):

@@ -94,28 +94,25 @@ def _find_param(body: dict[str, Any], name: str) -> dict[str, Any] | None:
 # ===========================================================================
 
 
-def test_h10_cf_cm02_01_source_audit_translate_post_does_not_call_coding_extractor():
-    """CF-CM02-01 (HISTORIAN confirmation via source-reading).
+def test_h10_cf_cm02_01_source_audit_translate_post_wired_to_coding_extractor():
+    """CF-CM02-01 RESOLVED (HISTORIAN confirmation via source-reading).
 
-    ``translate_post`` (line 1986-1995 in apps/fhir_api.py) MUST be
-    source-read to confirm it does NOT call
-    ``_extract_coding_from_parameters`` or
-    ``_extract_codeable_concept_from_parameters``. The handler uses
-    ``_parse_parameters`` (scalar-only — TS-02 HISTORIAN QA-022) and
-    silently drops the spec-listed ``coding`` and ``codeableConcept``
-    alternative encodings (per FHIR R4 $translate In Parameters:
-    https://hl7.org/fhir/R4/conceptmap-operation-translate.html).
+    ``translate_post`` (apps/fhir_api.py) MUST call
+    ``_extract_translate_params`` which in turn consults
+    ``_extract_named_coding_from_parameters(body, "coding")`` AND
+    ``_extract_codeable_concept_from_parameters(body)`` when scalar
+    system/code are absent (mirrors ``_extract_lookup_params``).
 
-    This is the 7th instance of "silent-wrong-answer on alternative
-    parameter encodings" pattern (count=6 PROMOTED in VS-05 SKEPTIC
-    QA-070 — $lookup, CodeSystem/$validate-code (coding + codeableConcept),
-    ValueSet/$validate-code (coding + codeableConcept), $subsumes (codingA
-    + codingB), $expand (valueSet)). The pattern persists despite
-    PROMOTION — every new operation accepting alternative encodings
-    inherits the drift class until a structural fix lands.
+    CF-CM02-01 LANDED via CM-01 EXPLORER QA-001 (resweep) — the helper
+    is now wired into BOTH the per-operation POST path AND the batch
+    dispatcher path (via shared ``_extract_translate_params``).
 
-    Pattern recurrence: silent-wrong-answer on alternative parameter
-    encodings count=7 (was 6 PROMOTED).
+    Carry-forward-as-probe pattern (CS-03 TERMINOLOGIST methodology) —
+    methodology fired loudly on the CM-01 EXPLORER fix as designed.
+
+    Pattern recurrence closed: silent-wrong-answer on alternative
+    parameter encodings count=7 (was 6 PROMOTED) — closed by CM-01
+    EXPLORER QA-001.
     """
     src = inspect.getsource(fhir_api.create_fhir_app)
     # Locate translate_post
@@ -124,7 +121,6 @@ def test_h10_cf_cm02_01_source_audit_translate_post_does_not_call_coding_extract
     )
     # Find the translate_post body slice
     start = src.index("async def translate_post")
-    # Find the next ``def `` at the same indentation level OR a decorator
     end_markers = ["\n    @app.post", "\n    @app.get", "\n    def _do_translate"]
     end = len(src)
     for m in end_markers:
@@ -133,43 +129,32 @@ def test_h10_cf_cm02_01_source_audit_translate_post_does_not_call_coding_extract
             end = idx
     translate_post_src = src[start:end]
 
-    # The translate_post body MUST NOT call _extract_coding_from_parameters.
-    assert "_extract_coding_from_parameters" not in translate_post_src, (
-        "translate_post calls _extract_coding_from_parameters — CF-CM02-01 "
-        "appears RESOLVED (coding alternative encoding wired in). Update "
-        "SKEPTIC test_s42 to assert the 200 path."
-    )
-    # The translate_post body MUST NOT call
-    # _extract_codeable_concept_from_parameters.
-    assert "_extract_codeable_concept_from_parameters" not in translate_post_src, (
-        "translate_post calls _extract_codeable_concept_from_parameters — "
-        "CF-CM02-01 codeableConcept branch appears RESOLVED. Update "
-        "SKEPTIC test_s43 to assert the 200 path."
-    )
-    # The translate_post body MUST NOT call the all-pairs helper either
-    # (per-op POST $translate has single-coding semantic per spec).
-    assert "_extract_all_coding_pairs_from_codeable_concept" not in translate_post_src, (
-        "translate_post calls _extract_all_coding_pairs_from_codeable_concept — "
-        "unexpected; the $translate spec implies single-coding semantic "
-        "(per TS-02 TERMINOLOGIST QA-029 / CS-03 SKEPTIC QA-049 distinction)."
+    # CF-CM02-01 RESOLVED: translate_post MUST call _extract_translate_params.
+    assert "_extract_translate_params" in translate_post_src, (
+        "translate_post does NOT call _extract_translate_params — CF-CM02-01 "
+        "REGRESSED (the shared extractor that wires both coding and "
+        "codeableConcept extractors is no longer invoked)."
     )
 
 
-def test_h11_cf_cm02_01_source_audit_batch_dispatcher_does_not_call_coding_extractor():
-    """CF-CM02-01 (HISTORIAN confirmation via batch dispatcher source-reading).
+def test_h11_cf_cm02_01_source_audit_batch_dispatcher_wired_to_coding_extractor():
+    """CF-CM02-01 RESOLVED (HISTORIAN confirmation via batch dispatcher
+    source-reading).
 
     The batch dispatcher's ``_extract_translate_params`` (lines 1328-1342)
     is the sibling extractor of ``translate_post``. Cross-handler
     helper-wiring consistency (TS-02 EXPLORER QA-028 pattern class)
-    requires the audit to extend to the batch path.
+    required the audit to extend to the batch path.
 
-    The batch dispatcher MUST be source-read to confirm it does NOT call
-    ``_extract_coding_from_parameters`` or
-    ``_extract_codeable_concept_from_parameters`` either. This is NOT a
-    divergence from the per-operation POST (both are buggy in the same
-    way — opposite of CS-03 HISTORIAN QA-052 where per-op HAD the helper
-    but batch did NOT). The structural fix candidate (when CF-CM02-01
-    lands) MUST wire the helper into BOTH paths simultaneously.
+    CF-CM02-01 LANDED via CM-01 EXPLORER QA-001 — the helper is now
+    wired into BOTH the per-operation POST path AND the batch dispatcher
+    path. The structural fix was to extend ``_extract_translate_params``
+    to consult ``_extract_named_coding_from_parameters(body, "coding")``
+    AND ``_extract_codeable_concept_from_parameters(body)`` when scalar
+    system/code are absent (mirrors ``_extract_lookup_params``).
+
+    Carry-forward-as-probe pattern (CS-03 TERMINOLOGIST methodology) —
+    methodology fired loudly on the CM-01 EXPLORER fix as designed.
     """
     src = inspect.getsource(fhir_api.create_fhir_app)
     assert "def _extract_translate_params" in src, (
@@ -182,33 +167,33 @@ def test_h11_cf_cm02_01_source_audit_batch_dispatcher_does_not_call_coding_extra
         end = len(src)
     extract_translate_src = src[start:end]
 
-    assert "_extract_coding_from_parameters" not in extract_translate_src, (
-        "_extract_translate_params calls _extract_coding_from_parameters "
-        "— batch path appears RESOLVED for coding alt-encoding."
+    # CF-CM02-01 RESOLVED: the helper MUST now call both extractors.
+    assert "_extract_named_coding_from_parameters" in extract_translate_src, (
+        "_extract_translate_params does NOT call _extract_named_coding_from_parameters "
+        "— CF-CM02-01 REGRESSED on coding alt-encoding."
     )
-    assert "_extract_codeable_concept_from_parameters" not in extract_translate_src, (
-        "_extract_translate_params calls "
-        "_extract_codeable_concept_from_parameters — batch path appears "
-        "RESOLVED for codeableConcept alt-encoding."
+    assert "_extract_codeable_concept_from_parameters" in extract_translate_src, (
+        "_extract_translate_params does NOT call "
+        "_extract_codeable_concept_from_parameters — CF-CM02-01 REGRESSED "
+        "on codeableConcept alt-encoding."
     )
 
 
-def test_h12_cf_cm02_01_behavioral_probe_coding_only_body_currently_400(fhir_client):
-    """CF-CM02-01 (behavioral confirmation — carry-forward-as-probe pattern).
+def test_h12_cf_cm02_01_behavioral_probe_coding_only_body_now_200(fhir_client):
+    """CF-CM02-01 RESOLVED (behavioral confirmation — carry-forward-as-probe pattern).
 
     POST $translate with a ``coding`` parameter (per FHIR R4 In Parameters:
     https://hl7.org/fhir/R4/conceptmap-operation-translate.html — ``coding``
-    0..1 Coding). The current implementation silently drops it and falls
-    through to the 400 path.
+    0..1 Coding). The implementation now honors the coding alternative
+    encoding via ``_extract_named_coding_from_parameters``.
 
     Per the carry-forward-as-probe pattern (CS-03 TERMINOLOGIST
-    methodology), this probe asserts the CURRENT behavior so that when
-    CF-CM02-01 lands, the probe MUST be updated to assert 200 + Parameters
-    + at least one match (positive success-shape per TS-03 HISTORIAN
-    QA-034 / VS-01 HISTORIAN test_h60 tightening methodology).
+    methodology), this probe was updated from the prior 400-expecting
+    shape when CF-CM02-01 was deferred. The methodology fired loudly on
+    the CM-01 EXPLORER QA-001 fix as designed.
 
     Distinct from SKEPTIC test_s42: HISTORIAN asserts the source-reading
-    invariant in test_h10 AND the behavioral invariant in test_h12 — the
+    invariant in test_h11 AND the behavioral invariant in test_h12 — the
     pair guards against silent drift in either direction (source fix
     without probe update, or probe update without source fix).
     """
@@ -231,24 +216,21 @@ def test_h12_cf_cm02_01_behavioral_probe_coding_only_body_currently_400(fhir_cli
             ],
         },
     )
-    # CF-CM02-01 current behavior: 400 (coding silently dropped).
-    # When the helper is wired, update this assertion to 200 + Parameters.
-    assert r.status_code == 400, (
-        f"POST $translate with coding-only body — CF-CM02-01 current "
-        f"behavior is 400 (coding silently dropped). If this assertion "
-        f"fails because the status is now 200, CF-CM02-01 has been "
-        f"RESOLVED — update SKEPTIC test_s42 + this probe to assert 200 "
-        f"+ Parameters + at least one match. Got {r.status_code}: {r.text}"
+    # CF-CM02-01 RESOLVED: helper is wired; coding body produces 200.
+    assert r.status_code == 200, (
+        f"POST $translate with coding-only body — CF-CM02-01 RESOLVED "
+        f"requires 200 (coding now honored). Got {r.status_code}: {r.text}"
     )
+    body = r.json()
+    assert body.get("resourceType") == "Parameters"
 
 
-def test_h13_cf_cm02_01_behavioral_probe_codeableconcept_body_currently_400(fhir_client):
-    """CF-CM02-01 (codeableConcept sibling — carry-forward-as-probe).
+def test_h13_cf_cm02_01_behavioral_probe_codeableconcept_body_now_200(fhir_client):
+    """CF-CM02-01 RESOLVED (codeableConcept sibling — carry-forward-as-probe).
 
     POST $translate with a ``codeableConcept`` parameter (per FHIR R4 In
-    Parameters: ``codeableConcept`` 0..1 CodeableConcept). Same silent-drop
-    shape as test_h12. Sibling probe of test_h12; both must be updated
-    together when CF-CM02-01 lands.
+    Parameters: ``codeableConcept`` 0..1 CodeableConcept). Same shape as
+    test_h12; both updated together when CF-CM02-01 landed.
     """
     r = fhir_client.post(
         "/fhir/ConceptMap/$translate",
@@ -273,13 +255,12 @@ def test_h13_cf_cm02_01_behavioral_probe_codeableconcept_body_currently_400(fhir
             ],
         },
     )
-    assert r.status_code == 400, (
-        f"POST $translate with codeableConcept body — CF-CM02-01 current "
-        f"behavior is 400 (codeableConcept silently dropped). If this "
-        f"assertion fails because the status is now 200, CF-CM02-01 has "
-        f"been RESOLVED — update SKEPTIC test_s43 + this probe to assert "
-        f"200 + Parameters. Got {r.status_code}: {r.text}"
+    assert r.status_code == 200, (
+        f"POST $translate with codeableConcept body — CF-CM02-01 RESOLVED "
+        f"requires 200 (codeableConcept now honored). Got {r.status_code}: {r.text}"
     )
+    body = r.json()
+    assert body.get("resourceType") == "Parameters"
 
 
 # ===========================================================================
@@ -697,42 +678,49 @@ def _extract_function_source(src: str, func_name: str) -> str:
     return src[start:end]
 
 
-def test_h50_skeptic_test_s42_uses_cf_carry_forward_pattern_correctly():
+def test_h50_skeptic_test_s42_updated_to_resolved_shape():
     """Test-too-lenient audit — SKEPTIC test_s42.
 
-    SKEPTIC test_s42 (POST $translate with coding-only body) asserts:
-    (1) status == 400, (2) Content-Type starts with application/fhir+json,
-    (3) body.resourceType == OperationOutcome.
+    SKEPTIC test_s42 (POST $translate with coding-only body) was updated
+    when CF-CM02-01 LANDED via CM-01 EXPLORER QA-001. The probe now
+    asserts:
+    (1) status == 200 (CF-CM02-01 RESOLVED — helper is wired),
+    (2) Content-Type starts with application/fhir+json,
+    (3) body.resourceType == Parameters.
 
-    HISTORIAN audit: this is NOT test-too-lenient because the assertion
-    IS positive (status + Content-Type + resourceType). The probe is a
-    carry-forward-as-probe (CS-03 TERMINOLOGIST methodology) — it asserts
-    CURRENT behavior with explicit transition notes ("When the fix lands,
-    this probe MUST be tightened to assert 200 + Parameters").
+    HISTORIAN audit: the probe was correctly updated from the prior
+    400-expecting shape. The new shape IS positive (status + Content-Type
+    + resourceType) and reflects the post-fix behavior. Carry-forward-as-
+    probe pattern (CS-03 TERMINOLOGIST methodology) — methodology fired
+    loudly on the CM-01 EXPLORER fix as designed.
     """
     src = _read_skeptic_probe_source()
-    s42 = _extract_function_source(src, "test_s42_post_coding_only_body_silently_dropped_current_behavior")
-    assert "== 400" in s42, (
-        "test_s42 lacks the status == 400 assertion — CF-CM02-01 probe shape drift."
+    s42 = _extract_function_source(src, "test_s42_post_coding_only_body_now_honored_via_helper")
+    assert "== 200" in s42, (
+        "test_s42 lacks the status == 200 assertion — CF-CM02-01 RESOLVED "
+        "shape drift. The probe MUST assert 200 now that the helper is wired."
     )
-    # The probe MUST reference the carry-forward pattern (when fix lands, tighten)
-    assert "tightened" in s42.lower() or "200" in s42, (
-        "test_s42 lacks the carry-forward transition note ('tighten to 200 "
-        "+ Parameters when fix lands'). The probe should be load-bearing — "
-        "when CF-CM02-01 lands, the probe MUST be updated."
+    # The probe MUST reference the CF-CM02-01 RESOLVED transition
+    assert "CF-CM02-01" in s42 and "RESOLVED" in s42, (
+        "test_s42 lacks the CF-CM02-01 RESOLVED transition note. The probe "
+        "should document that the prior 400-expecting shape was updated."
     )
 
 
-def test_h51_skeptic_test_s43_carries_matching_pattern():
+def test_h51_skeptic_test_s43_updated_to_resolved_shape():
     """Test-too-lenient audit — SKEPTIC test_s43 (codeableConcept).
 
     Same audit shape as test_h50 but on the codeableConcept sibling.
+    Updated when CF-CM02-01 LANDED via CM-01 EXPLORER QA-001.
     """
     src = _read_skeptic_probe_source()
     s43 = _extract_function_source(
-        src, "test_s43_post_codeableconcept_body_silently_dropped_current_behavior"
+        src, "test_s43_post_codeableconcept_body_now_honored_via_helper"
     )
-    assert "== 400" in s43, "test_s43 lacks the status == 400 assertion."
+    assert "== 200" in s43, (
+        "test_s43 lacks the status == 200 assertion — CF-CM02-01 RESOLVED "
+        "shape drift."
+    )
 
 
 def test_h52_skeptic_test_s50_uses_positive_success_shape_not_negative_only():

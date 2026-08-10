@@ -801,13 +801,18 @@ class TestCarryForwardPinning:
     is a load-bearing contract, not a passive note.
     """
 
-    def test_e100_cf_cm02_01_translate_lacks_coding_extractor(self, fhir_client):
-        """EXPLORER (CF-CM02-01 pin): POST $translate with a ``coding`` body
-        silently falls through to the 400 path today. When CF-CM02-01 lands,
-        this probe MUST be updated to assert 200 + match.
+    def test_e100_cf_cm02_01_translate_now_honors_coding_extractor(self, fhir_client):
+        """EXPLORER (CF-CM02-01 RESOLVED via CM-01 EXPLORER QA-001):
+        POST $translate with a ``coding`` body now produces 200 + Parameters
+        via ``_extract_named_coding_from_parameters`` wired into
+        ``_extract_translate_params``.
 
-        The 400 path IS conformant (Content-Type + OperationOutcome); the gap
-        is the missing feature, not a spec violation.
+        Updated from prior 400-expecting shape when CF-CM02-01 was deferred.
+        Carry-forward-as-probe pattern (CS-03 TERMINOLOGIST methodology) —
+        methodology fired loudly on the CM-01 EXPLORER fix as designed.
+
+        The 7th instance of cross-handler-helper-wiring inconsistency
+        (count=6 PROMOTED).
         """
         body = {
             "resourceType": "Parameters",
@@ -817,20 +822,22 @@ class TestCarryForwardPinning:
             ],
         }
         r = fhir_client.post("/fhir/ConceptMap/$translate", json=body)
-        # Current behavior: 400 + OperationOutcome (no coding extractor).
-        assert r.status_code == 400, (
-            f"CF-CM02-01 may have LANDED: POST $translate with coding body now "
-            f"returns {r.status_code} instead of 400. Update this probe to "
-            f"assert 200 + match."
+        # CF-CM02-01 RESOLVED: helper is wired; coding body produces 200.
+        assert r.status_code == 200, (
+            f"CF-CM02-01 REGRESSED: POST $translate with coding body should "
+            f"return 200 now. Got {r.status_code}: {r.text}"
         )
         assert r.headers["content-type"].startswith("application/fhir+json")
         body = r.json()
-        assert body.get("resourceType") == "OperationOutcome"
+        assert body.get("resourceType") == "Parameters"
 
-    def test_e101_cf_cm02_01_translate_lacks_codeable_concept_extractor(self, fhir_client):
-        """EXPLORER (CF-CM02-01 mirror): POST $translate with a ``codeableConcept``
-        body silently falls through to the 400 path today. When CF-CM02-01
-        lands, this probe MUST be updated.
+    def test_e101_cf_cm02_01_translate_now_honors_codeable_concept_extractor(self, fhir_client):
+        """EXPLORER (CF-CM02-01 RESOLVED mirror): POST $translate with a
+        ``codeableConcept`` body now produces 200 + Parameters via
+        ``_extract_codeable_concept_from_parameters`` wired into
+        ``_extract_translate_params``.
+
+        Updated from prior 400-expecting shape when CF-CM02-01 was deferred.
         """
         body = {
             "resourceType": "Parameters",
@@ -845,9 +852,9 @@ class TestCarryForwardPinning:
             ],
         }
         r = fhir_client.post("/fhir/ConceptMap/$translate", json=body)
-        assert r.status_code == 400, (
-            f"CF-CM02-01 may have LANDED: POST $translate with codeableConcept "
-            f"body now returns {r.status_code}. Update this probe."
+        assert r.status_code == 200, (
+            f"CF-CM02-01 REGRESSED: POST $translate with codeableConcept body "
+            f"should return 200 now. Got {r.status_code}: {r.text}"
         )
 
     def test_e102_cf_terminologist_cm01_01_subsumes_specializes_pass_through(self):
