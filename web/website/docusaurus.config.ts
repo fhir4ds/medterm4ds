@@ -13,10 +13,10 @@ const config: Config = {
     v4: true,
   },
 
-  url: 'https://medterm4ds.com',
+  url: 'https://terminology.fhir4ds.com',
   baseUrl,
 
-  organizationName: 'medterm4ds',
+  organizationName: 'fhir4ds',
   projectName: 'medterm4ds',
 
   onBrokenLinks: 'warn',
