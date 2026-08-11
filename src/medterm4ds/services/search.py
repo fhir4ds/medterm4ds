@@ -82,6 +82,7 @@ def _hf_download(allow_patterns: list[str]) -> None:
         repo_type="model",
         local_dir=str(_CACHE_DIR),
         allow_patterns=allow_patterns,
+        token=os.getenv("HF_TOKEN"),
     )
     logger.info("Download complete → %s", _CACHE_DIR)
 

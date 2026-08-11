@@ -543,6 +543,121 @@ except ImportError:
     FastAPI = None  # type: ignore[assignment,misc]
 
 
+def expand_intensional_value_set(
+    engine: Any, value_set: dict[str, Any], count: int = 1000,
+) -> list[dict[str, Any]]:
+    """Expand a ValueSet with compose.include/exclude rules.
+
+    Public entry point for intensional ValueSet expansion. Used by both
+    the FHIR HTTP handler (via the nested _expand_intensional wrapper)
+    and the Terminology.expand_intensional facade method.
+
+    Supports:
+    - Explicit concept lists (compose.include[].concept)
+    - is-a / descendent-of filters via BFS (bounded by FHIR_VS_MAX_DEPTH)
+    - compose.exclude (removes codes from the expansion)
+
+    Returns ``(deduped, depth_cap_hit)`` where *deduped* is a list of
+    ``{"system": str, "code": str, "display": str}`` dicts (deduplicated,
+    NOT truncated — callers truncate as needed). Callers needing FHIR
+    response shape should wrap with ``build_valueset_expand``.
+    """
+    compose = value_set.get("compose", {})
+    if not isinstance(compose, dict):
+        compose = {}
+    max_depth = _resolve_max_depth()
+    contains: list[dict[str, Any]] = []
+    depth_cap_hit = False
+
+    for include in compose.get("include", []):
+        if not isinstance(include, dict):
+            continue
+        inc_system = include.get("system", "")
+        source = fhir_uri_to_system(inc_system) or inc_system
+        canonical_inc = canonical_system_uri(inc_system, source=source if source else None)
+
+        # Explicit concept list
+        if "concept" in include:
+            for concept in include["concept"]:
+                if not isinstance(concept, dict):
+                    continue
+                code_str = str(concept.get("code", ""))
+                display = concept.get("display") or ""
+                if not display and code_str:
+                    concept_infos = get_code_infos(
+                        [CodeRef(source, code_str)], engine=engine,
+                    )
+                    if concept_infos and concept_infos[0]:
+                        display = concept_infos[0].name or code_str
+                    else:
+                        display = code_str
+                contains.append({
+                    "system": canonical_inc,
+                    "code": code_str,
+                    "display": display,
+                })
+
+        # Intensional filter (is-a, descendent-of)
+        for filt in include.get("filter", []):
+            if not isinstance(filt, dict):
+                continue
+            prop = filt.get("property", "")
+            op = filt.get("op", "")
+            val = filt.get("value", "")
+            if prop == "concept" and op in ("is-a", "descendent-of"):
+                root_code = str(val)
+                include_root = (op == "is-a")
+                if include_root:
+                    root_infos = get_code_infos(
+                        [CodeRef(source, root_code)], engine=engine,
+                    )
+                    if root_infos and root_infos[0]:
+                        contains.append({
+                            "system": canonical_inc,
+                            "code": root_code,
+                            "display": root_infos[0].name or root_code,
+                        })
+                descendants, layer_depth_capped = get_descendants_bfs(
+                    CodeRef(source=source, code=root_code),
+                    engine=engine,
+                    max_depth=max_depth,
+                    limit=count + 1,
+                )
+                if layer_depth_capped:
+                    depth_cap_hit = True
+                for d in descendants:
+                    contains.append({
+                        "system": canonical_inc,
+                        "code": d.target.code,
+                        "display": d.target_display or d.target.code,
+                    })
+            else:
+                logger.debug("Unsupported filter: property=%s op=%s", prop, op)
+
+    # Apply excludes
+    for exclude in compose.get("exclude", []):
+        if not isinstance(exclude, dict):
+            continue
+        exc_concepts = exclude.get("concept", [])
+        if not isinstance(exc_concepts, list):
+            continue
+        exc_codes = {
+            c.get("code") for c in exc_concepts if isinstance(c, dict)
+        }
+        contains = [c for c in contains if c["code"] not in exc_codes]
+
+    # Deduplicate by (system, code)
+    seen: set[tuple[str, str]] = set()
+    deduped: list[dict[str, Any]] = []
+    for c in contains:
+        key = (c["system"], c["code"])
+        if key not in seen:
+            seen.add(key)
+            deduped.append(c)
+
+    return deduped, depth_cap_hit
+
+
 def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
     """Create the FHIR R4 terminology FastAPI app."""
     if FastAPI is None:
@@ -2544,204 +2659,13 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
     def _expand_intensional(engine, value_set: dict[str, Any], count: int):
         """Expand a ValueSet with compose.include/exclude rules.
 
-        Supports:
-        - Explicit concept lists (compose.include[].concept)
-        - is-a / descendent-of filters (compose.include[].filter) — via BFS,
-          bounded by FHIR_VS_MAX_DEPTH (default 5)
-        - compose.exclude (removes codes from the expansion)
-
-        Truncation: when count or depth is hit, emits the HL7 toocostly
-        extension (see _truncation_extensions).
+        Thin wrapper around the module-level expand_intensional_value_set
+        that adds FHIR response wrapping (build_valueset_expand +
+        truncation extensions). All core logic lives in the module-level
+        function — this just adds the FHIR response envelope.
         """
-        compose = value_set.get("compose", {})
-        # Per FHIR R4 §3.1.0.1.5 + §3.1.0.1.9: a malformed ValueSet body
-        # MUST produce a FHIR OperationOutcome (not a 500 + traceback). The
-        # ``isinstance(compose, dict)`` guard is load-bearing — without it,
-        # a client supplying ``compose`` as a non-dict (string, int, null,
-        # list) triggers AttributeError on the next line's
-        # ``compose.get("include", [])`` that propagates as 500 + text/plain
-        # (information-disclosure surface). Pattern-match to the 10th
-        # PROMOTED pattern "isinstance guard at untrusted-data list-iterator
-        # boundary" (count=4 PROMOTED): 5th sibling covering the PARENT
-        # data-access boundary (compose element itself), distinct from the
-        # 4 prior siblings covering the include/concept/filter/exclude
-        # iterators WITHIN the compose dict. Found by SKEPTIC iteration
-        # VS-01 resweep (QA-001) via hostile-body probe on test_s77.
-        if not isinstance(compose, dict):
-            compose = {}
+        deduped, depth_cap_hit = expand_intensional_value_set(engine, value_set, count)
         max_depth = _resolve_max_depth()
-        contains: list[dict[str, Any]] = []
-        depth_cap_hit = False
-
-        for include in compose.get("include", []):
-            # Per FHIR R4 §3.1.0.1.5 + §3.1.0.1.9: a malformed ValueSet
-            # compose body MUST produce a FHIR OperationOutcome (not a
-            # 500 + traceback). The ``isinstance(include, dict)`` guard
-            # is load-bearing — without it, a client supplying
-            # ``compose.include[]`` entries as non-dict (string, int,
-            # null, list) triggers AttributeError that propagates as 500
-            # + text/plain (information-disclosure surface). Pattern-
-            # match to CS-04 SKEPTIC QA-001 + CF-HISTORIAN-CM03-01 +
-            # _extract_named_coding_from_parameters — 4th sibling of the
-            # isinstance-guard-at-data-access-boundary pattern (found by
-            # CS-04 HISTORIAN resweep QA-001; PROMOTED to GLOBAL_RULES.md
-            # as 10th PROMOTED pattern). The systemic duckdb.Error
-            # handler does NOT catch AttributeError (per GLOBAL_RULES.md
-            # "Silent Fallbacks" — programming bugs MUST propagate); the
-            # guard at the data-access boundary is the conformant fix.
-            # Sibling guards on filter[] and exclude[] loops below apply
-            # the same shape (per HISTORIAN L2 source-read structural
-            # audit).
-            if not isinstance(include, dict):
-                continue
-            inc_system = include.get("system", "")
-            source = fhir_uri_to_system(inc_system) or inc_system
-            # CR-013 (milestone-2 review): re-resolve the include[].system
-            # to its canonical FHIR URI once per include block. Without
-            # this, every ``contains[].system`` echoes the client-supplied
-            # ``inc_system`` verbatim — including aliases (urn:oid:...) and
-            # trailing-slash variants. A client parsing the response's
-            # ``contains[]`` then has a Coding whose ``system`` is the
-            # alias, not the canonical URI — fails strict validation. The
-            # same drift applies to the is-a filter path AND the
-            # descendants loop. Spec: FHIR R4 §4.7.5 Out
-            # ``contains[].system`` ("An absolute URI which is the code
-            # system URI of the code system from which the code in the
-            # expansion was defined" — implies canonical, not alias). Same
-            # client-input-as-canonical drift pattern as CR-011 / CR-012.
-            # Structural fix: shared ``canonical_system_uri``.
-            canonical_inc = canonical_system_uri(inc_system, source=source if source else None)
-
-            # Explicit concept list
-            if "concept" in include:
-                for concept in include["concept"]:
-                    # isinstance guard: see compose.include[] loop above
-                    # (CS-04 HISTORIAN QA-001 — 4th sibling of the pattern).
-                    if not isinstance(concept, dict):
-                        continue
-                    code_str = str(concept.get("code", ""))
-                    # Per FHIR R4 ValueSet.expansion.contains.display
-                    # (https://hl7.org/fhir/R4/valueset-definitions.html#ValueSet.expansion.contains.display):
-                    # "The recommended display for this item in the expansion."
-                    # When the client OMITS the display, resolve the engine's
-                    # canonical preferred term via get_code_infos (mirror the
-                    # is-a root display resolution below). Found by TERMINOLOGIST
-                    # iteration VS-01 (QA-056) — the prior implementation echoed
-                    # empty string for omitted display, producing clinically
-                    # useless expansions. NOTE: when the client SUPPLIES a
-                    # display, the implementation still echoes it verbatim —
-                    # see CF-TERMINOLOGIST-VS01-01 for the deferred canonical-
-                    # wins decision on the supplied-display case.
-                    display = concept.get("display") or ""
-                    if not display and code_str:
-                        concept_infos = get_code_infos(
-                            [CodeRef(source, code_str)], engine=engine
-                        )
-                        if concept_infos and concept_infos[0]:
-                            display = concept_infos[0].name or code_str
-                        else:
-                            # Unknown code: get_code_infos returned empty.
-                            # Fall back to the code string itself so the
-                            # contains[] entry has a non-empty "recommended
-                            # display" per FHIR R4 §4.9.1. Without this
-                            # fallback, the entry surfaces with
-                            # ``display: ''`` — silent-wrong-answer (a CDS
-                            # hook reading the expansion would see an
-                            # unknown code with no display and no error
-                            # signal). Mirrors the descendant-loop fallback
-                            # at line 2656 (``d.target_display or d.target.code``).
-                            # Found by TERMINOLOGIST iteration VS-02
-                            # (CF-TERMINOLOGIST-VS02-04 / QA-001).
-                            display = code_str
-                    contains.append({
-                        "system": canonical_inc,
-                        "code": code_str,
-                        "display": display,
-                    })
-
-            # Intensional filter (is-a, descendent-of)
-            for filt in include.get("filter", []):
-                # isinstance guard: see compose.include[] loop above
-                # (CS-04 HISTORIAN QA-001 — 4th sibling of the pattern).
-                if not isinstance(filt, dict):
-                    continue
-                prop = filt.get("property", "")
-                op = filt.get("op", "")
-                val = filt.get("value", "")
-
-                # FHIR R4 §4.9.5 / https://hl7.org/fhir/R4/valueset.html#filter:
-                # op is bound to Filter Operator (Required) — 9-value enum:
-                #   = | is-a | descendent-of | is-not-a | regex | in | not-in
-                #   | generalizes | exists
-                # NOTE: the spec spelling is "descendent-of" (Latin-derived),
-                # NOT "descendant-of" (common English). Found by SKEPTIC
-                # iteration VS-01 (QA-054) — the prior "descendant-of" form
-                # silently honored an off-spec value while the spec-correct
-                # "descendent-of" was silently dropped.
-                if prop == "concept" and op in ("is-a", "descendent-of"):
-                    root_code = str(val)
-                    include_root = (op == "is-a")
-
-                    if include_root:
-                        root_infos = get_code_infos(
-                            [CodeRef(source, root_code)], engine=engine
-                        )
-                        if root_infos and root_infos[0]:
-                            contains.append({
-                                "system": canonical_inc,
-                                "code": root_code,
-                                "display": root_infos[0].name or root_code,
-                            })
-
-                    # BFS-bounded descendant walk (was: recursive get_descendants
-                    # with max_depth=20, which timed out for wide SNOMED roots).
-                    # Pass limit=count+1 (the "+1 probe" pattern) so BFS fetches
-                    # one extra descendant beyond the requested count. This lets
-                    # count_limited = len(deduped) > count correctly detect
-                    # truncation AND gives expansion.total a lower bound of
-                    # count+1 instead of just count (matching the 3 sibling call
-                    # sites: filter mode, URL pattern, implicit value set).
-                    # CF-HISTORIAN-VS02-01 RESOLVED by this harmonization.
-                    descendants, layer_depth_capped = get_descendants_bfs(
-                        CodeRef(source=source, code=root_code),
-                        engine=engine,
-                        max_depth=max_depth,
-                        limit=count + 1,
-                    )
-                    if layer_depth_capped:
-                        depth_cap_hit = True
-                    for d in descendants:
-                        contains.append({
-                            "system": canonical_inc,
-                            "code": d.target.code,
-                            "display": d.target_display or d.target.code,
-                        })
-                else:
-                    logger.debug("Unsupported filter: property=%s op=%s", prop, op)
-
-        # Apply excludes
-        for exclude in compose.get("exclude", []):
-            # isinstance guard: see compose.include[] loop above
-            # (CS-04 HISTORIAN QA-001 — 4th sibling of the pattern).
-            if not isinstance(exclude, dict):
-                continue
-            exc_concepts = exclude.get("concept", [])
-            if not isinstance(exc_concepts, list):
-                continue
-            exc_codes = {
-                c.get("code") for c in exc_concepts if isinstance(c, dict)
-            }
-            contains = [c for c in contains if c["code"] not in exc_codes]
-
-        # Deduplicate by (system, code)
-        seen: set[tuple[str, str]] = set()
-        deduped: list[dict[str, Any]] = []
-        for c in contains:
-            key = (c["system"], c["code"])
-            if key not in seen:
-                seen.add(key)
-                deduped.append(c)
-
         count_limited = len(deduped) > count
         extensions = _truncation_extensions(
             count_limited=count_limited,
@@ -2749,11 +2673,6 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
             count=count,
             max_depth=max_depth,
         )
-        # VS-02 SKEPTIC QA-057: pass UN-truncated ``total`` so the response
-        # reflects the full expansion size per FHIR R4 §4.9.2: "The total
-        # number of concepts in the expansion." The toocostly extension
-        # carries the truncation signal; total carries the count of unique
-        # concepts that would have been returned without truncation.
         return build_valueset_expand(
             deduped[:count],
             url=value_set.get("url"),

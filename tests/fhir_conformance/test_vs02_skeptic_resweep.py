@@ -948,17 +948,19 @@ class TestCfHistorianVs02One:
         )
 
     def test_s93_intensional_call_site_passes_limit_count_source_audit(self):
-        """Source-read: ``_expand_intensional`` calls BFS with limit=count.
+        """Source-read: ``expand_intensional_value_set`` calls BFS with limit=count.
 
-        The load-bearing line for CF-HISTORIAN-VS02-01.
+        The load-bearing line for CF-HISTORIAN-VS02-01. Core logic moved
+        from the nested ``_expand_intensional`` wrapper to the module-level
+        ``expand_intensional_value_set`` (wrapper is now a thin envelope).
         """
-        src = _get_func_source(_FHIR_API_PATH, "create_fhir_app", "_expand_intensional")
+        src = _get_func_source(_FHIR_API_PATH, "expand_intensional_value_set")
         assert "get_descendants_bfs(" in src, (
-            "could not find get_descendants_bfs call in _expand_intensional"
+            "could not find get_descendants_bfs call in expand_intensional_value_set"
         )
         # The call site MUST pass limit=count (the source of the BFS cap).
         assert "limit=count" in src, (
-            "could not find 'limit=count' in _expand_intensional — has the "
+            "could not find 'limit=count' in expand_intensional_value_set — has the "
             "call site been refactored? CF-HISTORIAN-VS02-01 status may have "
             "changed; update this probe and the GLOBAL_KNOWLEDGE entry."
         )
@@ -1177,35 +1179,54 @@ class TestSourceReadStructuralContracts:
 
     def test_s113_intensional_path_uses_canonical_inc_source_audit(self):
         """Intensional path uses ``canonical_inc`` for contains[].system
-        per CR-013 (milestone-2 review)."""
-        src = _get_func_source(_FHIR_API_PATH, "create_fhir_app", "_expand_intensional")
+        per CR-013 (milestone-2 review).
+
+        Core logic moved from the nested ``_expand_intensional`` wrapper to
+        the module-level ``expand_intensional_value_set``.
+        """
+        src = _get_func_source(_FHIR_API_PATH, "expand_intensional_value_set")
         assert "canonical_inc" in src
 
     def test_s114_intensional_path_isinstance_guard_on_compose(self):
         """VS-01 SKEPTIC QA-001 fix: isinstance(compose, dict) guard at
-        parent compose data-access boundary."""
-        src = _get_func_source(_FHIR_API_PATH, "create_fhir_app", "_expand_intensional")
+        parent compose data-access boundary.
+
+        Core logic lives in module-level ``expand_intensional_value_set``.
+        """
+        src = _get_func_source(_FHIR_API_PATH, "expand_intensional_value_set")
         # The guard pattern.
         assert "isinstance(compose, dict)" in src
 
     def test_s115_intensional_path_isinstance_guard_on_include(self):
-        """CS-04 HISTORIAN QA-001 fix: isinstance(include, dict) guard."""
-        src = _get_func_source(_FHIR_API_PATH, "create_fhir_app", "_expand_intensional")
+        """CS-04 HISTORIAN QA-001 fix: isinstance(include, dict) guard.
+
+        Core logic lives in module-level ``expand_intensional_value_set``.
+        """
+        src = _get_func_source(_FHIR_API_PATH, "expand_intensional_value_set")
         assert "isinstance(include, dict)" in src
 
     def test_s116_intensional_path_isinstance_guard_on_concept(self):
-        """CS-04 HISTORIAN QA-001 fix: isinstance(concept, dict) guard."""
-        src = _get_func_source(_FHIR_API_PATH, "create_fhir_app", "_expand_intensional")
+        """CS-04 HISTORIAN QA-001 fix: isinstance(concept, dict) guard.
+
+        Core logic lives in module-level ``expand_intensional_value_set``.
+        """
+        src = _get_func_source(_FHIR_API_PATH, "expand_intensional_value_set")
         assert "isinstance(concept, dict)" in src
 
     def test_s117_intensional_path_isinstance_guard_on_filter(self):
-        """CS-04 HISTORIAN QA-001 fix: isinstance(filt, dict) guard."""
-        src = _get_func_source(_FHIR_API_PATH, "create_fhir_app", "_expand_intensional")
+        """CS-04 HISTORIAN QA-001 fix: isinstance(filt, dict) guard.
+
+        Core logic lives in module-level ``expand_intensional_value_set``.
+        """
+        src = _get_func_source(_FHIR_API_PATH, "expand_intensional_value_set")
         assert "isinstance(filt, dict)" in src
 
     def test_s118_intensional_path_isinstance_guard_on_exclude(self):
-        """CS-04 HISTORIAN QA-001 fix: isinstance(exclude, dict) guard."""
-        src = _get_func_source(_FHIR_API_PATH, "create_fhir_app", "_expand_intensional")
+        """CS-04 HISTORIAN QA-001 fix: isinstance(exclude, dict) guard.
+
+        Core logic lives in module-level ``expand_intensional_value_set``.
+        """
+        src = _get_func_source(_FHIR_API_PATH, "expand_intensional_value_set")
         assert "isinstance(exclude, dict)" in src
 
     def test_s119_filter_mode_path_uses_canonical_system_uri(self):

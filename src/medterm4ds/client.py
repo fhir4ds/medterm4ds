@@ -295,6 +295,39 @@ class Terminology:
                 result.append(CodeRef(source=source, code=str(c.get("code", ""))))
         return result
 
+    def expand_intensional(
+        self, value_set: dict, *, count: int = 1000,
+    ) -> list[CodeRef]:
+        """Expand a ValueSet with compose.include/exclude rules.
+
+        Supports explicit concept lists and ``is-a`` / ``descendent-of``
+        intensional filters (via BFS, bounded by ``FHIR_VS_MAX_DEPTH``).
+
+        Example::
+
+            terms = mt.connect()
+            codes = terms.expand_intensional({
+                "resourceType": "ValueSet",
+                "compose": {
+                    "include": [{
+                        "system": "http://snomed.info/sct",
+                        "filter": [{"property": "concept", "op": "is-a", "value": "73211009"}],
+                    }],
+                },
+            })
+        """
+        from medterm4ds.apps.fhir_api import expand_intensional_value_set
+        from medterm4ds.engines.fhir import fhir_uri_to_system
+
+        contains, _ = expand_intensional_value_set(self.engine, value_set, count)
+        contains = contains[:count]
+        result: list[CodeRef] = []
+        for c in contains:
+            source = fhir_uri_to_system(c.get("system", ""))
+            if source:
+                result.append(CodeRef(source=source, code=str(c.get("code", ""))))
+        return result
+
     def resolve_df(
         self,
         source_or_codes: str | CodeArg,
