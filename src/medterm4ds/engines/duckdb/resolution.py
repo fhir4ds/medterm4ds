@@ -476,23 +476,36 @@ def _code_replacements_ready(engine) -> bool:
 def _replacement_candidates(engine, historical: CodeInfo) -> list[_ReplacementCandidate]:
     from medterm4ds.engines.duckdb.engine import _REPLACEMENT_RELAS
     if _code_replacements_ready(engine):
+        # One candidate per distinct new_code: best_atoms carries every active
+        # atom (rank 1..N), so an unqualified join fans one replacement row out
+        # to N identical-target candidates and misclassifies single-successor
+        # codes as 'ambiguous'. Pick each target's best (lowest-rank) atom.
         rows = engine.con.execute(
             """
-            SELECT b.code, b.name, b.cui, b.aui, b.tty, b.suppress, r.rela
-            FROM mt4ds.code_replacements r
-            JOIN mt4ds.best_atoms b
-              ON b.source = r.source
-             AND b.code = r.new_code
-            WHERE r.source = ?
-              AND r.old_code = ?
-              AND b.is_active
+            SELECT code, name, cui, aui, tty, suppress, rela
+            FROM (
+                SELECT
+                    b.code, b.name, b.cui, b.aui, b.tty, b.suppress, r.rela,
+                    ROW_NUMBER() OVER (
+                        PARTITION BY r.new_code
+                        ORDER BY b.rank, b.aui
+                    ) AS atom_rank
+                FROM mt4ds.code_replacements r
+                JOIN mt4ds.best_atoms b
+                  ON b.source = r.source
+                 AND b.code = r.new_code
+                WHERE r.source = ?
+                  AND r.old_code = ?
+                  AND b.is_active
+            )
+            WHERE atom_rank = 1
             ORDER BY
-                CASE r.rela
+                CASE rela
                     WHEN 'same_as' THEN 0
                     WHEN 'replaced_by' THEN 1
                     ELSE 2
                 END,
-                b.code
+                code
             LIMIT 25
             """,
             [historical.code.source, historical.code.code],

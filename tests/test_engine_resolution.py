@@ -105,6 +105,58 @@ class TestCodeResolution:
         assert results[0].resolved.code == "NEW_CODE"
         assert results[0].resolved_display == "Replacement term"
 
+    def test_prepared_single_successor_not_ambiguous_multi_atom_target(self, tmp_path):
+        """Post-rebuild regression: when the prepared code_replacements table
+        has ONE replacement row but the target code has MULTIPLE active atoms
+        in best_atoms, the candidate join must not fan out to N identical
+        candidates (misclassifying 'replaced' as 'ambiguous'). One distinct
+        target -> one candidate, best atom by rank."""
+        db = tmp_path / "resolution_fanout.duckdb"
+        _make_resolution_db(db)
+        con = duckdb.connect(str(db))
+        try:
+            con.execute("CREATE SCHEMA mt4ds")
+            con.execute("""CREATE TABLE mt4ds.prepare_manifest (
+                key VARCHAR, value VARCHAR
+            )""")
+            con.executemany(
+                "INSERT INTO mt4ds.prepare_manifest VALUES (?, ?)",
+                [("prepared_schema_version", "0.9")],
+            )
+            con.execute("""CREATE TABLE mt4ds.code_replacements (
+                source VARCHAR, old_code VARCHAR, new_code VARCHAR, rela VARCHAR
+            )""")
+            con.execute(
+                "INSERT INTO mt4ds.code_replacements VALUES "
+                "('ICD10CM', 'OLD_CODE', 'NEW_CODE', 'same_as')"
+            )
+            con.execute("""CREATE TABLE mt4ds.best_atoms (
+                source VARCHAR, code VARCHAR, aui VARCHAR, cui VARCHAR,
+                tty VARCHAR, name VARCHAR, suppress VARCHAR,
+                is_active BOOLEAN, rank INTEGER
+            )""")
+            # Target with 4 active atoms: rank-1 PT plus FN/SY siblings.
+            con.executemany(
+                "INSERT INTO mt4ds.best_atoms VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                [
+                    ("ICD10CM", "NEW_CODE", "AUI_NEW", "C_NEW", "PT",
+                     "Replacement term", "N", True, 1),
+                    ("ICD10CM", "NEW_CODE", "AUI_NEW_FN", "C_NEW", "FN",
+                     "Replacement term (finding)", "N", True, 2),
+                    ("ICD10CM", "NEW_CODE", "AUI_NEW_SY1", "C_NEW", "SY",
+                     "Replacement synonym", "N", True, 3),
+                    ("ICD10CM", "NEW_CODE", "AUI_NEW_SY2", "C_NEW", "SY",
+                     "Replacement synonym two", "N", True, 4),
+                ],
+            )
+            engine = LocalDuckDBEngine(con)
+            results = engine.resolve_codes([CodeRef("ICD10CM", "OLD_CODE")])
+        finally:
+            con.close()
+        assert results[0].status == "replaced", results[0].status
+        assert results[0].resolved.code == "NEW_CODE"
+        assert results[0].candidates == (CodeRef("ICD10CM", "NEW_CODE"),)
+
     def test_ndc_lookup_default_mode_returns_resolved_drug_qc401(self, tmp_path):
         """QC-401 (HIGH): active_only lookup of an NDC code must return the
         resolved RXNORM drug record. The historical fallthrough previously
