@@ -220,14 +220,20 @@ class Terminology:
         # CLI/MCP/FHIR surfaces already offer. Critical for the remote engine
         # where an unbounded expansion can exceed the 50MiB response cap.
         limit: int | None = None,
+        include_retired: bool = False,
     ):
-        """Traverse parents, children, ancestors, or descendants."""
+        """Traverse parents, children, ancestors, or descendants.
+
+        ``include_retired=True`` includes retired/editorial-suppressed
+        concepts as walk targets (default active-only).
+        """
         return get_code_relations(
             _code_refs_from_args(source_or_codes, code)[0],
             engine=self.engine,
             direction=direction,
             max_depth=max_depth,
             limit=limit,
+            include_retired=include_retired,
         )
 
     def hierarchy_df(
@@ -258,13 +264,41 @@ class Terminology:
             return _empty_coderelation_frame(backend)
         return to_dataframe(records, backend=backend)
 
-    def parents(self, source_or_codes: str | CodeArg, code: CodeValueArg | None = None):
-        """Return direct parent relationships."""
-        return get_parents(_code_refs_from_args(source_or_codes, code)[0], engine=self.engine)
+    def parents(
+        self,
+        source_or_codes: str | CodeArg,
+        code: CodeValueArg | None = None,
+        *,
+        include_retired: bool = False,
+    ):
+        """Return direct parent relationships.
 
-    def children(self, source_or_codes: str | CodeArg, code: CodeValueArg | None = None):
-        """Return direct child relationships."""
-        return get_children(_code_refs_from_args(source_or_codes, code)[0], engine=self.engine)
+        ``include_retired=True`` includes retired/editorial-suppressed
+        concepts as walk targets (default active-only).
+        """
+        return get_parents(
+            _code_refs_from_args(source_or_codes, code)[0],
+            engine=self.engine,
+            include_retired=include_retired,
+        )
+
+    def children(
+        self,
+        source_or_codes: str | CodeArg,
+        code: CodeValueArg | None = None,
+        *,
+        include_retired: bool = False,
+    ):
+        """Return direct child relationships.
+
+        ``include_retired=True`` includes retired/editorial-suppressed
+        concepts as walk targets (default active-only).
+        """
+        return get_children(
+            _code_refs_from_args(source_or_codes, code)[0],
+            engine=self.engine,
+            include_retired=include_retired,
+        )
 
     def ancestors(
         self,
@@ -272,12 +306,18 @@ class Terminology:
         code: CodeValueArg | None = None,
         *,
         max_depth: int = 5,
+        include_retired: bool = False,
     ):
-        """Return ancestor relationships."""
+        """Return ancestor relationships.
+
+        ``include_retired=True`` includes retired/editorial-suppressed
+        concepts as walk targets (default active-only).
+        """
         return get_ancestors(
             _code_refs_from_args(source_or_codes, code)[0],
             engine=self.engine,
             max_depth=max_depth,
+            include_retired=include_retired,
         )
 
     def descendants(
@@ -292,13 +332,19 @@ class Terminology:
         # the remote engine's 50MiB response cap (SNOMED root depth 5 =
         # 75.4MiB).
         limit: int | None = None,
+        include_retired: bool = False,
     ):
-        """Return descendant relationships."""
+        """Return descendant relationships.
+
+        ``include_retired=True`` includes retired/editorial-suppressed
+        concepts as walk targets (default active-only).
+        """
         return get_descendants(
             _code_refs_from_args(source_or_codes, code)[0],
             engine=self.engine,
             max_depth=max_depth,
             limit=limit,
+            include_retired=include_retired,
         )
 
     def resolve(

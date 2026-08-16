@@ -283,6 +283,7 @@ class McpRuntime:
         depth: int = 1,
         include_ancestors: bool = False,
         limit: int = 20,
+        include_retired: bool = False,
     ) -> dict[str, Any]:
         return terminology_domain.discover(
             source_terminology,
@@ -291,6 +292,7 @@ class McpRuntime:
             depth=depth,
             include_ancestors=include_ancestors,
             limit=limit,
+            include_retired=include_retired,
         )
 
     def cross_reference(
@@ -428,6 +430,7 @@ class McpRuntime:
         direction: str,
         max_depth: int = 5,
         limit: int = DEFAULT_DESCENDANT_LIMIT,
+        include_retired: bool = False,
     ) -> dict[str, Any]:
         refs = build_code_refs(codes, sources)
         # QC-432 (HIGH): the descendants direction must not run the
@@ -438,13 +441,16 @@ class McpRuntime:
         # result cap. Ancestors walk upward and stay small, so only the
         # descendants direction needs the rerouting.
         if normalize_hierarchy_direction(direction) == "descendants":
-            return self._descendants_bounded(refs, max_depth=max_depth, limit=limit)
+            return self._descendants_bounded(
+                refs, max_depth=max_depth, limit=limit, include_retired=include_retired,
+            )
         relations = get_code_relations(
             refs,
             engine=self._engine(),
             direction=direction,
             max_depth=max_depth,
             limit=limit,
+            include_retired=include_retired,
         )
         return {"results": [relation.to_dict() for relation in relations]}
 
@@ -544,16 +550,24 @@ class McpRuntime:
         *,
         codes: Sequence[str],
         sources: Sequence[str],
+        include_retired: bool = False,
     ) -> dict[str, Any]:
-        return self.code_relations(codes=codes, sources=sources, direction="parents", max_depth=1)
+        return self.code_relations(
+            codes=codes, sources=sources, direction="parents", max_depth=1,
+            include_retired=include_retired,
+        )
 
     def children(
         self,
         *,
         codes: Sequence[str],
         sources: Sequence[str],
+        include_retired: bool = False,
     ) -> dict[str, Any]:
-        return self.code_relations(codes=codes, sources=sources, direction="children", max_depth=1)
+        return self.code_relations(
+            codes=codes, sources=sources, direction="children", max_depth=1,
+            include_retired=include_retired,
+        )
 
     def ancestors(
         self,
@@ -561,12 +575,14 @@ class McpRuntime:
         codes: Sequence[str],
         sources: Sequence[str],
         max_depth: int = 5,
+        include_retired: bool = False,
     ) -> dict[str, Any]:
         return self.code_relations(
             codes=codes,
             sources=sources,
             direction="ancestors",
             max_depth=max_depth,
+            include_retired=include_retired,
         )
 
     def descendants(
@@ -576,9 +592,12 @@ class McpRuntime:
         sources: Sequence[str],
         max_depth: int = 5,
         limit: int = DEFAULT_DESCENDANT_LIMIT,
+        include_retired: bool = False,
     ) -> dict[str, Any]:
         refs = build_code_refs(codes, sources)
-        return self._descendants_bounded(refs, max_depth=max_depth, limit=limit)
+        return self._descendants_bounded(
+            refs, max_depth=max_depth, limit=limit, include_retired=include_retired,
+        )
 
     def _descendants_bounded(
         self,
@@ -586,6 +605,7 @@ class McpRuntime:
         *,
         max_depth: int,
         limit: int,
+        include_retired: bool = False,
     ) -> dict[str, Any]:
         """Bounded descendant expansion (QC-432, HIGH).
 
@@ -609,6 +629,7 @@ class McpRuntime:
                 engine=self._engine(),
                 max_depth=max_depth,
                 limit=limit,
+                include_retired=include_retired,
             )
             results.extend(relation.to_dict() for relation in relations)
             if depth_cap_hit or (limit is not None and len(relations) >= limit):
@@ -920,9 +941,13 @@ def create_mcp_server(
         depth: int = 1,
         include_ancestors: bool = False,
         limit: int = 20,
+        include_retired: bool = False,
     ) -> dict[str, Any]:
-        """Browse a source or a code's local hierarchy."""
-        return await _run_db(server_runtime.discover, source_terminology=source_terminology, code=code, depth=depth, include_ancestors=include_ancestors, limit=limit)
+        """Browse a source or a code's local hierarchy.
+
+        include_retired: include retired/editorial-suppressed concepts as
+        walk targets on the code branch (default active-only)."""
+        return await _run_db(server_runtime.discover, source_terminology=source_terminology, code=code, depth=depth, include_ancestors=include_ancestors, limit=limit, include_retired=include_retired)
 
     @mcp.tool()
     async def cross_reference(
@@ -1042,14 +1067,17 @@ def create_mcp_server(
         direction: str,
         max_depth: int = 5,
         limit: int = DEFAULT_DESCENDANT_LIMIT,
+        include_retired: bool = False,
     ) -> dict[str, Any]:
         """Return parent, child, ancestor, or descendant relationships.
 
         Descendant requests are layer-bounded (BFS) with a per-code result
         cap (default 1000); the response carries "truncated": true when more
         descendants existed beyond the cap or the depth limit.
-        """
-        return await _run_db(server_runtime.code_relations, codes=codes, sources=sources, direction=direction, max_depth=max_depth, limit=limit)
+
+        include_retired: include retired/editorial-suppressed concepts as
+        walk targets (default active-only)."""
+        return await _run_db(server_runtime.code_relations, codes=codes, sources=sources, direction=direction, max_depth=max_depth, limit=limit, include_retired=include_retired)
 
     @mcp.tool()
     async def map_codes(
@@ -1087,26 +1115,38 @@ def create_mcp_server(
     async def get_parents(
         codes: list[str],
         sources: list[str],
+        include_retired: bool = False,
     ) -> dict[str, Any]:
-        """Return direct parent relationships for clinical codes."""
-        return await _run_db(server_runtime.parents, codes=codes, sources=sources)
+        """Return direct parent relationships for clinical codes.
+
+        include_retired: include retired/editorial-suppressed concepts as
+        walk targets (default active-only)."""
+        return await _run_db(server_runtime.parents, codes=codes, sources=sources, include_retired=include_retired)
 
     @mcp.tool()
     async def get_children(
         codes: list[str],
         sources: list[str],
+        include_retired: bool = False,
     ) -> dict[str, Any]:
-        """Return direct child relationships for clinical codes."""
-        return await _run_db(server_runtime.children, codes=codes, sources=sources)
+        """Return direct child relationships for clinical codes.
+
+        include_retired: include retired/editorial-suppressed concepts as
+        walk targets (default active-only)."""
+        return await _run_db(server_runtime.children, codes=codes, sources=sources, include_retired=include_retired)
 
     @mcp.tool()
     async def get_ancestors(
         codes: list[str],
         sources: list[str],
         max_depth: int = 5,
+        include_retired: bool = False,
     ) -> dict[str, Any]:
-        """Return ancestor relationships for clinical codes."""
-        return await _run_db(server_runtime.ancestors, codes=codes, sources=sources, max_depth=max_depth)
+        """Return ancestor relationships for clinical codes.
+
+        include_retired: include retired/editorial-suppressed concepts as
+        walk targets (default active-only)."""
+        return await _run_db(server_runtime.ancestors, codes=codes, sources=sources, max_depth=max_depth, include_retired=include_retired)
 
     @mcp.tool()
     async def get_descendants(
@@ -1114,6 +1154,7 @@ def create_mcp_server(
         sources: list[str],
         max_depth: int = 5,
         limit: int = DEFAULT_DESCENDANT_LIMIT,
+        include_retired: bool = False,
     ) -> dict[str, Any]:
         """Return descendant relationships for clinical codes.
 
@@ -1121,8 +1162,10 @@ def create_mcp_server(
         1000) so wide SNOMED subtrees answer in bounded time instead of
         enumerating every path; "truncated": true signals more descendants
         existed beyond the cap or the depth limit.
-        """
-        return await _run_db(server_runtime.descendants, codes=codes, sources=sources, max_depth=max_depth, limit=limit)
+
+        include_retired: include retired/editorial-suppressed concepts as
+        walk targets (default active-only)."""
+        return await _run_db(server_runtime.descendants, codes=codes, sources=sources, max_depth=max_depth, limit=limit, include_retired=include_retired)
 
     @mcp.tool()
     async def patient_friendly_names(

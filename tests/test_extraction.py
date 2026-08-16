@@ -91,3 +91,73 @@ class TestExtract:
         # GLiNER may not detect "T2DM" or "CKD" as short acronyms.
         # Verify that the pipeline runs and returns a list.
         assert isinstance(spans, list)
+
+
+class TestNerModelRevisionPin:
+    """The GLiNER NER model revision must be pinned (weight drift observed
+    2026-08-14 changed recall); the pin must reach the load call."""
+
+    def test_revision_constant_is_pinned_sha(self):
+        import os
+        import re
+
+        from medterm4ds.services.extraction import DEFAULT_NER_MODEL_REVISION
+
+        if os.getenv("MEDTERM4DS_NER_MODEL_REVISION"):
+            # Explicit override: honor whatever the operator pinned.
+            assert DEFAULT_NER_MODEL_REVISION == (
+                os.environ["MEDTERM4DS_NER_MODEL_REVISION"] or None
+            )
+        else:
+            assert re.fullmatch(r"[0-9a-f]{40}", DEFAULT_NER_MODEL_REVISION), (
+                "DEFAULT_NER_MODEL_REVISION must be a 40-hex commit SHA"
+            )
+
+    def test_revision_passed_at_load(self, monkeypatch):
+        """GLiNER.from_pretrained receives revision=<pin> (mocked — no
+        weight download)."""
+        gliner = pytest.importorskip("gliner")
+        import medspacy
+
+        from medterm4ds.services import extraction
+
+        calls: dict = {}
+
+        class _FakeGLiNER:
+            @staticmethod
+            def from_pretrained(model_id, revision=None, **kwargs):
+                calls["model_id"] = model_id
+                calls["revision"] = revision
+                return object()
+
+        monkeypatch.setattr(gliner, "GLiNER", _FakeGLiNER)
+        monkeypatch.setattr(medspacy, "load", lambda **kwargs: object())
+
+        pipeline = extraction.NlpPipeline()
+        pipeline._ensure_loaded()
+
+        assert calls["model_id"] == extraction.DEFAULT_NER_MODEL
+        assert calls["revision"] == extraction.DEFAULT_NER_MODEL_REVISION
+
+    def test_revision_disabled_with_none(self, monkeypatch):
+        """ner_revision=None unpins (local model paths)."""
+        gliner = pytest.importorskip("gliner")
+        import medspacy
+
+        from medterm4ds.services import extraction
+
+        calls: dict = {}
+
+        class _FakeGLiNER:
+            @staticmethod
+            def from_pretrained(model_id, revision=None, **kwargs):
+                calls["revision"] = revision
+                return object()
+
+        monkeypatch.setattr(gliner, "GLiNER", _FakeGLiNER)
+        monkeypatch.setattr(medspacy, "load", lambda **kwargs: object())
+
+        pipeline = extraction.NlpPipeline(ner_revision=None)
+        pipeline._ensure_loaded()
+
+        assert calls["revision"] is None

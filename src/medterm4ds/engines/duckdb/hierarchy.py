@@ -25,12 +25,17 @@ def get_source_code_relations(
     upward: bool,
     max_depth: int,
     limit: int | None = None,
+    include_retired: bool = False,
 ) -> list[tuple[int, CodeRelation]]:
     """Return same-source hierarchy rows for one source + chunk of codes.
 
     Dispatches to the prepared path if mt4ds.walk_edges + best_atoms exist AND
     walk_edges covers the requested source; otherwise falls back to raw
     mrrel/mrconso traversal.
+
+    ``include_retired=True`` skips the QC-238 retired-concept pruning on both
+    paths: retired/editorial-suppressed concepts are included as walk targets
+    (and seeds), so the result is a superset of the default active-only walk.
     """
     # QC-402 (MEDIUM): the gate previously checked TABLE EXISTENCE only, so a
     # source with 0 rows in production walk_edges (RXNORM, MSH — the builder
@@ -50,6 +55,7 @@ def get_source_code_relations(
             upward=upward,
             max_depth=max_depth,
             limit=limit,
+            include_retired=include_retired,
         )
 
     # Late import to avoid circular dependency (engine module defines these helpers).
@@ -68,6 +74,11 @@ def get_source_code_relations(
         "w.target_aui",
         upward=upward,
     )
+
+    # include_retired=True: skip the SUPPRESS='N' pruning on the seed and on
+    # every walked target (retired/editorial-suppressed concepts join the walk).
+    _seed_suppress = "" if include_retired else "AND c.SUPPRESS = 'N'"
+    _target_suppress = "" if include_retired else "AND t.SUPPRESS = 'N'"
 
     with engine._temp_code_ordinals(code_ordinals) as temp:
         rows = engine.con.execute(
@@ -90,7 +101,7 @@ def get_source_code_relations(
                 FROM {temp} i
                 JOIN mrconso c ON c.CODE = i.code
                 WHERE c.SAB = ?
-                  AND c.SUPPRESS = 'N'
+                  {_seed_suppress}
             ),
             -- QC-349/350 (EC-15 HIGH): seed EVERY active atom of the input
             -- code, not just the rn=1 one — the same multi-atom fix the
@@ -121,7 +132,7 @@ def get_source_code_relations(
                 JOIN mrrel r ON {source_join}
                 JOIN mrconso t ON t.AUI = {source_target}
                 WHERE t.SAB = ?
-                  AND t.SUPPRESS = 'N'
+                  {_target_suppress}
 
                 UNION ALL
 
@@ -135,7 +146,7 @@ def get_source_code_relations(
                 JOIN mrconso t ON t.AUI = {recursive_target}
                 WHERE w.depth < ?
                   AND t.SAB = ?
-                  AND t.SUPPRESS = 'N'
+                  {_target_suppress}
                   AND strpos('>' || w.path || '>', '>' || t.AUI || '>') = 0
             ),
             ranked AS (
@@ -200,6 +211,7 @@ def get_source_code_relations_prepared(
     upward: bool,
     max_depth: int,
     limit: int | None = None,
+    include_retired: bool = False,
 ) -> list[tuple[int, CodeRelation]]:
     """Prepared-table path: traverse mt4ds.walk_edges instead of raw mrrel.
 
@@ -209,6 +221,9 @@ def get_source_code_relations_prepared(
     building CodeRelation objects for rows the caller will discard. For
     pathological hierarchies (e.g. SNOMED diabetes), the walk itself is the
     bottleneck; see `_expand_url_pattern` for the depth-cap contract.
+
+    ``include_retired=True`` skips the QC-238 is_active pruning on the seed
+    and on walk targets (retired/editorial-suppressed concepts join the walk).
     """
     if upward:
         first_join = "e.from_aui = s.source_aui"
@@ -246,10 +261,16 @@ def get_source_code_relations_prepared(
         # depth-3 descendants of 404684003. The EXISTS check prunes edges
         # whose TARGET atom is suppressed, so paths through retired concepts
         # are cut exactly like the raw path.
+        # ``include_retired=True`` disables both checks (seed + targets).
+        _seed_active = "" if include_retired else "AND b.is_active = true"
         _active_target = (
-            "EXISTS (SELECT 1 FROM mt4ds.best_atoms ba "
-            "WHERE ba.source = e.source AND ba.aui = {aui} "
-            "AND ba.is_active = true)"
+            "true"
+            if include_retired
+            else (
+                "EXISTS (SELECT 1 FROM mt4ds.best_atoms ba "
+                "WHERE ba.source = e.source AND ba.aui = {aui} "
+                "AND ba.is_active = true)"
+            )
         )
         rows = engine.con.execute(
             f"""
@@ -262,7 +283,7 @@ def get_source_code_relations_prepared(
                 JOIN mt4ds.best_atoms b
                   ON b.source = ?
                  AND b.code = i.code
-                 AND b.is_active = true
+                 {_seed_active}
                 LEFT JOIN mt4ds.best_atoms d
                   ON d.source = b.source
                  AND d.code = b.code

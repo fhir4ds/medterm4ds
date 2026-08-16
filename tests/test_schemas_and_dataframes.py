@@ -65,7 +65,7 @@ class StaticEngine:
             )
         ]
 
-    def get_code_relations(self, codes, *, direction, max_depth=1, limit=None):
+    def get_code_relations(self, codes, *, direction, max_depth=1, limit=None, include_retired=False):
         return [
             CodeRelation(
                 source=codes[0],

@@ -205,6 +205,11 @@ def _make_fhir_db(path: Path) -> None:
             # unaffected.
             ("44054006", "PT", "Fixture alias concept", "A44054006I10", "N", "ICD10CM", "C0011847"),
             ("860975", "SCD", "24 HR metformin 500 MG Oral Tablet", "A860975", "N", "RXNORM", "C0978484"),
+            # activeOnly fixture: a RETIRED (SUPPRESS='Y') child of 73211009.
+            # Default (active-only) expansions must never surface 8800001;
+            # activeOnly=false must. STR avoids 'diabetes' so filter-mode
+            # search tests are unaffected.
+            ("8800001", "PT", "Retired glycemic disorder", "A8800001", "Y", "SNOMEDCT_US", "C_RETIRED"),
         ],
     )
     con.execute(
@@ -215,7 +220,10 @@ def _make_fhir_db(path: Path) -> None:
     # SNOMED hierarchy: 44054006 (Type 2 diabetes) → parent → 73211009 (Diabetes)
     con.executemany(
         "INSERT INTO mrrel VALUES (?, ?, ?, ?)",
-        [("A44054006", "A73211009", "isa", "PAR")],
+        [
+            ("A44054006", "A73211009", "isa", "PAR"),
+            ("A8800001", "A73211009", "isa", "PAR"),
+        ],
     )
     con.close()
 
@@ -602,6 +610,116 @@ class TestFhirEndpoints:
         codes = {c["code"] for c in body["expansion"]["contains"]}
         assert "73211009" in codes
         assert "44054006" in codes
+
+    # -- QC-315: $expand activeOnly --
+
+    def test_expand_active_only_false_includes_retired_qc315(self, fhir_app):
+        """QC-315 (MEDIUM): activeOnly honored on the isa (fhir_vs) mode.
+
+        The fixture carries a RETIRED child (8800001, SUPPRESS='Y') under
+        73211009. Default (omitted) and activeOnly=true are identical and
+        exclude it; activeOnly=false includes it (strict superset).
+        """
+        from starlette.testclient import TestClient
+        with TestClient(fhir_app) as client:
+            default = client.get(
+                "/fhir/ValueSet/$expand",
+                params={"url": "http://snomed.info/sct/73211009?fhir_vs=isa", "count": 100},
+            ).json()
+            explicit_true = client.get(
+                "/fhir/ValueSet/$expand",
+                params={
+                    "url": "http://snomed.info/sct/73211009?fhir_vs=isa",
+                    "count": 100, "activeOnly": "true",
+                },
+            ).json()
+            explicit_false = client.get(
+                "/fhir/ValueSet/$expand",
+                params={
+                    "url": "http://snomed.info/sct/73211009?fhir_vs=isa",
+                    "count": 100, "activeOnly": "false",
+                },
+            ).json()
+        default_codes = {c["code"] for c in default["expansion"]["contains"]}
+        true_codes = {c["code"] for c in explicit_true["expansion"]["contains"]}
+        false_codes = {c["code"] for c in explicit_false["expansion"]["contains"]}
+        # activeOnly=true == default (both active-only).
+        assert default_codes == true_codes
+        assert "8800001" not in default_codes
+        # activeOnly=false: strict superset containing the retired child.
+        assert default_codes < false_codes
+        assert "8800001" in false_codes
+
+    def test_expand_active_only_post_body_boolean_qc315(self, fhir_app):
+        """QC-315: POST Parameters-body activeOnly (valueBoolean) is honored."""
+        from starlette.testclient import TestClient
+        body_false = {
+            "resourceType": "Parameters",
+            "parameter": [
+                {"name": "url", "valueUri": "http://snomed.info/sct/73211009?fhir_vs=isa"},
+                {"name": "count", "valueInteger": 100},
+                {"name": "activeOnly", "valueBoolean": False},
+            ],
+        }
+        body_true = {
+            "resourceType": "Parameters",
+            "parameter": [
+                {"name": "url", "valueUri": "http://snomed.info/sct/73211009?fhir_vs=isa"},
+                {"name": "count", "valueInteger": 100},
+                {"name": "activeOnly", "valueBoolean": True},
+            ],
+        }
+        with TestClient(fhir_app) as client:
+            false_resp = client.post("/fhir/ValueSet/$expand", json=body_false)
+            true_resp = client.post("/fhir/ValueSet/$expand", json=body_true)
+        assert false_resp.status_code == 200
+        assert true_resp.status_code == 200
+        false_codes = {c["code"] for c in false_resp.json()["expansion"]["contains"]}
+        true_codes = {c["code"] for c in true_resp.json()["expansion"]["contains"]}
+        assert "8800001" in false_codes
+        assert "8800001" not in true_codes
+
+    def test_expand_active_only_wrong_type_rejected_qc315(self, fhir_app):
+        """QC-315: a non-boolean activeOnly body value 400s (QC-127/QC-136
+        wrong-typed-parameter contract) instead of silently using the default."""
+        from starlette.testclient import TestClient
+        body = {
+            "resourceType": "Parameters",
+            "parameter": [
+                {"name": "url", "valueUri": "http://snomed.info/sct/73211009?fhir_vs=isa"},
+                {"name": "activeOnly", "valueString": "yes"},
+            ],
+        }
+        with TestClient(fhir_app) as client:
+            resp = client.post("/fhir/ValueSet/$expand", json=body)
+        assert resp.status_code == 400
+        assert resp.json()["resourceType"] == "OperationOutcome"
+
+    def test_expand_active_only_false_filter_mode_400_qc315(self, fhir_app):
+        """QC-315: activeOnly=false is rejected with 400 for filter-based
+        expansions (the search path is active-only and cannot express
+        concept activity) rather than silently ignored."""
+        from starlette.testclient import TestClient
+        with TestClient(fhir_app) as client:
+            resp = client.get(
+                "/fhir/ValueSet/$expand",
+                params={"filter": "diabetes", "activeOnly": "false"},
+            )
+        assert resp.status_code == 400
+        body = resp.json()
+        assert body["resourceType"] == "OperationOutcome"
+        assert "filter" in body["issue"][0]["diagnostics"]
+
+    def test_expand_active_only_true_filter_mode_ok_qc315(self, fhir_app):
+        """QC-315: activeOnly=true (== the server default) still works on the
+        filter mode."""
+        from starlette.testclient import TestClient
+        with TestClient(fhir_app) as client:
+            resp = client.get(
+                "/fhir/ValueSet/$expand",
+                params={"filter": "diabetes", "activeOnly": "true"},
+            )
+        assert resp.status_code == 200
 
     # -- EC-10 (FHIR $expand) remediation regression tests (QC-241..260) --
 

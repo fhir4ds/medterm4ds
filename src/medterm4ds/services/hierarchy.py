@@ -28,8 +28,13 @@ def get_code_relations(
     direction: str,
     max_depth: int = 1,
     limit: int | None = None,
+    include_retired: bool = False,
 ) -> list[CodeRelation]:
-    """Return hierarchy relationships for one or many codes."""
+    """Return hierarchy relationships for one or many codes.
+
+    ``include_retired=True`` includes retired/editorial-suppressed concepts
+    as walk targets; the default walks active concepts only (QC-238).
+    """
     normalized_direction = normalize_hierarchy_direction(direction)
     # QC-051 (MEDIUM): pre-fix, a string ``max_depth='5'`` crashed with
     # ``TypeError: '<' not supported between instances of 'str' and 'int'``
@@ -56,23 +61,42 @@ def get_code_relations(
         direction=normalized_direction,
         max_depth=max_depth,
         limit=limit,
+        include_retired=include_retired,
     )
 
 
 def get_parents(
     codes: Sequence[CodeRef | tuple[str, str]],
     engine: HierarchyEngine,
+    *,
+    include_retired: bool = False,
 ) -> list[CodeRelation]:
-    """Return direct parent relationships."""
-    return get_code_relations(codes, engine=engine, direction="parents", max_depth=1)
+    """Return direct parent relationships.
+
+    ``include_retired=True`` includes retired/editorial-suppressed concepts
+    as walk targets (default active-only).
+    """
+    return get_code_relations(
+        codes, engine=engine, direction="parents", max_depth=1,
+        include_retired=include_retired,
+    )
 
 
 def get_children(
     codes: Sequence[CodeRef | tuple[str, str]],
     engine: HierarchyEngine,
+    *,
+    include_retired: bool = False,
 ) -> list[CodeRelation]:
-    """Return direct child relationships."""
-    return get_code_relations(codes, engine=engine, direction="children", max_depth=1)
+    """Return direct child relationships.
+
+    ``include_retired=True`` includes retired/editorial-suppressed concepts
+    as walk targets (default active-only).
+    """
+    return get_code_relations(
+        codes, engine=engine, direction="children", max_depth=1,
+        include_retired=include_retired,
+    )
 
 
 def get_ancestors(
@@ -80,9 +104,17 @@ def get_ancestors(
     engine: HierarchyEngine,
     *,
     max_depth: int = 5,
+    include_retired: bool = False,
 ) -> list[CodeRelation]:
-    """Return ancestor relationships up to max_depth."""
-    return get_code_relations(codes, engine=engine, direction="ancestors", max_depth=max_depth)
+    """Return ancestor relationships up to max_depth.
+
+    ``include_retired=True`` includes retired/editorial-suppressed concepts
+    as walk targets (default active-only).
+    """
+    return get_code_relations(
+        codes, engine=engine, direction="ancestors", max_depth=max_depth,
+        include_retired=include_retired,
+    )
 
 
 def get_descendants(
@@ -91,9 +123,17 @@ def get_descendants(
     *,
     max_depth: int = 5,
     limit: int | None = None,
+    include_retired: bool = False,
 ) -> list[CodeRelation]:
-    """Return descendant relationships up to max_depth."""
-    return get_code_relations(codes, engine=engine, direction="descendants", max_depth=max_depth, limit=limit)
+    """Return descendant relationships up to max_depth.
+
+    ``include_retired=True`` includes retired/editorial-suppressed concepts
+    as walk targets (default active-only).
+    """
+    return get_code_relations(
+        codes, engine=engine, direction="descendants", max_depth=max_depth,
+        limit=limit, include_retired=include_retired,
+    )
 
 
 def get_descendants_bfs(
@@ -103,6 +143,7 @@ def get_descendants_bfs(
     max_depth: int = 5,
     limit: int | None = None,
     stop_at: str | None = None,
+    include_retired: bool = False,
 ) -> tuple[list[CodeRelation], bool]:
     """Layer-by-layer BFS over descendants using direct children queries.
 
@@ -126,6 +167,8 @@ def get_descendants_bfs(
             `stop_at` is reached (early-exit), with the matching relation
             included in results. Used by $subsumes to check "is B a descendant
             of A" without walking the entire A subtree.
+        include_retired: include retired/editorial-suppressed concepts as walk
+            targets (default active-only, per the QC-238 pruning).
 
     Returns (relations, depth_cap_hit) where depth_cap_hit is True if the BFS
     reached max_depth with frontier still non-empty AND stop_at (if set) was
@@ -149,7 +192,7 @@ def get_descendants_bfs(
         if limit is not None and len(results) >= limit:
             break
         refs = [CodeRef(source=seed.source, code=c) for c in frontier]
-        children = get_children(refs, engine=engine)
+        children = get_children(refs, engine=engine, include_retired=include_retired)
         new_frontier: list[str] = []
         seen_this_layer: set[str] = set()
         for rel in children:
@@ -182,6 +225,7 @@ def get_ancestors_bfs(
     max_depth: int = 5,
     limit: int | None = None,
     stop_at: str | None = None,
+    include_retired: bool = False,
 ) -> tuple[list[CodeRelation], bool]:
     """Layer-by-layer BFS over ancestors using direct parent queries.
 
@@ -203,6 +247,8 @@ def get_ancestors_bfs(
             (early-exit).
         stop_at: optional target code; the walk returns as soon as it is
             reached.
+        include_retired: include retired/editorial-suppressed concepts as walk
+            targets (default active-only, per the QC-238 pruning).
 
     Returns (relations, depth_cap_hit) where depth_cap_hit is True if the
     BFS reached max_depth with a non-empty frontier and stop_at (if set) was
@@ -221,7 +267,7 @@ def get_ancestors_bfs(
         if limit is not None and len(results) >= limit:
             break
         refs = [CodeRef(source=seed.source, code=c) for c in frontier]
-        parents = get_parents(refs, engine=engine)
+        parents = get_parents(refs, engine=engine, include_retired=include_retired)
         new_frontier: list[str] = []
         seen_this_layer: set[str] = set()
         for rel in parents:

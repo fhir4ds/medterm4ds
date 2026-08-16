@@ -33,6 +33,10 @@ from medterm4ds.core.normalize import source_label
 logger = logging.getLogger(__name__)
 
 DEFAULT_NER_MODEL = os.getenv("MEDTERM4DS_NER_MODEL", "knowledgator/gliner-bi-small-v2.0")
+# Pinned revision (commit SHA) of DEFAULT_NER_MODEL so Hugging Face weight
+# drift can't silently change extraction recall — drift observed 2026-08-14.
+# Override (or disable with an empty value) via MEDTERM4DS_NER_MODEL_REVISION.
+DEFAULT_NER_MODEL_REVISION = os.getenv("MEDTERM4DS_NER_MODEL_REVISION", "3d74c1bf459b8b1c0be1ecbddd679416ce005418") or None
 # Canonical mode is the default — it searches canonical anchor names directly
 # via the FAISS concept index, with a 0.70 confidence floor that filters weak
 # matches. Hybrid/lexical modes still available for callers who want raw UMLS.
@@ -397,10 +401,15 @@ class NlpPipeline:
         self,
         *,
         ner_model: str = DEFAULT_NER_MODEL,
+        ner_revision: str | None = DEFAULT_NER_MODEL_REVISION,
         labels: list[str] | None = None,
         threshold: float = DEFAULT_THRESHOLD,
     ):
         self._ner_model_name = ner_model
+        # Pinned HF revision so weight drift can't silently change recall
+        # (drift observed 2026-08-14). None disables pinning (e.g. local
+        # model paths, where huggingface_hub has no revision concept).
+        self._ner_model_revision = ner_revision
         self._labels = labels or DEFAULT_LABELS
         self._threshold = threshold
         self._nlp = None
@@ -424,9 +433,14 @@ class NlpPipeline:
         from loguru import logger as _loguru_logger
         _loguru_logger.remove()
 
-        # Load GLiNER
+        # Load GLiNER. revision= pins the HF repo commit (see
+        # DEFAULT_NER_MODEL_REVISION) so weight drift can't silently change
+        # extraction recall; None (explicit constructor override or empty
+        # env var) loads the repo head / local path unpinned.
         from gliner import GLiNER
-        self._ner_model = GLiNER.from_pretrained(self._ner_model_name)
+        self._ner_model = GLiNER.from_pretrained(
+            self._ner_model_name, revision=self._ner_model_revision,
+        )
 
         # Load medspaCy for ConText (disable target_matcher — we use GLiNER instead)
         import medspacy

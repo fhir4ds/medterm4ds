@@ -5,7 +5,7 @@ import pytest
 
 from medterm4ds import CodeRef, get_ancestors, get_children, get_descendants, get_parents
 from medterm4ds.engines.duckdb import LocalDuckDBEngine
-from medterm4ds.services.hierarchy import get_code_relations
+from medterm4ds.services.hierarchy import get_code_relations, get_descendants_bfs
 
 
 def _make_hierarchy_db(con: duckdb.DuckDBPyConnection) -> None:
@@ -45,6 +45,10 @@ def _make_hierarchy_db(con: duckdb.DuckDBPyConnection) -> None:
             ("0010U", "PT", "Specific CPT procedure", "CPT_0010U", "N", "CPT", "C_CPT_CHILD"),
             ("0010", "PT", "CPT procedure parent", "CPT_0010", "N", "CPT", "C_CPT_PARENT"),
             ("E11.9", "PT", "Suppressed duplicate", "ICD_SUP", "Y", "ICD10CM", "C_SUP"),
+            # include_retired fixture: a RETIRED (SUPPRESS='Y') child of E11.
+            # Default active-only walks must never surface E11.R; the
+            # include_retired=True walks must.
+            ("E11.R", "PT", "Retired diabetic disorder", "ICD_E11R", "Y", "ICD10CM", "C_E11R"),
         ],
     )
     con.executemany(
@@ -54,6 +58,7 @@ def _make_hierarchy_db(con: duckdb.DuckDBPyConnection) -> None:
             ("ICD_E11", "ICD_E00", "isa", "PAR"),
             ("CVX_208", "CVX_200", "isa", "PAR"),
             ("ICD_S3706", "ICD_S370", "isa", "PAR"),
+            ("ICD_E11R", "ICD_E11", "isa", "PAR"),
             # Real UMLS CPT edges are REL='PAR' RELA='inverse_isa' (child in
             # AUI1, parent in AUI2) mirrored by REL='CHD' RELA='isa'. The old
             # fixture row carried a fabricated REL='AUI' which does not exist
@@ -220,4 +225,106 @@ def test_get_code_relations_rejects_string_max_depth_and_negative_limit():
             )
     finally:
         con.close()
+
+
+# -- include_retired (QC-238 opt-out) tests --
+
+def test_include_retired_raw_path_superset():
+    """include_retired=True returns a strict superset on the raw-mrrel path.
+
+    The synthetic DB has no mt4ds prepared tables, so get_code_relations
+    exercises the raw mrrel/mrconso CTE (SUPPRESS pruning). Default walks
+    must exclude the retired E11.R child; include_retired=True must include
+    it as a walk target.
+    """
+    con = duckdb.connect(database=":memory:")
+    try:
+        _make_hierarchy_db(con)
+        engine = LocalDuckDBEngine(con)
+
+        active = get_descendants(
+            [CodeRef("ICD10CM", "E00-E89")], engine=engine, max_depth=2
+        )
+        with_retired = get_descendants(
+            [CodeRef("ICD10CM", "E00-E89")], engine=engine, max_depth=2,
+            include_retired=True,
+        )
+        retired_children = get_children(
+            [CodeRef("ICD10CM", "E11")], engine=engine, include_retired=True
+        )
+    finally:
+        con.close()
+
+    active_codes = {row.target.code for row in active}
+    retired_codes = {row.target.code for row in with_retired}
+    assert active_codes == {"E11", "E11.9"}
+    assert active_codes < retired_codes
+    assert retired_codes == {"E11", "E11.9", "E11.R"}
+    # Direct children of E11 with the flag include the retired child.
+    assert {row.target.code for row in retired_children} == {"E11.9", "E11.R"}
+
+
+def test_include_retired_bfs_superset():
+    """include_retired=True on the BFS walk (the FHIR $expand route)."""
+    con = duckdb.connect(database=":memory:")
+    try:
+        _make_hierarchy_db(con)
+        engine = LocalDuckDBEngine(con)
+        seed = CodeRef("ICD10CM", "E00-E89")
+
+        active, _ = get_descendants_bfs(seed, engine, max_depth=2)
+        with_retired, _ = get_descendants_bfs(
+            seed, engine, max_depth=2, include_retired=True
+        )
+    finally:
+        con.close()
+
+    active_codes = {r.target.code for r in active}
+    retired_codes = {r.target.code for r in with_retired}
+    assert active_codes < retired_codes
+    assert retired_codes - active_codes == {"E11.R"}
+    # QC-432: BFS relations carry the true layer depth.
+    depths = {r.target.code: r.depth for r in with_retired}
+    assert depths == {"E11": 1, "E11.9": 2, "E11.R": 2}
+
+
+def test_include_retired_production_superset(umls_db_path):
+    """Production regression: SNOMED 404684003 (Disease) walk.
+
+    Depth-2 full walk: the active-only set must be a STRICT subset of the
+    retired-included set, with retired concepts present and the count
+    growing (QC-238 measured 8,069 retired SNOMED concepts at depth 3).
+    Depth-3 bounded walk: retired concepts must appear even under a cap.
+    """
+    con = duckdb.connect(str(umls_db_path), read_only=True)
+    try:
+        engine = LocalDuckDBEngine(con)
+        seed = CodeRef("SNOMEDCT_US", "404684003")
+
+        active, _ = get_descendants_bfs(seed, engine, max_depth=2)
+        with_retired, _ = get_descendants_bfs(
+            seed, engine, max_depth=2, include_retired=True
+        )
+        retired_codes = {
+            row[0]
+            for row in con.execute(
+                "SELECT DISTINCT code FROM mt4ds.best_atoms "
+                "WHERE source = 'SNOMEDCT_US' AND is_active = false"
+            ).fetchall()
+        }
+        bounded, _ = get_descendants_bfs(
+            seed, engine, max_depth=3, limit=5000, include_retired=True
+        )
+    finally:
+        con.close()
+
+    active_codes = {r.target.code for r in active}
+    retired_included_codes = {r.target.code for r in with_retired}
+    assert len(active_codes) > 0
+    assert active_codes < retired_included_codes
+    assert len(retired_included_codes) > len(active_codes)
+    assert len(retired_included_codes & retired_codes) > 0
+    bounded_retired = {r.target.code for r in bounded} & retired_codes
+    assert len(bounded) == 5000
+    assert len(bounded_retired) > 0
 

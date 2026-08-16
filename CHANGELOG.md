@@ -49,6 +49,33 @@ derived tables on existing databases** — see Upgrade notes.
   `DEFAULT_INVENTORY_SOURCES`), so a prepared Python engine answers ATC
   lookups the same way CLI/MCP/API/FHIR do. [QC-469]
 
+### Added
+
+- **`include_retired` opt-out from the active-only hierarchy walks** (the
+  QC-238 query-time retired-concept pruning). `get_code_relations` /
+  `get_descendants_bfs` / `get_ancestors_bfs` and the
+  `parents`/`children`/`ancestors`/`descendants`/`hierarchy` facade methods
+  accept `include_retired=True` to include retired/editorial-suppressed
+  concepts as walk targets on both the prepared and raw-mrrel engine paths;
+  wired through the REST `/hierarchy` request, MCP
+  (`get_parents`/`get_children`/`get_ancestors`/`get_descendants`/
+  `code_relations`/`discover`), and `domains.terminology.discover`.
+  Defaults are unchanged everywhere — active-only.
+- **FHIR `$expand` `activeOnly` is honored** (was silently ignored, QC-315).
+  `activeOnly=true` matches the server default; `activeOnly=false` includes
+  retired concepts for the isa/fhir_vs, implicit-value-set, and intensional
+  compose expansions (GET, POST Parameters `valueBoolean`, and `$batch`).
+  **Documented divergence from R4**: the spec default for the parameter is
+  `false`; this server's default when `activeOnly` is OMITTED narrows to
+  active-only, matching the engine-wide QC-238 contract. Filter-based (text
+  search) expansions reject `activeOnly=false` with 400 — the search index
+  is active-only and cannot cheaply express concept activity.
+- **Pinned GLiNER NER model revision** (`knowledgator/gliner-bi-small-v2.0` @
+  `3d74c1bf459b8b1c0be1ecbddd679416ce005418`) so Hugging Face weight drift
+  can't silently change extraction recall (drift observed 2026-08-14).
+  Env overrides preserved: `MEDTERM4DS_NER_MODEL` and
+  `MEDTERM4DS_NER_MODEL_REVISION` (empty value unpins).
+
 ### Changed
 
 - **Default remote timeout raised 30 s → 300 s.** `connect_remote()` /

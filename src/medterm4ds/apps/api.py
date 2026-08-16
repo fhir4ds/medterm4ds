@@ -173,6 +173,9 @@ class HierarchyRequest(BaseModel):
     # (validated non-negative in services.hierarchy.get_code_relations);
     # ge=1 made the remote surface 422 on a value the local engine accepts.
     limit: int | None = Field(default=None, ge=0)
+    # include_retired: include retired/editorial-suppressed concepts as walk
+    # targets (default active-only, per the QC-238 pruning).
+    include_retired: bool = False
 
 
 class MappingRequest(BaseModel):
@@ -443,6 +446,7 @@ def create_app(settings: ApiSettings | None = None) -> FastAPI:
             direction=payload.direction,
             max_depth=payload.max_depth,
             limit=payload.limit,
+            include_retired=payload.include_retired,
         )
         return {"results": [result.to_dict() for result in results]}
 

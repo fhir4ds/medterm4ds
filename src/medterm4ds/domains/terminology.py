@@ -315,8 +315,13 @@ def discover(
     depth: int = 1,
     include_ancestors: bool = False,
     limit: int = 20,
+    include_retired: bool = False,
 ) -> dict[str, Any]:
-    """Browse a source or a code's local hierarchy."""
+    """Browse a source or a code's local hierarchy.
+
+    ``include_retired=True`` includes retired/editorial-suppressed concepts
+    as walk targets on the code branch (default active-only).
+    """
     source = normalize_source(source_terminology)
     depth = min(max(depth, 1), 5)
     # QC-223/QC-228: validate the caller-facing parameter BEFORE delegating —
@@ -354,10 +359,12 @@ def discover(
         direction="descendants",
         max_depth=depth,
         limit=limit,
+        include_retired=include_retired,
     )
     ancestors = (
         get_code_relations(
-            [ref], engine=engine, direction="ancestors", max_depth=depth, limit=limit
+            [ref], engine=engine, direction="ancestors", max_depth=depth, limit=limit,
+            include_retired=include_retired,
         )
         if include_ancestors
         else []

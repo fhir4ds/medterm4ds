@@ -168,6 +168,7 @@ def expand_url_pattern(
     url: str,
     *,
     count: int = 1000,
+    include_retired: bool = False,
 ) -> dict[str, Any]:
     """Expand a FHIR fhir_vs URL pattern to a ValueSet expansion payload.
 
@@ -197,6 +198,10 @@ def expand_url_pattern(
         engine: A TerminologyEngine (typically LocalDuckDBEngine).
         url: The fhir_vs URL to expand.
         count: Max number of concepts in the expansion (default 1000).
+        include_retired: include retired/editorial-suppressed concepts in
+            the descendant walk (the FHIR ``activeOnly=false`` semantics).
+            Default active-only. The isa ROOT itself is still resolved via
+            active-atom lookup, so a retired root code 400s as unknown.
 
     Returns:
         FHIR ValueSet expansion payload dict — same shape as the HTTP
@@ -320,6 +325,7 @@ def expand_url_pattern(
             # "BFS exhausted at exactly the budget" (NOT truncated) from
             # "BFS hit the limit with more remaining" (truncated).
             limit=(descendant_budget + 1) if descendant_budget > 0 else 1,
+            include_retired=include_retired,
         )
         # count_limited: more descendants observed than fit in the budget.
         count_limited = len(relations) > descendant_budget
@@ -649,6 +655,7 @@ except ImportError:
 
 def expand_intensional_value_set(
     engine: Any, value_set: dict[str, Any], count: int = 1000,
+    *, include_retired: bool = False,
 ) -> list[dict[str, Any]]:
     """Expand a ValueSet with compose.include/exclude rules.
 
@@ -663,6 +670,11 @@ def expand_intensional_value_set(
     - compose.exclude (removes codes from the expansion, scoped to the
       exclude block's own system — QC-244 — and honoring intensional
       exclude filters — QC-242)
+
+    ``include_retired=True`` (the FHIR ``activeOnly=false`` semantics)
+    includes retired/editorial-suppressed concepts in the is-a /
+    descendent-of walks, the exclusion walks, and the system-only
+    enumeration. Default active-only.
 
     Raises:
         ValueError: On an unresolvable compose system URI (QC-252 — the
@@ -763,9 +775,12 @@ def expand_intensional_value_set(
             # LOINC and must not be emitted as http://loinc.org members.
             # The filter is scoped to LNC only: other SABs (OMIM, ICPC2*)
             # legitimately carry MTHU-prefixed codes.
+            # include_retired: drop the SUPPRESS='N' restriction so the
+            # activeOnly=false enumeration includes suppressed codes.
+            _suppress_clause = "" if include_retired else "AND SUPPRESS = 'N' "
             rows = engine.con.execute(
                 "SELECT DISTINCT CODE FROM mrconso WHERE SAB = ? "
-                "AND SUPPRESS = 'N' "
+                f"{_suppress_clause}"
                 "AND (SAB != 'LNC' OR CODE NOT LIKE 'MTHU%') "
                 "ORDER BY CODE LIMIT ?",
                 [source, count + 1],
@@ -806,6 +821,7 @@ def expand_intensional_value_set(
                     engine=engine,
                     max_depth=max_depth,
                     limit=count + 1,
+                    include_retired=include_retired,
                 )
                 if layer_depth_capped:
                     depth_cap_hit = True
@@ -866,6 +882,7 @@ def expand_intensional_value_set(
                     CodeRef(source=exc_source, code=root_code),
                     engine=engine,
                     max_depth=max_depth,
+                    include_retired=include_retired,
                 )
                 for d in exc_descendants:
                     excluded.add((canonical_exc, d.target.code))
@@ -1830,7 +1847,9 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
             elif path == "/ValueSet/$expand":
                 # Mandatory per §4.7.1.2 — found missing from batch dispatcher
                 # by HISTORIAN TS-04 QA-039 (4-tuple coverage audit).
-                url_param, filter_text, count, system_uri, offset_val = _extract_expand_params(
+                (
+                    url_param, filter_text, count, system_uri, offset_val, active_only_val,
+                ) = _extract_expand_params(
                     method, params, body_resource,
                 )
                 # QC-286 (MEDIUM): the direct POST route accepts a bare
@@ -1851,7 +1870,7 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
                     executor, _do_expand, engine,
                     url=url_param, filter_text=filter_text, count=count,
                     system_uri=system_uri, value_set=value_set_body,
-                    offset=offset_val,
+                    offset=offset_val, active_only=active_only_val,
                 )
             elif path == "/CodeSystem/$closure":
                 # Mandatory per §4.7.1.2 — found missing from batch dispatcher
@@ -2129,15 +2148,73 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
                 code_b = coding_b_pair[1]
         return system, code_a, code_b
 
+    def _parse_active_only_body_param(
+        body_resource: dict[str, Any] | None,
+    ) -> bool | None:
+        """Extract the ``activeOnly`` boolean from a FHIR Parameters body.
+
+        QC-315: ``activeOnly`` is a boolean-typed In parameter (R4
+        OperationDefinition ValueSet-$expand) — ``valueBoolean``. Unlike the
+        scalar ``_parse_parameters`` (which deliberately drops valueBoolean
+        per QC-046), this helper parses it STRICTLY:
+
+        - absent → None (caller applies its default)
+        - JSON true/false → the boolean
+        - anything else (valueString, valueInteger, non-bool JSON) →
+          ValueError so the caller can 400 instead of silently using the
+          default while the client believes their value applied (the
+          QC-127/QC-136 wrong-typed-parameter contract).
+        """
+        if body_resource is None:
+            return None
+        for param in _parameter_entries(body_resource):
+            if not isinstance(param, dict):
+                continue
+            if param.get("name") != "activeOnly":
+                continue
+            if "valueBoolean" not in param:
+                raise ValueError(
+                    "activeOnly must be a boolean parameter (valueBoolean); "
+                    f"got entries {sorted(k for k in param if isinstance(k, str) and k.startswith('value'))}."
+                )
+            value = param["valueBoolean"]
+            if not isinstance(value, bool):
+                raise ValueError(
+                    f"activeOnly must be a JSON boolean (got {value!r})."
+                )
+            return value
+        return None
+
+    def _parse_active_only_query_param(raw: str | None) -> bool | None:
+        """Parse the ``activeOnly`` GET query parameter (QC-315).
+
+        Accepts ``true``/``false`` case-insensitively; anything else raises
+        ValueError (FastAPI coerces a bare query param to bool only for the
+        literal true/false, so the batch path — which sees raw strings —
+        validates the same vocabulary).
+        """
+        if raw is None:
+            return None
+        normalized = raw.strip().lower()
+        if normalized == "true":
+            return True
+        if normalized == "false":
+            return False
+        raise ValueError(
+            f"activeOnly must be 'true' or 'false' (got {raw!r})."
+        )
+
     def _extract_expand_params(
         method: str,
         params: dict[str, str],
         body_resource: dict[str, Any] | None,
-    ) -> tuple[str | None, str | None, int, str | None, int]:
-        """Extract (url, filter, count, system, offset) for $expand.
+    ) -> tuple[str | None, str | None, int, str | None, int, bool]:
+        """Extract (url, filter, count, system, offset, activeOnly) for $expand.
 
         Returns count with default=20 if absent; None otherwise for absent
-        optional params; offset with default=0. Used by the batch dispatcher
+        optional params; offset with default=0; activeOnly with default=True
+        (the QC-315 server default — active-only, a documented divergence
+        from the R4 default of false). Used by the batch dispatcher
         (HISTORIAN TS-04 QA-039 — closed the 4-tuple coverage gap for
         $expand).
 
@@ -2175,8 +2252,12 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
                 raise ValueError(
                     f"offset must be a non-negative integer (got {params.get('offset')!r})."
                 )
+            active_only = _parse_active_only_query_param(params.get("activeOnly"))
             system_uri = params.get("system")
-            return url_param, filter_text, count_val, system_uri, offset_val
+            return (
+                url_param, filter_text, count_val, system_uri, offset_val,
+                True if active_only is None else active_only,
+            )
         # POST: parse Parameters body. $expand also accepts a ValueSet
         # resource body but that path is operation-specific; the batch
         # dispatcher always passes a Parameters body for entry.resource.
@@ -2190,8 +2271,12 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
             raise ValueError(
                 f"offset must be a non-negative integer (got {params.get('offset')!r})."
             )
+        query_active_only = _parse_active_only_query_param(params.get("activeOnly"))
         if body_resource is None:
-            return None, None, query_count, None, query_offset
+            return (
+                None, None, query_count, None, query_offset,
+                True if query_active_only is None else query_active_only,
+            )
         p = _parse_parameters(body_resource)
         # QC-308: body value wins over the query-string default.
         count_val = _parse_count_param(p.get("count"), default=query_count)
@@ -2204,7 +2289,13 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
             raise ValueError(
                 f"offset must be a non-negative integer (got {p.get('offset')!r})."
             )
-        return p.get("url"), p.get("filter"), count_val, p.get("system"), offset_val
+        # QC-315: body valueBoolean wins over the query-string default.
+        body_active_only = _parse_active_only_body_param(body_resource)
+        active_only = (
+            body_active_only if body_active_only is not None
+            else (True if query_active_only is None else query_active_only)
+        )
+        return p.get("url"), p.get("filter"), count_val, p.get("system"), offset_val, active_only
 
     # -- Lightweight liveness probe --
     # Pure async, no executor / DB / model touch. Returns instantly even when
@@ -3095,11 +3186,24 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
         count: int = Query(20, ge=1, le=1000),
         offset: int = Query(0, ge=0, description="Paging offset (per FHIR R4 $expand). Passed through; not yet used to slice results."),
         system: str | None = Query(None, description="System URI for filter expansion"),
+        activeOnly: bool = Query(
+            True,
+            description=(
+                "Controls whether inactive concepts are included in the "
+                "expansion (per FHIR R4 $expand). DIVERGENCE FROM R4: the "
+                "spec default is false; this server's default (parameter "
+                "omitted) narrows to active-only, matching the engine-wide "
+                "active-only walk contract. activeOnly=true is identical to "
+                "the default; activeOnly=false includes retired concepts "
+                "for url/intensional expansions and is rejected with 400 "
+                "for filter-based expansions."
+            ),
+        ),
     ):
         payload = await _run_db(
             _executor(request), _do_expand, _engine(request),
             url=url, filter_text=filter, count=count, system_uri=system,
-            offset=offset,
+            offset=offset, active_only=activeOnly,
         )
         return _respond(request, payload)
 
@@ -3109,6 +3213,14 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
         body: dict[str, Any],
         count: int = Query(20, ge=1, le=1000),
         offset: int = Query(0, ge=0, description="Paging offset (per FHIR R4 $expand)"),
+        activeOnly: bool = Query(
+            True,
+            description=(
+                "Controls whether inactive concepts are included (per FHIR "
+                "R4 $expand). Default diverges from R4 (false): this server "
+                "narrows to active-only when the parameter is omitted."
+            ),
+        ),
     ):
         """Expand a ValueSet. Accepts either a ValueSet resource (intensional)
         or a Parameters resource (filter mode).
@@ -3119,10 +3231,19 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
         implementation hardcoded ``count=1000`` for the ValueSet-body branch,
         silently ignoring the client's request and never surfacing the
         ``valueset-toocostly`` truncation extension (clinical-safety signal).
+
+        QC-315: ``activeOnly`` is honored for both shapes — query string AND
+        the Parameters body (``valueBoolean``; body wins per the QC-251
+        body-overrides-query contract). Default (omitted) is active-only, a
+        documented divergence from the R4 default of false.
         """
         resource_type = body.get("resourceType", "")
         if resource_type == "ValueSet":
-            payload = await _run_db(_executor(request), _do_expand, _engine(request), value_set=body, count=count, offset=offset)
+            payload = await _run_db(
+                _executor(request), _do_expand, _engine(request),
+                value_set=body, count=count, offset=offset,
+                active_only=activeOnly,
+            )
             return _respond(request, payload)
         # Per FHIR R4 §4.7.5 In Parameters ``valueSet`` (0..1 ValueSet):
         # "The value set is provided directly as part of the request." The
@@ -3167,7 +3288,20 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
                     request, 400,
                     f"offset must be a non-negative integer (got {inline_params.get('offset')!r})."
                 )
-            payload = await _run_db(_executor(request), _do_expand, _engine(request), value_set=inline_vs, count=inline_count, offset=inline_offset)
+            # QC-315: activeOnly may be co-located in the same Parameters
+            # body; body value wins over the query-string default.
+            try:
+                inline_active_only = _parse_active_only_body_param(body)
+            except ValueError as exc:
+                return _fhir_error_response(request, 400, str(exc))
+            payload = await _run_db(
+                _executor(request), _do_expand, _engine(request),
+                value_set=inline_vs, count=inline_count, offset=inline_offset,
+                active_only=(
+                    inline_active_only if inline_active_only is not None
+                    else activeOnly
+                ),
+            )
             return _respond(request, payload)
         # Parameters-style: extract url, filter, count, offset
         params = _parse_parameters(body)
@@ -3184,6 +3318,11 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
         body_offset = _parse_offset_param(params.get("offset"), default=offset)
         if body_offset is None:
             return _fhir_error_response(request, 400, f"offset must be a non-negative integer (got {params.get('offset')!r}).")
+        # QC-315: body activeOnly (valueBoolean) wins over the query default.
+        try:
+            body_active_only = _parse_active_only_body_param(body)
+        except ValueError as exc:
+            return _fhir_error_response(request, 400, str(exc))
         payload = await _run_db(
             _executor(request), _do_expand, _engine(request),
             url=params.get("url"),
@@ -3191,6 +3330,10 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
             count=count,
             system_uri=params.get("system"),
             offset=body_offset,
+            active_only=(
+                body_active_only if body_active_only is not None
+                else activeOnly
+            ),
         )
         return _respond(request, payload)
 
@@ -3202,6 +3345,7 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
         system_uri: str | None = None,
         value_set: dict[str, Any] | None = None,
         offset: int = 0,
+        active_only: bool = True,
     ):
         """Expand a ValueSet.
 
@@ -3209,6 +3353,20 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
         1. Intensional (inline ValueSet with compose.include.filter) — hierarchy walk
         2. URL-based (fhir_vs pattern) — SNOMED intensional shorthand
         3. Filter (text search) — EHR autocomplete
+
+        QC-315 (MEDIUM): FHIR R4 $expand ``activeOnly`` is honored on the
+        enumeration modes. DIVERGENCE FROM R4: the spec default is false
+        ("include both active and inactive concepts"); this server's
+        DEFAULT (parameter omitted) narrows to active-only, matching the
+        engine-wide QC-238 active-only pruning every other surface
+        applies. ``activeOnly=true`` is identical to the default;
+        ``activeOnly=false`` includes retired/editorial-suppressed
+        concepts in the hierarchy/enumeration modes. The filter (text
+        search) mode ranks over prebuilt active-only search indexes that
+        cannot cheaply express concept activity, so ``activeOnly=false``
+        is rejected with 400 there per FHIR R4 §4.9.2 ("Combining
+        parameters must either work or the server returns an error")
+        rather than silently ignored (the QC-315 finding).
 
         QC-241 (HIGH): FHIR R4 $expand ``offset`` — "If paging is being
         used, the offset at which this resource starts." The route always
@@ -3241,10 +3399,13 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
                 "(filter), not both.",
             )
         page_end = offset + count
+        include_retired = not active_only
 
         # Mode 1: Inline ValueSet with compose rules
         if value_set:
-            payload = _expand_intensional(engine, value_set, page_end)
+            payload = _expand_intensional(
+                engine, value_set, page_end, include_retired=include_retired,
+            )
             return _expand_slice_page(payload, offset, page_end)
 
         # Mode 2: Implicit value set URL — FHIR R4 §4.7.3.1 convention-based
@@ -3255,17 +3416,33 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
         # The server SHOULD expand these even though no explicit ValueSet
         # resource exists. Found by SKEPTIC iteration TS-03 (QA-032).
         if url and _is_implicit_value_set_url(url):
-            payload = _expand_implicit_value_set(engine, url, page_end)
+            payload = _expand_implicit_value_set(
+                engine, url, page_end, include_retired=include_retired,
+            )
             return _expand_slice_page(payload, offset, page_end)
 
         # Mode 3: URL with fhir_vs pattern (SNOMED intensional shorthand with
         # a code in the path: http://snomed.info/sct/<code>?fhir_vs=isa)
         if url and "fhir_vs" in url:
-            payload = _expand_url_pattern(engine, url, page_end)
+            payload = _expand_url_pattern(
+                engine, url, page_end, include_retired=include_retired,
+            )
             return _expand_slice_page(payload, offset, page_end)
 
         # Mode 4: Text filter (existing EHR autocomplete)
         if filter_text:
+            if include_retired:
+                # QC-315: the search path ranks over prebuilt active-only
+                # indexes; honoring activeOnly=false here would require the
+                # index to carry activity state. Fail loudly instead of
+                # silently ignoring the parameter (the QC-315 finding).
+                return _fhir_error(
+                    400,
+                    "activeOnly=false not supported for filter-based "
+                    "expansions: the text-search index is active-only. Use "
+                    "a url/intensional expansion or the hierarchy "
+                    "include_retired walk instead.",
+                )
             sources = _resolve_sources(system_uri)
             if sources is None:
                 return _fhir_error(400, f"Unrecognized system URI: {system_uri}")
@@ -3419,7 +3596,9 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
                         expansion.pop("extension", None)
         return payload
 
-    def _expand_intensional(engine, value_set: dict[str, Any], count: int):
+    def _expand_intensional(
+        engine, value_set: dict[str, Any], count: int, include_retired: bool = False,
+    ):
         """Expand a ValueSet with compose.include/exclude rules.
 
         Thin wrapper around the module-level expand_intensional_value_set
@@ -3430,7 +3609,9 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
         null/empty concept code — QC-246) maps to a 400 OperationOutcome.
         """
         try:
-            deduped, depth_cap_hit = expand_intensional_value_set(engine, value_set, count)
+            deduped, depth_cap_hit = expand_intensional_value_set(
+                engine, value_set, count, include_retired=include_retired,
+            )
         except ValueError as exc:
             return _fhir_error(400, str(exc))
         max_depth = _resolve_max_depth()
@@ -3458,14 +3639,18 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
             total=total,
         )
 
-    def _expand_url_pattern(engine, url: str, count: int):
+    def _expand_url_pattern(
+        engine, url: str, count: int, include_retired: bool = False,
+    ):
         """HTTP-handler wrapper around the module-level expand_url_pattern.
 
         Delegates to the module-level function; catches ValueError and
         converts to a FHIR 400 OperationOutcome response.
         """
         try:
-            return expand_url_pattern(engine, url, count=count)
+            return expand_url_pattern(
+                engine, url, count=count, include_retired=include_retired,
+            )
         except ValueError as exc:
             return _fhir_error(400, str(exc))
 
@@ -3531,7 +3716,9 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
 
         return False
 
-    def _expand_implicit_value_set(engine, url: str, count: int):
+    def _expand_implicit_value_set(
+        engine, url: str, count: int, include_retired: bool = False,
+    ):
         """Expand a FHIR R4 §4.7.3.1 implicit value set URL.
 
         Per the spec: 'Some code systems define a value set which includes all
@@ -3541,7 +3728,8 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
         Implementation: resolve the URL to a medterm4ds source name and expand
         to all codes in that source (capped at `count`). For very large code
         systems (LOINC, SNOMED) the count cap will trigger the `too-costly`
-        truncation extension.
+        truncation extension. ``include_retired=True`` enumerates suppressed
+        codes too (FHIR ``activeOnly=false``); default active-only.
 
         Spec: https://hl7.org/fhir/terminology-service.html#4.7.3.1
         Found by SKEPTIC iteration TS-03 (QA-032).
@@ -3607,9 +3795,11 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
             # surrogate codes from the LNC expansion — they are not real
             # LOINC identifiers and a strict LOINC validator rejects them.
             # Scoped to LNC only (other SABs legitimately carry MTHU codes).
+            # include_retired: drop SUPPRESS='N' (activeOnly=false).
+            _suppress_clause = "" if include_retired else "AND SUPPRESS = 'N' "
             rows = engine.con.execute(
                 "SELECT DISTINCT CODE FROM mrconso WHERE SAB = ? "
-                "AND SUPPRESS = 'N' "
+                f"{_suppress_clause}"
                 "AND (SAB != 'LNC' OR CODE NOT LIKE 'MTHU%') "
                 "ORDER BY CODE LIMIT ?",
                 [source, count + 1],
