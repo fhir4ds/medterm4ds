@@ -146,16 +146,20 @@ def test_remote_api_engine_implements_service_protocols():
                 }
             ]
         },
+        # QC-490: /optimize now uses the shared 'results' envelope like every
+        # other endpoint (the engine still accepts the legacy 'result' key).
         "/optimize": {
-            "result": {
-                "source": "ICD10CM",
-                "relationship": "isa",
-                "strategy": "greedy_hierarchy",
-                "original_count": 2,
-                "optimized_count": 1,
-                "reduction": 50.0,
-                "rules": [{"include_source": "ICD10CM", "include": "E11", "exclude": []}],
-            }
+            "results": [
+                {
+                    "source": "ICD10CM",
+                    "relationship": "isa",
+                    "strategy": "greedy_hierarchy",
+                    "original_count": 2,
+                    "optimized_count": 1,
+                    "reduction": 50.0,
+                    "rules": [{"include_source": "ICD10CM", "include": "E11", "exclude": []}],
+                }
+            ]
         },
     }
 
@@ -204,3 +208,67 @@ def test_remote_api_engine_implements_service_protocols():
     assert health["status"] == "ok"
     assert calls[1][1]["target_sources"] == ["SNOMEDCT_US"]
     assert calls[4][1]["sources"] == ["ICD10CM"]
+
+
+# QC-481 (LOW): garbage constructor inputs must fail at construction with a
+# named-parameter ValueError — not at first call as raw AttributeError /
+# TypeError / "unknown url type" ValueError outside the RuntimeError envelope.
+import pytest
+
+from medterm4ds.engines.api.engine import (
+    DEFAULT_REMOTE_TIMEOUT,
+    RemoteApiEngine,
+    _truncate_detail,
+)
+
+
+@pytest.mark.parametrize(
+    "base_url",
+    [None, "", "   ", "127.0.0.1:8931", "ftp://example.com"],
+)
+def test_remote_engine_rejects_invalid_base_url(base_url):
+    with pytest.raises(ValueError, match="base_url"):
+        RemoteApiEngine(base_url)
+
+
+@pytest.mark.parametrize("timeout", ["abc", -1.0, 0, None, True])
+def test_remote_engine_rejects_invalid_timeout(timeout):
+    with pytest.raises(ValueError, match="timeout"):
+        RemoteApiEngine("http://terminology.example", timeout=timeout)
+
+
+# QC-485 (HIGH): the 30s default broke facade calls the local engine
+# completes (optimize measured 55-82s; a 10k-code patient-friendly batch
+# ~415s).
+def test_remote_engine_default_timeout_accommodates_documented_workloads():
+    assert DEFAULT_REMOTE_TIMEOUT >= 300
+
+
+# QC-490 (LOW): the engine still accepts the legacy singular 'result' key
+# from pre-fix servers while preferring the shared 'results' envelope.
+def test_remote_engine_optimize_accepts_legacy_result_key():
+    legacy = {
+        "result": {
+            "source": "ICD10CM",
+            "relationship": "isa",
+            "strategy": "greedy_hierarchy",
+            "original_count": 2,
+            "optimized_count": 1,
+            "reduction": 50.0,
+            "rules": [{"include_source": "ICD10CM", "include": "E11", "exclude": []}],
+        }
+    }
+    engine = RemoteApiEngine("http://terminology.example", transport=lambda path, payload: legacy)
+    result = engine.optimize_codes([CodeRef("ICD10CM", "E11.9")])
+    assert result.rules[0].include.code == "E11"
+
+
+# QC-479 (MEDIUM): the embedded HTTP error body is truncated so a pydantic
+# 422 echoing a 10,001-code input list cannot materialize as a 430k-char
+# exception string.
+def test_remote_engine_truncates_embedded_error_detail():
+    huge = "x" * 430_291
+    truncated = _truncate_detail(huge)
+    assert len(truncated) < 2_200
+    assert "chars truncated" in truncated
+    assert _truncate_detail("short message") == "short message"

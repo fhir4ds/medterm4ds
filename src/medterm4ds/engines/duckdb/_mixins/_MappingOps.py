@@ -17,6 +17,45 @@ class _MappingOps:
     instantiated on its own.
     """
 
+    def _known_mapping_sources(self) -> set[str] | None:
+        """Sources present in any mapping-relevant table (QC-414).
+
+        Cached per engine instance. Returns None when no mapping-relevant
+        table exists (nothing to validate against — the mapping itself will
+        fail or return [] exactly as before this guard existed).
+        """
+        cached = getattr(self, "_known_mapping_sources_cache", None)
+        if cached is not None:
+            return cached
+        import duckdb as _duckdb
+
+        known: set[str] = set()
+        probes = [
+            ("best_atoms", "source"),
+            ("same_cui_edges", "source"),
+            ("same_cui_edges", "target_source"),
+            ("crosswalk_edges", "source"),
+            ("crosswalk_edges", "target_source"),
+            ("walk_edges", "source"),
+            ("walk_edges", "target_source"),
+            ("mrconso", "SAB"),
+        ]
+        for table, column in probes:
+            if not self._table_exists(table):
+                continue
+            try:
+                rows = self.con.execute(
+                    f'SELECT DISTINCT "{column}" FROM {table}'
+                ).fetchall()
+            except _duckdb.CatalogException:
+                # Column absent on older schemas (e.g. walk_edges without a
+                # target_source) — that table simply contributes nothing.
+                continue
+            known.update(row[0] for row in rows if row[0])
+        result = known or None
+        self._known_mapping_sources_cache = result
+        return result
+
     def get_code_mappings(
         self,
         codes: Sequence[CodeRef],
@@ -39,6 +78,18 @@ class _MappingOps:
 
         ordered = [CodeRef(source=code.source, code=code.code) for code in codes]
         target_sources = _dedupe(target_sources)
+        # QC-414 (MEDIUM): an unknown-SAB target (e.g. 'BOGUS') previously
+        # returned [] — indistinguishable from 'code has no mapping' — while
+        # the input 'sources' side rejects the same value. Reject only when
+        # NO requested target exists in any mapping-relevant table: candidate
+        # lists (FHIR $translate all-targets, smart cross-reference defaults)
+        # legitimately over-include sources a given database may not carry.
+        known = self._known_mapping_sources()
+        if known is not None and not any(t in known for t in target_sources):
+            raise ValueError(
+                "target source(s) not found in this database: "
+                + ", ".join(repr(t) for t in target_sources)
+            )
         if (
             not include_target_ancestors
             and not include_target_descendants
@@ -154,6 +205,7 @@ class _MappingOps:
         relationship: str,
         upward: bool,
         max_depth: int,
+        warn_truncated: bool = False,
     ) -> dict[str, set[str]]:
         if not codes:
             return {}
@@ -180,6 +232,22 @@ class _MappingOps:
                         output[origin].add(target)
                         next_frontier[origin].add(target)
             frontier = {origin: values for origin, values in next_frontier.items() if values}
+        # QC-208/QC-214 (HIGH): a non-empty frontier at depth exhaustion means
+        # relations beyond max_depth may exist but were not explored. Opt-in
+        # (default False) so bounded callers like parents/children (which use
+        # max_depth=1 by design) stay silent; optimize enables it so deep
+        # hierarchies surface under-coverage instead of silently truncating.
+        if frontier and warn_truncated:
+            pending = len({code for values in frontier.values() for code in values})
+            logger.warning(
+                "%s hierarchy traversal from %d code(s) stopped at max_depth=%d "
+                "with %d relation(s) on the unexplored frontier; deeper "
+                "relations may be missing from this result",
+                source,
+                len(output),
+                max_depth,
+                pending,
+            )
         return output
 
 

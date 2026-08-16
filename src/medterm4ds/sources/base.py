@@ -40,6 +40,34 @@ BROAD_MEDLINEPLUS_NAMES: frozenset[str] = frozenset({
 })
 
 
+# ---------------------------------------------------------------------------
+# Hierarchy edge RELA vocabulary (canonical — imported by BOTH the prepared
+# builder (engines/duckdb/prepared.py) and the raw-path join builder
+# (engines/duckdb/_engine_base.py). Do not redefine locally.
+#
+# mrrel REL is authoritative for direction, never RELA (found by QC-340/345/349,
+# EC-15): UMLS mirrors every hierarchy edge twice —
+#   - REL='PAR' or 'RB' rows store the CHILD in AUI1 and the PARENT in AUI2
+#     (RELA='inverse_isa', and 'has_member' for ATC class->drug links);
+#   - REL='CHD' or 'RN' rows store the PARENT in AUI1 and the CHILD in AUI2
+#     (RELA='isa', and 'member_of' for the ATC mirror).
+# LOINC's multiaxial hierarchy is NOT mirrored: REL='RO' RELA='class_of' rows
+# store the code (child) in AUI1 and the multiaxial class (parent) in AUI2.
+# ---------------------------------------------------------------------------
+
+RELA_HIERARCHY_PARENT_SIDE: tuple[str, ...] = (
+    "isa",
+    "inverse_isa",
+    "has_member",  # ATC class has_member drug (REL='PAR': AUI1=drug/child)
+)
+RELA_HIERARCHY_CHILD_SIDE: tuple[str, ...] = (
+    "isa",
+    "inverse_isa",
+    "member_of",  # ATC drug member_of class (REL='CHD': AUI1=class/parent)
+)
+LOINC_CLASS_RELA = "class_of"
+
+
 class SourceStrategy(Protocol):
     """Interface that each UMLS source must implement.
 

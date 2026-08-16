@@ -17,18 +17,16 @@ from medterm4ds.engines.fhir.equivalence import (
 )
 from medterm4ds.engines.fhir.equivalence import fhir_equivalence
 
-PATIENT_FRIENDLY_SYSTEM = "urn:medterm4ds:CodeSystem:patient-friendly"
+PATIENT_FRIENDLY_SYSTEM = SYSTEM_TO_FHIR_URI["PATIENT_FRIENDLY"]
 DEFAULT_CONCEPT_MAP_URL = "urn:medterm4ds:ConceptMap:patient-friendly"
 
 # Single source of truth for source -> FHIR system URI lives in
-# medterm4ds.engines.fhir.SYSTEM_TO_FHIR_URI. This map composes it with the
-# internal PATIENT_FRIENDLY namespace used by patient-friendly ConceptMap
-# exports. Do not add system URIs here — add them to SYSTEM_TO_FHIR_URI so
-# the FHIR API, ConceptMap export, and CapabilityStatement all agree.
-FHIR_CODE_SYSTEMS: dict[str, str] = {
-    **SYSTEM_TO_FHIR_URI,
-    "PATIENT_FRIENDLY": PATIENT_FRIENDLY_SYSTEM,
-}
+# medterm4ds.engines.fhir.SYSTEM_TO_FHIR_URI (QC-367: PATIENT_FRIENDLY now
+# lives there too, so the $translate surface and the ConceptMap export
+# surface resolve it identically). Do not add system URIs here — add them
+# to SYSTEM_TO_FHIR_URI so the FHIR API, ConceptMap export, and
+# CapabilityStatement all agree.
+FHIR_CODE_SYSTEMS: dict[str, str] = dict(SYSTEM_TO_FHIR_URI)
 
 # CR-024 (milestone-3 review): ``FHIR_EQUIVALENCES`` and the helper
 # ``fhir_equivalence`` are now imported from the canonical module
@@ -141,7 +139,13 @@ def _merge_row_target(
     target = {
         "equivalence": fhir_equivalence(row.relationship),
     }
-    if row.relationship != "unmatched":
+    # QC-355 (MEDIUM): the guard compared against the literal 'unmatched',
+    # but the internal relationship vocabulary is 'not-translated' (which
+    # fhir_equivalence translates to the R4 enum value 'unmatched'). Compare
+    # the TRANSLATED equivalence so both spellings omit target code/display —
+    # R4: a target with equivalence 'unmatched' must not present a code as if
+    # the source were mapped.
+    if fhir_equivalence(row.relationship) != "unmatched":
         target["code"] = row.target.code
         target["display"] = row.target_display
     if include_extensions:

@@ -14,6 +14,8 @@ import logging
 from collections import defaultdict
 from collections.abc import Sequence
 
+import duckdb
+
 from medterm4ds.core.models import (
     CodeRef,
     FriendlyNameResult,
@@ -567,8 +569,22 @@ def _snomed_fallback(
 
     try:
         rows = con.execute(query).fetchall()
-    except Exception:
-        logger.exception("SNOMED fallback query failed")
+    except duckdb.Error:
+        # QC-089/QC-090/QC-098 (HIGH): pre-fix, a broad ``except Exception:``
+        # here silently swallowed ``OutOfMemoryException`` and returned ``{}``,
+        # causing the caller to silently downgrade ~30% of batch codes from
+        # ``snomed_fallback`` to ``original`` (losing the MEDLINEPLUS patient-
+        # friendly name) with no signal. Per GLOBAL_RULES "Silent Fallbacks"
+        # we narrow to ``duckdb.Error`` (the legitimate operational-error
+        # class for DuckDB) and log at WARNING so the operator sees the
+        # degraded run. Programming bugs (TypeError / AttributeError / etc.)
+        # propagate. Returning ``{}`` preserves the degradation behavior for
+        # genuine OOM / I/O errors, but the WARNING makes it visible.
+        logger.warning(
+            "SNOMED fallback query failed (degraded run: codes will fall "
+            "back to 'original' without patient-friendly names)",
+            exc_info=True,
+        )
         return {}
 
     fallback_map: dict[int, FriendlyNameResult] = {}
@@ -584,7 +600,14 @@ def _snomed_fallback(
         match_depth = int(row[6] or 0)
         code_ref = needs_fallback[idx]
         _, tech_name = base_info.get(idx, (code_ref.code, code_ref.code))
-        if friendly_src == "CHV" and is_combo_name_mismatch(tech_name, friendly_name):
+        # QC-096 (HIGH): pre-fix, the combo-name mismatch guard fired only
+        # for ``friendly_src == 'CHV'``. MEDLINEPLUS-friendly hits bypassed
+        # the check entirely, so SNOMED combination codes with mismatched
+        # MEDLINEPLUS atoms were silently accepted. Apply the guard uniformly
+        # to both CHV and MEDLINEPLUS candidates.
+        if friendly_src in {"CHV", "MEDLINEPLUS"} and is_combo_name_mismatch(
+            tech_name, friendly_name
+        ):
             continue
 
         fallback_map[idx] = FriendlyNameResult(
@@ -1274,8 +1297,13 @@ def _guarded_snomed_walk(
 
     try:
         rows = con.execute(query).fetchall()
-    except Exception:
-        logger.exception("Guarded SNOMED walk query failed")
+    except duckdb.Error:
+        # QC-089 sibling: narrow ``except Exception:`` to ``duckdb.Error`` so
+        # OOM / I/O failures log at WARNING (degraded run signal) while
+        # programming bugs propagate. Per GLOBAL_RULES "Silent Fallbacks".
+        logger.warning(
+            "Guarded SNOMED walk query failed (degraded run)", exc_info=True
+        )
         return
 
     for row in rows:
@@ -1287,7 +1315,14 @@ def _guarded_snomed_walk(
         match_depth = int(row[3] or 0)
         code_ref = codes[idx]
         _, tech_name = base_info.get(idx, (code_ref.code, code_ref.code))
-        if friendly_src == "CHV" and is_combo_name_mismatch(tech_name, friendly_name):
+        # QC-096 (HIGH): pre-fix, the combo-name mismatch guard fired only
+        # for ``friendly_src == 'CHV'``. MEDLINEPLUS-friendly hits bypassed
+        # the check entirely, so SNOMED combination codes with mismatched
+        # MEDLINEPLUS atoms were silently accepted. Apply the guard uniformly
+        # to both CHV and MEDLINEPLUS candidates.
+        if friendly_src in {"CHV", "MEDLINEPLUS"} and is_combo_name_mismatch(
+            tech_name, friendly_name
+        ):
             continue
 
         results[idx] = FriendlyNameResult(

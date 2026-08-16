@@ -66,6 +66,17 @@ def write_csv(rows: Iterable[ResultLike], path: str | Path) -> Path:
     """Write service results as CSV.
 
     Nested values such as provenance are serialized as compact JSON strings.
+
+    Formula-injection defense (QC-373): string cells starting with ``= + - @``
+    or whitespace control chars are prefixed with a single leading ``'`` so
+    spreadsheets render them literally instead of evaluating them as formulas
+    (OWASP CSV injection guidance). This intentionally MUTATES the cell value;
+    consumers who need the exact value should use ``write_jsonl``/JSON or read
+    back with :func:`read_csv`, which strips the guard prefix (QC-374: ``None``
+    values round-trip as ``None``; empty CSV cells are read back as ``None``).
+
+    Line endings are ``\\r\\n`` (csv module excel dialect), per RFC 4180 —
+    JSON/JSONL writers emit ``\\n`` (QC-376, documented divergence).
     """
     output_path = Path(path)
     iterator = iter(rows)
@@ -101,6 +112,40 @@ def _sanitize_csv_value(value: Any) -> Any:
 def _sanitize_csv_record(record: dict[str, Any]) -> dict[str, Any]:
     """Return a copy of `record` with all string values sanitized."""
     return {key: _sanitize_csv_value(value) for key, value in record.items()}
+
+
+def _restore_csv_value(value: Any) -> Any:
+    """Undo :func:`_sanitize_csv_value` on a cell read back from CSV.
+
+    Inverse of the formula-injection guard: a leading ``'`` followed by a
+    formula-prefix char is stripped, and empty cells map to ``None`` so a
+    CSV round-trip matches the JSON/JSONL values (QC-373/QC-374). A genuine
+    value that already began with ``'`` + formula char is indistinguishable
+    from a guarded cell — prefer json/jsonl when that ambiguity matters.
+    """
+    if not isinstance(value, str):
+        return value
+    if value == "":
+        return None
+    if value[0] == "'" and len(value) > 1 and value[1] in _CSV_FORMULA_PREFIXES:
+        return value[1:]
+    return value
+
+
+def read_csv(path: str | Path) -> list[dict[str, Any]]:
+    """Read back a file written by :func:`write_csv`.
+
+    Canonical reader for the CSV output surface (QC-373): strips the
+    formula-injection guard prefix and maps empty cells to ``None``, so
+    ``read_csv(write_csv(rows))`` returns the same data values as the
+    JSON/JSONL representations.
+    """
+    output_path = Path(path)
+    with output_path.open("r", encoding="utf-8", newline="") as file:
+        return [
+            {key: _restore_csv_value(value) for key, value in row.items()}
+            for row in csv.DictReader(file)
+        ]
 
 
 def to_record(row: ResultLike) -> dict[str, Any]:

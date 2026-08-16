@@ -189,3 +189,165 @@ def test_local_engine_hierarchy_uses_prepared_walk_edges(
         ("ROOT", "A", 1),
         ("ROOT", "A.1", 2),
     ]
+
+
+def test_prepared_seed_uses_all_atoms_not_just_rank1() -> None:
+    """QC-067/QC-070 (CRITICAL) regression: walk_edges edge attached to a
+    non-rank-1 atom of the parent must be discoverable by descendants() /
+    is_descendant() / $subsumes.
+
+    Pre-fix, the seed step joined best_atoms with ``rank = 1``, so when a
+    code had multiple atoms and an mrrel CHD/isa edge attached to a non-
+    best atom, the edge was silently dropped. This fixture mirrors the
+    production scenario: code PARENT has 3 atoms (rank 1/2/3); the edge
+    to CHILD attaches to the rank-3 atom of PARENT. Without the fix,
+    descendants(PARENT) would miss CHILD.
+    """
+    conn = duckdb.connect(":memory:")
+    try:
+        conn.execute("CREATE SCHEMA mt4ds")
+        # best_atoms mirrors the production schema (all atoms, with rank).
+        # PARENT has 3 atoms; the edge attaches to AUI_PARENT_OAS (rank 3).
+        conn.execute(
+            """
+            CREATE TABLE mt4ds.best_atoms (
+                source VARCHAR, code VARCHAR, aui VARCHAR, cui VARCHAR,
+                tty VARCHAR, name VARCHAR, suppress VARCHAR,
+                is_active BOOLEAN, rank INTEGER
+            )
+            """
+        )
+        conn.executemany(
+            "INSERT INTO mt4ds.best_atoms VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            [
+                # PARENT atoms: rank 1 (display), 2, 3 (where the edge attaches)
+                ("SNOMEDCT_US", "PARENT", "AUI_PARENT_DISPLAY", "C_P", "OAS",
+                 "Parent display", "N", True, 1),
+                ("SNOMEDCT_US", "PARENT", "AUI_PARENT_OTHER", "C_P", "OAS",
+                 "Parent other", "N", True, 2),
+                ("SNOMEDCT_US", "PARENT", "AUI_PARENT_OAP", "C_P", "OAP",
+                 "Parent OAP", "N", True, 3),
+                # CHILD atom
+                ("SNOMEDCT_US", "CHILD", "AUI_CHILD_PT", "C_C", "PT",
+                 "Child PT", "N", True, 1),
+            ],
+        )
+        # walk_edges: CHILD -> PARENT via the non-rank-1 atom of PARENT
+        conn.execute(
+            """
+            CREATE TABLE mt4ds.walk_edges (
+                source VARCHAR, from_code VARCHAR, from_aui VARCHAR,
+                from_cui VARCHAR, from_tty VARCHAR, to_code VARCHAR,
+                to_aui VARCHAR, to_cui VARCHAR, to_tty VARCHAR,
+                relationship VARCHAR, direction VARCHAR, edge_source VARCHAR
+            )
+            """
+        )
+        conn.execute(
+            """
+            INSERT INTO mt4ds.walk_edges VALUES (
+                'SNOMEDCT_US', 'CHILD', 'AUI_CHILD_PT', 'C_C', 'PT',
+                'PARENT', 'AUI_PARENT_OAP', 'C_P', 'OAP',
+                'isa', 'parent', 'umls_mrrel'
+            )
+            """
+        )
+        engine = LocalDuckDBEngine(conn)
+        # descendants(PARENT) must include CHILD even though the edge
+        # attaches to PARENT's rank-3 atom (not rank-1).
+        descendants = engine.get_code_relations(
+            [CodeRef(source="SNOMEDCT_US", code="PARENT")],
+            direction="descendants",
+            max_depth=5,
+        )
+        target_codes = [row.target.code for row in descendants]
+        assert "CHILD" in target_codes, (
+            f"QC-070 regression: CHILD missing from descendants(PARENT); "
+            f"got {target_codes}"
+        )
+    finally:
+        conn.close()
+
+
+
+def test_prepared_walk_excludes_retired_targets_qc238() -> None:
+    """QC-238 (HIGH) regression: the prepared walk_edges path had no
+    is_active check on walked targets (the raw-mrrel path enforces
+    SUPPRESS='N' on every hop), leaking retired SNOMED concepts into
+    descendants — 8,069 of 49,696 (16.2%) depth-3 descendants of
+    404684003 in production 2026AA. Retired targets must be excluded,
+    including concepts only reachable THROUGH a retired intermediate.
+    """
+    conn = duckdb.connect(":memory:")
+    try:
+        conn.execute("CREATE SCHEMA mt4ds")
+        conn.execute(
+            """
+            CREATE TABLE mt4ds.best_atoms (
+                source VARCHAR, code VARCHAR, aui VARCHAR, cui VARCHAR,
+                tty VARCHAR, name VARCHAR, suppress VARCHAR,
+                is_active BOOLEAN, rank INTEGER
+            )
+            """
+        )
+        conn.executemany(
+            "INSERT INTO mt4ds.best_atoms VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            [
+                ("SNOMEDCT_US", "ROOT", "AUI_ROOT", "C_R", "PT", "Root", "N", True, 1),
+                ("SNOMEDCT_US", "ACTIVE_CHILD", "AUI_ACTIVE", "C_AC", "PT", "Active child", "N", True, 1),
+                # Retired concept: suppressed atom (mrconso SUPPRESS='O').
+                ("SNOMEDCT_US", "RETIRED_CHILD", "AUI_RETIRED", "C_RC", "PT", "Retired child", "O", False, 1),
+                # Active concept whose ONLY parent edge is via RETIRED_CHILD.
+                ("SNOMEDCT_US", "ONLY_VIA_RETIRED", "AUI_OVR", "C_OVR", "PT", "Only via retired", "N", True, 1),
+            ],
+        )
+        conn.execute(
+            """
+            CREATE TABLE mt4ds.walk_edges (
+                source VARCHAR, from_code VARCHAR, from_aui VARCHAR,
+                from_cui VARCHAR, from_tty VARCHAR, to_code VARCHAR,
+                to_aui VARCHAR, to_cui VARCHAR, to_tty VARCHAR,
+                relationship VARCHAR, direction VARCHAR, edge_source VARCHAR
+            )
+            """
+        )
+        conn.executemany(
+            "INSERT INTO mt4ds.walk_edges VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            [
+                ("SNOMEDCT_US", "ACTIVE_CHILD", "AUI_ACTIVE", "C_AC", "PT",
+                 "ROOT", "AUI_ROOT", "C_R", "PT", "isa", "parent", "synthetic"),
+                ("SNOMEDCT_US", "RETIRED_CHILD", "AUI_RETIRED", "C_RC", "PT",
+                 "ROOT", "AUI_ROOT", "C_R", "PT", "isa", "parent", "synthetic"),
+                ("SNOMEDCT_US", "ONLY_VIA_RETIRED", "AUI_OVR", "C_OVR", "PT",
+                 "RETIRED_CHILD", "AUI_RETIRED", "C_RC", "PT", "isa", "parent", "synthetic"),
+            ],
+        )
+        engine = LocalDuckDBEngine(conn)
+        descendants = engine.get_code_relations(
+            [CodeRef(source="SNOMEDCT_US", code="ROOT")],
+            direction="descendants",
+            max_depth=3,
+        )
+        target_codes = [row.target.code for row in descendants]
+        assert target_codes == ["ACTIVE_CHILD"], (
+            f"QC-238 regression: retired targets leaked into descendants; "
+            f"got {target_codes}"
+        )
+    finally:
+        conn.close()
+
+
+def test_discover_limit_caps_descendant_rows_qc216(
+    con: duckdb.DuckDBPyConnection,
+) -> None:
+    """QC-216 (HIGH) regression: discover() never passed ``limit`` to
+    get_code_relations on the code branch — limit=5 on SNOMED 404684003
+    (depth=3) returned all 49,696 descendants (~18MB payload) in production."""
+    from medterm4ds.domains.terminology import discover
+
+    engine = LocalDuckDBEngine(con)
+    payload = discover("ICD10CM", engine=engine, code="ROOT", depth=2, limit=1)
+    assert len(payload["descendants"]) == 1
+    # Without a limit the same walk returns both levels.
+    payload_all = discover("ICD10CM", engine=engine, code="ROOT", depth=2, limit=20)
+    assert len(payload_all["descendants"]) == 2

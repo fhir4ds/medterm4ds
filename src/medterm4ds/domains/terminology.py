@@ -7,7 +7,7 @@ from typing import Any
 
 from medterm4ds.core.models import CodeRef
 from medterm4ds.core.normalize import normalize_source
-from medterm4ds.services.discovery import sample_source_codes, search_names
+from medterm4ds.services.discovery import MAX_DISCOVERY_LIMIT, sample_source_codes, search_names
 from medterm4ds.services.hierarchy import get_code_relations
 from medterm4ds.services.lookup import get_code_infos
 from medterm4ds.services.mapping import get_code_mappings
@@ -319,6 +319,18 @@ def discover(
     """Browse a source or a code's local hierarchy."""
     source = normalize_source(source_terminology)
     depth = min(max(depth, 1), 5)
+    # QC-223/QC-228: validate the caller-facing parameter BEFORE delegating —
+    # previously limit=0 leaked ``per_source must be at least 1`` (an internal
+    # parameter name) on the no-code branch and was silently ignored on the
+    # code branch. QC-217: unbounded limits crashed in the SQL layer.
+    if limit < 1:
+        raise ValueError("limit must be at least 1")
+    if limit > MAX_DISCOVERY_LIMIT:
+        raise ValueError(f"limit must be at most {MAX_DISCOVERY_LIMIT} (got {limit})")
+    # QC-222: an empty string is never a valid code — previously echoed back
+    # as root {'code': ''} with empty descendants.
+    if code is not None and not code.strip():
+        raise ValueError("code must be a non-empty string")
     if code is None:
         samples = sample_source_codes(engine=engine, sources=[source], per_source=limit)
         infos = get_code_infos(samples, engine=engine)
@@ -333,14 +345,20 @@ def discover(
 
     ref = CodeRef(source, code)
     root = get_code_infos([ref], engine=engine)[0]
+    # QC-216 (HIGH): limit was never passed to get_code_relations on the code
+    # branch — limit=5 on SNOMED 404684003 (depth=3) returned all 49,696
+    # descendants (~18MB) and depth=5 crashed with a temp-storage IOException.
     descendants = get_code_relations(
         [ref],
         engine=engine,
         direction="descendants",
         max_depth=depth,
+        limit=limit,
     )
     ancestors = (
-        get_code_relations([ref], engine=engine, direction="ancestors", max_depth=depth)
+        get_code_relations(
+            [ref], engine=engine, direction="ancestors", max_depth=depth, limit=limit
+        )
         if include_ancestors
         else []
     )
@@ -370,6 +388,16 @@ def cross_reference(
     source = normalize_source(from_source)
     target_sources = tuple(to_sources or _SMART_CROSS_REFERENCE_TARGETS.get(source, ("SNOMEDCT_US", "MSH")))
     normalized_mode = mode.lower().strip()
+    # QC-415 (MEDIUM): a typo'd mode previously fell through the membership
+    # tests below and silently degraded to exact-mode semantics while being
+    # echoed back as if honored. Validate the enumeration like search mode
+    # and lookup resolve_mode.
+    valid_modes = {"exact", "broader", "narrower", "best", "fallback"}
+    if normalized_mode not in valid_modes:
+        raise ValueError(
+            f"Unknown cross-reference mode: {mode!r}. "
+            f"Use one of: {', '.join(sorted(valid_modes))}."
+        )
     mapping_depth = max_depth if normalized_mode in {"broader", "best", "fallback"} else 0
     include_descendants = normalized_mode in {"narrower", "best"}
     include_ancestors = normalized_mode in {"broader", "best"}

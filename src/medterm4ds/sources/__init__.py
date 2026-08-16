@@ -10,6 +10,9 @@ from .base import (
     BROAD_CHV_NAMES,
     BROAD_MEDLINEPLUS_NAMES,
     DefaultStrategy,
+    LOINC_CLASS_RELA,
+    RELA_HIERARCHY_CHILD_SIDE,
+    RELA_HIERARCHY_PARENT_SIDE,
     SourceStrategy,
 )
 from .cpt_hcpcs import CptStrategy, HcpcsStrategy
@@ -67,6 +70,10 @@ __all__ = [
     # Broad name sets
     "BROAD_CHV_NAMES",
     "BROAD_MEDLINEPLUS_NAMES",
+    # Hierarchy edge RELA vocabulary (canonical — see sources/base.py)
+    "LOINC_CLASS_RELA",
+    "RELA_HIERARCHY_CHILD_SIDE",
+    "RELA_HIERARCHY_PARENT_SIDE",
     # RxNorm
     "RXNORM_TTY_TOPOLOGY",
     "RXNORM_KNOWN_TTYS",

@@ -18,6 +18,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 from typing import Any
 
+from medterm4ds.core.display import join_limited
 from medterm4ds.core.normalize import normalize_source
 
 
@@ -44,9 +45,12 @@ def validate_indication_relationships(relationship_types: Sequence[str] | str | 
     )
     unsupported = [value for value in relationships if value not in _ALLOWED_INDICATION_RELATIONSHIPS]
     if unsupported:
+        # QC-399 (LOW): cap the enumeration — a 10K-entry relationship_types
+        # list previously produced a ~120KB one-line ValueError (QC-396
+        # sibling; reachable from MCP drugs_for_indication).
         raise ValueError(
             "Unsupported indication relationship(s): "
-            + ", ".join(unsupported)
+            + join_limited(unsupported)
             + ". Supported values: "
             + ", ".join(sorted(_ALLOWED_INDICATION_RELATIONSHIPS))
         )

@@ -324,3 +324,208 @@ def test_get_code_mappings_filters_top_level_snomed_target_hierarchy():
     assert ("44054006", "equivalent", "same_cui", 0) in selected
     assert ("111111", "source-is-narrower-than-target", "target_ancestor", 1) not in selected
     assert ("222222", "source-is-broader-than-target", "target_descendant", 1) not in selected
+
+
+# ---------------------------------------------------------------------------
+# Input-validation regression tests (QC-020, QC-021, QC-027)
+# ---------------------------------------------------------------------------
+
+
+def _minimal_engine() -> tuple[duckdb.DuckDBPyConnection, LocalDuckDBEngine]:
+    con = duckdb.connect(database=":memory:")
+    _make_mapping_db(con)
+    return con, LocalDuckDBEngine(con)
+
+
+def test_get_code_mappings_rejects_none_target_sources():
+    """QC-020: target_sources=None must raise ValueError, not TypeError."""
+    con, engine = _minimal_engine()
+    try:
+        with pytest.raises(ValueError, match="target_sources must not be empty"):
+            get_code_mappings(
+                [CodeRef("SNOMEDCT_US", "44054006")],
+                engine=engine,
+                target_sources=None,
+            )
+    finally:
+        con.close()
+
+
+def test_get_code_mappings_rejects_empty_string_target_source():
+    """QC-021: target_sources=[''] must raise ValueError, not silently return []."""
+    con, engine = _minimal_engine()
+    try:
+        with pytest.raises(ValueError, match="empty or None entries"):
+            get_code_mappings(
+                [CodeRef("SNOMEDCT_US", "44054006")],
+                engine=engine,
+                target_sources=[""],
+            )
+    finally:
+        con.close()
+
+
+def test_get_code_mappings_rejects_none_in_target_sources():
+    """QC-021 sibling: target_sources=[None] must raise ValueError."""
+    con, engine = _minimal_engine()
+    try:
+        with pytest.raises(ValueError, match="empty or None entries"):
+            get_code_mappings(
+                [CodeRef("SNOMEDCT_US", "44054006")],
+                engine=engine,
+                target_sources=[None],
+            )
+    finally:
+        con.close()
+
+
+def test_get_code_mappings_rejects_string_max_results_per_code():
+    """QC-027: max_results_per_code='50' (string) must raise TypeError with clear message."""
+    con, engine = _minimal_engine()
+    try:
+        with pytest.raises(TypeError, match="max_results_per_code must be int"):
+            get_code_mappings(
+                [CodeRef("SNOMEDCT_US", "44054006")],
+                engine=engine,
+                target_sources=["ICD10CM"],
+                max_results_per_code="50",  # type: ignore[arg-type]
+            )
+    finally:
+        con.close()
+
+
+def test_get_code_mappings_rejects_string_max_depth():
+    """QC-027 sibling: max_depth='1' (string) must raise TypeError with clear message."""
+    con, engine = _minimal_engine()
+    try:
+        with pytest.raises(TypeError, match="max_depth must be int"):
+            get_code_mappings(
+                [CodeRef("SNOMEDCT_US", "44054006")],
+                engine=engine,
+                target_sources=["ICD10CM"],
+                max_depth="1",  # type: ignore[arg-type]
+            )
+    finally:
+        con.close()
+
+
+# ---------------------------------------------------------------------------
+# CLI run_mapping regression tests (QC-022, QC-023, QC-029)
+# ---------------------------------------------------------------------------
+
+
+def test_run_mapping_rejects_empty_target_source():
+    """QC-023: --target-source '' must exit non-zero with a clean message."""
+    import argparse
+    from medterm4ds.apps.cli import run_mapping
+
+    args = argparse.Namespace(
+        db="data/umls_current.duckdb",
+        memory_profile="low",
+        memory_limit=None,
+        temp_dir=None,
+        threads=None,
+        query_chunk_size=None,
+        code=["44054006"],
+        source=["SNOMEDCT_US"],
+        target_source=[""],
+        max_results_per_code=50,
+        max_depth=0,
+        include_target_ancestors=False,
+        include_target_descendants=False,
+        resolve_mode="active_only",
+        output=None,
+        format="json",
+    )
+
+    with pytest.raises(SystemExit, match="non-empty vocabulary name"):
+        run_mapping(args)
+
+
+def test_run_mapping_rejects_uri_form_target_source():
+    """QC-032: --target-source http://... must exit non-zero (sibling of FIX-010).
+
+    Pre-fix, ``--target-source http://hl7.org/fhir/sid/icd-10-cm`` was
+    uppercased to 'HTTP://HL7.ORG/...' and silently returned no matches.
+    The fix applies the same URI/OID rejection that --source uses (QC-011).
+    """
+    import argparse
+    from medterm4ds.apps.cli import run_mapping
+
+    args = argparse.Namespace(
+        db="data/umls_current.duckdb",
+        memory_profile="low",
+        memory_limit=None,
+        temp_dir=None,
+        threads=None,
+        query_chunk_size=None,
+        code=["44054006"],
+        source=["SNOMEDCT_US"],
+        target_source=["http://hl7.org/fhir/sid/icd-10-cm"],
+        max_results_per_code=50,
+        max_depth=0,
+        include_target_ancestors=False,
+        include_target_descendants=False,
+        resolve_mode="active_only",
+        output=None,
+        format="json",
+    )
+
+    with pytest.raises(SystemExit, match="UMLS SAB string"):
+        run_mapping(args)
+
+
+
+def test_run_mapping_rejects_negative_max_depth():
+    """QC-022: --max-depth -5 must exit 1 with a clean message, not a traceback.
+
+    This tests the CLI-layer catch of ValueError from the service layer. The
+    service-layer validation itself is tested above (test_get_code_mappings_*
+    tests); this test confirms the CLI renders it as a SystemExit.
+    """
+    import argparse
+    import inspect
+    from medterm4ds.apps.cli import run_mapping
+
+    # Source-read audit: run_mapping must wrap get_code_mappings in
+    # try/except (ValueError, TypeError) so input-validation errors surface
+    # as clean SystemExit messages rather than raw Python tracebacks.
+    source = inspect.getsource(run_mapping)
+    assert "except (ValueError, TypeError)" in source, (
+        "QC-022 regression: run_mapping must catch ValueError/TypeError from "
+        "get_code_mappings and render as SystemExit('Error: ...')."
+    )
+
+
+def test_run_mapping_disables_progress_bar_for_stdout():
+    """QC-029/QC-360: DuckDB progress bar must be disabled when writing JSON
+    to stdout.
+
+    DuckDB 1.5+ auto-enables a progress bar that writes directly to the
+    terminal fd (bypassing sys.stdout), corrupting JSON output for downstream
+    subprocess parsers. QC-360 generalized the QC-029 run_mapping-only guard
+    into the shared ``_connect_read_only`` helper used by every stdout-
+    printing query command; run_mapping must route its connection through it.
+    """
+    import inspect
+    from medterm4ds.apps.cli import _connect_read_only, run_mapping
+
+    source = inspect.getsource(run_mapping)
+    assert "_connect_read_only(db_path, output=args.output)" in source, (
+        "QC-360 regression: run_mapping must open its read-only connection "
+        "via _connect_read_only so the DuckDB progress bar is disabled on "
+        "the stdout path (corrupting JSON otherwise)."
+    )
+
+    helper_source = inspect.getsource(_connect_read_only)
+    assert "enable_progress_bar" in helper_source, (
+        "QC-029/QC-360 regression: _connect_read_only must SET "
+        "enable_progress_bar = false when output is None."
+    )
+    # The disable must be conditional on stdout output (not --output file path).
+    assert "if not output" in helper_source, (
+        "QC-029/QC-360 regression: progress-bar disable must be gated on "
+        "output being None (stdout path only)."
+    )
+
+

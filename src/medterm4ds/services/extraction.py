@@ -137,15 +137,18 @@ _GRADE_ORDER = {"certain": 0, "exact": 0, "probable": 1, "possible": 2, "broader
 # and fails to match the Heart Rate anchor. Stripping values before search
 # (while preserving the original span in `matched_text`) fixes this.
 # Matches trailing tokens like: "80", "120/80", "7.2%", "37C", "98%", "+", "-".
+# QC-188: the unit part must be a single unspaced token — the previous
+# `(?:\s*[%°a-zA-Z/]+)?` let " 2 diabetes" match as number+unit, mangling
+# "type 2 diabetes" → "type" before search.
 _TRAILING_VALUE_RE = re.compile(
     r'\s+'                              # whitespace before value
     r'(?:'
         r'\d+(?:[./]\d+)*'              # number: 80, 120/80, 7.2
-        r'(?:\s*[%°a-zA-Z/]+)?'         # optional unit: %, C, mmHg, mg/dL, etc.
+        r'(?:[%°a-zA-Z/]+)?'            # optional unspaced unit: %, C, mmHg, mg/dL
         r'|[+\-]'                       # bare + or -
         r'|less|greater|high|low|normal|abnormal'  # common qualifiers
     r')'
-    r'(?:[,;]?\s*\d+(?:[./]\d+)*(?:\s*[%°a-zA-Z/]+)?)*'  # additional values
+    r'(?:[,;]?\s*\d+(?:[./]\d+)*(?:[%°a-zA-Z/]+)?)*'  # additional values
     r'\s*$'
 )
 
@@ -200,11 +203,22 @@ _FALSE_POSITIVE_WORDS = frozenset({
     "hospital", "clinic", "center", "department", "service",
     "doctor", "nurse", "physician", "provider",
     "family", "mother", "father", "brother", "sister",
+    # QC-189: complete the kinship set — aunt/uncle/cousin/daughter/son/
+    # maternal/paternal/grandmother (etc.) leaked through as GLiNER spans
+    # in family-history sentences while father/mother were filtered.
+    "aunt", "uncle", "cousin", "daughter", "son",
+    "maternal", "paternal", "grandmother", "grandfather",
+    "grandparent", "grandparents", "sibling", "siblings",
+    "nephew", "niece", "relative", "relatives",
     "plan", "assessment", "note", "notes", "report",
     "presents", "presenting", "admitted", "discharged",
     "normal", "stable", "unremarkable", "well", "good",
     "left", "right", "bilateral", "upper", "lower",
     "yes", "no", "not", "and", "or", "with", "without",
+    # QC-160: note furniture GLiNER wrongly affirmed at low threshold.
+    "evidence", "history", "social history", "family history",
+    "past medical history", "review of systems", "physical exam",
+    "stage",
 })
 
 # Negation/uncertainty/historical trigger patterns that GLiNER may include
@@ -217,6 +231,14 @@ _NEGATION_TRIGGERS = [
     (r"^(possible\s+|possibly\s+|may\s+have\s+|might\s+have\s+|could\s+be\s+|suspected\s+|suspect\s+|suggestive\s+of\s+|concerning\s+for\s+|likely\s+)", "uncertain"),
     (r"^(history\s+of\s+|hx\s+of\s+|hx\s+|past\s+|previously\s+had\s+|prior\s+|remote\s+)", "historical"),
 ]
+
+# Post-entity negation triggers (QC-188): "breast cancer ruled out" carries
+# the trigger AFTER the entity. medspaCy ConText missed these in GLiNER
+# spans (it annotates its own cue window, not inline span text).
+_POST_ENTITY_NEGATION_RE = re.compile(
+    r"\s+(?:ruled\s+out|rules\s+out|is\s+ruled\s+out|was\s+ruled\s+out)\s*$",
+    re.IGNORECASE,
+)
 
 
 def _detect_inline_trigger(entity_text: str) -> tuple[str, str]:
@@ -232,6 +254,13 @@ def _detect_inline_trigger(entity_text: str) -> tuple[str, str]:
             cleaned = entity_text[match.end():].strip()
             if cleaned and len(cleaned) >= 2:
                 return cleaned, status
+    # QC-188: post-entity negation ("breast cancer ruled out") — GLiNER
+    # includes the trailing trigger in the span.
+    post = _POST_ENTITY_NEGATION_RE.search(lower)
+    if post:
+        cleaned = entity_text[:post.start()].strip()
+        if cleaned and len(cleaned) >= 2:
+            return cleaned, "negated"
     return entity_text, "affirmed"
 
 
@@ -239,6 +268,12 @@ def _is_false_positive(text: str) -> bool:
     """Check if an entity text is a common non-medical word."""
     lower = text.lower().strip()
     if lower in _FALSE_POSITIVE_WORDS:
+        return True
+    # QC-160: 'Pt' (patient abbreviation) and staging fragments ('stage 2',
+    # 'stage 3') leak into affirmed output and resolve to LOINC codes.
+    if lower == "pt":
+        return True
+    if re.fullmatch(r"stage\s+\d+(?:[a-d])?", lower):
         return True
     # Filter single-character spans (bullet chars, punctuation, etc.)
     if len(lower) <= 1:
@@ -375,8 +410,19 @@ class NlpPipeline:
         if self._nlp is not None:
             return
 
-        import logging as _logging
-        _logging.getLogger("PyRuSH").setLevel(_logging.WARNING)
+        # QC-178: PyRuSH's Cython module imports `from loguru import logger`
+        # at MODULE level and emits per-token DEBUG lines containing the full
+        # clinical note text (PHI) — ~1MB of log per 100K-char note. The
+        # previous stdlib setLevel(WARNING) call was a no-op against loguru.
+        # Remove loguru's default stderr sink so these lines never render.
+        # (loguru.disable() on the package is the other option but sinks are
+        # the supported removal path; if the host app configured its own
+        # loguru sink it stays — we only remove the default one.)
+        # If loguru isn't installed PyRuSH isn't either, so the import failing
+        # means this pipeline can't load at all — let the ImportError propagate
+        # (a missing dependency is a real error, per GLOBAL_RULES).
+        from loguru import logger as _loguru_logger
+        _loguru_logger.remove()
 
         # Load GLiNER
         from gliner import GLiNER
@@ -388,9 +434,16 @@ class NlpPipeline:
 
         logger.info("NLP pipeline loaded (GLiNER %s + medspaCy ConText)", self._ner_model_name)
 
-    def process(self, text: str) -> list[FilteredSpan]:
-        """Process text and return filtered entity spans using sentence-level NER attention."""
+    def process(self, text: str, labels: list[str] | None = None) -> list[FilteredSpan]:
+        """Process text and return filtered entity spans using sentence-level NER attention.
+
+        ``labels`` overrides the pipeline's default label set for this call
+        only (GLiNER is zero-shot — labels are passed at query time, not baked
+        into the model). Used by find_terms(ner_labels=...) so per-call
+        overrides never mutate the shared pipeline (QC-154).
+        """
         self._ensure_loaded()
+        labels = labels if labels is not None else self._labels
 
         # Step 1: Run text through medspaCy sentencizer (PyRuSH)
         doc = self._nlp(text)
@@ -402,7 +455,7 @@ class NlpPipeline:
             if not sent_text:
                 continue
             sent_ents = self._ner_model.predict_entities(
-                sent_text, self._labels, threshold=self._threshold
+                sent_text, labels, threshold=self._threshold
             )
             # Map sentence-relative character offsets back to doc character offsets
             sent_offset = sent.start_char
@@ -476,8 +529,24 @@ class NlpPipeline:
                         negated = getattr(spacy_ent._, "is_negated", False)
                         uncertain = getattr(spacy_ent._, "is_uncertain", False)
                         historical = getattr(spacy_ent._, "is_historical", False)
+                        # QC-152: relatives' conditions are not the patient's —
+                        # medspaCy ConText sets is_family for FAMILY_HISTORY
+                        # items ("father had", "family history of"). Previously
+                        # only negated/uncertain/historical were checked, so
+                        # "Father had colon cancer" affirmed colon cancer for
+                        # the patient. Excluded from the affirmed default
+                        # (status "family" is not in allowed_statuses); callers
+                        # who want it pass include_family=True.
+                        family = getattr(spacy_ent._, "is_family", False)
+                        # QC-187: conditional/hypothetical mentions ("if X were
+                        # present, we would start Y") must not be affirmed.
+                        hypothetical = getattr(spacy_ent._, "is_hypothetical", False)
                         if negated:
                             status = "negated"
+                        elif family:
+                            status = "family"
+                        elif hypothetical:
+                            status = "hypothetical"
                         elif uncertain:
                             status = "uncertain"
                         elif historical:
@@ -526,6 +595,7 @@ class ExtractionService:
         include_negated: bool = False,
         include_uncertain: bool = False,
         include_historical: bool = False,
+        include_family: bool = False,
     ) -> list[FilteredSpan]:
         """Extract medical terms from free text.
 
@@ -538,17 +608,14 @@ class ExtractionService:
             Override the default GLiNER labels (DEFAULT_LABELS). When set,
             GLiNER will only detect spans matching these labels. None uses
             the defaults (disease, medication, symptom, procedure, lab test, vital).
-        """
-        # If caller overrides labels, rebuild pipeline with custom labels.
-        # Default-pipeline case skips this (cheaper).
-        if ner_labels is not None and ner_labels != self._nlp._labels:
-            self._nlp = NlpPipeline(
-                ner_model=self._nlp._ner_model_name,
-                labels=ner_labels,
-                threshold=self._nlp._threshold,
-            )
 
-        spans = self._nlp.process(text)
+            Per-call override only — the shared pipeline (and its loaded
+            models) are never mutated (QC-154: replacing self._nlp on the
+            cached singleton leaked one client's labels into every later
+            call; QC-175: each rebuild reloaded GLiNER+medspaCy, ~2.1s CPU
+            and ~0.7GB transient RSS per flip).
+        """
+        spans = self._nlp.process(text, labels=ner_labels)
 
         # Filter by ConText status
         allowed_statuses = {"affirmed"}
@@ -558,6 +625,10 @@ class ExtractionService:
             allowed_statuses.add("uncertain")
         if include_historical:
             allowed_statuses.add("historical")
+        # QC-152: family-history mentions default to excluded (a relative's
+        # condition is not the patient's). Opt-in like the other statuses.
+        if include_family:
+            allowed_statuses.add("family")
 
         spans = [s for s in spans if s.status in allowed_statuses]
 
@@ -591,12 +662,29 @@ class ExtractionService:
             default (e.g., medication label searches medication + drug_class).
             When set, overrides the per-label default.
         """
-        from medterm4ds.services.search import get_search_service
+        from medterm4ds.services.search import (
+            _result_types_to_prefixes,
+            get_search_service,
+        )
 
         search = get_search_service()
         search_mode = mode or self._search_mode
         default_threshold = "probable" if search_mode == "canonical" else self._min_grade
         grade_threshold = min_grade or default_threshold
+        # QC-153: validate result_types EAGERLY (raises ValueError for bogus
+        # values, which the FHIR layer maps to a 400 per the service-
+        # delegation pattern) and reduce to canonical_id prefixes for the
+        # post-filtering below.
+        result_type_prefixes = _result_types_to_prefixes(result_types)
+        # QC-161: garbage min_grade was silently treated as the strictest
+        # grade (0) because _GRADE_ORDER.get(grade_threshold, 0) defaults
+        # unknown keys to 0. Validate at the service boundary so wire surfaces
+        # that forward it unconstrained (MCP) get a clean ValueError.
+        if grade_threshold not in _GRADE_ORDER:
+            valid = ", ".join(sorted(_GRADE_ORDER))
+            raise ValueError(
+                f"Unknown min_grade: {grade_threshold!r}. Valid: {valid}."
+            )
 
         # --- Batch path for canonical mode ---
         # Embed ALL search texts in one SapBERT forward pass, then batch-search
@@ -632,6 +720,13 @@ class ExtractionService:
                 for r in results:
                     # Source filter
                     if source_set and r.anchor_system not in source_set:
+                        continue
+                    # Result-type filter (QC-153: previously the batch path
+                    # ignored result_types entirely — FHIR resultTypes=condition
+                    # still returned medications)
+                    if result_type_prefixes and not any(
+                        r.canonical_id.startswith(p) for p in result_type_prefixes
+                    ):
                         continue
                     # Grade filter
                     if _GRADE_ORDER.get(r.match_grade, 2) > _GRADE_ORDER.get(grade_threshold, 0):
@@ -682,24 +777,63 @@ class ExtractionService:
                                 ))
                                 break
 
-            # Deduplicate by canonical_id (preferred) or source:code (legacy)
-            seen: dict[str, ExtractedConcept] = {}
+            # Deduplicate by canonical_id (preferred) or source:code (legacy).
+            # QC-183: the key includes status — without it a negated mention
+            # could REPLACE the affirmed mention of the same condition (the
+            # patient's active condition silently disappearing from output
+            # when a "no evidence of X" sentence scores higher).
+            seen: dict[tuple[str, str], ExtractedConcept] = {}
             for c in concepts:
-                key = c.canonical_id or f"{c.source}:{c.code}"
+                key = (c.canonical_id or f"{c.source}:{c.code}", c.status)
                 if key not in seen or c.confidence > seen[key].confidence:
                     seen[key] = c
             return sorted(seen.values(), key=lambda c: c.confidence, reverse=True)
 
         # --- Legacy path: per-span search (single span or non-canonical mode) ---
+        # QC-153: result_types must filter here too. Canonical mode forwards
+        # to search.canonical (prefix filter). Legacy modes use BM25 category
+        # (SEARCH_CATEGORIES vocabulary — a subset of result_type values);
+        # categories that don't exist in the BM25 index can never match, so
+        # filtering on the intersection preserves caller intent.
+        from medterm4ds.services.search import SEARCH_CATEGORIES
+
+        requested_types = (
+            {result_types.lower().strip()}
+            if isinstance(result_types, str)
+            else {t.lower().strip() for t in result_types}
+            if result_types
+            else None
+        )
         concepts = []
+        # QC-172: legacy modes ran one full search PER SPAN with zero dedup —
+        # a 10K-char note with 310 spans / 26 distinct texts did 11.9x
+        # redundant SapBERT+BM25 work (108.6s where ~12s needed). Cache search
+        # results by (search_text, sources-key) so repeated mentions of the
+        # same entity text resolve once. Canonical multi-span path already
+        # batches; this covers the per-span legacy/single-span route.
+        _search_cache: dict[tuple[str, str], list[Any]] = {}
+
+        def _search_span_texts(text: str, ss_key: str, ss, rt) -> list[Any]:
+            cache_key = (text, ss_key)
+            if cache_key in _search_cache:
+                return _search_cache[cache_key]
+            if search_mode == "canonical":
+                r = search.canonical(text, result_types=rt, sources=ss, count=5)
+            else:
+                r = search.search(text, mode=search_mode, sources=ss, count=5)
+                if requested_types is not None:
+                    cat_filter = requested_types.intersection(SEARCH_CATEGORIES)
+                    if cat_filter:
+                        r = [x for x in r if x.category in cat_filter]
+            _search_cache[cache_key] = r
+            return r
+
         for span in spans:
             search_text = _strip_trailing_values(span.text)
             ss = _LABEL_TO_SOURCES.get(span.entity_type.lower())
-            if search_mode == "canonical":
-                rt = result_types if result_types is not None else _LABEL_TO_SEARCH_CATEGORIES.get(span.entity_type.lower())
-                results = search.canonical(search_text, result_types=rt, sources=ss, count=5)
-            else:
-                results = search.search(search_text, mode=search_mode, sources=ss, count=5)
+            ss_key = ",".join(ss) if ss else ""
+            rt = result_types if result_types is not None else _LABEL_TO_SEARCH_CATEGORIES.get(span.entity_type.lower())
+            results = _search_span_texts(search_text, ss_key, ss, rt)
 
             resolved = False
             for r in results:
@@ -723,10 +857,7 @@ class ExtractionService:
                 parts = _split_on_conjunction(search_text)
                 if parts:
                     for part in parts:
-                        if search_mode == "canonical":
-                            part_results = search.canonical(part, result_types=rt, sources=ss, count=5)
-                        else:
-                            part_results = search.search(part, mode=search_mode, sources=ss, count=5)
+                        part_results = _search_span_texts(part, ss_key, ss, rt)
                         for r in part_results:
                             if _GRADE_ORDER.get(r.match_grade, 2) > _GRADE_ORDER.get(grade_threshold, 0):
                                 continue
@@ -743,9 +874,10 @@ class ExtractionService:
                             ))
                             break
 
-        seen: dict[str, ExtractedConcept] = {}
+        seen: dict[tuple[str, str], ExtractedConcept] = {}
         for c in concepts:
-            key = c.canonical_id or f"{c.source}:{c.code}"
+            # QC-183: include status in the dedup key (see batch path above).
+            key = (c.canonical_id or f"{c.source}:{c.code}", c.status)
             if key not in seen or c.confidence > seen[key].confidence:
                 seen[key] = c
         return sorted(seen.values(), key=lambda c: c.confidence, reverse=True)
@@ -762,6 +894,7 @@ class ExtractionService:
         include_negated: bool = False,
         include_uncertain: bool = False,
         include_historical: bool = False,
+        include_family: bool = False,
     ) -> list[FilteredSpan] | list[ExtractedConcept] | dict[str, Any]:
         """Extract medical concepts from free text.
 
@@ -793,6 +926,7 @@ class ExtractionService:
             include_negated=include_negated,
             include_uncertain=include_uncertain,
             include_historical=include_historical,
+            include_family=include_family,
         )
 
         if format == "terms":
@@ -821,14 +955,14 @@ class ExtractionService:
         All spans are included regardless of ConText status (negated,
         uncertain, historical). Each span's ``status`` field lets callers
         filter downstream.
-        """
-        # Get ALL spans (don't filter by status — include everything)
+        """        # Get ALL spans (don't filter by status — include everything)
         all_spans = self.find_terms(
             text,
             ner_labels=ner_labels,
             include_negated=True,
             include_uncertain=True,
             include_historical=True,
+            include_family=True,
         )
 
         # Resolve ALL spans (including negated/uncertain/historical). With batch

@@ -126,6 +126,66 @@ def test_resolve_codes_uses_prepared_code_replacements_without_raw_mrrel(tmp_pat
     assert obsolete.replacement_relationship == "replaced_by"
 
 
+def test_get_code_info_resolve_modes_distinguish_historical_and_resolved(tmp_path):
+    """Regression for QC-017 (DATA_INTEGRITY HIGH): resolve_mode was no-op.
+
+    Pre-fix, ``get_code_infos`` called ``effective_code_refs`` which returned
+    ``(normalized, resolutions)`` for historical mode, then queried the active
+    table with ``normalized`` (the unchanged suppressed code) and discarded
+    ``resolutions``. All three modes returned None for suppressed-only codes.
+    The fix builds CodeInfo from the resolution record: historical returns the
+    historical atom's display; resolve_current returns the active replacement.
+    """
+    db_path = tmp_path / "umls.duckdb"
+    _make_db(db_path)
+    con = duckdb.connect(str(db_path), read_only=True)
+    try:
+        engine = LocalDuckDBEngine(con)
+        # 'OLD' is suppressed=O in mrconso; 'NEW' (replaced_by) is active.
+        info_active = get_code_info(CodeRef("ICD10CM", "OLD"), engine=engine, resolve_mode="active_only")
+        info_hist = get_code_info(CodeRef("ICD10CM", "OLD"), engine=engine, resolve_mode="historical")
+        info_resolved = get_code_info(CodeRef("ICD10CM", "OLD"), engine=engine, resolve_mode="resolve_current")
+    finally:
+        con.close()
+
+    # active_only: OLD is suppressed-only -> no active atom -> None.
+    assert info_active is None
+    # historical: returns the historical atom's display ("Old diabetes code").
+    assert info_hist is not None
+    assert info_hist.name == "Old diabetes code"
+    assert info_hist.cui == "C_OLD"
+    # resolve_current: returns the active replacement's display ("New diabetes code").
+    assert info_resolved is not None
+    assert info_resolved.name == "New diabetes code"
+    assert info_resolved.cui == "C_NEW"
+
+
+def test_effective_code_refs_rejects_invalid_resolve_mode(tmp_path):
+    """Regression for QC-002 (EDGE_CASE MEDIUM): Python API didn't validate resolve_mode.
+
+    Pre-fix, typos like ``'historica'`` and empty string silently fell through
+    to resolve_current behavior. The CLI validated via argparse choices=, but
+    the engine layer didn't. The fix adds validation at the single chokepoint
+    (``effective_code_refs``) shared by all services + CLI imports.
+    """
+    from medterm4ds.services.resolution import effective_code_refs
+
+    db_path = tmp_path / "umls.duckdb"
+    _make_db(db_path)
+    con = duckdb.connect(str(db_path), read_only=True)
+    try:
+        engine = LocalDuckDBEngine(con)
+        for bad in ("bogus", "", "historica", "INVALID_MODE", None):
+            with pytest.raises(ValueError, match="resolve_mode must be one of"):
+                effective_code_refs(
+                    [CodeRef("ICD10CM", "E11")],
+                    engine=engine,
+                    resolve_mode=bad,
+                )
+    finally:
+        con.close()
+
+
 def test_optimize_codes_compacts_hierarchy(tmp_path):
     db_path = tmp_path / "umls.duckdb"
     _make_db(db_path)

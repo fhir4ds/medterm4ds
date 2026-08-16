@@ -28,6 +28,14 @@ def iter_concept_map(
         raise ValueError(f"Unsupported ConceptMap target: {target}")
     if batch_size < 1:
         raise ValueError("batch_size must be at least 1")
+    # QC-421 (LOW): target_source is the ConceptMap target system — an
+    # empty/whitespace value previously flowed into every row
+    # (resource.target.uri='' downstream). Reject like every other
+    # empty-string input.
+    if not target_source.strip():
+        raise ValueError(
+            f"target_source must be a non-empty name, got {target_source!r}"
+        )
 
     for batch in iter_batches(codes, batch_size):
         results = get_patient_friendly_names(batch, engine=engine, max_depth=max_depth)

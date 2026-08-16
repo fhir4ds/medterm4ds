@@ -16,6 +16,11 @@ DEFAULT_INVENTORY_SOURCES = (
     "LNC",
     "CVX",
     "CPT",
+    # QC-341 (EC-15 LOW): ATC was added to SYSTEM_TO_FHIR_URI (QC-006)
+    # without extending this default, so MCP prepare_cache scope / health()
+    # 'sources' and CLI data-setup defaults silently excluded ATC while the
+    # FHIR CapabilityStatement advertised it.
+    "ATC",
 )
 
 

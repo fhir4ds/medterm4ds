@@ -168,6 +168,28 @@ class _DiscoveryOps:
         filter_params: list[object] = []
         if sources:
             normalized_sources = _dedupe(sources)
+            # QC-424 (MEDIUM): a typo'd source filter previously returned
+            # silent 0-row success — indistinguishable from a legitimate
+            # no-match query. Probe the exact table this search reads (with
+            # no active filter — a source whose atoms are all suppressed
+            # still EXISTS). Reject only when NO requested source is
+            # present: candidate lists (domain wrappers, FHIR $expand
+            # defaults) legitimately over-include sources a given database
+            # may not carry, and those must keep returning the present ones.
+            probe_placeholders = ",".join(["?"] * len(normalized_sources))
+            found_sources = {
+                row[0]
+                for row in self.con.execute(
+                    f"SELECT DISTINCT {source_col} FROM {table_name} "
+                    f"WHERE {source_col} IN ({probe_placeholders})",
+                    list(normalized_sources),
+                ).fetchall()
+            }
+            if not found_sources:
+                raise ValueError(
+                    "source(s) not found in this database: "
+                    + ", ".join(repr(s) for s in normalized_sources)
+                )
             filters.append(f"{source_col} IN ({','.join(['?'] * len(normalized_sources))})")
             filter_params.extend(normalized_sources)
         if tty_filters:
@@ -176,8 +198,17 @@ class _DiscoveryOps:
             filter_params.extend(normalized_ttys)
 
         lowered_query = stripped_query.lower()
-        prefix_pattern = f"{lowered_query}%"
-        contains_pattern = f"%{lowered_query}%"
+        # QC-218: escape LIKE metacharacters so user input is matched
+        # literally. A bare '%' query previously matched ~all 10M active
+        # atoms; the ranking CTE materialized and sorted the full match set
+        # (38.8s at limit=5) and concurrent wildcard queries exhausted
+        # duckdb temp storage. DuckDB has no default LIKE escape character,
+        # so each LIKE below carries an explicit ESCAPE '\'.
+        escaped_query = (
+            lowered_query.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        )
+        prefix_pattern = f"{escaped_query}%"
+        contains_pattern = f"%{escaped_query}%"
 
         rows = self.con.execute(
             f"""
@@ -187,7 +218,7 @@ class _DiscoveryOps:
                        {aui_col} AS AUI, {tty_col} AS TTY,
                        CASE
                            WHEN LOWER({name_col}) = ? THEN 'exact'
-                           WHEN LOWER({name_col}) LIKE ? THEN 'prefix'
+                           WHEN LOWER({name_col}) LIKE ? ESCAPE '\\' THEN 'prefix'
                            ELSE 'contains'
                        END AS match_type,
                        ROW_NUMBER() OVER (
@@ -195,7 +226,7 @@ class _DiscoveryOps:
                            ORDER BY
                                CASE
                                    WHEN LOWER({name_col}) = ? THEN 0
-                                   WHEN LOWER({name_col}) LIKE ? THEN 1
+                                   WHEN LOWER({name_col}) LIKE ? ESCAPE '\\' THEN 1
                                    ELSE 2
                                END,
                                CASE {tty_col}
@@ -209,7 +240,7 @@ class _DiscoveryOps:
                        ) AS atom_rn
                 FROM {table_name}
                 WHERE {' AND '.join(filters)}
-                  AND LOWER({name_col}) LIKE ?
+                  AND LOWER({name_col}) LIKE ? ESCAPE '\\'
             ),
             deduped AS (
                 SELECT *

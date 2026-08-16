@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import duckdb
+import pytest
 
 from medterm4ds import CodeRef, get_ancestors, get_children, get_descendants, get_parents
 from medterm4ds.engines.duckdb import LocalDuckDBEngine
@@ -53,7 +54,11 @@ def _make_hierarchy_db(con: duckdb.DuckDBPyConnection) -> None:
             ("ICD_E11", "ICD_E00", "isa", "PAR"),
             ("CVX_208", "CVX_200", "isa", "PAR"),
             ("ICD_S3706", "ICD_S370", "isa", "PAR"),
-            ("CPT_0010U", "CPT_0010", "isa", "AUI"),
+            # Real UMLS CPT edges are REL='PAR' RELA='inverse_isa' (child in
+            # AUI1, parent in AUI2) mirrored by REL='CHD' RELA='isa'. The old
+            # fixture row carried a fabricated REL='AUI' which does not exist
+            # in mrrel; updated per the QC-349/350 REL-authoritative contract.
+            ("CPT_0010U", "CPT_0010", "inverse_isa", "PAR"),
         ],
     )
 
@@ -159,5 +164,60 @@ def test_hierarchy_uses_source_specific_relationship_rules_and_icd_umls_parent_r
         ("S37.0", "PAR", "isa", 1)
     ]
     assert [(row.target.code, row.rel, row.rela, row.depth) for row in cpt_parent] == [
-        ("0010", "AUI", "isa", 1)
+        ("0010", "PAR", "inverse_isa", 1)
     ]
+
+
+def test_get_code_relations_rejects_non_string_direction():
+    """QC-048 (MEDIUM): direction=None / direction=int must raise TypeError,
+    not leak AttributeError("'NoneType' object has no attribute 'strip'")."""
+    con = duckdb.connect(database=":memory:")
+    try:
+        _make_hierarchy_db(con)
+        engine = LocalDuckDBEngine(con)
+        with pytest.raises(TypeError):
+            get_code_relations(
+                [CodeRef("ICD10CM", "S37.06")],
+                engine=engine,
+                direction=None,  # type: ignore[arg-type]
+                max_depth=1,
+            )
+        with pytest.raises(TypeError):
+            get_code_relations(
+                [CodeRef("ICD10CM", "S37.06")],
+                engine=engine,
+                direction=42,  # type: ignore[arg-type]
+                max_depth=1,
+            )
+    finally:
+        con.close()
+
+
+def test_get_code_relations_rejects_string_max_depth_and_negative_limit():
+    """QC-051 (MEDIUM): max_depth='5' must raise TypeError.
+    QC-053 (LOW): limit=-1 must raise ValueError at service boundary
+    (not duckdb.BinderException leaking from SQL)."""
+    con = duckdb.connect(database=":memory:")
+    try:
+        _make_hierarchy_db(con)
+        engine = LocalDuckDBEngine(con)
+        # QC-051: string max_depth
+        with pytest.raises(TypeError):
+            get_code_relations(
+                [CodeRef("ICD10CM", "S37.06")],
+                engine=engine,
+                direction="children",
+                max_depth="5",  # type: ignore[arg-type]
+            )
+        # QC-053: negative limit
+        with pytest.raises(ValueError):
+            get_code_relations(
+                [CodeRef("ICD10CM", "S37.06")],
+                engine=engine,
+                direction="children",
+                max_depth=1,
+                limit=-1,
+            )
+    finally:
+        con.close()
+

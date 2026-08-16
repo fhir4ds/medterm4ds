@@ -70,3 +70,45 @@ class TestPatientFriendly:
         # means we fell back to the technical display name, none means no
         # resolver could place the code at all.
         assert results[0].match_type in ("original", "none")
+
+
+# =============================================================================
+# Regression: get_patient_friendly_names validates max_depth type/range.
+# Found by QC-075/QC-076/QC-077/QC-082 (MEDIUM): pre-fix, max_depth='5'
+# (string) silently coerced via int('5'); max_depth=None raised a raw
+# TypeError from int(None); max_depth=0 silently skipped the broader walk
+# with no signal. Sibling of EC-03 FIX-007 (hierarchy) and EC-02 FIX-005
+# (mapping).
+# =============================================================================
+
+
+def test_get_patient_friendly_names_rejects_string_max_depth(engine):
+    """QC-076: string max_depth raises TypeError, not silent coercion."""
+    with pytest.raises(TypeError, match="max_depth must be int"):
+        get_patient_friendly_names(
+            [CodeRef("ICD10CM", "E11.9")], engine=engine, max_depth="5"  # type: ignore[arg-type]
+        )
+
+
+def test_get_patient_friendly_names_rejects_none_max_depth(engine):
+    """QC-077: None max_depth raises clean TypeError, not raw int() leak."""
+    with pytest.raises(TypeError, match="max_depth must be int"):
+        get_patient_friendly_names(
+            [CodeRef("ICD10CM", "E11.9")], engine=engine, max_depth=None  # type: ignore[arg-type]
+        )
+
+
+def test_get_patient_friendly_names_rejects_negative_max_depth(engine):
+    """QC-075 sibling: negative max_depth raises ValueError."""
+    with pytest.raises(ValueError, match="max_depth must be non-negative"):
+        get_patient_friendly_names(
+            [CodeRef("ICD10CM", "E11.9")], engine=engine, max_depth=-5
+        )
+
+
+def test_get_patient_friendly_names_rejects_bool_max_depth(engine):
+    """Sibling defense: bool is rejected even though bool is a subclass of int."""
+    with pytest.raises(TypeError, match="max_depth must be int"):
+        get_patient_friendly_names(
+            [CodeRef("ICD10CM", "E11.9")], engine=engine, max_depth=True  # type: ignore[arg-type]
+        )

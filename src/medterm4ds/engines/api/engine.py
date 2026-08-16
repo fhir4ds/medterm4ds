@@ -26,6 +26,17 @@ from medterm4ds.core.normalize import normalize_source
 
 ApiTransport = Callable[[str, Mapping[str, Any]], Mapping[str, Any]]
 
+# QC-485 (HIGH): default read timeout. 30s broke facade calls the local
+# engine completes — /optimize over two SNOMED codes measured 55-82s, and a
+# 10,000-code /patient-friendly batch (exactly the server's documented
+# MAX_CODES_PER_REQUEST cap) measured ~415s. The client timeout also counts
+# server-side queue wait behind heavier requests (single-worker executor),
+# so 300s is the floor that makes the documented workload domain reachable;
+# bulk patient-friendly/map batches may still need an explicit
+# ``timeout=600``. Raising the default cannot break a call that previously
+# succeeded — it only lets slower-but-valid work complete.
+DEFAULT_REMOTE_TIMEOUT = 300.0
+
 
 class RemoteApiEngine:
     """Terminology engine backed by a medterm4ds FastAPI process."""
@@ -34,10 +45,22 @@ class RemoteApiEngine:
         self,
         base_url: str,
         *,
-        timeout: float = 30.0,
+        timeout: float = DEFAULT_REMOTE_TIMEOUT,
         headers: Mapping[str, str] | None = None,
         transport: ApiTransport | None = None,
     ):
+        # QC-481 (LOW): constructor-time validation. Pre-fix, garbage inputs
+        # surfaced at FIRST CALL as raw non-enveloped exceptions (None ->
+        # AttributeError 'NoneType' rstrip; '' -> raw ValueError "unknown
+        # url type"; timeout='abc' -> TypeError; timeout=-1 -> ValueError
+        # "Timeout value out of range"). Named-parameter ValueErrors at
+        # construction match the envelope every transport failure gets.
+        if not isinstance(base_url, str) or not base_url.strip().lower().startswith(
+            ("http://", "https://")
+        ):
+            raise ValueError(f"base_url must be an http(s) URL string, got {base_url!r}")
+        if isinstance(timeout, bool) or not isinstance(timeout, (int, float)) or timeout <= 0:
+            raise ValueError(f"timeout must be a positive number of seconds, got {timeout!r}")
         self.base_url = base_url.rstrip("/")
         self.timeout = timeout
         self.headers = dict(headers or {})
@@ -152,7 +175,11 @@ class RemoteApiEngine:
             "include_codes": include_codes,
         }
         response = self._post("/optimize", payload)
-        result = response.get("result")
+        # QC-490 (LOW): /optimize now uses the shared 'results' envelope like
+        # every other endpoint. The legacy singular 'result' key is still
+        # accepted so this engine keeps working against pre-fix servers.
+        rows = response.get("results")
+        result = rows[0] if isinstance(rows, list) and rows else response.get("result")
         if not isinstance(result, Mapping):
             raise RuntimeError("Remote API response did not include an optimize result.")
         return _optimize_result(result)
@@ -215,13 +242,42 @@ def _open_json(request: Request, timeout: float) -> Mapping[str, Any]:
         with urlopen(request, timeout=timeout) as response:  # noqa: S310
             payload = json.loads(_read_capped(response).decode("utf-8"))
     except HTTPError as exc:
-        detail = _read_capped(exc).decode("utf-8", errors="replace")
+        # QC-479 (MEDIUM): pydantic 422 bodies echo the full request payload
+        # (a 10,001-code batch produced a 430,291-char exception string, and
+        # the bound was only the 50MiB read cap). Truncate the embedded
+        # detail so the exception stays human-readable; 2KB is far above any
+        # legitimate service error message.
+        detail = _truncate_detail(_read_capped(exc).decode("utf-8", errors="replace"))
         raise RuntimeError(f"Remote API request failed with HTTP {exc.code}: {detail}") from exc
     except URLError as exc:
         raise RuntimeError(f"Remote API request failed: {exc.reason}") from exc
+    except TimeoutError as exc:
+        # QC-486 (LOW): socket read-timeout is NOT a URLError subclass and
+        # previously leaked as a raw TimeoutError outside the RuntimeError
+        # envelope — no URL, no timeout context.
+        raise RuntimeError(
+            f"Remote API request timed out after {timeout}s: {request.full_url}"
+        ) from exc
+    except json.JSONDecodeError as exc:
+        # QC-482 (LOW): HTTP 200 with a non-JSON body (wrong service on the
+        # port / captive portal / truncated proxy response) previously leaked
+        # a raw JSONDecodeError with zero server context.
+        raise RuntimeError(
+            f"Remote API response from {request.full_url} was not valid JSON: {exc}"
+        ) from exc
     if not isinstance(payload, Mapping):
         raise RuntimeError("Remote API response was not a JSON object.")
     return payload
+
+
+# QC-479: cap on the error-body text embedded in the RuntimeError message.
+_MAX_ERROR_DETAIL_CHARS = 2_048
+
+
+def _truncate_detail(detail: str) -> str:
+    if len(detail) <= _MAX_ERROR_DETAIL_CHARS:
+        return detail
+    return detail[:_MAX_ERROR_DETAIL_CHARS] + f"... [{len(detail) - _MAX_ERROR_DETAIL_CHARS} chars truncated]"
 
 
 def _code_payload(code: CodeRef) -> dict[str, str]:

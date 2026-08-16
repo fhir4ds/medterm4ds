@@ -189,8 +189,16 @@ class RxNormStrategy(DefaultStrategy):
         super().__init__(source="RXNORM")
 
     def hierarchy_edge_sql(self) -> str | None:
-        """RxNorm uses TTY topology, not standard hierarchy edges."""
-        return None
+        """RxNorm isa edges (SCD/SCDG/SBD/... TTY hierarchy) via mrrel.
+
+        Found by QC-349 (EC-15 HIGH): returning None here dropped all 238,329
+        RxNorm isa/inverse_isa subsumption edges from the prepared hierarchy
+        build, so every hierarchy operation silently returned empty for RxNorm
+        while the CapabilityStatement advertised $subsumes. The TTY topology
+        (rxnorm_tty_edges) drives patient-friendly resolution; these isa edges
+        drive subsumption/hierarchy. REL is authoritative for direction.
+        """
+        return "r.REL IN ('RB', 'RN') AND r.RELA IN ('isa', 'inverse_isa')"
 
     def friendly_strategy_rows(self) -> list[dict[str, object]]:
         """RxNorm patient-friendly rows use TTY topology, not hierarchy walks."""

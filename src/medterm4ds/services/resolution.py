@@ -9,6 +9,15 @@ from medterm4ds.engines.base import LookupEngine, ResolutionEngine
 
 ResolveMode = str
 
+#: Allowed ``resolve_mode`` values — single source of truth shared by the
+#: CLI argparse ``choices=`` and the Python API validation. Found by QC-002
+#: (EDGE_CASE MEDIUM): pre-fix, the Python API silently accepted typos and
+#: fell through to resolve_current behavior; the CLI validated via argparse
+#: but the engine layer didn't, so direct API callers got silent-wrong-answer.
+ALLOWED_RESOLVE_MODES: frozenset[str] = frozenset(
+    {"active_only", "resolve_current", "historical"}
+)
+
 
 def resolve_codes(
     codes: Sequence[CodeRef | tuple[str, str]],
@@ -47,6 +56,15 @@ def effective_code_refs(
     resolve_mode: ResolveMode = "active_only",
 ) -> tuple[list[CodeRef], list[CodeResolution] | None]:
     """Return code refs to use for downstream work plus optional resolution rows."""
+    if resolve_mode not in ALLOWED_RESOLVE_MODES:
+        # Fail loud on programming errors (typos, empty string, None) per
+        # GLOBAL_RULES "Silent Fallbacks" — silent fallthrough to
+        # resolve_current masked the historical/active_only distinction.
+        # Found by QC-002 (EDGE_CASE MEDIUM).
+        raise ValueError(
+            f"resolve_mode must be one of {sorted(ALLOWED_RESOLVE_MODES)!r}, "
+            f"got {resolve_mode!r}"
+        )
     normalized = [
         item if isinstance(item, CodeRef) else CodeRef.from_pair(item)
         for item in codes
@@ -55,7 +73,22 @@ def effective_code_refs(
         return normalized, None
     resolutions = resolve_codes(normalized, engine=engine)
     if resolve_mode == "historical":
-        return normalized, resolutions
+        # Historical mode returns the input CodeRef as effective for
+        # same-system obsolete codes (e.g. SNOMED->SNOMED where the input
+        # IS the historical atom). But for cross-system resolutions like
+        # NDC->RXNORM, the input is not an atom of the resolved system at
+        # all — using the input NDC as effective while resolved_display
+        # carries the RXNORM drug name produces a silent display/code
+        # mismatch. Found by QC-119 (DATA_INTEGRITY HIGH): for resolutions
+        # where input.source != resolved.source, use the resolved CodeRef
+        # as effective so effective and resolved_display stay consistent.
+        effective = [
+            resolution.input
+            if (resolution.resolved is None or resolution.input.source == resolution.resolved.source)
+            else resolution.resolved
+            for resolution in resolutions
+        ]
+        return effective, resolutions
     effective = [
         resolution.resolved if resolution.is_resolved and resolution.resolved else resolution.input
         for resolution in resolutions

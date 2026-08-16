@@ -154,3 +154,70 @@ def test_search_names_uses_prepared_atoms_active_only():
         ("MEDLINEPLUS", "D_DIAB", "exact", "MH"),
         ("ICD10CM", "E11.9", "contains", "PT"),
     ]
+
+
+# -- EC-09 discovery validation regressions (QC-216..228) -------------------
+
+
+def test_sample_source_codes_rejects_out_of_range_per_source(engine):
+    """QC-217: unbounded integers previously reached the SQL layer and
+    crashed with raw duckdb exceptions ('MIN/MAX: n value must be < 1000000',
+    'INT128 ... out of range for INT64')."""
+    with pytest.raises(ValueError, match="per_source must be at least 1"):
+        sample_source_codes(engine=engine, sources=["CVX"], per_source=0)
+    with pytest.raises(ValueError, match="per_source must be at most"):
+        sample_source_codes(engine=engine, sources=["CVX"], per_source=1_000_000)
+
+
+def test_search_names_rejects_single_char_and_wildcard_queries(engine):
+    """QC-218/QC-235: 1-char and bare-wildcard queries matched most of the
+    15.5M active atoms in production (38-46s per call, temp-storage
+    exhaustion under concurrency)."""
+    for query in ("%", "a", "_"):
+        with pytest.raises(ValueError, match="at least 2 characters"):
+            search_names(query, engine=engine, limit=5)
+    with pytest.raises(ValueError, match="limit must be at most"):
+        search_names("diabetes", engine=engine, limit=10**9)
+
+
+def test_unknown_sources_raise_instead_of_silent_empty(engine):
+    """QC-221: unknown/typo/URI sources previously returned empty success on
+    every discovery surface — indistinguishable from a real query with no
+    matches."""
+    with pytest.raises(ValueError, match="not found in this database"):
+        get_source_stats(engine=engine, sources=["NOSUCHSOURCE"])
+    with pytest.raises(ValueError, match="not found in this database"):
+        sample_source_codes(engine=engine, sources=["NOSUCH"])
+    with pytest.raises(ValueError, match="not found in this database"):
+        get_source_stats(engine=engine, sources=["http://snomed.info/sct"])
+
+
+def test_get_code_ttys_rejects_empty_code_and_uri_source(engine):
+    """QC-222/QC-227: empty-string codes echoed back as silent empty success;
+    URI-form sources were uppercased and silently returned []."""
+    with pytest.raises(ValueError, match="non-empty string"):
+        get_code_ttys([("ICD10CM", "")], engine=engine)
+    with pytest.raises(ValueError, match="URI/OID"):
+        get_code_ttys([("http://snomed.info/sct", "44054006")], engine=engine)
+
+
+def test_discover_validates_limit_on_both_branches(engine):
+    """QC-223/QC-228: limit=0 leaked the internal 'per_source must be at
+    least 1' message on the no-code branch and was silently ignored on the
+    code branch."""
+    from medterm4ds.domains.terminology import discover
+
+    for kwargs in ({}, {"code": "E11.9"}):
+        with pytest.raises(ValueError, match="limit must be at least 1"):
+            discover("ICD10CM", engine=engine, limit=0, **kwargs)
+        with pytest.raises(ValueError, match="limit must be at most"):
+            discover("ICD10CM", engine=engine, limit=10**9, **kwargs)
+
+
+def test_discover_rejects_empty_code(engine):
+    """QC-222: discover(code='') previously echoed root {'code': ''} with
+    empty descendants."""
+    from medterm4ds.domains.terminology import discover
+
+    with pytest.raises(ValueError, match="non-empty string"):
+        discover("ICD10CM", engine=engine, code="")

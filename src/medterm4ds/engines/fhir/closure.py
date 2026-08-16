@@ -21,9 +21,15 @@ from typing import Any
 import duckdb
 
 from medterm4ds.core.models import CodeRef
-from medterm4ds.services.hierarchy import get_ancestors, get_descendants
+from medterm4ds.services.hierarchy import get_ancestors_bfs, get_descendants_bfs
 
 logger = logging.getLogger(__name__)
+
+# Closure concepts are keyed by (source, code), never by the bare code
+# string: two systems can share a code (e.g. an ICD-10-CM code that is also
+# a valid SCTID digit string) and bare-code keying silently overwrites the
+# first entry and conflates cross-system subsumption pairs (QC-266).
+_ConceptKey = tuple[str, str]
 
 
 class ClosureTable:
@@ -31,14 +37,15 @@ class ClosureTable:
 
     def __init__(self, name: str):
         self.name = name
-        # All concepts ever added: {code: {system, display}}
-        self.concepts: dict[str, dict[str, str]] = {}
-        # Subsumption: (code_a, code_b) -> True means "a subsumes b"
-        self._subsumes: dict[tuple[str, str], bool] = {}
+        # All concepts ever added: {(source, code): {system, display}}
+        self.concepts: dict[_ConceptKey, dict[str, str]] = {}
+        # Subsumption: (key_a, key_b) -> True means "a subsumes b"
+        self._subsumes: dict[tuple[_ConceptKey, _ConceptKey], bool] = {}
         self._version = 0
         # Set to True if any ancestor/descendant walk failed since reset.
         # Callers reading the closure can check this to know whether
-        # check() may be returning false negatives.
+        # check() may be returning false negatives. Surfaced on the wire by
+        # build_closure_response() as the `incomplete` Out parameter (QC-267).
         self.incomplete_since: bool = False
         self._lock = threading.RLock()
 
@@ -48,7 +55,16 @@ class ClosureTable:
         subsumed by this code).
 
         Uses the engine to walk ancestors and descendants, then records
-        relationships for any that are already in the closure.
+        relationships for any that are already in the closure. Both walks
+        are layer-by-layer BFS (visited-set, one batched query per layer) —
+        the recursive-CTE get_ancestors/get_descendants walks previously used
+        here enumerate every distinct path through multiply-inherited
+        subtrees and exploded to 32 GB RSS / OOM-at-1 GiB for ordinary
+        concepts (QC-261/275/281).
+
+        Re-adding a concept already in the closure is a no-op: the earlier
+        walk already recorded its relationships, and re-walking costs full
+        hierarchy walks for zero state change (QC-278).
 
         Failure handling: duckdb.Error (transient lock timeouts, brief
         connection issues) is logged at WARNING and the walk continues with
@@ -57,54 +73,73 @@ class ClosureTable:
         Programming bugs (TypeError, AttributeError, KeyError) propagate so
         they surface instead of producing silently-wrong subsumption answers.
         """
+        new_relations: set[str] = set()
         with self._lock:
-            self.concepts[code] = {"system": source, "display": display}
-            # Self-subsumption
-            self._subsumes[(code, code)] = True
+            key = (source, code)
+            if key in self.concepts:
+                return new_relations
+            new_relations = self._record_walk(code, source, display, engine)
+        return new_relations
 
-            new_relations: set[str] = set()
+    def _record_walk(self, code: str, source: str, display: str, engine) -> set[str]:
+        """Register one concept and record its in-closure subsumption pairs.
 
-            # Walk ancestors: codes that subsume this one
-            try:
-                ancestors = get_ancestors([CodeRef(source, code)], engine=engine, max_depth=20)
-                for rel in ancestors:
-                    anc_code = rel.target.code
-                    if anc_code in self.concepts:
-                        # ancestor subsumes this code
-                        self._subsumes[(anc_code, code)] = True
-                        self._subsumes[(code, anc_code)] = False
-                        new_relations.add(anc_code)
-            except duckdb.Error as exc:
-                # Transient DuckDB issue — log at WARNING (not DEBUG) so an
-                # operator running $subsumes against an incomplete closure
-                # has a log line explaining why answers may be wrong.
-                logger.warning(
-                    "Ancestor walk failed for %s in closure %s: %s. "
-                    "Closure is now incomplete — $subsumes may return false negatives.",
-                    code, self.name, exc,
-                )
-                self.incomplete_since = True
+        Returns the set of in-closure codes that subsume or are subsumed by
+        this one. Caller must hold ``self._lock`` and have verified the
+        concept is not already present. Shared by add_concept and
+        add_concepts.
+        """
+        new_relations: set[str] = set()
+        key = (source, code)
+        self.concepts[key] = {"system": source, "display": display}
+        # Self-subsumption
+        self._subsumes[(key, key)] = True
 
-            # Walk descendants: codes this one subsumes
-            try:
-                descendants = get_descendants([CodeRef(source, code)], engine=engine, max_depth=20)
-                for rel in descendants:
-                    desc_code = rel.target.code
-                    if desc_code in self.concepts:
-                        # this code subsumes descendant
-                        self._subsumes[(code, desc_code)] = True
-                        self._subsumes[(desc_code, code)] = False
-                        new_relations.add(desc_code)
-            except duckdb.Error as exc:
-                logger.warning(
-                    "Descendant walk failed for %s in closure %s: %s. "
-                    "Closure is now incomplete — $subsumes may return false negatives.",
-                    code, self.name, exc,
-                )
-                self.incomplete_since = True
+        seed = CodeRef(source, code)
 
-            self._version += 1
-            return new_relations
+        # Walk ancestors: codes that subsume this one. BFS visits each
+        # ancestor exactly once (visited set), so the multiply-inherited
+        # path explosion of the recursive CTE cannot occur.
+        try:
+            ancestors, _cap = get_ancestors_bfs(seed, engine=engine, max_depth=20)
+            for rel in ancestors:
+                anc_key = (source, rel.target.code)
+                if anc_key in self.concepts:
+                    # ancestor subsumes this code
+                    self._subsumes[(anc_key, key)] = True
+                    self._subsumes[(key, anc_key)] = False
+                    new_relations.add(rel.target.code)
+        except duckdb.Error as exc:
+            # Transient DuckDB issue — log at WARNING (not DEBUG) so an
+            # operator running $subsumes against an incomplete closure
+            # has a log line explaining why answers may be wrong.
+            logger.warning(
+                "Ancestor walk failed for %s in closure %s: %s. "
+                "Closure is now incomplete — $subsumes may return false negatives.",
+                code, self.name, exc,
+            )
+            self.incomplete_since = True
+
+        # Walk descendants: codes this one subsumes.
+        try:
+            descendants, _cap = get_descendants_bfs(seed, engine=engine, max_depth=20)
+            for rel in descendants:
+                desc_key = (source, rel.target.code)
+                if desc_key in self.concepts:
+                    # this code subsumes descendant
+                    self._subsumes[(key, desc_key)] = True
+                    self._subsumes[(desc_key, key)] = False
+                    new_relations.add(rel.target.code)
+        except duckdb.Error as exc:
+            logger.warning(
+                "Descendant walk failed for %s in closure %s: %s. "
+                "Closure is now incomplete — $subsumes may return false negatives.",
+                code, self.name, exc,
+            )
+            self.incomplete_since = True
+
+        self._version += 1
+        return new_relations
 
     def add_concepts(
         self,
@@ -113,10 +148,10 @@ class ClosureTable:
     ) -> None:
         """Batch-add multiple concepts to the closure.
 
-        Equivalent to calling add_concept() in a loop, but ancestor and
-        descendant walks are batched per source — 2 walks per source
-        instead of 2 walks per concept. For a $closure POST with 2000
-        SNOMED concepts, this collapses ~4000 hierarchy queries into 2.
+        Each NEW concept gets one BFS ancestor walk + one BFS descendant
+        walk (2 walks per new concept, each visiting every node once —
+        linear in subtree size, no path enumeration). Concepts already in
+        the closure are skipped without re-walking (QC-278).
 
         Args:
             concepts: list of (code, source, display) tuples.
@@ -130,76 +165,72 @@ class ClosureTable:
             return
 
         with self._lock:
-            # Register all concepts first so cross-closure relationships are
-            # discoverable during the walks below.
+            # Register concepts one at a time so each walk sees the concepts
+            # registered before it (order within one POST does not matter for
+            # the FINAL state: each concept's own ancestor+descendant walks
+            # discover every in-closure relative regardless of order — the
+            # pre-BFS CTE walks OOM'd nondeterministically instead, which is
+            # what made insertion order change the answer, QC-281).
             for code, source, display in concepts:
-                self.concepts[code] = {"system": source, "display": display}
-                self._subsumes[(code, code)] = True
+                if (source, code) in self.concepts:
+                    continue
+                self._record_walk(code, source, display, engine)
 
-            # Group by source so each walk hits one source's hierarchy.
-            by_source: dict[str, list[str]] = {}
-            for code, source, _ in concepts:
-                by_source.setdefault(source, []).append(code)
-
-            for source, codes in by_source.items():
-                refs = [CodeRef(source, code) for code in codes]
-                try:
-                    ancestors = get_ancestors(refs, engine=engine, max_depth=20)
-                except duckdb.Error as exc:
-                    logger.warning(
-                        "Batched ancestor walk failed for %d %s concepts in "
-                        "closure %s: %s. Closure is incomplete — $subsumes "
-                        "may return false negatives.",
-                        len(codes), source, self.name, exc,
-                    )
-                    self.incomplete_since = True
-                    ancestors = []
-                for rel in ancestors:
-                    # rel.source.code is the input code; rel.target.code is its ancestor.
-                    input_code = rel.source.code
-                    anc_code = rel.target.code
-                    if anc_code in self.concepts:
-                        self._subsumes[(anc_code, input_code)] = True
-                        self._subsumes[(input_code, anc_code)] = False
-
-                try:
-                    descendants = get_descendants(refs, engine=engine, max_depth=20)
-                except duckdb.Error as exc:
-                    logger.warning(
-                        "Batched descendant walk failed for %d %s concepts in "
-                        "closure %s: %s. Closure is incomplete — $subsumes "
-                        "may return false negatives.",
-                        len(codes), source, self.name, exc,
-                    )
-                    self.incomplete_since = True
-                    descendants = []
-                for rel in descendants:
-                    input_code = rel.source.code
-                    desc_code = rel.target.code
-                    if desc_code in self.concepts:
-                        self._subsumes[(input_code, desc_code)] = True
-                        self._subsumes[(desc_code, input_code)] = False
-
-            self._version += 1
-
-    def check(self, code_a: str, code_b: str) -> str:
+    def check(self, code_a: str, code_b: str, system: str | None = None) -> str:
         """Check subsumption via the closure table.
+
+        Subsumption is only defined within one code system (the R4
+        $subsumes/$closure model has no cross-system relationship map), so
+        relations are namespaced per system (QC-266).
+
+        When ``system`` is supplied, both codes are resolved under that
+        system. When omitted (backward-compatible 2-arg form), the pair is
+        resolved within any single shared system: codes registered only
+        under DIFFERENT systems are "not-subsumed" — cross-system pairs
+        can never be conflated into a false relationship.
 
         Returns: "equivalent", "subsumes", "subsumed-by", "not-subsumed".
         """
         with self._lock:
             if code_a == code_b:
                 return "equivalent"
-            if self._subsumes.get((code_a, code_b)):
-                return "subsumes"
-            if self._subsumes.get((code_b, code_a)):
-                return "subsumed-by"
+            if system is not None:
+                key_a = (system, code_a)
+                key_b = (system, code_b)
+                if self._subsumes.get((key_a, key_b)):
+                    return "subsumes"
+                if self._subsumes.get((key_b, key_a)):
+                    return "subsumed-by"
+                return "not-subsumed"
+            systems_a = {s for (s, c) in self.concepts if c == code_a}
+            systems_b = {s for (s, c) in self.concepts if c == code_b}
+            for shared in sorted(systems_a & systems_b):
+                if self._subsumes.get(((shared, code_a), (shared, code_b))):
+                    return "subsumes"
+                if self._subsumes.get(((shared, code_b), (shared, code_a))):
+                    return "subsumed-by"
             return "not-subsumed"
 
     def version_hash(self) -> str:
-        """Return a hash representing the current state of the closure."""
+        """Return a content hash of the full closure state.
+
+        Hashes the concept set (source, code, display) AND the recorded
+        subsumption relations, so any change in closure content — including
+        a relation set degraded by a failed walk — changes the token
+        (QC-283). The hash is deterministic for identical content: it
+        excludes the internal call counter, so two closures built via
+        different POST batching (or re-adding an already-present concept,
+        which is a no-op) report the same version (QC-270/QC-278).
+        """
         with self._lock:
-            payload = f"{len(self.concepts)}:{self._version}:{sorted(self.concepts.keys())}"
+            concept_items = sorted(
+                (source, code, info.get("display", ""))
+                for (source, code), info in self.concepts.items()
+            )
+            relation_items = sorted(
+                key for key, value in self._subsumes.items() if value
+            )
+            payload = repr((concept_items, relation_items))
             return hashlib.md5(payload.encode()).hexdigest()[:12]
 
     def to_parameter_list(self) -> list[dict[str, Any]]:
@@ -208,8 +239,8 @@ class ClosureTable:
 
         with self._lock:
             entries: list[dict[str, Any]] = []
-            for code, info in sorted(self.concepts.items()):
-                system_uri = system_to_fhir_uri(info["system"]) or info["system"]
+            for (source, code), info in sorted(self.concepts.items()):
+                system_uri = system_to_fhir_uri(source) or source
                 entries.append({
                     "name": "concept",
                     "valueCoding": {
@@ -280,12 +311,18 @@ def build_closure_response(closure: ClosureTable) -> dict[str, Any]:
 
     Includes:
     - return: version hash (so client knows if state changed)
+    - incomplete: valueBoolean — True when any ancestor/descendant walk
+      failed since the last reset, meaning check()/$subsumes answers read
+      from this closure may be false negatives (QC-267; the
+      ``incomplete_since`` degradation flag was previously server-internal
+      only).
     - concept: list of all concepts currently in the closure
     """
     return {
         "resourceType": "Parameters",
         "parameter": [
             {"name": "return", "valueString": closure.version_hash()},
+            {"name": "incomplete", "valueBoolean": closure.incomplete_since},
             *closure.to_parameter_list(),
         ],
     }

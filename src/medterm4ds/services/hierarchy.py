@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
+from dataclasses import replace
 from typing import cast
 
 from medterm4ds.core.models import CodeRef, CodeRelation
@@ -30,8 +31,22 @@ def get_code_relations(
 ) -> list[CodeRelation]:
     """Return hierarchy relationships for one or many codes."""
     normalized_direction = normalize_hierarchy_direction(direction)
+    # QC-051 (MEDIUM): pre-fix, a string ``max_depth='5'`` crashed with
+    # ``TypeError: '<' not supported between instances of 'str' and 'int'``
+    # in the engine. Sibling of EC-02 FIX-005. ``bool`` is excluded because
+    # ``isinstance(True, int)`` is True in Python.
+    if not isinstance(max_depth, int) or isinstance(max_depth, bool):
+        raise TypeError(f"max_depth must be an integer, got {type(max_depth).__name__}")
     if max_depth < 1:
         raise ValueError("max_depth must be at least 1")
+    # QC-053 (LOW): pre-fix, ``limit=-1`` propagated to the SQL LIMIT clause
+    # and raised ``duckdb.BinderException: LIMIT/OFFSET cannot be negative``.
+    # Surface as a clean ValueError at the service boundary.
+    if limit is not None:
+        if not isinstance(limit, int) or isinstance(limit, bool):
+            raise TypeError(f"limit must be an integer or None, got {type(limit).__name__}")
+        if limit < 0:
+            raise ValueError("limit must be non-negative")
     normalized = [
         item if isinstance(item, CodeRef) else CodeRef.from_pair(item)
         for item in codes
@@ -115,6 +130,11 @@ def get_descendants_bfs(
     Returns (relations, depth_cap_hit) where depth_cap_hit is True if the BFS
     reached max_depth with frontier still non-empty AND stop_at (if set) was
     not found (i.e. there were more descendants beyond the cap).
+
+    Each returned relation's ``depth`` field carries the true BFS layer
+    (QC-432: the child relations this walk composes from all report depth=1;
+    consumers of the bounded MCP/FHIR descendant paths expect the depth of
+    the descendant below the seed).
     """
     if max_depth < 1:
         return [], False
@@ -138,9 +158,81 @@ def get_descendants_bfs(
                 continue
             seen_this_layer.add(child_code)
             visited.add(child_code)
-            results.append(rel)
+            results.append(replace(rel, depth=_depth + 1))
             new_frontier.append(child_code)
             if stop_at is not None and child_code == stop_at:
+                found_target = True
+                break
+            if limit is not None and len(results) >= limit:
+                break
+        if found_target:
+            break
+        frontier = new_frontier
+    else:
+        # Loop completed without break = depth cap was the limiter
+        if frontier:
+            depth_cap_hit = True
+    return results, depth_cap_hit
+
+
+def get_ancestors_bfs(
+    seed: CodeRef,
+    engine: HierarchyEngine,
+    *,
+    max_depth: int = 5,
+    limit: int | None = None,
+    stop_at: str | None = None,
+) -> tuple[list[CodeRelation], bool]:
+    """Layer-by-layer BFS over ancestors using direct parent queries.
+
+    Upward mirror of ``get_descendants_bfs``: each layer is one batched SQL
+    query (parents of all frontier codes via get_parents, depth=1). Each node
+    is visited exactly once via a visited set, so cost is O(nodes) not
+    O(paths). Like the descendant walk, this bypasses the recursive CTE in
+    get_ancestors, whose path-string cycle prevention enumerates every
+    distinct upward path and explodes for concepts with multiply-inherited
+    ancestors (an ordinary SNOMED code's ancestor CTE walk OOMs at the 1 GiB
+    balanced DuckDB limit while the true ancestor set is ~30 nodes —
+    QC-281).
+
+    Args:
+        seed: code to walk upward from.
+        engine: HierarchyEngine (typically LocalDuckDBEngine).
+        max_depth: max levels to ascend. Default 5.
+        limit: optional cap on number of ancestor relations returned
+            (early-exit).
+        stop_at: optional target code; the walk returns as soon as it is
+            reached.
+
+    Returns (relations, depth_cap_hit) where depth_cap_hit is True if the
+    BFS reached max_depth with a non-empty frontier and stop_at (if set) was
+    not found.
+    """
+    if max_depth < 1:
+        return [], False
+    visited: set[str] = {seed.code}
+    frontier: list[str] = [seed.code]
+    results: list[CodeRelation] = []
+    depth_cap_hit = False
+    found_target = False
+    for _depth in range(max_depth):
+        if not frontier:
+            break
+        if limit is not None and len(results) >= limit:
+            break
+        refs = [CodeRef(source=seed.source, code=c) for c in frontier]
+        parents = get_parents(refs, engine=engine)
+        new_frontier: list[str] = []
+        seen_this_layer: set[str] = set()
+        for rel in parents:
+            parent_code = rel.target.code
+            if parent_code in visited or parent_code in seen_this_layer:
+                continue
+            seen_this_layer.add(parent_code)
+            visited.add(parent_code)
+            results.append(rel)
+            new_frontier.append(parent_code)
+            if stop_at is not None and parent_code == stop_at:
                 found_target = True
                 break
             if limit is not None and len(results) >= limit:
@@ -184,6 +276,15 @@ def is_descendant(
 
 def normalize_hierarchy_direction(direction: str) -> HierarchyDirection:
     """Normalize hierarchy direction aliases."""
+    # QC-048 (MEDIUM): pre-fix, called ``direction.strip().lower()`` without
+    # an isinstance check; ``None`` crashed with ``AttributeError: 'NoneType'
+    # object has no attribute 'strip'`` and ``int`` crashed with ``'int'
+    # object has no attribute 'strip'``. Per GLOBAL_RULES.md "Silent
+    # Fallbacks" — programming bugs MUST propagate as typed errors.
+    if not isinstance(direction, str):
+        raise TypeError(
+            f"direction must be a string, got {type(direction).__name__}"
+        )
     normalized = _DIRECTION_ALIASES.get(direction.strip().lower())
     if normalized is None:
         raise ValueError(
