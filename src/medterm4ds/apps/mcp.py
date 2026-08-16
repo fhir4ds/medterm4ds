@@ -845,32 +845,50 @@ def create_mcp_server(
 
         Each result includes a match_grade: 'certain', 'probable', or 'possible'.
         """
-        from medterm4ds.services.search import SEARCH_CATEGORIES, search as search_service
-        # QC-400: pass the engine so result displays are canonicalized to the
-        # engine preferred term — the same convention Python and FHIR $search
-        # emit (runs on this server's single db_executor, like every tool).
-        results = await _run_db(
-            search_service, query, mode=mode, sources=sources, count=count,
-            engine=server_runtime.engine,
+        from medterm4ds.services.search import (
+            CANONICAL_RESULT_TYPES,
+            SEARCH_CATEGORIES,
+            search as search_service,
         )
         warnings: list[str] = []
-        if result_types:
-            # QC-429 (LOW): mirror CLI ``search --result-types`` — category
-            # filter applies to the BM25/semantic/hybrid ``category`` field;
-            # canonical mode filters on ``result_type`` instead.
+        # result_types is enforced SERVICE-SIDE in every mode (canonical
+        # filters by canonical_id prefix; lexical/semantic/hybrid restrict the
+        # category indexes searched), so `count` caps the FILTERED result set.
+        # The former post-filter ran AFTER the service truncated to count and
+        # silently discarded the non-matching truncated slots — the same
+        # filter-then-limit bug the CLI had.
+        requested = list(result_types or [])
+        forwarded: list[str] | None = None
+        if requested:
             if mode != "canonical":
-                unknown = [t for t in result_types if t not in SEARCH_CATEGORIES]
+                # QC-429: the category filter applies to the BM25 `category`
+                # field, which only ever holds SEARCH_CATEGORIES values.
+                unknown = [t for t in requested if t not in SEARCH_CATEGORIES]
                 if unknown:
                     warnings.append(
                         f"result_types values {unknown} are not search "
                         f"categories ({', '.join(SEARCH_CATEGORIES)}); they "
                         "matched no results."
                     )
-                results = [r for r in results if r.category in result_types]
+                forwarded = [t for t in requested if t in SEARCH_CATEGORIES]
             else:
-                wanted = set(result_types)
-                results = [r for r in results if r.result_type in wanted]
-        payload: dict[str, Any] = {"results": [r.to_dict() for r in results]}
+                # canonical() raises ValueError on unknown types; forwarding
+                # only the matchable subset keeps the empty-result contract.
+                forwarded = [t for t in requested if t in CANONICAL_RESULT_TYPES]
+            if not forwarded:
+                # Nothing can match — skip the (expensive) service call.
+                payload: dict[str, Any] = {"results": []}
+                if warnings:
+                    payload["warnings"] = warnings
+                return payload
+        # QC-400: pass the engine so result displays are canonicalized to the
+        # engine preferred term — the same convention Python and FHIR $search
+        # emit (runs on this server's single db_executor, like every tool).
+        results = await _run_db(
+            search_service, query, mode=mode, sources=sources, count=count,
+            result_types=forwarded, engine=server_runtime.engine,
+        )
+        payload = {"results": [r.to_dict() for r in results]}
         if warnings:
             payload["warnings"] = warnings
         return payload

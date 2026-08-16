@@ -335,3 +335,121 @@ def test_mcp_single_code_tools_reject_none_inputs(tmp_path):
     # Valid inputs pass without raising.
     _validate_single_code_inputs(code="E11.9", source="ICD10CM")
 
+
+
+# =============================================================================
+# Filter-then-limit regression (same bug class the CLI had): result_types
+# must be forwarded to the SERVICE so `count` caps the filtered set — the
+# former tool post-filtered after truncation and silently discarded slots.
+# =============================================================================
+
+
+def _fake_search_results():
+    from types import SimpleNamespace
+
+    def make(code, display, category, result_type, score):
+        return SimpleNamespace(
+            to_dict=lambda _c=code, _d=display, _cat=category, _rt=result_type, _s=score: {
+                "code": _c, "display": _d, "category": _cat,
+                "result_type": _rt, "score": _s,
+            },
+            category=category,
+            result_type=result_type,
+        )
+
+    # Medication ranks first; a client-side post-filter with count=1 would
+    # drop it and return zero labs.
+    return [
+        make("6809", "metformin", "medication", "medication", 0.99),
+        make("LP15098-4", "Potassium", "lab", "lab", 0.98),
+    ]
+
+
+def test_mcp_search_result_types_forwarded_not_postfiltered(tmp_path, monkeypatch):
+    """`search(result_types=['lab'], count=1)` must return the one lab result
+    AND the service must receive result_types (service-side filtering)."""
+    import asyncio
+
+    db_path = tmp_path / "umls.duckdb"
+    _make_duckdb(db_path)
+    runtime = McpRuntime(_settings(db_path, prepare_cache=False))
+    runtime.open()
+    captured: dict = {}
+
+    def fake_service(query, *, mode=None, sources=None, count=None,
+                     result_types=None, engine=None):
+        captured.update(
+            mode=mode, count=count, result_types=result_types,
+        )
+        if result_types:
+            return [r for r in _fake_search_results()
+                    if r.category in result_types or r.result_type in result_types]
+        return _fake_search_results()
+
+    monkeypatch.setattr("medterm4ds.services.search.search", fake_service)
+
+    from medterm4ds.apps.mcp import create_mcp_server
+    from fastmcp import Client
+
+    async def run():
+        server = create_mcp_server(runtime=runtime)
+        async with Client(server) as client:
+            res = await client.call_tool(
+                "search",
+                {"query": "potassium", "mode": "lexical", "count": 1,
+                 "result_types": ["lab"]},
+            )
+            return res
+
+    try:
+        result = asyncio.run(run())
+    finally:
+        runtime.close()
+
+    payload = result.data if hasattr(result, "data") else result
+    rows = payload["results"]
+    assert len(rows) == 1, rows
+    assert rows[0]["code"] == "LP15098-4"
+    # The service, not the tool, applied the filter.
+    assert captured["result_types"] == ["lab"]
+    assert captured["count"] == 1
+
+
+def test_mcp_search_unknown_result_types_skip_service(tmp_path, monkeypatch):
+    """Every requested type outside the mode's vocabulary → empty result
+    without calling the (expensive) service; a warning is surfaced."""
+    import asyncio
+
+    db_path = tmp_path / "umls.duckdb"
+    _make_duckdb(db_path)
+    runtime = McpRuntime(_settings(db_path, prepare_cache=False))
+    runtime.open()
+    called = {"n": 0}
+
+    def fake_service(*args, **kwargs):
+        called["n"] += 1
+        return _fake_search_results()
+
+    monkeypatch.setattr("medterm4ds.services.search.search", fake_service)
+
+    from medterm4ds.apps.mcp import create_mcp_server
+    from fastmcp import Client
+
+    async def run():
+        server = create_mcp_server(runtime=runtime)
+        async with Client(server) as client:
+            return await client.call_tool(
+                "search",
+                {"query": "x", "mode": "lexical", "count": 5,
+                 "result_types": ["bogus_type"]},
+            )
+
+    try:
+        result = asyncio.run(run())
+    finally:
+        runtime.close()
+
+    payload = result.data if hasattr(result, "data") else result
+    assert payload["results"] == []
+    assert called["n"] == 0
+    assert any("bogus_type" in w for w in payload.get("warnings", []))
