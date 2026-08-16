@@ -106,143 +106,135 @@ _LABEL_TO_SEARCH_CATEGORIES: dict[str, str | list[str] | None] = {
     "body structure": None,
 }
 
-# Labels whose spans denote drugs. Used by the analyte/TDM context rules
-# below to decide when a drug-labeled span actually wants a LAB anchor.
-_DRUG_LABELS = frozenset({
-    "therapeutic agent", "therapeutic class", "medication",
-})
-
-# Ambiguous analyte names that ALSO exist as RxNorm chemicals/drugs, so
-# SapBERT's unfiltered top hit is often the drug anchor even though the
-# clinical text means the measurement (QC report pattern 2: creatinine →
-# RxNorm 2913, potassium → ATC A12BA, glucose/sodium/calcium/magnesium/
-# cholesterol likewise). Spans matching one of these (after stripping
-# leading specimen qualifiers) prefer the "lab" category when GLiNER
-# labeled them a drug — unless an administration context is present
-# (see _ADMINISTRATION_CONTEXT_RE). Salt-form drug names ("potassium
-# chloride", "sodium bicarbonate") are deliberately NOT matched: only
-# the bare analyte, optionally qualified by a specimen prefix.
-_ANALYTE_NAMES = frozenset({
-    # QC report offenders first
-    "creatinine", "potassium", "glucose", "calcium", "sodium",
-    "magnesium", "cholesterol",
-    # Same-shape additions from routine chemistry panels
-    "albumin", "bilirubin", "hemoglobin", "hematocrit", "platelets",
-    "phosphate", "lactate", "uric acid", "triglycerides", "cortisol",
-    "ferritin", "iron", "vitamin b12", "folate",
-})
-
-# Specimen/setting qualifiers GLiNER may include in the span ahead of the
-# analyte name ("serum creatinine"). Stripped (single leading words) before
-# analyte matching only.
-_ANALYTE_QUALIFIERS = frozenset({
-    "serum", "plasma", "blood", "urine", "urinary",
-    "fasting", "random", "spot", "csf",
-})
-
-# Administration context: nearby tokens indicating the span is a substance
-# being GIVEN to the patient, not measured (creatinine/potassium/iron
-# supplements, potassium infusion). Checked against the span text plus the
-# surrounding context window captured on FilteredSpan. Small and
-# deliberately conservative — when in doubt the analyte rule applies.
-_ADMINISTRATION_CONTEXT_RE = re.compile(
-    r"\b(?:"
-    r"give|gives|given|gave|"
-    r"administers?|administered|administration|"
-    r"infus\w*|inject\w*|"
-    r"supplements?|supplementation|"
-    r"dose|dosing|dosage|"
-    r"prescrib\w*"
-    r")\b",
-    re.IGNORECASE,
+# ConText tie-breaker cue lexicons (QC pattern 2 fix, 2026-08-16). GLiNER's
+# label cannot distinguish "creatinine" the measurement from "creatinine"
+# the RxNorm chemical — the biggest wrong-type pattern (1,046 lab analytes
+# typed "therapeutic agent"). Two custom medspaCy ConText categories read
+# the SENTENCE context instead: MEASUREMENT cues (span is being
+# measured/monitored → lab anchor) and ADMINISTRATION cues (span is being
+# given/administered → medication anchor). Evaluated at 100% accuracy on
+# decided items over a 60-item corpus (docs/.ai_loop/qc_comp/
+# lexicon_tiebreaker_results.md); undecided items conservatively keep the
+# GLiNER label mapping.
+#
+# Cues are single literals phrase-matched case-insensitively; directions
+# are BIDIRECTIONAL everywhere (cues legitimately precede "level of
+# vancomycin" and follow "carbamazepine level"; sentence-bounded default
+# scopes + same-category scope limiting do the cue-to-entity assignment).
+_MEASUREMENT_CUES = (
+    "level", "levels", "measured", "resulted", "resulting", "screening",
+    "screened", "monitor", "monitored", "monitoring", "drawn", "panel",
+    "CBC", "BMP", "CMP", "serum", "plasma", "urine", "lab", "labs",
+    "laboratory", "quantitative", "checked", "checking", "pending",
+    "elevated", "low", "high", "normal", "abnormal", "trough", "peak",
+    "reference", "range", "reference range", "obtained", "collected",
+    "specimen", "fasting", "random", "spot", "ordered", "supplemented",
+    "corrected",
 )
 
-# Therapeutic-drug-monitoring context: a drug-labeled span mentioning (or
-# sitting next to) "level"/"levels"/"concentration" denotes the measurement,
-# not the therapy ("carbamazepine level", "check cyclosporine
-# concentration"). QC report pattern 4 wants plain drug mentions to stay
-# drugs (the label constraint handles that); this only flips spans that
-# explicitly reference a level/concentration.
-_LEVEL_CONTEXT_RE = re.compile(
-    r"\b(?:levels?|concentrations?)\b",
-    re.IGNORECASE,
+# Administration cues. Note vs. the eval spec: "repleted", "infused" and
+# "drip" live HERE, not with the measurement cues — the corpus gold for
+# "calcium gluconate infused" / "sodium bicarbonate drip" / "magnesium
+# repleted" is medication (they are the eval's named cue gaps to close).
+# "replaced" is administration-only despite appearing in both spec lists:
+# medspaCy prunes overlapping same-span modifiers, so a literal registered
+# in two categories fires as only one — administration matches the corpus
+# gold ("potassium replaced" = medication).
+_ADMINISTRATION_CUES = (
+    "given", "gave", "administered", "administration", "started", "stopped",
+    "switched", "IV", "intravenously", "PO", "orally", "daily", "BID", "TID",
+    "QID", "nightly", "weekly", "dose", "dosing", "dosage", "prescribed",
+    "infusion", "injected", "injection", "push", "pushed", "supplement",
+    "supplementation", "tablet", "capsule", "cream", "ointment", "patch",
+    "mEq", "mg", "mcg", "units", "held", "hold", "resumed", "increased",
+    "decreased", "titrated", "tolerated", "replaced", "taken",
+    "repleted", "infused", "drip",
 )
 
-# Characters of surrounding text captured per span for the context
-# heuristics above. Not part of the public span payload (to_dict omits it).
-_CONTEXT_WINDOW_CHARS = 48
+# Slashed result units ("250 mg/dL") as MEASUREMENT regex patterns. The
+# medspaCy tokenizer splits "mg/dL" into tokens, so the bare "mg"
+# ADMINISTRATION cue above would fire on plain lab-value sentences and
+# flip analytes to medications ("calcium 8.9 mg/dL"). These regex rules
+# (matched over the raw doc text) fire MEASUREMENT on the same sentence,
+# keeping analyte-with-unit spans on the lab side.
+_LAB_RESULT_UNIT_REGEXES = (
+    "mg/dl", "mcg/dl", "ng/ml", "ng/dl", "pg/ml", "g/dl",
+    "mmol/l", "meq/l", "u/ml", "iu/l",
+)
 
 
-def _strip_analyte_qualifiers(text_lower: str) -> str:
-    """Drop leading specimen qualifiers from a lowercased span text.
+def _register_context_arbiter(nlp) -> bool:
+    """Register the MEASUREMENT/ADMINISTRATION ConText rules on a medspaCy
+    pipeline (call once per pipeline; NlpPipeline._ensure_loaded and tests
+    that build a medspaCy pipeline without GLiNER both route through here).
 
-    "serum creatinine" → "creatinine"; "uric acid" is left intact.
+    Returns True when the rules were registered, False when the pipeline
+    has no medspacy_context pipe (nothing to arbitrate with).
     """
-    words = text_lower.split()
-    while words and words[0] in _ANALYTE_QUALIFIERS:
-        words = words[1:]
-    return " ".join(words)
+    if "medspacy_context" not in getattr(nlp, "pipe_names", ()):
+        return False
+    from medspacy.context import ConTextRule
+    from spacy.tokens import Span
+
+    ctx = nlp.get_pipe("medspacy_context")
+    # Span attributes set on targets modified by each category. Copy the
+    # mapping first — assigning into it in place would mutate medspaCy's
+    # module-level DEFAULT_ATTRIBUTES for every ConText instance.
+    Span.set_extension("is_measurement", default=False, force=True)
+    Span.set_extension("is_administration", default=False, force=True)
+    attrs = dict(ctx.context_attributes_mapping or {})
+    attrs["MEASUREMENT"] = {"is_measurement": True}
+    attrs["ADMINISTRATION"] = {"is_administration": True}
+    ctx.context_attributes_mapping = attrs
+
+    def _unit_pattern(unit: str) -> str:
+        # "mg/dl" → \bmg\s*/\s*dl\b — tolerates "mg / dl" spacing variants.
+        return r"\b" + re.escape(unit).replace("/", r"\s*/\s*") + r"\b"
+
+    rules = [ConTextRule(literal=c, category="MEASUREMENT")
+             for c in _MEASUREMENT_CUES]
+    rules += [ConTextRule(literal=u, category="MEASUREMENT",
+                          pattern=_unit_pattern(u))
+              for u in _LAB_RESULT_UNIT_REGEXES]
+    rules += [ConTextRule(literal=c, category="ADMINISTRATION")
+              for c in _ADMINISTRATION_CUES]
+    ctx.add(rules)
+    return True
 
 
-def _has_adjacent_level_word(span: "FilteredSpan") -> bool:
-    """True when a level/concentration word sits next to the span.
+def _context_arbitrate_categories(ent) -> list[str] | None:
+    """Map a spaCy entity's ConText MEASUREMENT/ADMINISTRATION flags to
+    canonical search categories for lab-vs-med disambiguation.
 
-    Matches the level word inside the span text itself ("carbamazepine
-    level") or within 2 tokens of the span inside the captured context
-    window ("check cyclosporine concentration", "level of tacrolimus").
-    A level word elsewhere in the window — a different entity's clause
-    ("Continue metformin. Glucose levels stable.") — does NOT count.
+    - MEASUREMENT only → ["lab"]
+    - ADMINISTRATION only → ["medication"]
+    - both fire → ["lab", "medication"] (search both, anchor ranking picks)
+    - neither → None (no override — GLiNER's label mapping stands)
     """
-    if _LEVEL_CONTEXT_RE.search(span.text):
-        return True
-    if not span.context:
-        return False
-    idx = span.context.find(span.text)
-    if idx < 0:
-        return False
-    end = idx + len(span.text)
-
-    def _tokens(fragment: str, last: bool) -> str:
-        # Whitespace tokens, punctuation left intact — a "." token stops the
-        # 2-token window at a sentence boundary ("…stable. Continue" does not
-        # reach a "levels" in the next clause).
-        words = fragment.split()
-        return " ".join(words[-2:] if last else words[:2])
-
-    before = _tokens(span.context[max(0, idx - 24):idx], last=True)
-    after = _tokens(span.context[end:end + 24], last=False)
-    return bool(_LEVEL_CONTEXT_RE.search(before) or _LEVEL_CONTEXT_RE.search(after))
+    measurement = bool(getattr(ent._, "is_measurement", False))
+    administration = bool(getattr(ent._, "is_administration", False))
+    if measurement and administration:
+        return ["lab", "medication"]
+    if measurement:
+        return ["lab"]
+    if administration:
+        return ["medication"]
+    return None
 
 
 def _span_search_categories(span: "FilteredSpan") -> str | list[str] | None:
     """Effective canonical search categories for a span (constrain step).
 
-    Starts from _LABEL_TO_SEARCH_CATEGORIES, then applies two context
-    adjustments for drug-labeled spans:
-
-    - Analyte rule (QC pattern 2): bare analyte names prefer "lab" unless an
-      administration context (give/administered/infusion/supplement/...) is
-      present in the span text or its context window.
-    - TDM rule (QC pattern 4 counterpart): an adjacent "level(s)/
-      concentration" word flips the span to "lab" (see
-      _has_adjacent_level_word).
-
-    Returns None when the label implies no category constraint.
+    ConText arbitration first: when the MEASUREMENT/ADMINISTRATION cues
+    around the span produced a decision (captured on
+    FilteredSpan.context_categories at find_terms time), it takes precedence
+    over the GLiNER label mapping — ConText decided 45/45 contested
+    lab-vs-med items correctly where the label is exactly what's wrong.
+    No decision (None) falls through to the label mapping as before.
     """
-    label = span.entity_type.lower()
-    if label in _DRUG_LABELS:
-        text = span.text.lower().strip()
-        # Combined text searched for administration cues: span text first,
-        # then the captured context window around the span in the source text.
-        blob = f"{span.text} {span.context}" if span.context else span.text
-        if _strip_analyte_qualifiers(text) in _ANALYTE_NAMES:
-            if _ADMINISTRATION_CONTEXT_RE.search(blob):
-                # Administered substance — keep the drug constraint.
-                return _LABEL_TO_SEARCH_CATEGORIES.get(label)
-            return "lab"
-        if _has_adjacent_level_word(span):
-            return "lab"
-    return _LABEL_TO_SEARCH_CATEGORIES.get(label)
+    if span.context_categories:
+        return span.context_categories
+    return _LABEL_TO_SEARCH_CATEGORIES.get(span.entity_type.lower())
 
 
 def _categories_to_prefixes(
@@ -469,11 +461,12 @@ class FilteredSpan:
     span_start: int = 0
     span_end: int = 0
     ner_confidence: float = 0.0
-    # Small window of source text around the span (_CONTEXT_WINDOW_CHARS
-    # each side), captured for resolve_spans context heuristics (administration
-    # verbs, TDM "level"/"concentration" cues). Internal only — omitted from
-    # to_dict. Empty for hand-built spans (heuristics fall back to span text).
-    context: str = ""
+    # ConText MEASUREMENT/ADMINISTRATION arbitration result for this span
+    # (see _context_arbitrate_categories): ["lab"], ["medication"],
+    # ["lab", "medication"], or None (no cue decision — the GLiNER label
+    # mapping stands). Captured at find_terms time because resolve_spans
+    # runs without medspaCy loaded. Internal only — omitted from to_dict.
+    context_categories: list[str] | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -620,9 +613,13 @@ class NlpPipeline:
             self._ner_model_name, revision=self._ner_model_revision,
         )
 
-        # Load medspaCy for ConText (disable target_matcher — we use GLiNER instead)
+        # Load medspaCy for ConText (disable target_matcher — we use GLiNER
+        # instead). medspacy_disable is the medspaCy 1.3.x kwarg; the plain
+        # spaCy `disable=` kwarg is silently swallowed by **model_kwargs when
+        # the base model is blank-English, so the matcher used to run anyway.
         import medspacy
-        self._nlp = medspacy.load(disable=["medspacy_target_matcher"])
+        self._nlp = medspacy.load(medspacy_disable=["medspacy_target_matcher"])
+        _register_context_arbiter(self._nlp)
 
         logger.info("NLP pipeline loaded (GLiNER %s + medspaCy ConText)", self._ner_model_name)
 
@@ -709,41 +706,49 @@ class NlpPipeline:
 
             # Check for negation/uncertainty/historical triggers embedded in the entity text
             cleaned_text, inline_status = _detect_inline_trigger(ent_text)
+            # ConText annotations from the overlapping spaCy entity: ConText
+            # status (negation/uncertainty/...) plus the MEASUREMENT/
+            # ADMINISTRATION arbitration result for lab-vs-med resolution.
+            context_status = None
+            context_categories = None
+            for spacy_ent in doc.ents:
+                if (spacy_ent.start_char <= start < spacy_ent.end_char or
+                        start <= spacy_ent.start_char < end):
+                    context_categories = _context_arbitrate_categories(spacy_ent)
+                    negated = getattr(spacy_ent._, "is_negated", False)
+                    uncertain = getattr(spacy_ent._, "is_uncertain", False)
+                    historical = getattr(spacy_ent._, "is_historical", False)
+                    # QC-152: relatives' conditions are not the patient's —
+                    # medspaCy ConText sets is_family for FAMILY_HISTORY
+                    # items ("father had", "family history of"). Previously
+                    # only negated/uncertain/historical were checked, so
+                    # "Father had colon cancer" affirmed colon cancer for
+                    # the patient. Excluded from the affirmed default
+                    # (status "family" is not in allowed_statuses); callers
+                    # who want it pass include_family=True.
+                    family = getattr(spacy_ent._, "is_family", False)
+                    # QC-187: conditional/hypothetical mentions ("if X were
+                    # present, we would start Y") must not be affirmed.
+                    hypothetical = getattr(spacy_ent._, "is_hypothetical", False)
+                    if negated:
+                        context_status = "negated"
+                    elif family:
+                        context_status = "family"
+                    elif hypothetical:
+                        context_status = "hypothetical"
+                    elif uncertain:
+                        context_status = "uncertain"
+                    elif historical:
+                        context_status = "historical"
+                    break
             if inline_status != "affirmed":
+                # An inline trigger found inside the span text wins over the
+                # sentence-level ConText status.
                 status = inline_status
                 display_text = cleaned_text
             else:
-                status = "affirmed"
+                status = context_status or "affirmed"
                 display_text = ent_text
-                for spacy_ent in doc.ents:
-                    if (spacy_ent.start_char <= start < spacy_ent.end_char or
-                        start <= spacy_ent.start_char < end):
-                        negated = getattr(spacy_ent._, "is_negated", False)
-                        uncertain = getattr(spacy_ent._, "is_uncertain", False)
-                        historical = getattr(spacy_ent._, "is_historical", False)
-                        # QC-152: relatives' conditions are not the patient's —
-                        # medspaCy ConText sets is_family for FAMILY_HISTORY
-                        # items ("father had", "family history of"). Previously
-                        # only negated/uncertain/historical were checked, so
-                        # "Father had colon cancer" affirmed colon cancer for
-                        # the patient. Excluded from the affirmed default
-                        # (status "family" is not in allowed_statuses); callers
-                        # who want it pass include_family=True.
-                        family = getattr(spacy_ent._, "is_family", False)
-                        # QC-187: conditional/hypothetical mentions ("if X were
-                        # present, we would start Y") must not be affirmed.
-                        hypothetical = getattr(spacy_ent._, "is_hypothetical", False)
-                        if negated:
-                            status = "negated"
-                        elif family:
-                            status = "family"
-                        elif hypothetical:
-                            status = "hypothetical"
-                        elif uncertain:
-                            status = "uncertain"
-                        elif historical:
-                            status = "historical"
-                        break
 
             spans.append(FilteredSpan(
                 text=display_text,
@@ -752,10 +757,7 @@ class NlpPipeline:
                 span_start=start,
                 span_end=end,
                 ner_confidence=score,
-                context=text[
-                    max(0, start - _CONTEXT_WINDOW_CHARS):
-                    min(len(text), end + _CONTEXT_WINDOW_CHARS)
-                ],
+                context_categories=context_categories,
             ))
 
         return spans

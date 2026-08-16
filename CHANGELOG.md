@@ -106,6 +106,20 @@ derived tables on existing databases** — see Upgrade notes.
 
 Of ~340 fixes in this release; the most user-visible:
 
+- **Extraction lab-vs-med disambiguation now uses medspaCy ConText as a
+  tie-breaker.** The old analyte heuristic (a 24-name hand list plus an
+  administration-verb regex and a TDM "level" adjacency rule) is replaced
+  by two custom ConText categories — MEASUREMENT and ADMINISTRATION cue
+  lexicons read from sentence context — evaluated at 100% accuracy on
+  decided items over a 60-item corpus (the biggest NER wrong-type pattern:
+  1,046 lab analytes typed "therapeutic agent"). A measurement-only
+  context overrides the GLiNER label to search `lab` anchors
+  ("carbamazepine level was 8"), administration-only to `medication`
+  ("potassium chloride 20 mEq IV given"), both fire search both and let
+  anchor ranking decide, and no decision conservatively keeps the label
+  mapping. Also fixes `medspacy.load(disable=...)` → `medspacy_disable=`
+  — the old kwarg was silently swallowed, so the unused target matcher
+  ran in the pipeline anyway.
 - **`search --result-types` with a small `--limit` returned zero results.**
   The CLI applied the category filter client-side AFTER the service had
   truncated to `--limit`, discarding truncated slots instead of backfilling
