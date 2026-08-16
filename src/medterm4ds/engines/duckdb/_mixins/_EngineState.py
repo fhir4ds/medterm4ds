@@ -155,10 +155,12 @@ class _EngineState:
                 "CREATE INDEX idx_mt4ds_mrrel_aui1 ON mrrel(AUI1)",
                 "CREATE INDEX idx_mt4ds_mrrel_aui2 ON mrrel(AUI2)",
             ):
+                # CR-035 (EC-20 sibling): narrow to duckdb.Error + warn — a
+                # bare except hid programming bugs and logged at debug.
                 try:
                     self.con.execute(ddl)
-                except Exception as exc:
-                    logger.debug("Skipping local DuckDB cache index %s: %s", ddl, exc)
+                except duckdb.Error as exc:
+                    logger.warning("Skipping local DuckDB cache index %s: %s", ddl, exc)
 
         # prepare_cache just created temp tables (mrconso, mrrel, indexes).
         # Invalidate again so post-prepare probes see the new state.
@@ -205,12 +207,14 @@ class _EngineState:
                     ON {_SNOMED_PARENT_LINKS_CACHE_TABLE}(child_aui)
                     """
                 )
-            except Exception as exc:
-                logger.debug("Skipping SNOMED parent link cache index: %s", exc)
+            except duckdb.Error as exc:
+                # CR-035 (EC-20 sibling): narrow + warn (was bare except/debug).
+                logger.warning("Skipping SNOMED parent link cache index: %s", exc)
             self._snomed_parent_links_cache_prepared = True
             return _SNOMED_PARENT_LINKS_CACHE_TABLE
-        except Exception as exc:
-            logger.debug("Failed to create SNOMED parent link cache: %s", exc)
+        except duckdb.Error as exc:
+            # CR-035 (EC-20 sibling): narrow + warn (was bare except/debug).
+            logger.warning("Failed to create SNOMED parent link cache: %s", exc)
             return None
 
 

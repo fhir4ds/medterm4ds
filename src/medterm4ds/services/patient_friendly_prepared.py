@@ -212,7 +212,9 @@ def _resolve_hierarchy_sources(
         f"({_sql_literal(c.code)}, {_sql_literal(source)}, {i})" for i, c in enumerate(codes)
     )
 
-    closure_table = _walk_closure_table(con, walk_depth)
+    # CR-031: per-source closure coverage gate — fall back to the walk_edges
+    # recursive CTE when the closure table has no rows for this source.
+    closure_table = _walk_closure_table(con, walk_depth, source)
     if closure_table:
         native_walk_cte = f"""
     native_walk(input_order, source, code, aui, cui, tty, depth) AS (
@@ -440,7 +442,14 @@ def _snomed_fallback(
         f"({_sql_literal(cr.code)}, {_sql_literal(cr.source)}, {idx})" for idx, cr in items
     )
 
-    closure_table = _walk_closure_table(con, walk_depth)
+    # CR-031: the native_walk leg joins the closure table per input source and
+    # the snomed_walk leg joins it on SNOMEDCT_US, so BOTH must be covered or
+    # the whole query falls back to the walk_edges recursive CTEs.
+    closure_table = _walk_closure_table(
+        con,
+        walk_depth,
+        {cr.source for cr in needs_fallback.values()} | {"SNOMEDCT_US"},
+    )
     if closure_table:
         native_walk_cte = f"""
     native_walk(input_order, source, source_code, source_depth, aui, cui, tty, depth) AS (
@@ -890,7 +899,8 @@ def _resolve_snomed(
     ]
     target_case_sql = "CASE target_source " + " ".join(target_case_parts) + " END"
     crosswalk_table, crosswalk_filter = _same_cui_crosswalk_sql(con)
-    closure_table = _walk_closure_table(con, walk_depth)
+    # CR-031: SNOMED-only walk — gate on SNOMEDCT_US closure coverage.
+    closure_table = _walk_closure_table(con, walk_depth, "SNOMEDCT_US")
     if closure_table:
         snomed_walk_cte = f"""
     snomed_walk(input_order, code, technical_name, walk_code, aui, depth) AS (
@@ -1232,7 +1242,8 @@ def _guarded_snomed_walk(
         f"({_sql_literal(cr.code)}, {idx})" for idx, cr in indices.items()
     )
 
-    closure_table = _walk_closure_table(con, walk_depth)
+    # CR-031: SNOMED-only guarded walk — gate on SNOMEDCT_US closure coverage.
+    closure_table = _walk_closure_table(con, walk_depth, "SNOMEDCT_US")
     if closure_table:
         snomed_walk_cte = f"""
     snomed_walk(input_order, code, walk_code, aui, cui, depth) AS (

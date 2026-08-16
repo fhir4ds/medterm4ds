@@ -245,7 +245,10 @@ def _broader_mappings(
 
         # Walk ancestors via shared UMLS parent-walk primitive
         with _temp_codes(con, deduped_codes) as temp:
-            closure_table = walk_closure_table(con, max_depth)
+            # CR-031: per-source closure coverage gate — fall back to the
+            # walk_edges recursive CTE when the closure table has no rows
+            # for this source (stale/partial prepared DB).
+            closure_table = walk_closure_table(con, max_depth, source)
             if closure_table:
                 rows = con.execute(
                     f"""

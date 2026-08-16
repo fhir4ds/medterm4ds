@@ -650,6 +650,31 @@ def _prepare_walk_edges(con, *, replace: bool) -> dict[str, object]:
     return {table: {"status": "created", "rows": rows}}
 
 
+def _walk_closure_seed_sources() -> list[str]:
+    """CR-031 (HIGH): derive the closure seed whitelist from SOURCE_STRATEGIES.
+
+    Any strategy whose ``hierarchy_edge_sql()`` is non-None contributes parent
+    edges to mt4ds.walk_edges, so the closure must seed from the same set. The
+    previous hardcoded list ('ICD10CM','ICD10PCS','HCPCS','CPT','LNC',
+    'SNOMEDCT_US') excluded RXNORM/ATC/MSH, so the closure table stayed empty
+    for them and every closure-accelerated ancestor walk silently returned []
+    for those sources (crosswalk_prepared._broader_mappings, services.walk
+    prepared paths, patient_friendly_prepared) even after walk_edges gained
+    their edges. The runtime side (prepared_primitives.walk_closure_table
+    per-source coverage probe) back-stops DBs built before this fix.
+
+    No PREPARED_SCHEMA_VERSION bump: the 0.9 rebuild in flight at fix time
+    predates this builder change, and the runtime per-source probe makes the
+    closure delta a performance (not correctness) skew — a version bump would
+    hard-disable the prepared paths on that rebuild for no correctness gain.
+    """
+    return sorted(
+        name
+        for name, strategy in SOURCE_STRATEGIES.items()
+        if strategy.hierarchy_edge_sql() is not None
+    )
+
+
 def _prepare_walk_closure_limited(
     con,
     *,
@@ -667,7 +692,9 @@ def _prepare_walk_closure_limited(
         return {table: {"status": "exists", "rows": _row_count(con, qualified)}}
 
     depth = max(1, int(max_depth))
-    logger.info("Building %s to depth %s", qualified, depth)
+    seed_sources = _walk_closure_seed_sources()
+    seed_list = ", ".join(f"'{source}'" for source in seed_sources) or "''"
+    logger.info("Building %s to depth %s (seeds: %s)", qualified, depth, ", ".join(seed_sources))
     con.execute(f"DROP TABLE IF EXISTS {qualified}")
     con.execute(
         f"""
@@ -697,7 +724,7 @@ def _prepare_walk_closure_limited(
               1 AS depth
             FROM mt4ds.walk_edges
             WHERE direction = 'parent'
-              AND source IN ('ICD10CM', 'ICD10PCS', 'HCPCS', 'CPT', 'LNC', 'SNOMEDCT_US')
+              AND source IN ({seed_list})
 
             UNION
 

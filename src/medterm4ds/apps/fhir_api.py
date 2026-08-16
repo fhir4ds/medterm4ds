@@ -4019,11 +4019,25 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
         # drops non-scalar value[x] entries, so a valueBoolean includeNegated
         # silently fell back to 'false' and the client got an empty Bundle
         # while believing negated findings were requested.
+        # CR-032: the four include* booleans are now HONORED via
+        # valueBoolean (_parse_boolean_parameters below) — the inverse
+        # wrong-typed contract applies to them: any scalar value[x]
+        # (valueInteger, valueString, ...) is the type error and 400s.
+        include_names = {
+            "includeNegated", "includeUncertain", "includeHistorical", "includeFamily",
+        }
         wrong_typed = _wrong_typed_parameter(
             body,
             {"text", "format", "nerLabels", "resultTypes", "mode", "minGrade"},
+            boolean_names=include_names,
         )
         if wrong_typed is not None:
+            if wrong_typed in include_names:
+                return _fhir_error_response(
+                    request, 400,
+                    f"Parameter {wrong_typed!r} must carry a boolean value "
+                    "(valueBoolean); other value[x] types are rejected.",
+                )
             return _fhir_error_response(
                 request, 400,
                 f"Parameter {wrong_typed!r} must carry a string/integer value "
@@ -4073,6 +4087,10 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
                 "cannot be served as XML. Re-send with _format=json (or "
                 "format=codes/terms for a Bundle that serializes to XML).",
             )
+        # CR-032: read the include* booleans from the parallel valueBoolean
+        # channel (they were previously unexpressible via POST — silently
+        # defaulted false). Absent stays false (GET parity).
+        bools = _parse_boolean_parameters(body)
         payload = await _run_db(
             _ner_executor(request), _do_extract, str(text),
             fmt,
@@ -4080,10 +4098,10 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
             params.get("resultTypes"),
             mode,
             min_grade,
-            params.get("includeNegated", "false").lower() == "true",
-            params.get("includeUncertain", "false").lower() == "true",
-            params.get("includeHistorical", "false").lower() == "true",
-            params.get("includeFamily", "false").lower() == "true",
+            bools.get("includeNegated", False),
+            bools.get("includeUncertain", False),
+            bools.get("includeHistorical", False),
+            bools.get("includeFamily", False),
         )
         return _fhir_response(request, payload)
 
@@ -4241,10 +4259,10 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
         return raw if isinstance(raw, list) else []
 
     def _wrong_typed_parameter(
-        body: dict[str, Any], names: set[str]
+        body: dict[str, Any], names: set[str], *, boolean_names: set[str] = frozenset()
     ) -> str | None:
-        """Return the first parameter name in ``names`` carrying a wrong-typed
-        value, or None (QC-127/QC-136).
+        """Return the first parameter name carrying a wrong-typed value, or
+        None (QC-127/QC-136; CR-032 adds ``boolean_names``).
 
         ``_parse_parameters`` (per the QC-046 fix) drops entries without a
         scalar ``value*`` key so ``str(True)='True'`` coercion can't happen —
@@ -4253,19 +4271,31 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
         default. This probe detects that case so the caller can 400 instead.
         ``valueInteger`` is a scalar and passes (it is str()-coerced
         downstream, where value validation catches garbage).
+
+        CR-032: names in ``boolean_names`` are boolean-typed parameters
+        ($extract's include* family) — the INVERSE contract applies: they must
+        carry ``valueBoolean`` (see ``_parse_boolean_parameters``); a scalar
+        ``valueInteger``/``valueString`` etc. for them is the type error.
         """
         for param in _parameter_entries(body):
             if not isinstance(param, dict):
                 continue
             name = param.get("name", "")
+            has_other_value = any(
+                isinstance(key, str) and key.startswith("value") for key in param
+            )
+            if name in boolean_names:
+                # Key presence (not value truthiness): a JSON null means the
+                # parameter is absent (QC-245 sibling) — not a type error.
+                has_boolean = "valueBoolean" in param
+                if has_other_value and not has_boolean:
+                    return str(name)
+                continue
             if name not in names:
                 continue
             has_scalar = any(
                 key in param
                 for key in ("valueString", "valueUri", "valueCode", "valueInteger")
-            )
-            has_other_value = any(
-                isinstance(key, str) and key.startswith("value") for key in param
             )
             if has_other_value and not has_scalar:
                 return str(name)
@@ -4322,6 +4352,28 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
                 if key in param and param[key] is not None:
                     out[name] = str(param[key])
                     break
+        return out
+
+    def _parse_boolean_parameters(body: dict[str, Any]) -> dict[str, bool]:
+        """Extract named boolean parameters (``valueBoolean``) from a FHIR
+        Parameters body (CR-032).
+
+        ``_parse_parameters`` deliberately drops ``valueBoolean`` (QC-046:
+        ``str(True) == 'True'`` coercion) — but that made POSTed boolean
+        parameters like $extract's ``includeNegated`` silently inexpressible:
+        the entry was dropped and the route defaulted to false with no 400.
+        This parallel channel returns them as real bools. Only genuine JSON
+        booleans (and non-null ones, QC-245 sibling) are extracted; garbage
+        types are left out and surface via ``_wrong_typed_parameter``'s
+        ``boolean_names`` 400 upstream.
+        """
+        out: dict[str, bool] = {}
+        for param in _parameter_entries(body):
+            if not isinstance(param, dict):
+                continue
+            value = param.get("valueBoolean")
+            if isinstance(value, bool):
+                out[str(param.get("name", ""))] = value
         return out
 
     def _extract_coding_from_parameters(body: dict[str, Any]) -> tuple[str, str] | None:

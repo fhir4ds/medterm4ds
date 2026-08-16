@@ -1809,3 +1809,146 @@ class TestFhirEndpoints:
         # The 406 body honors the negotiated format (XML OperationOutcome).
         assert "xml" in get_resp.headers["content-type"]
         assert "<OperationOutcome" in get_resp.text
+
+    # -- $extract POST include* booleans (CR-032) --
+
+    @staticmethod
+    def _fake_extract_factory(calls):
+        """Fake extraction.extract honoring the includeNegated filter contract:
+        'no evidence of diabetes' is detected as a NEGATED span, returned only
+        when include_negated=True (mirrors ExtractionService.find_terms)."""
+        from medterm4ds.services.extraction import FilteredSpan
+
+        def _fake_extract(text, *, format="codes", **kwargs):
+            calls.append(kwargs)
+            include_negated = bool(kwargs.get("include_negated"))
+            if "diabet" not in text.lower():
+                return []
+            if include_negated:
+                return [FilteredSpan(
+                    text="diabetes", entity_type="disorder",
+                    status="negated", span_start=15, span_end=23,
+                )]
+            return []
+
+        return _fake_extract
+
+    def test_extract_post_include_negated_boolean_honored_cr032(
+        self, fhir_app, monkeypatch,
+    ):
+        """CR-032 (HIGH): POST {name: includeNegated, valueBoolean: true} must
+        reach the extraction service — previously the valueBoolean entry was
+        dropped by _parse_parameters and silently defaulted to false, so POST
+        could not express any include* flag at all."""
+        from starlette.testclient import TestClient
+
+        import medterm4ds.services.extraction as extraction_module
+
+        calls: list[dict] = []
+        monkeypatch.setattr(
+            extraction_module, "extract", self._fake_extract_factory(calls)
+        )
+        with TestClient(fhir_app) as client:
+            resp = client.post(
+                "/fhir/CodeSystem/$extract",
+                json={"resourceType": "Parameters", "parameter": [
+                    {"name": "text", "valueString": "no evidence of diabetes"},
+                    {"name": "format", "valueCode": "terms"},
+                    {"name": "includeNegated", "valueBoolean": True},
+                ]},
+            )
+            # Same request WITHOUT the boolean: default must stay false.
+            default_resp = client.post(
+                "/fhir/CodeSystem/$extract",
+                json={"resourceType": "Parameters", "parameter": [
+                    {"name": "text", "valueString": "no evidence of diabetes"},
+                    {"name": "format", "valueCode": "terms"},
+                ]},
+            )
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["total"] == 1, body
+        assert body["entry"][0]["resource"]["text"] == "diabetes"
+        assert body["entry"][0]["resource"]["status"] == "negated"
+        # The service received the flag (wiring, not just the response).
+        assert calls[0].get("include_negated") is True
+        assert calls[1].get("include_negated") is False
+
+        assert default_resp.status_code == 200
+        assert default_resp.json()["total"] == 0
+
+    def test_extract_post_all_include_booleans_wired_cr032(self, fhir_app, monkeypatch):
+        """All four include* booleans flow through the valueBoolean channel."""
+        from starlette.testclient import TestClient
+
+        import medterm4ds.services.extraction as extraction_module
+
+        calls: list[dict] = []
+        monkeypatch.setattr(
+            extraction_module, "extract", self._fake_extract_factory(calls)
+        )
+        with TestClient(fhir_app) as client:
+            resp = client.post(
+                "/fhir/CodeSystem/$extract",
+                json={"resourceType": "Parameters", "parameter": [
+                    {"name": "text", "valueString": "no evidence of diabetes"},
+                    {"name": "includeNegated", "valueBoolean": True},
+                    {"name": "includeUncertain", "valueBoolean": True},
+                    {"name": "includeHistorical", "valueBoolean": False},
+                    {"name": "includeFamily", "valueBoolean": True},
+                ]},
+            )
+        assert resp.status_code == 200
+        assert calls[0]["include_negated"] is True
+        assert calls[0]["include_uncertain"] is True
+        assert calls[0]["include_historical"] is False
+        assert calls[0]["include_family"] is True
+
+    def test_extract_post_include_negated_wrong_typed_integer_400_cr032(
+        self, fhir_app,
+    ):
+        """CR-032: include* parameters are boolean-typed — valueInteger (or
+        any scalar value[x]) is a type error and must 400, not silently
+        default (the inverse of the QC-127 scalar-parameter contract)."""
+        from starlette.testclient import TestClient
+        with TestClient(fhir_app) as client:
+            int_resp = client.post(
+                "/fhir/CodeSystem/$extract",
+                json={"resourceType": "Parameters", "parameter": [
+                    {"name": "text", "valueString": "no evidence of diabetes"},
+                    {"name": "includeNegated", "valueInteger": 1},
+                ]},
+            )
+            str_resp = client.post(
+                "/fhir/CodeSystem/$extract",
+                json={"resourceType": "Parameters", "parameter": [
+                    {"name": "text", "valueString": "no evidence of diabetes"},
+                    {"name": "includeNegated", "valueString": "true"},
+                ]},
+            )
+            null_resp = client.post(
+                "/fhir/CodeSystem/$extract",
+                json={"resourceType": "Parameters", "parameter": [
+                    {"name": "text", "valueString": "no evidence of diabetes"},
+                    {"name": "includeFamily", "valueBoolean": None},
+                ]},
+            )
+        for resp in (int_resp, str_resp):
+            assert resp.status_code == 400
+            assert "valueBoolean" in resp.json()["issue"][0]["diagnostics"]
+        # valueBoolean: null means absent (QC-245 sibling) — not a 400.
+        assert null_resp.status_code == 200
+
+    def test_extract_post_scalar_wrong_typed_still_400_cr032(self, fhir_app):
+        """The pre-CR-032 scalar contract is preserved: text sent as
+        valueBoolean still 400s."""
+        from starlette.testclient import TestClient
+        with TestClient(fhir_app) as client:
+            resp = client.post(
+                "/fhir/CodeSystem/$extract",
+                json={"resourceType": "Parameters", "parameter": [
+                    {"name": "text", "valueBoolean": True},
+                ]},
+            )
+        assert resp.status_code == 400
+        assert "string/integer" in resp.json()["issue"][0]["diagnostics"]

@@ -660,3 +660,69 @@ class TestIndexCreationLogging:
             "at WARNING level."
         )
 
+
+
+class TestWalkClosureSeedWhitelistCr031:
+    """CR-031 (HIGH): the closure seed whitelist is derived from
+    SOURCE_STRATEGIES, so RXNORM/ATC/MSH isa edges land in
+    mt4ds.walk_closure_limited (the old hardcoded 6-source list excluded
+    them, silently returning [] from every closure-accelerated walk)."""
+
+    def test_prepare_seeds_rxnorm_closure_rows(self):
+        con = _con()
+        con.execute(
+            """CREATE TABLE main.mrconso (
+                CUI VARCHAR, AUI VARCHAR, SAB VARCHAR, TTY VARCHAR,
+                CODE VARCHAR, STR VARCHAR, SUPPRESS VARCHAR
+            )"""
+        )
+        con.execute(
+            """CREATE TABLE main.mrrel (
+                AUI1 VARCHAR, AUI2 VARCHAR, REL VARCHAR, RELA VARCHAR
+            )"""
+        )
+        con.execute(
+            """CREATE TABLE main.mrsat (
+                CODE VARCHAR, SAB VARCHAR, ATN VARCHAR, ATV VARCHAR
+            )"""
+        )
+        # RXNORM isa edge (metformin SCD 1161610 -> IN 1156948): RB rows store
+        # the child in AUI1 and the parent in AUI2 (RxNormStrategy predicate).
+        con.executemany(
+            "INSERT INTO main.mrconso VALUES (?,?,?,?,?,?,?)",
+            [
+                ("C0021026", "A1156948", "RXNORM", "IN", "1156948", "metformin", "N"),
+                ("C0978484", "A1161610", "RXNORM", "SCD", "1161610",
+                 "metformin 250 MG Oral Tablet", "N"),
+            ],
+        )
+        con.execute(
+            "INSERT INTO main.mrrel VALUES ('A1161610', 'A1156948', 'RB', 'inverse_isa')"
+        )
+
+        prepare_mt4ds_schema(con)
+
+        closure_rows = con.execute(
+            """
+            SELECT from_code, to_code, depth
+            FROM mt4ds.walk_closure_limited
+            WHERE source = 'RXNORM'
+            """
+        ).fetchall()
+        assert closure_rows == [("1161610", "1156948", 1)], (
+            "CR-031 regression: prepare must seed walk_closure_limited from "
+            "SOURCE_STRATEGIES (RXNORM isa edges); got "
+            f"{closure_rows}"
+        )
+
+        # And the closure-accelerated walk resolves through it.
+        from medterm4ds import CodeRef
+        from medterm4ds.services.walk import get_ancestors_prepared
+
+        ancestors = get_ancestors_prepared(
+            [CodeRef(source="RXNORM", code="1161610")], con, max_depth=5
+        )
+        assert [(r.source.code, r.target.code, r.depth) for r in ancestors] == [
+            ("1161610", "1156948", 1)
+        ]
+        con.close()

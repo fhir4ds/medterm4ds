@@ -419,3 +419,73 @@ def test_default_umls_release_never_empty(monkeypatch):
     reloaded = importlib.reload(prov)
     assert reloaded.DEFAULT_UMLS_RELEASE == "2026AA"
     importlib.reload(prov)  # restore pristine module state
+
+
+# ---------------------------------------------------------------------------
+# CR-035: _EngineState broad excepts narrowed to duckdb.Error + warning
+# ---------------------------------------------------------------------------
+
+
+class _ProxyCon:
+    """Forward every call to the real connection but raise ``exc`` for
+    execute() statements containing ``pattern`` — used to prove programming
+    errors (non-duckdb exceptions) propagate instead of being swallowed."""
+
+    def __init__(self, con, pattern: str, exc: BaseException):
+        self._con = con
+        self._pattern = pattern
+        self._exc = exc
+
+    def execute(self, sql, params=None):
+        if self._pattern in sql:
+            raise self._exc
+        if params is None:
+            return self._con.execute(sql)
+        return self._con.execute(sql, params)
+
+    def __getattr__(self, name):
+        return getattr(self._con, name)
+
+
+def _cr035_engine(tmp_path, pattern: str, exc: BaseException):
+    from medterm4ds.engines.duckdb import LocalDuckDBEngine
+
+    db = tmp_path / "umls.duckdb"
+    _tiny_source_db(db)
+    con = duckdb.connect(str(db))
+    return LocalDuckDBEngine(_ProxyCon(con, pattern, exc))
+
+
+def test_prepare_cache_index_value_error_propagates_cr035(tmp_path):
+    """CR-035: a non-duckdb exception during cache-index creation must
+    propagate (was ``except Exception: logger.debug`` — silently skipped)."""
+    engine = _cr035_engine(tmp_path, "CREATE INDEX idx_mt4ds_mrconso", ValueError("boom"))
+    with pytest.raises(ValueError, match="boom"):
+        engine.prepare_cache()
+
+
+def test_snomed_link_cache_value_error_propagates_cr035(tmp_path):
+    engine = _cr035_engine(
+        tmp_path, "CREATE TEMP TABLE IF NOT EXISTS", ValueError("boom")
+    )
+    with pytest.raises(ValueError, match="boom"):
+        engine._ensure_snomed_parent_links_cache()
+
+
+def test_snomed_link_cache_duckdb_error_degrades_with_warning_cr035(tmp_path, caplog):
+    """A genuine duckdb.Error still degrades gracefully — but at WARNING, not
+    DEBUG (operator-visible)."""
+    import logging
+
+    engine = _cr035_engine(
+        tmp_path,
+        "CREATE TEMP TABLE IF NOT EXISTS",
+        duckdb.Error("catalog unavailable"),
+    )
+    with caplog.at_level(logging.WARNING):
+        result = engine._ensure_snomed_parent_links_cache()
+    assert result is None
+    assert any(
+        "Failed to create SNOMED parent link cache" in record.message
+        for record in caplog.records
+    ), [record.message for record in caplog.records]

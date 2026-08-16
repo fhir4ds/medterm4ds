@@ -351,3 +351,107 @@ def test_discover_limit_caps_descendant_rows_qc216(
     # Without a limit the same walk returns both levels.
     payload_all = discover("ICD10CM", engine=engine, code="ROOT", depth=2, limit=20)
     assert len(payload_all["descendants"]) == 2
+
+
+# ---------------------------------------------------------------------------
+# CR-031 (HIGH): walk_closure_limited per-source coverage gate
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture()
+def stale_closure_con() -> duckdb.DuckDBPyConnection:
+    """Prepared DB whose walk_closure_limited misses RXNORM (pre-CR-031 build).
+
+    walk_edges has RXNORM + ICD10CM parent edges; the closure table was built
+    by the OLD hardcoded whitelist (ICD10CM only, no RXNORM/ATC/MSH) — the
+    exact production shape during the 0.9 rebuild transition.
+    """
+    conn = duckdb.connect(":memory:")
+    try:
+        conn.execute("CREATE SCHEMA mt4ds")
+        conn.execute(
+            """
+            CREATE TABLE mt4ds.walk_edges (
+                source VARCHAR, from_code VARCHAR, from_aui VARCHAR,
+                from_cui VARCHAR, from_tty VARCHAR, to_code VARCHAR,
+                to_aui VARCHAR, to_cui VARCHAR, to_tty VARCHAR,
+                relationship VARCHAR, direction VARCHAR, edge_source VARCHAR
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE mt4ds.walk_closure_limited (
+                source VARCHAR, from_code VARCHAR, from_aui VARCHAR,
+                from_cui VARCHAR, from_tty VARCHAR, to_code VARCHAR,
+                to_aui VARCHAR, to_cui VARCHAR, to_tty VARCHAR, depth INTEGER
+            )
+            """
+        )
+        conn.executemany(
+            "INSERT INTO mt4ds.walk_edges VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            [
+                ("RXNORM", "1161610", "A1161610", "C0978484", "SCD",
+                 "1156948", "A1156948", "C0978484", "IN", "isa", "parent", "umls_mrrel"),
+                ("ICD10CM", "A.1", "A_CHILD", "C_A1", "PT",
+                 "A", "A_PARENT", "C_A", "PT", "isa", "parent", "synthetic"),
+            ],
+        )
+        conn.execute(
+            "INSERT INTO mt4ds.walk_closure_limited VALUES ("
+            "'ICD10CM', 'A.1', 'A_CHILD', 'C_A1', 'PT', "
+            "'A', 'A_PARENT', 'C_A', 'PT', 1)"
+        )
+        yield conn
+    finally:
+        conn.close()
+
+
+class TestWalkClosureSourceGateCr031:
+    def test_uncovered_source_falls_back_to_walk_edges_bfs(self, stale_closure_con):
+        """CR-031: RXNORM has walk_edges rows but zero closure rows — the
+        ancestor walk at closure-eligible depth must fall back to the BFS
+        instead of silently returning [] through the closure table."""
+        ancestors = get_ancestors_prepared(
+            [CodeRef(source="RXNORM", code="1161610")],
+            stale_closure_con,
+            max_depth=5,
+        )
+        assert [(r.source.code, r.target.code, r.depth) for r in ancestors] == [
+            ("1161610", "1156948", 1),
+        ]
+
+    def test_covered_source_still_uses_closure(self, stale_closure_con):
+        from medterm4ds.services.prepared_primitives import walk_closure_table
+
+        assert walk_closure_table(stale_closure_con, 5, "ICD10CM") == (
+            "mt4ds.walk_closure_limited"
+        )
+        ancestors = get_ancestors_prepared(
+            [CodeRef(source="ICD10CM", code="A.1")], stale_closure_con, max_depth=5
+        )
+        assert [(r.target.code, r.depth) for r in ancestors] == [("A", 1)]
+
+    def test_gate_semantics(self, stale_closure_con):
+        from medterm4ds.services.prepared_primitives import walk_closure_table
+
+        # Uncovered source -> None regardless of table existence.
+        assert walk_closure_table(stale_closure_con, 5, "RXNORM") is None
+        # Multiple sources: one uncovered poisons the whole set.
+        assert walk_closure_table(stale_closure_con, 5, {"ICD10CM", "RXNORM"}) is None
+        assert walk_closure_table(stale_closure_con, 5, {"ICD10CM"}) is not None
+        # Depth beyond the closure bound is still None (pre-CR-031 behavior).
+        assert walk_closure_table(stale_closure_con, 6, "ICD10CM") is None
+        # No source gate -> legacy table-existence behavior retained.
+        assert walk_closure_table(stale_closure_con, 5) == "mt4ds.walk_closure_limited"
+
+    def test_closure_seed_sources_derived_from_strategies(self):
+        """The build whitelist must track SOURCE_STRATEGIES (any strategy with
+        hierarchy_edge_sql), not the old hardcoded 6-source list."""
+        from medterm4ds.engines.duckdb.prepared import _walk_closure_seed_sources
+
+        seeds = _walk_closure_seed_sources()
+        # The three sources the old list excluded must now be seeded.
+        assert {"RXNORM", "ATC", "MSH"} <= set(seeds)
+        # CVX declares no hierarchy — must stay out.
+        assert "CVX" not in seeds

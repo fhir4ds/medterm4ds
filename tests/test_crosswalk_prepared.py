@@ -290,6 +290,38 @@ class TestBroaderMapping:
             "source_ancestor_same_cui",
         ]
 
+    def test_broader_mapping_falls_back_when_closure_lacks_source_cr031(self, prepared_db):
+        """CR-031 (HIGH): a walk_closure_limited table with zero rows for the
+        source (pre-fix build excluded RXNORM/ATC/MSH; here ICD10CM) must NOT
+        dispatch ancestor lookups through it — the recursive walk_edges CTE
+        serves the broader mapping instead of silently returning []."""
+        # Stale closure table: exists, but has no ICD10CM rows (pre-CR-031
+        # whitelist shape; walk_edges above carries the A01.0 -> A01 edge).
+        prepared_db.execute(
+            """
+            CREATE TABLE mt4ds.walk_closure_limited (
+                source VARCHAR, from_code VARCHAR, from_aui VARCHAR,
+                from_cui VARCHAR, from_tty VARCHAR, to_code VARCHAR,
+                to_aui VARCHAR, to_cui VARCHAR, to_tty VARCHAR, depth INTEGER
+            )
+            """
+        )
+        prepared_db.execute(
+            "INSERT INTO mt4ds.walk_closure_limited VALUES ("
+            "'SNOMEDCT_US', '4834000', 'AUI_SNO_TYPHOID', 'C_TYPHOID', 'PT', "
+            "'999001', 'AUI_SNO_BROAD', 'C_BROAD', 'PT', 1)"
+        )
+
+        codes = [CodeRef(source="ICD10CM", code="A01.0")]
+        results = get_crosswalk_mappings(codes, prepared_db, max_depth=1)
+
+        broader = [m for m in results if m.match_type == "source_ancestor_same_cui"]
+        assert len(broader) >= 1, (
+            "CR-031 regression: broader mapping returned [] through an "
+            f"uncovered closure table; got {[m.match_type for m in results]}"
+        )
+        assert broader[0].match_depth == 1
+
 
 class TestCodeNotFound:
     """Test 4: Code not found returns empty."""
