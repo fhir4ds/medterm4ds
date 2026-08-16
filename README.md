@@ -193,14 +193,15 @@ Common commands are captured in the `Makefile`:
 
 ```bash
 make test
+make lint
 make compile
 make verify
-make notebook-smoke
-make acceptance-smoke
-make bulk-validation-smoke
-make mapping-quality-smoke
+make ci
+make fhir-conformance
+make website-build
 make build
-make wheel-install-smoke
+make publish-test
+make publish
 ```
 
 Install extras as needed:

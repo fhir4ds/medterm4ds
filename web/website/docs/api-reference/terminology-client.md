@@ -34,7 +34,7 @@ Creates a `Terminology` client backed by `LocalDuckDBEngine`.
 
 | Parameter | Purpose |
 | --- | --- |
-| `db_path` | Local DuckDB database path. |
+| `db_path` | Local DuckDB database path. Must exist — a nonexistent path raises `RuntimeError` instead of creating an empty database. |
 | `memory_profile` | One of `fast`, `balanced`, or `low`. |
 | `memory_limit` | Optional DuckDB memory limit override. |
 | `temp_directory` | Optional DuckDB spill directory. |
@@ -43,7 +43,7 @@ Creates a `Terminology` client backed by `LocalDuckDBEngine`.
 | `read_only` | Opens the database read-only by default. |
 | `prepare_cache` | Creates temporary filtered tables for repeated local work. |
 | `cache_sources` | Optional source list for cache preparation. |
-| `cache_indexes` | Create indexes on prepared temp tables. |
+| `cache_indexes` | Create indexes on prepared temp tables. Defaults to `False` (since 0.0.2). |
 
 Use the client as a context manager when the connection should close
 automatically:
@@ -61,7 +61,7 @@ For long-running notebooks, call `terms.close()` when finished.
 mt.connect_remote(
     base_url,
     *,
-    timeout=30.0,
+    timeout=300.0,
     headers=None,
 ) -> Terminology
 ```

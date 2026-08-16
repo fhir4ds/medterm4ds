@@ -7,8 +7,194 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-_No unreleased changes yet. v0.0.1 shipped on 2026-07-14; subsequent work tracks
+_No unreleased changes yet. v0.0.2 shipped on 2026-08-16; subsequent work tracks
 here until the next tag._
+
+## [0.0.2] - 2026-08-16
+
+Systematic QC sweep across 22 domains: 497 defects found, ~340 fixed
+(331 during the sweep plus 6 in the final review pass), including 7 CRITICAL
+and 83 HIGH-severity fixes. **This release requires a one-time rebuild of
+derived tables on existing databases** — see Upgrade notes.
+
+### Breaking changes
+
+- **`mt.connect()` no longer creates a database at a nonexistent path** (default
+  `read_only=True` unchanged). A typo'd path previously materialized a silent
+  12 KB junk DuckDB file; now `connect()` raises `RuntimeError` with build
+  guidance. Paths containing `?` (DuckDB 1.5 URI suffixes, e.g. `…?mode=ro`)
+  are also rejected. Build with `medterm4ds data build-duckdb` or omit
+  `db_path` to auto-provision. [QC-468]
+- **`mt.connect(cache_indexes=...)` default changed `True → False`**, now
+  matching the documented server default (`MEDTERM4DS_CACHE_INDEXES=false`).
+  Index creation adds ~28 s and ~0.8 GB to a production prepare for little
+  gain on read-mostly workloads; pass `cache_indexes=True` explicitly if you
+  need temp indexes. [QC-470]
+- **`/optimize` response envelope key renamed `result` → `results`**, aligning
+  it with the other 12 data endpoints. The v0.0.2 `RemoteApiEngine` still
+  accepts the legacy `result` key, but a v0.0.1 engine against a v0.0.2 server
+  fails with `RuntimeError` — upgrade engine and server together. [QC-490]
+- **Stricter input validation — previously "successful" garbage now errors.**
+  Empty/whitespace sources and codes, URI/OID-form sources (`http://…`,
+  `urn:oid:…`), and empty `target_sources` now raise `ValueError` from the
+  Python service layer (mapping to HTTP 422/400 on the servers, which
+  previously returned 500 for an empty source string). An unknown-but-well-formed
+  source remains valid (resolves to not-found); a source absent from the
+  database returns HTTP 400 instead of empty data. [QC-422, QC-489]
+- **`mt.connect()` now honors the documented engine environment variables**
+  (`MEDTERM4DS_MEMORY_PROFILE`, `…_MEMORY_LIMIT`, `…_TEMP_DIR`, `…_THREADS`,
+  `…_QUERY_CHUNK_SIZE`) as fallback defaults, matching the three servers.
+  Explicit arguments always win. [QC-464]
+- **`connect(prepare_cache=True)` now prepares ATC too** (9-source
+  `DEFAULT_INVENTORY_SOURCES`), so a prepared Python engine answers ATC
+  lookups the same way CLI/MCP/API/FHIR do. [QC-469]
+
+### Changed
+
+- **Default remote timeout raised 30 s → 300 s.** `connect_remote()` /
+  `RemoteApiEngine` now default to `DEFAULT_REMOTE_TIMEOUT = 300.0` — the old
+  default was below the server's own measured workload domain (`optimize`/`map`
+  over SNOMED 55–82 s; a 10,000-code batch ~415 s cold). The timeout counts
+  time queued behind other requests on the single-worker DB executor; pass
+  `timeout=600` for bulk batches at the 10,000-code cap. Constructor arguments
+  are validated up front (`base_url` must be http(s), `timeout` positive).
+  [QC-485]
+- **Request caps enforced for real**: 10,000 codes / 256 chars per code /
+  64 chars per source / ≤1,000 list items / 10 MB body on the API, and a
+  50 MiB client-side response cap on `RemoteApiEngine` (bind wide hierarchy
+  walks with `descendants(..., limit=)` — now available on the facade).
+  [QC-474, QC-494]
+- **Empty-input DataFrame parity**: all `*_df()` methods return a
+  correctly-columned 0-row DataFrame on empty or all-missing input instead of
+  a 0-column frame. [QC-045, QC-072, QC-073, QC-080, QC-105, QC-106]
+- **API robustness**: `/health` no longer leaks the DB filesystem path; error
+  bodies echoed into `RuntimeError` messages truncate at 2,048 chars (was
+  430,291 chars on a 10,001-code batch error); body-size cap actually enforced
+  on list length. [QC-477]
+- **CLI**: `--limit`/`--threads`/`--memory-limit` garbage values fail with a
+  clean one-line error, no raw tracebacks; `--max-depth` no longer silently
+  overridden to 1 for `parents`/`children`. [QC-058, QC-380, CR-043]
+
+### Fixed
+
+Of ~340 fixes in this release; the most user-visible:
+
+- **Prepared-table correctness** — CPT prepared priority ranked ETCF above PT,
+  returning the wrong CUI/display/TTY for ~90% of CPT codes; the RxNorm
+  hierarchy was entirely absent from `mt4ds.walk_edges` (0 of 238,329 isa
+  edges); LOINC ignored the official multiaxial hierarchy (284,774 `class_of`
+  edges); an AUI mismatch silently lost 34,471 PT-child relationships.
+  [QC-016, QC-349, QC-350, QC-070 — needs the rebuild below]
+- **`resolve_mode` actually works now.** `historical` and `resolve_current`
+  produced byte-identical output; CLI `--resolve-mode` was a silent no-op on
+  production databases; an NDC-lookup regression in the default mode; SUPPRESS
+  'E' (editorial) no longer conflated with 'O' (obsolete). [QC-017, QC-398,
+  QC-401, QC-406, QC-119, QC-120]
+- **ConceptMap `equivalence` mislabeling.** `snomed_fallback`, TTY-traversal
+  `group` matches, and 6+ other depth>0 match types were emitted as
+  `equivalent`; in a production-scale sample 3,970/3,970 RxNorm rows at
+  `match_depth>0` were mislabeled; CVX product→family edges now `narrower`.
+  [QC-074, QC-081, QC-094, QC-088, QC-095 — CRITICAL/HIGH]
+- **`$closure` no longer OOMs.** ~100 concepts exhausted 32 GB RSS and ran
+  >17 min, wedging every other FHIR DB operation; ordinary 3–4 concept payloads
+  returned wrong subsumption states on the balanced profile. [QC-261, QC-281]
+- **`$expand` correctness**: `offset` no longer silently ignored;
+  `compose.exclude` with a `filter` no longer silently ignored;
+  `valueset-toocostly` no longer fires on terminal empty pages; filter mode
+  returns the preferred term, not the matched synonym; the spec-canonical
+  `?fhir_vs=isa/<sctid>` URL form accepted. [QC-241, QC-242, QC-316, QC-258,
+  QC-411]
+- **`$extract` correctness**: family history now detected (`is_family` was
+  ignored); a negated mention can no longer REPLACE the affirmed mention of
+  the same condition; the default-mode matrix no longer silently drops
+  affirmed concepts; `format=annotated` returns 200 on GET and POST (CLI and
+  MCP too). [QC-152, QC-183, QC-165, QC-151, QC-164]
+- **Valueset optimizer**: dead exclude branch restored;
+  `original_count`/`optimized_count`/`reduction` computed on the same basis
+  (previously reported up to 98.85% "reduction" on valuesets whose expansion
+  *grew*); the lexical tie-break no longer prefers hierarchy ancestors over
+  the user's own input code; deep-subtree leaves no longer dropped silently.
+  [QC-192, QC-194, QC-215, QC-212, QC-214]
+- **Search**: empty/whitespace queries no longer return "results" in
+  semantic/hybrid/canonical modes; unknown `resultTypes` returns a clean 400
+  (was plaintext 500); `result_types` filter works on every path;
+  `total_member_count` no longer 0 on every result; accented queries
+  (Guillain-Barré, Chédiak) no longer silently return 0 hits. [QC-122,
+  QC-123, QC-153, QC-143, QC-148, QC-329]
+- **`$subsumes` correctness** (`codeA=parent, codeB=child` returned
+  `not-subsumed`; `valueBoolean:true` coerced to the string `'True'` across
+  all 5 FHIR POST handlers). [QC-071, QC-056]
+- **FHIR XML/batch hardening**: control characters in client codes produced
+  not-well-formed XML with HTTP 200; a batch entry with a non-string
+  `request.method` crashed before the per-entry isolation boundary.
+  [QC-300, QC-284]
+- **CSV formula-injection sanitizer no longer permanently mutates data** (the
+  leading `'` was baked into cells, so non-Excel consumers re-parsed a
+  different value). [QC-373]
+- **Schema-skew detection loud**: a version mismatch between the DB manifest
+  and the package no longer silently disables the prepared patient-friendly
+  path (LNC raises `NotImplementedError` / HTTP 501 with remediation text);
+  `umls.*` views no longer bake the build-time catalog filename into their DDL
+  (a copy/rename of a built DB broke them). [QC-435, QC-459]
+- **Remote/local parity**: `patient_friendly` no longer silently forces
+  `resolve_current` on the remote leg regardless of the caller's mode.
+  [QC-495]
+
+### Known issues
+
+- **CR-031 (HIGH) — closure-accelerated walks return `[]` for
+  RXNORM/ATC/MSH after the rebuild.** The `walk_closure_limited` seed
+  whitelist still excludes those three sources, so hierarchy-assisted
+  mappings, prepared `walk` paths, and the SNOMED patient-friendly fallback
+  silently return `[]` at the default depth once the rebuild adds their
+  `walk_edges` rows. **Workaround**: pass `max_depth >= 6` for those sources.
+  Fix queued post-release.
+- **CR-032 (HIGH) — `$extract` POST cannot express the four `include*`
+  booleans.** A POSTed `{name: "includeNegated", valueBoolean: true}` is
+  silently dropped and defaults to `false` with no 400. **Workaround**: use
+  GET query parameters (`?includeNegated=true`) or the CLI `--include-*`
+  flags. Fix queued post-release.
+- **Pre-existing environment failure**: `tests/test_fhir_conformance.py` —
+  4 tests fail with pydantic `rest.0.url Extra inputs are not permitted`
+  (`fhir.resources` library-version drift, not a code regression). Fix by
+  pinning the `fhir.resources` version.
+- **GLiNER model drift**: the default NER model
+  (`knowledgator/gliner-bi-small-v2.0`) had its HF weights re-downloaded
+  after the test baseline was captured, causing 3 environmental failures in
+  `tests/test_extraction.py::TestFindTerms`. **Recommendation**: pin the model
+  revision via `MEDTERM4DS_NER_MODEL` post-release.
+- **Deferred (mitigated)**: executor fairness / head-of-line blocking on the
+  single DB executor (QC-492/QC-410) — the 300 s default and `timeout=600`
+  guidance mitigate the reported starvation timeline; architectural fix
+  queued post-release.
+
+### Upgrade notes
+
+**REQUIRED — rebuild derived tables on every existing database** (prepared
+schema 0.8 → 0.9). Without it you keep running on stale prepared tables with
+known data defects (CPT wrong-display, missing RxNorm/MSH hierarchy, partial
+ATC, retired SNOMED concepts in crosswalks), and LNC patient-friendly raises
+`NotImplementedError` (HTTP 501 on the servers) on the version gate — loud by
+design:
+
+```bash
+medterm4ds data prepare-derived --db data/umls_current.duckdb
+# (= mt.prepare_umls_duckdb(db, replace=True); stamps manifest
+#  prepared_schema_version=0.9)
+medterm4ds data verify --db data/umls_current.duckdb   # no version mismatch
+```
+
+Expected effects: `mt4ds.walk_edges` gains RXNORM (~238 K isa edges), MSH
+(~15 K), ATC → ~6,982, LNC +~284 K `class_of`; CPT 87143 lookup displays the
+PT; `map('ICD10CM','E11.9')→SNOMED` returns no retired concepts; prepared
+patient-friendly is re-enabled (restoring the ~0.8 s prepared path vs the
+~6.5 s legacy fallback measured on the pre-rebuild database).
+
+Also on upgrade: pair engine and server versions (the `/optimize` envelope
+change breaks v0.0.1 engines against a v0.0.2 server); pass
+`cache_indexes=True` to `mt.connect()` if you relied on temp indexes; fix any
+code that passed URI-form sources or empty strings expecting success-shaped
+nulls.
 
 ## [0.0.1] - 2026-07-14
 
@@ -66,7 +252,9 @@ here until the next tag._
 - **`scripts/rebuild_fhir_docker.sh`** — one-command rebuild + restart.
 - **`LocalDuckDBEngine` mixin composition** — 2173-line god class → 9 focused mixins.
 - **`get_descendants_bfs()` / `is_descendant()`** — O(nodes) BFS for hierarchy walks.
-- **GLiNER NER model** (`E3-JSI/gliner-multi-med-ner-synthetic-v1`) replaces d4data.
+- **GLiNER NER model** (`knowledgator/gliner-bi-small-v2.0`, which superseded
+  the earlier `E3-JSI/gliner-multi-med-ner-synthetic-v1` default later in the
+  0.0.1 cycle) replaces d4data.
 - **`.github/workflows/publish.yml`** — PyPI publish on tag push via trusted publishing.
 - **Systemic `duckdb.Error` exception handler** — every per-operation `_do_*`
   handler now has a 503-OperationOutcome boundary for transient DB failures.
@@ -149,7 +337,7 @@ here until the next tag._
 - MCP `extract` tool bypassing the single-worker executor.
 - FHIR startup banner not appearing in `docker logs`.
 
-### Earlier in 0.0.2 (Tier A/B/C refactor)
+### Earlier in 0.0.1 (Tier A/B/C refactor, continued)
 
 ### Architecture refactor (Tier C)
 - Split `engines/duckdb/engine.py` from 5,362 lines into 6 focused modules: `hierarchy.py`, `mappings.py`, `resolution.py`, `patient_friendly.py`, `indications.py`, plus a leaner `engine.py` (2,127 lines, -60%). No behavioral change; verified via full regression suite and chain-of-custody diff against pre-refactor output.
