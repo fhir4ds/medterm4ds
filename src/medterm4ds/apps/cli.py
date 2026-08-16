@@ -61,7 +61,7 @@ from medterm4ds.services.lookup import get_code_infos
 from medterm4ds.services.mapping import get_code_mappings
 from medterm4ds.services.optimize import optimize_codes
 from medterm4ds.services.resolution import ALLOWED_RESOLVE_MODES, resolve_codes
-from medterm4ds.services.search import SEARCH_CATEGORIES
+from medterm4ds.services.search import CANONICAL_RESULT_TYPES, SEARCH_CATEGORIES
 
 _HIERARCHY_DIRECTIONS = ("parents", "children", "ancestors", "descendants")
 
@@ -1640,6 +1640,47 @@ def run_text_search(args: argparse.Namespace) -> int:
     """Run intelligent text-to-code search (BM25 + SapBERT)."""
     from medterm4ds.services.search import search as search_service
 
+    # --result-types is enforced SERVICE-SIDE in every mode (canonical filters
+    # by canonical_id prefix; lexical/semantic/hybrid restrict the category
+    # indexes searched), so `count` caps the FILTERED result set. The former
+    # client-side post-filter ran AFTER the service truncated to --limit and
+    # silently discarded the non-matching truncated slots — `search
+    # "Potassium" --result-types lab --limit 1` returned 0 results.
+    requested = list(getattr(args, "result_types", None) or [])
+    result_types: list[str] | None = None
+    if requested:
+        if args.mode != "canonical":
+            # QC-129: the category filter applies to the BM25 `category`
+            # field, which only ever holds SEARCH_CATEGORIES values. Warn
+            # (not silently filter to empty) when the user passes values
+            # outside that set — they are valid canonical result_types but
+            # never match legacy modes.
+            unknown = [t for t in requested if t not in SEARCH_CATEGORIES]
+            if unknown:
+                print(
+                    f"Warning: --result-types values {unknown} are not search "
+                    f"categories ({', '.join(SEARCH_CATEGORIES)}); they will "
+                    "match no results.",
+                    file=sys.stderr,
+                )
+            # Forward only the matchable subset; mixed valid+invalid keeps
+            # the valid values working (invalid ones match nothing anyway).
+            result_types = [t for t in requested if t in SEARCH_CATEGORIES]
+        else:
+            # canonical() raises ValueError on unknown types; pre-filtering
+            # the matchable subset preserves the old "matches nothing →
+            # empty result, exit 0" behavior instead of erroring out.
+            result_types = [t for t in requested if t in CANONICAL_RESULT_TYPES]
+        if not result_types:
+            # Every requested type is outside this mode's type vocabulary —
+            # nothing can match, so skip the (expensive) service call.
+            _write_record_results(
+                [],
+                output=getattr(args, "output", None),
+                output_format=getattr(args, "format", "json"),
+            )
+            return 0
+
     # Clean CLI errors for input validation (whitespace/over-length query,
     # invalid mode/count) instead of raw tracebacks — QC-022/QC-027 pattern.
     try:
@@ -1648,29 +1689,10 @@ def run_text_search(args: argparse.Namespace) -> int:
             mode=args.mode,
             sources=args.sources,
             count=args.limit,
+            result_types=result_types,
         )
     except (ValueError, TypeError) as exc:
         raise SystemExit(f"Error: {exc}") from exc
-    if getattr(args, "result_types", None):
-        # QC-129: the category filter applies to the BM25 `category` field,
-        # which only ever holds SEARCH_CATEGORIES values. Warn (not silently
-        # filter to empty) when the user passes values outside that set —
-        # they are valid canonical result_types but never match legacy modes.
-        # CanonicalSearchResult has no `.category` (it has result_type), so
-        # the filter only applies to legacy-mode results.
-        if args.mode != "canonical":
-            unknown = [t for t in args.result_types if t not in SEARCH_CATEGORIES]
-            if unknown:
-                print(
-                    f"Warning: --result-types values {unknown} are not search "
-                    f"categories ({', '.join(SEARCH_CATEGORIES)}); they will "
-                    "match no results.",
-                    file=sys.stderr,
-                )
-            results = [r for r in results if r.category in args.result_types]
-        else:
-            wanted = {t for t in args.result_types}
-            results = [r for r in results if r.result_type in wanted]
     _write_record_results(
         [r.to_dict() for r in results],
         output=getattr(args, "output", None),

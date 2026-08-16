@@ -981,28 +981,80 @@ def test_cli_resumes_csv_without_rewriting_header(tmp_path):
     ]
 
 
-def _fake_search_results(*_args, **_kwargs):
-    """Stand-in for services.search.search returning a mixed-category result set."""
-    return [
-        SearchResult(
-            code="85676001", source="RXNORM", display="Lisinopril 10 MG Oral Tablet",
-            score=0.95, match_grade="certain", category="medication",
-        ),
-        SearchResult(
-            code="L313", source="LNC", display="Lisinopril [Mass/volume] in Serum",
-            score=0.72, match_grade="probable", category="lab",
-        ),
-        SearchResult(
-            code="38911000", source="SNOMEDCT_US", display="Hypertensive disorder",
-            score=0.41, match_grade="possible", category="condition",
-        ),
-    ]
+# Mixed-category canned results ordered so the FIRST rows are non-matching:
+# a client that truncates to --limit BEFORE filtering would return zero
+# medication rows for --result-types medication --limit 1.
+_FAKE_MIXED_RESULTS = [
+    SearchResult(
+        code="L313", source="LNC", display="Lisinopril [Mass/volume] in Serum",
+        score=0.90, match_grade="certain", category="lab",
+    ),
+    SearchResult(
+        code="38911000", source="SNOMEDCT_US", display="Hypertensive disorder",
+        score=0.80, match_grade="probable", category="condition",
+    ),
+    SearchResult(
+        code="85676001", source="RXNORM", display="Lisinopril 10 MG Oral Tablet",
+        score=0.72, match_grade="possible", category="medication",
+    ),
+]
 
 
-def test_cli_search_result_types_filters_to_matching_category(monkeypatch, capsys):
-    monkeypatch.setattr(
-        "medterm4ds.services.search.search", _fake_search_results
-    )
+class _FakeSearchService:
+    """Stand-in for services.search.search that honors the service contract.
+
+    Mirrors the post-fix semantics: ``result_types`` filters the result set
+    BEFORE ``count`` truncation (the real service restricts the category
+    indexes it searches / the canonical prefixes it accepts), so a filtered
+    call with a small ``--limit`` still returns matching rows. Records every
+    call's kwargs so tests can assert the CLI forwards the filter
+    service-side instead of post-filtering truncated output.
+    """
+
+    def __init__(self) -> None:
+        self.calls: list[dict] = []
+
+    def __call__(
+        self,
+        query,
+        *,
+        mode="lexical",
+        sources=None,
+        count=20,
+        engine=None,
+        result_types=None,
+    ):
+        self.calls.append(
+            {
+                "query": query,
+                "mode": mode,
+                "sources": sources,
+                "count": count,
+                "result_types": result_types,
+            }
+        )
+        results = _FAKE_MIXED_RESULTS
+        if result_types:
+            wanted = set(result_types)
+            results = [r for r in results if r.category in wanted]
+        return results[:count]
+
+
+def _patch_search(monkeypatch) -> _FakeSearchService:
+    fake = _FakeSearchService()
+    monkeypatch.setattr("medterm4ds.services.search.search", fake)
+    return fake
+
+
+def test_cli_search_result_types_small_limit_returns_matching_result(monkeypatch, capsys):
+    """Regression: filter-then-limit, not limit-then-filter.
+
+    Pre-fix, ``search --result-types medication --limit 1`` called the
+    service with count=1 and NO result_types, then client-side filtered the
+    single (non-matching) truncated row to zero results. The service must
+    receive the filter so ``count`` caps the filtered set.
+    """
+    fake = _patch_search(monkeypatch)
     status = main(
         [
             "search",
@@ -1012,29 +1064,73 @@ def test_cli_search_result_types_filters_to_matching_category(monkeypatch, capsy
             "--mode",
             "semantic",
             "--limit",
-            "5",
+            "1",
         ]
     )
     assert status == 0
     payload = json.loads(capsys.readouterr().out)
     assert [row["category"] for row in payload["results"]] == ["medication"]
     assert [row["code"] for row in payload["results"]] == ["85676001"]
+    # The filter was requested service-side, not applied client-side.
+    assert fake.calls == [
+        {
+            "query": "Lisinopril",
+            "mode": "semantic",
+            "sources": None,
+            "count": 1,
+            "result_types": ["medication"],
+        }
+    ]
 
 
 def test_cli_search_without_result_types_preserves_all_results(monkeypatch, capsys):
-    monkeypatch.setattr(
-        "medterm4ds.services.search.search", _fake_search_results
-    )
+    fake = _patch_search(monkeypatch)
     status = main(["search", "Lisinopril", "--mode", "semantic", "--limit", "5"])
     assert status == 0
     payload = json.loads(capsys.readouterr().out)
-    assert [row["category"] for row in payload["results"]] == ["medication", "lab", "condition"]
+    assert [row["category"] for row in payload["results"]] == ["lab", "condition", "medication"]
+    # No filter requested -> forwarded as None, no behavioral change.
+    assert fake.calls[0]["result_types"] is None
+    assert fake.calls[0]["count"] == 5
+
+
+@pytest.mark.parametrize("mode", ["lexical", "semantic", "hybrid", "canonical"])
+def test_cli_search_result_types_forwarded_for_every_mode(mode, monkeypatch, capsys):
+    """Every mode must forward --result-types in the service-call kwargs."""
+    fake = _patch_search(monkeypatch)
+    status = main(
+        [
+            "search",
+            "Potassium",
+            "--result-types",
+            "lab",
+            "--mode",
+            mode,
+            "--limit",
+            "2",
+        ]
+    )
+    assert status == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert [row["category"] for row in payload["results"]] == ["lab"]
+    assert fake.calls == [
+        {
+            "query": "Potassium",
+            "mode": mode,
+            "sources": None,
+            "count": 2,
+            "result_types": ["lab"],
+        }
+    ]
 
 
 def test_cli_search_result_types_unknown_category_returns_zero_results(monkeypatch, capsys):
-    monkeypatch.setattr(
-        "medterm4ds.services.search.search", _fake_search_results
-    )
+    """Unknown legacy categories can never match: empty result, no crash.
+
+    The CLI skips the (expensive) service call entirely when no requested
+    type is a search category — the outcome is deterministic.
+    """
+    fake = _patch_search(monkeypatch)
     status = main(
         [
             "search",
@@ -1048,8 +1144,61 @@ def test_cli_search_result_types_unknown_category_returns_zero_results(monkeypat
         ]
     )
     assert status == 0
+    captured = capsys.readouterr()
+    payload = json.loads(captured.out)
+    assert payload["results"] == []
+    assert "not search categories" in captured.err
+    assert fake.calls == []
+
+
+def test_cli_search_result_types_canonical_unknown_type_returns_zero_results(monkeypatch, capsys):
+    """Canonical mode: unknown types match nothing — empty, exit 0, no crash.
+
+    Pre-canonical-forwarding this was a silent client-side filter to [];
+    it must stay an empty result (not a raised error) now that the value
+    would reach ``canonical(result_types=...)`` for valid types.
+    """
+    fake = _patch_search(monkeypatch)
+    status = main(
+        [
+            "search",
+            "Lisinopril",
+            "--result-types",
+            "bogus",
+            "--mode",
+            "canonical",
+            "--limit",
+            "5",
+        ]
+    )
+    assert status == 0
     payload = json.loads(capsys.readouterr().out)
     assert payload["results"] == []
+    assert fake.calls == []
+
+
+def test_cli_search_result_types_mixed_valid_and_invalid_forwards_valid_subset(monkeypatch, capsys):
+    """Mixed requests forward only the matchable values and warn on the rest."""
+    fake = _patch_search(monkeypatch)
+    status = main(
+        [
+            "search",
+            "Lisinopril",
+            "--result-types",
+            "medication",
+            "bogus",
+            "--mode",
+            "lexical",
+            "--limit",
+            "5",
+        ]
+    )
+    assert status == 0
+    captured = capsys.readouterr()
+    payload = json.loads(captured.out)
+    assert [row["category"] for row in payload["results"]] == ["medication"]
+    assert "bogus" in captured.err
+    assert fake.calls[0]["result_types"] == ["medication"]
 
 
 # =============================================================================

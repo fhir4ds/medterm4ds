@@ -261,6 +261,11 @@ _RESULT_TYPE_TO_PREFIXES: dict[str, tuple[str, ...]] = {
     "vaccine": ("VAL-VAX-",),
 }
 
+# Valid canonical-mode result types (the keys above), for callers that need
+# to validate/intersect --result-types values before they reach
+# ``SearchService.canonical`` (which raises on unknown types).
+CANONICAL_RESULT_TYPES: tuple[str, ...] = tuple(_RESULT_TYPE_TO_PREFIXES)
+
 
 def _result_types_to_prefixes(result_types: str | list[str] | None) -> set[str]:
     """Normalize result_types parameter to a set of canonical_id prefixes.
@@ -489,6 +494,29 @@ class SearchService:
             source_upper = source.upper()
             cats.extend(_SOURCE_TO_CATEGORIES.get(source_upper, []))
         return list(dict.fromkeys(cats))  # dedupe, preserve order
+
+    @staticmethod
+    def _restrict_categories(
+        categories: list[str], result_types: str | list[str] | None
+    ) -> list[str]:
+        """Intersect search categories with requested ``result_types``.
+
+        Legacy-mode analogue of ``canonical(result_types=...)``: restricts
+        which category indexes are searched BEFORE retrieval, so ``count``
+        caps the filtered result set instead of truncating before a
+        client-side filter drops non-matching rows (``search
+        --result-types lab --limit 1`` returned 0 results pre-fix).
+
+        Values that are not SEARCH_CATEGORIES (e.g. canonical-only types
+        like "symptom") intersect away; an empty intersection means the
+        request can match nothing, which callers turn into an empty result.
+        """
+        if not result_types:
+            return categories
+        if isinstance(result_types, str):
+            result_types = [result_types]
+        wanted = set(result_types)
+        return [c for c in categories if c in wanted]
 
     @staticmethod
     def _filter_by_source(
@@ -1005,12 +1033,23 @@ class SearchService:
         *,
         sources: list[str] | None = None,
         count: int = 20,
+        result_types: str | list[str] | None = None,
     ) -> list[SearchResult]:
-        """BM25 lexical search (~1ms). Token matching with stemming."""
+        """BM25 lexical search (~1ms). Token matching with stemming.
+
+        ``result_types`` restricts which category indexes are searched
+        (see ``_restrict_categories``) so ``count`` caps the FILTERED set —
+        the service-side replacement for the CLI's former post-truncation
+        client filter.
+        """
         _validate_query(query)
         _validate_count(count)
         self._ensure_bm25()
-        categories = self._resolve_categories(sources)
+        categories = self._restrict_categories(
+            self._resolve_categories(sources), result_types
+        )
+        if not categories:
+            return []
         # QC-329: fold accents + split on non-alphanumerics so accented
         # queries match the accent-stripped index (see _query_tokens).
         query_tokens = _query_tokens(query)
@@ -1078,12 +1117,23 @@ class SearchService:
         *,
         sources: list[str] | None = None,
         count: int = 20,
+        result_types: str | list[str] | None = None,
     ) -> list[SearchResult]:
-        """SapBERT embedding + FAISS ANN search (~100ms on CPU)."""
+        """SapBERT embedding + FAISS ANN search (~100ms on CPU).
+
+        ``result_types`` restricts which category indexes are searched
+        (see ``_restrict_categories``); an empty intersection returns []
+        WITHOUT calling the engine — ``SemanticSearchEngine.search`` treats
+        an empty categories list as "search all".
+        """
         _validate_query(query)
         _validate_count(count)
         engine = self._ensure_semantic()
-        categories = self._resolve_categories(sources)
+        categories = self._restrict_categories(
+            self._resolve_categories(sources), result_types
+        )
+        if not categories:
+            return []
         # Over-fetch when filtering by source so we still have `count` results
         # after the source filter drops cross-source hits (e.g., ICD-10 codes
         # that share a name with a SNOMED concept).
@@ -1107,23 +1157,39 @@ class SearchService:
         *,
         sources: list[str] | None = None,
         count: int = 20,
+        result_types: str | list[str] | None = None,
     ) -> list[SearchResult]:
         """BM25 retrieve + SapBERT re-rank (~110ms on CPU).
 
         The BM25 candidate pool is capped at ``max(50, count)`` — the former
         hard cap of 50 silently truncated hybrid(count=N>50) requests (QC-138).
+
+        ``result_types`` restricts the category indexes searched in both the
+        BM25 stage and the semantic-only fallback (see
+        ``_restrict_categories``).
         """
         _validate_query(query)
         _validate_count(count)
         self._ensure_bm25()
         engine = self._ensure_semantic()
-        categories = self._resolve_categories(sources)
+        categories = self._restrict_categories(
+            self._resolve_categories(sources), result_types
+        )
+        if not categories:
+            return []
 
         # Stage 1: BM25 retrieve
-        bm25_results = self.lexical(query, sources=sources, count=min(count * 3, max(50, count)))
+        bm25_results = self.lexical(
+            query,
+            sources=sources,
+            count=min(count * 3, max(50, count)),
+            result_types=result_types,
+        )
         if not bm25_results:
             # Fall back to semantic-only
-            return self.semantic(query, sources=sources, count=count)
+            return self.semantic(
+                query, sources=sources, count=count, result_types=result_types
+            )
 
         # Stage 2: SapBERT re-rank
         candidates = [{"code": r.code, "system": r.source, "display": r.display} for r in bm25_results]
@@ -1151,6 +1217,7 @@ class SearchService:
         sources: list[str] | None = None,
         count: int = 20,
         engine=None,
+        result_types: str | list[str] | None = None,
     ) -> list[SearchResult] | list[CanonicalSearchResult]:
         """Unified entry point. mode: 'lexical', 'semantic', 'hybrid', or 'canonical'.
 
@@ -1158,17 +1225,33 @@ class SearchService:
         engine preferred term (QC-400). Pass it wherever a terminology engine
         is already open — Python facade, MCP, FHIR $search — so all surfaces
         emit ONE display convention for the same result row.
+
+        ``result_types`` filters SERVICE-SIDE in every mode: canonical mode
+        filters by canonical_id prefix (``canonical(result_types=...)``);
+        legacy modes restrict the category indexes searched
+        (``_restrict_categories``). In both cases ``count`` caps the
+        FILTERED result set — callers must not truncate before filtering.
+        Legacy modes accept only SEARCH_CATEGORIES values; values outside
+        that set (e.g. canonical-only "symptom") match nothing.
         """
         if mode == "canonical":
             # Canonical results carry the anchor's patient_friendly_name by
             # design — no preferred-term canonicalization applies.
-            return self.canonical(query, sources=sources, count=count)
+            return self.canonical(
+                query, result_types=result_types, sources=sources, count=count
+            )
         if mode == "lexical":
-            results = self.lexical(query, sources=sources, count=count)
+            results = self.lexical(
+                query, sources=sources, count=count, result_types=result_types
+            )
         elif mode == "semantic":
-            results = self.semantic(query, sources=sources, count=count)
+            results = self.semantic(
+                query, sources=sources, count=count, result_types=result_types
+            )
         elif mode == "hybrid":
-            results = self.hybrid(query, sources=sources, count=count)
+            results = self.hybrid(
+                query, sources=sources, count=count, result_types=result_types
+            )
         else:
             raise ValueError(
                 f"Unknown search mode: {mode}. Use 'lexical', 'semantic', 'hybrid', or 'canonical'."
@@ -1243,6 +1326,7 @@ def search(
     sources: list[str] | None = None,
     count: int = 20,
     engine=None,
+    result_types: str | list[str] | None = None,
 ) -> list[SearchResult]:
     """Search for medical codes by free text.
 
@@ -1255,6 +1339,10 @@ def search(
     engine : Optional terminology engine. When provided, legacy-mode result
         displays are canonicalized to the engine preferred term (QC-400) so
         all surfaces emit one display convention for the same result.
+    result_types : Filter by clinical result type, applied SERVICE-SIDE so
+        ``count`` caps the filtered set (canonical mode filters by
+        canonical_id prefix; legacy modes restrict the category indexes
+        searched). Legacy modes accept only SEARCH_CATEGORIES values.
 
     Returns
     -------
@@ -1282,5 +1370,6 @@ def search(
         # terminology tables, so a DB probe is the wrong instrument. The LIKE
     # path (search_names) presence-checks in the engine.
     return get_search_service().search(
-        query, mode=mode, sources=sources, count=count, engine=engine
+        query, mode=mode, sources=sources, count=count, engine=engine,
+        result_types=result_types,
     )
