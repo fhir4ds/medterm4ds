@@ -303,11 +303,16 @@ class TestLens2MultiHierarchySubsumption:
         """
         closure = ClosureTable("t21_multi_parent")
         # Simulate: P1 and P2 both subsume C (multi-hierarchy).
-        closure._subsumes[("P1", "C")] = True
-        closure._subsumes[("C", "P1")] = False
-        closure._subsumes[("P2", "C")] = True
-        closure._subsumes[("C", "P2")] = False
-        closure._subsumes[("C", "C")] = True
+        # EC-11 QC-266: _subsumes is keyed by ((source, code), (source, code)).
+        p1, p2, c = ("S", "P1"), ("S", "P2"), ("S", "C")
+        closure.concepts[p1] = {"system": "S", "display": "P1"}
+        closure.concepts[p2] = {"system": "S", "display": "P2"}
+        closure.concepts[c] = {"system": "S", "display": "C"}
+        closure._subsumes[(p1, c)] = True
+        closure._subsumes[(c, p1)] = False
+        closure._subsumes[(p2, c)] = True
+        closure._subsumes[(c, p2)] = False
+        closure._subsumes[(c, c)] = True
 
         # Both parents subsume C
         assert closure.check("P1", "C") == "subsumes"
@@ -337,8 +342,10 @@ class TestLens2MultiHierarchySubsumption:
         manager = get_closure_manager()
         closure = manager.get(name)
         assert closure is not None
-        # The self-tuple is set at registration time (line 137 of closure.py).
-        assert closure._subsumes.get((DIABETES_SNOMED, DIABETES_SNOMED)) is True
+        # The self-tuple is set at registration time. EC-11 QC-266: keys
+        # are ((source, code), (source, code)).
+        key = ("SNOMEDCT_US", DIABETES_SNOMED)
+        assert closure._subsumes.get((key, key)) is True
 
 
 # ===========================================================================
@@ -391,15 +398,16 @@ class TestLens3ProductionSafetyOfIncompleteClosure:
         assert closure is not None
         assert closure.incomplete_since is False
 
-        # Step 2: monkeypatch get_ancestors to raise duckdb.Error during
-        # the add_concepts call. We do this on the closure module's
-        # imported reference.
-        original = closure_mod.get_ancestors
+        # Step 2: monkeypatch the BFS ancestor walk to raise duckdb.Error
+        # during the add_concepts call. We do this on the closure module's
+        # imported reference (EC-11 BFS migration renamed it
+        # get_ancestors -> get_ancestors_bfs).
+        original = closure_mod.get_ancestors_bfs
 
         def _raise(*args, **kwargs):
             raise duckdb.Error("simulated transient DB failure")
 
-        monkeypatch.setattr(closure_mod, "get_ancestors", _raise)
+        monkeypatch.setattr(closure_mod, "get_ancestors_bfs", _raise)
         try:
             fhir_client.post(
                 "/fhir/CodeSystem/$closure",
@@ -408,7 +416,7 @@ class TestLens3ProductionSafetyOfIncompleteClosure:
                 ),
             )
         finally:
-            monkeypatch.setattr(closure_mod, "get_ancestors", original)
+            monkeypatch.setattr(closure_mod, "get_ancestors_bfs", original)
 
         # The flag MUST be set True — clinical-safety signal.
         assert closure.incomplete_since is True
@@ -461,12 +469,12 @@ class TestLens3ProductionSafetyOfIncompleteClosure:
         assert closure is not None
         assert closure.incomplete_since is False
 
-        original = closure_mod.get_ancestors
+        original = closure_mod.get_ancestors_bfs
 
         def _raise_type_error(*args, **kwargs):
             raise TypeError("simulated programming bug")
 
-        monkeypatch.setattr(closure_mod, "get_ancestors", _raise_type_error)
+        monkeypatch.setattr(closure_mod, "get_ancestors_bfs", _raise_type_error)
         try:
             with pytest.raises(TypeError):
                 closure.add_concepts(
@@ -474,7 +482,7 @@ class TestLens3ProductionSafetyOfIncompleteClosure:
                     engine=None,  # engine is irrelevant — monkeypatch raises before use
                 )
         finally:
-            monkeypatch.setattr(closure_mod, "get_ancestors", original)
+            monkeypatch.setattr(closure_mod, "get_ancestors_bfs", original)
 
         # Programming bug MUST NOT set incomplete_since.
         assert closure.incomplete_since is False
@@ -546,16 +554,24 @@ class TestLens4CrossSourceClosureClinicalSafety:
         concept. Clinical implication: efficient even for large
         cross-source batches.
 
-        This is a structural source-reading probe (strategy 29)."""
+        This is a structural source-reading probe (strategy 29).
+
+        EC-11 BFS migration (QC-261/275/276/281): the per-source batched
+        recursive-CTE walks were replaced by per-concept layer-by-layer
+        BFS walks (visited-set — cost O(nodes), no path enumeration).
+        The structural contract is now: add_concepts calls
+        get_ancestors_bfs + get_descendants_bfs (via _record_walk) once
+        per NEW concept, and skips already-present concepts (QC-278)."""
         import medterm4ds.engines.fhir.closure as closure_mod
 
-        # Source-read: add_concepts must iterate by_source.items()
         src = inspect.getsource(closure_mod.ClosureTable.add_concepts)
-        assert "by_source" in src, "add_concepts must group by source"
-        assert "for source, codes in by_source.items()" in src
-        # 2 walks per source: ancestors + descendants
-        assert "get_ancestors" in src
-        assert "get_descendants" in src
+        record_src = inspect.getsource(closure_mod.ClosureTable._record_walk)
+        # Per-concept walk (2 BFS walks per new concept)
+        assert "_record_walk" in src, "add_concepts must walk via _record_walk"
+        assert "get_ancestors_bfs" in record_src
+        assert "get_descendants_bfs" in record_src
+        # QC-278: already-present concepts are skipped without re-walking
+        assert "in self.concepts" in src
 
     def test_t42_to_parameter_list_canonicalizes_system_uri_per_concept(
         self, fhir_client
@@ -825,13 +841,14 @@ class TestLens6DecisionCfHistorianCm03_02IncompleteSinceWireShape:
         assert closure is not None
         assert closure.incomplete_since is False
 
-        # Simulate duckdb.Error during add_concepts
-        original = closure_mod.get_ancestors
+        # Simulate duckdb.Error during add_concepts (EC-11 BFS migration:
+        # the closure module imports get_ancestors_bfs).
+        original = closure_mod.get_ancestors_bfs
 
         def _raise(*args, **kwargs):
             raise duckdb.Error("simulated transient DB failure")
 
-        monkeypatch.setattr(closure_mod, "get_ancestors", _raise)
+        monkeypatch.setattr(closure_mod, "get_ancestors_bfs", _raise)
         try:
             fhir_client.post(
                 "/fhir/CodeSystem/$closure",
@@ -840,7 +857,7 @@ class TestLens6DecisionCfHistorianCm03_02IncompleteSinceWireShape:
                 ),
             )
         finally:
-            monkeypatch.setattr(closure_mod, "get_ancestors", original)
+            monkeypatch.setattr(closure_mod, "get_ancestors_bfs", original)
 
         # The flag IS observable on the Python instance.
         assert closure.incomplete_since is True
@@ -1043,20 +1060,22 @@ class TestLens8VersionHashClinicalMeaningfulness:
         But the structural gap exists — documented here as a
         carry-forward pin for future enhancements."""
         closure = ClosureTable("t83_hash_gap")
-        closure.concepts["X"] = {"system": "S", "display": "X"}
-        closure.concepts["Y"] = {"system": "S", "display": "Y"}
-        closure._subsumes[("X", "Y")] = True  # X subsumes Y
+        # EC-11 QC-266: (source, code) keys.
+        x, y = ("S", "X"), ("S", "Y")
+        closure.concepts[x] = {"system": "S", "display": "X"}
+        closure.concepts[y] = {"system": "S", "display": "Y"}
+        closure._subsumes[(x, y)] = True  # X subsumes Y
         hash1 = closure.version_hash()
 
-        # Update _subsumes WITHOUT changing concepts — hash unchanged.
-        closure._subsumes[("X", "Y")] = False  # relationship changed
-        closure._subsumes[("Y", "X")] = True  # now Y subsumes X
+        # Update _subsumes WITHOUT changing concepts.
+        closure._subsumes[(x, y)] = False  # relationship changed
+        closure._subsumes[(y, x)] = True  # now Y subsumes X
         hash2 = closure.version_hash()
 
-        # Structural gap: hash does not capture _subsumes changes.
-        # This is documented behavior; future enhancement MAY extend
-        # the hash payload to include _subsumes (sorted tuples).
-        assert hash1 == hash2
+        # EC-11 QC-283 (HIGH) closed the gap this probe pinned: the hash
+        # payload now includes the _subsumes relation set, so relation
+        # drift (e.g. a silently-degraded build) changes the token.
+        assert hash1 != hash2
 
 
 # ===========================================================================
@@ -1117,8 +1136,8 @@ class TestLens10BuildClosureResponseAudit:
         the response sequentially should see the version hash before
         the concept list)."""
         closure = ClosureTable("t100_return_first")
-        closure.concepts["X"] = {"system": "S", "display": "X"}
-        closure.concepts["Y"] = {"system": "S", "display": "Y"}
+        closure.concepts[("S", "X")] = {"system": "S", "display": "X"}
+        closure.concepts[("S", "Y")] = {"system": "S", "display": "Y"}
         body = build_closure_response(closure)
         params = body["parameter"]
         assert params[0]["name"] == "return"
@@ -1130,17 +1149,20 @@ class TestLens10BuildClosureResponseAudit:
         closure = ClosureTable("t101_empty")
         body = build_closure_response(closure)
         params = body["parameter"]
-        assert len(params) == 1
+        # EC-11 QC-267: the ``incomplete`` degradation flag is also
+        # always present.
+        assert len(params) == 2
         assert params[0]["name"] == "return"
+        assert params[1]["name"] == "incomplete"
 
     def test_t102_concept_list_sorted_by_code(self):
         """Concepts MUST be sorted by code in the response. This is the
         deterministic-ordering contract (clients can byte-compare
         responses for state-change detection)."""
         closure = ClosureTable("t102_sorted")
-        closure.concepts["Z"] = {"system": "S", "display": "Z"}
-        closure.concepts["A"] = {"system": "S", "display": "A"}
-        closure.concepts["M"] = {"system": "S", "display": "M"}
+        closure.concepts[("S", "Z")] = {"system": "S", "display": "Z"}
+        closure.concepts[("S", "A")] = {"system": "S", "display": "A"}
+        closure.concepts[("S", "M")] = {"system": "S", "display": "M"}
         body = build_closure_response(closure)
         concept_params = _find_params(body, "concept")
         codes = [p["valueCoding"]["code"] for p in concept_params]
@@ -1170,17 +1192,17 @@ class TestLens11ClosureManagerInvariants:
         state across calls."""
         mgr = ClosureManager()
         c1 = mgr.get_or_create("t111_idempotent")
-        c1.concepts["X"] = {"system": "S", "display": "X"}
+        c1.concepts[("S", "X")] = {"system": "S", "display": "X"}
         c2 = mgr.get_or_create("t111_idempotent")
         assert c1 is c2
-        assert "X" in c2.concepts
+        assert ("S", "X") in c2.concepts
 
     def test_t112_reset_creates_fresh_instance(self):
         """``reset`` MUST create a FRESH instance — clears concepts,
         subsumption map, version counter, and ``incomplete_since``."""
         mgr = ClosureManager()
         c1 = mgr.get_or_create("t112_reset")
-        c1.concepts["X"] = {"system": "S", "display": "X"}
+        c1.concepts[("S", "X")] = {"system": "S", "display": "X"}
         c1._version = 5
         c1.incomplete_since = True
         c2 = mgr.reset("t112_reset")
@@ -1218,10 +1240,10 @@ class TestLens11ClosureManagerInvariants:
         closure_b = mgr.get(name_b)
         assert closure_a is not None
         assert closure_b is not None
-        assert DIABETES_SNOMED in closure_a.concepts
-        assert T2DM_SNOMED not in closure_a.concepts
-        assert T2DM_SNOMED in closure_b.concepts
-        assert DIABETES_SNOMED not in closure_b.concepts
+        assert ("SNOMEDCT_US", DIABETES_SNOMED) in closure_a.concepts
+        assert ("SNOMEDCT_US", T2DM_SNOMED) not in closure_a.concepts
+        assert ("SNOMEDCT_US", T2DM_SNOMED) in closure_b.concepts
+        assert ("SNOMEDCT_US", DIABETES_SNOMED) not in closure_b.concepts
 
 
 # ===========================================================================

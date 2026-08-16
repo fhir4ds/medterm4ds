@@ -372,19 +372,26 @@ def test_h13_do_closure_isinstance_guards_via_ast_walk() -> None:
     for node in ast.walk(tree):
         if not isinstance(node, ast.For):
             continue
-        if not isinstance(node.iter, ast.Call):
-            continue
-        if not isinstance(node.iter.func, ast.Attribute):
-            continue
-        if node.iter.func.attr != "get":
-            continue
-        if not node.iter.args:
-            continue
-        first_arg = node.iter.args[0]
-        if not isinstance(first_arg, ast.Constant):
-            continue
-        if first_arg.value != "parameter":
-            continue
+        # EC-11: the loop iterates the defensive ``_parameter_entries``
+        # helper (QC-001 parameter:null guard) instead of the raw
+        # ``body.get("parameter", [])``. Accept BOTH shapes.
+        if isinstance(node.iter, ast.Call) and isinstance(node.iter.func, ast.Name):
+            if node.iter.func.id != "_parameter_entries":
+                continue
+        else:
+            if not isinstance(node.iter, ast.Call):
+                continue
+            if not isinstance(node.iter.func, ast.Attribute):
+                continue
+            if node.iter.func.attr != "get":
+                continue
+            if not node.iter.args:
+                continue
+            first_arg = node.iter.args[0]
+            if not isinstance(first_arg, ast.Constant):
+                continue
+            if first_arg.value != "parameter":
+                continue
         found_param_loop = True
         # Walk the loop body for isinstance guards.
         for stmt in node.body:
@@ -838,22 +845,14 @@ def test_h40_version_hash_payload_uses_sorted_keys_not_items() -> None:
             version_hash_src = ast.get_source_segment(closure_src, node) or ""
             break
     assert version_hash_src, "version_hash method not found in source"
-    # The payload MUST call sorted() on .keys(), NOT on .items() or .values().
-    assert "sorted(self.concepts.keys())" in version_hash_src, (
-        "version_hash payload MUST use `sorted(self.concepts.keys())` — "
-        "found a different composition. CF-HISTORIAN-CM03-02 / version "
-        "hash payload composition regression."
-    )
-    # FORBIDDEN: the payload MUST NOT use items() or values() (would
-    # include display, breaking the documented exclusion).
-    assert "items()" not in version_hash_src, (
-        "version_hash payload uses `.items()` — display values would "
-        "contribute to the hash, breaking the documented exclusion "
-        "(CF-SKEPTIC-CM03-01 spec-deviation-as-carry-forward)"
-    )
-    assert "values()" not in version_hash_src, (
-        "version_hash payload uses `.values()` — display values would "
-        "contribute to the hash, breaking the documented exclusion"
+    # EC-11 QC-270/QC-283: the payload covers the FULL state — concept
+    # tuples (source, code, display) AND the TRUE relation pairs — and
+    # excludes the internal call counter.
+    assert "concept_items" in version_hash_src
+    assert "relation_items" in version_hash_src
+    assert "self._version" not in version_hash_src, (
+        "QC-270: the internal call counter MUST NOT contribute to the "
+        "hash — identical content must yield identical hashes"
     )
 
 
@@ -874,19 +873,20 @@ def test_h41_version_hash_excludes_display_behavioral() -> None:
     t1 = ClosureTable("historian-hash-display-1")
     t2 = ClosureTable("historian-hash-display-2")
     # Same code + same source, DIFFERENT display.
-    t1.concepts["73211009"] = {"system": "SNOMEDCT_US", "display": "Diabetes"}
-    t2.concepts["73211009"] = {
+    # EC-11 QC-282/QC-283: displays are part of the hashed content (and
+    # are always engine-canonical, so a display change means the
+    # terminology release changed — a real state change).
+    t1.concepts[("SNOMEDCT_US", "73211009")] = {
+        "system": "SNOMEDCT_US", "display": "Diabetes"}
+    t2.concepts[("SNOMEDCT_US", "73211009")] = {
         "system": "SNOMEDCT_US",
         "display": "Diabetes mellitus (entirely different display)",
     }
-    # Both at _version=0 (no add_concepts call).
-    assert t1._version == t2._version == 0
     h1 = t1.version_hash()
     h2 = t2.version_hash()
-    assert h1 == h2, (
-        f"version hashes differ for same-codes-different-displays: "
-        f"{h1!r} vs {h2!r}. Display values MUST be excluded from the "
-        f"hash payload per documented behavior."
+    assert h1 != h2, (
+        f"QC-283: display/content changes MUST change the hash: "
+        f"{h1!r} vs {h2!r}"
     )
 
 
@@ -902,7 +902,8 @@ def test_h42_version_hash_changes_when_concept_added() -> None:
     _reset_singleton_manager()
     t = ClosureTable("historian-hash-change")
     h_empty = t.version_hash()
-    t.concepts["73211009"] = {"system": "SNOMEDCT_US", "display": "DM"}
+    t.concepts[("SNOMEDCT_US", "73211009")] = {
+        "system": "SNOMEDCT_US", "display": "DM"}
     h_one = t.version_hash()
     assert h_empty != h_one, (
         "version hash did not change after adding a concept — payload "
@@ -916,13 +917,16 @@ def test_h43_version_hash_changes_when_version_counter_advances() -> None:
     ``self._version``."""
     _reset_singleton_manager()
     t = ClosureTable("historian-hash-version")
-    t.concepts["73211009"] = {"system": "SNOMEDCT_US", "display": "DM"}
+    t.concepts[("SNOMEDCT_US", "73211009")] = {
+        "system": "SNOMEDCT_US", "display": "DM"}
     h_v0 = t.version_hash()
     t._version = 1
     h_v1 = t.version_hash()
-    assert h_v0 != h_v1, (
-        "version hash did not change after advancing _version counter — "
-        "payload composition must include self._version"
+    # EC-11 QC-270: the internal call counter is excluded from the
+    # content hash — advancing it alone must NOT churn the token.
+    assert h_v0 == h_v1, (
+        "QC-270: version hash changed on a counter-only advance — "
+        "identical content must yield identical hashes"
     )
 
 
@@ -970,9 +974,10 @@ def test_h45_version_hash_deterministic_across_instances_same_state() -> None:
     _reset_singleton_manager()
     t1 = ClosureTable("historian-hash-det-1")
     t2 = ClosureTable("historian-hash-det-2")
-    t1.concepts["73211009"] = {"system": "SNOMEDCT_US", "display": "DM"}
-    t2.concepts["73211009"] = {"system": "SNOMEDCT_US", "display": "DM"}
-    # _version is 0 on both (no add_concepts call).
+    t1.concepts[("SNOMEDCT_US", "73211009")] = {
+        "system": "SNOMEDCT_US", "display": "DM"}
+    t2.concepts[("SNOMEDCT_US", "73211009")] = {
+        "system": "SNOMEDCT_US", "display": "DM"}
     assert t1.version_hash() == t2.version_hash(), (
         "version hashes differ for same-state instances — payload "
         "composition must be deterministic across instances"
@@ -991,11 +996,18 @@ def test_h46_version_hash_payload_format_explicit() -> None:
     """
     _reset_singleton_manager()
     t = ClosureTable("historian-hash-format")
-    t.concepts["73211009"] = {"system": "SNOMEDCT_US", "display": "DM"}
-    t.concepts["44054006"] = {"system": "SNOMEDCT_US", "display": "T2DM"}
-    expected_payload = (
-        f"{len(t.concepts)}:{t._version}:{sorted(t.concepts.keys())}"
+    t.concepts[("SNOMEDCT_US", "73211009")] = {
+        "system": "SNOMEDCT_US", "display": "DM"}
+    t.concepts[("SNOMEDCT_US", "44054006")] = {
+        "system": "SNOMEDCT_US", "display": "T2DM"}
+    # EC-11 QC-270/QC-283: the payload is the repr of
+    # (sorted concept tuples, sorted TRUE relation pairs).
+    concept_items = sorted(
+        (source, code, info.get("display", ""))
+        for (source, code), info in t.concepts.items()
     )
+    relation_items = sorted(key for key, value in t._subsumes.items() if value)
+    expected_payload = repr((concept_items, relation_items))
     expected_hash = hashlib.md5(expected_payload.encode()).hexdigest()[:12]
     assert t.version_hash() == expected_hash, (
         f"version hash {t.version_hash()!r} does not match expected "
@@ -1164,11 +1176,14 @@ def test_h51_batch_per_entry_isolation_malformed_valuecoding_in_one_entry(
     bundle = r.json()
     entries = bundle.get("entry", [])
     assert len(entries) == 2
-    # Entry 0: malformed valueCoding silently dropped → 200 with empty closure.
-    assert entries[0]["response"]["status"].startswith("2"), (
-        f"entry[0] (malformed valueCoding) should be 2xx (silent drop "
-        f"per CF-HISTORIAN-CM03-01); got {entries[0]['response']['status']}"
+    # Entry 0: EC-11 QC-264 — an entry whose ONLY concept entry is
+    # malformed is a per-entry 400 OperationOutcome (isolated to that
+    # entry; NOT a 500-with-traceback, and no silent reset).
+    assert entries[0]["response"]["status"] == "400", (
+        f"entry[0] (malformed valueCoding) should be 400 per QC-264; "
+        f"got {entries[0]['response']['status']}"
     )
+    assert entries[0]["resource"]["resourceType"] == "OperationOutcome"
     # Entry 1: valid $closure → 200 with 1 concept.
     assert entries[1]["response"]["status"].startswith("2"), (
         f"entry[1] (valid $closure) should be 2xx; got "
@@ -1738,9 +1753,13 @@ def test_h100_closure_post_xml_format_serializes_value_coding(fhir_client) -> No
     )
     body_text = r.text
     # The valueCoding system/code/display should be present as XML.
+    # EC-11 QC-282: the display is the engine canonical preferred term
+    # (the client-supplied "DM" is corrected, not echoed).
     assert "73211009" in body_text, "code not in XML body"
     assert SNOMED_URI in body_text, "system URI not in XML body"
-    assert "DM" in body_text, "display not in XML body"
+    assert "Diabetes mellitus" in body_text, (
+        f"canonical display not in XML body: {body_text[:400]}"
+    )
 
 
 def test_h101_closure_post_content_type_fhir_json(fhir_client) -> None:
@@ -1958,8 +1977,8 @@ def test_h122_same_name_same_input_produces_same_hash(fhir_client) -> None:
     # Both responses should have 1 concept (overwrite, not append).
     assert len(_find_params(r1.json(), "concept")) == 1
     assert len(_find_params(r2.json(), "concept")) == 1
-    # Hashes should DIFFER because _version counter advanced.
-    assert h1 != h2, (
-        f"version hashes should differ across two add_concepts calls "
-        f"(cumulative _version counter): {h1!r} vs {h2!r}"
+    # EC-11 QC-270/QC-278: the hash is content-addressed — the redundant
+    # re-add is a no-op and keeps the same token.
+    assert h1 == h2, (
+        f"QC-278: redundant re-add must keep the same hash: {h1!r} vs {h2!r}"
     )

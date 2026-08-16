@@ -11,6 +11,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 import duckdb
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
@@ -19,8 +20,10 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
+from medterm4ds import __version__
 from medterm4ds.apps._asyncutil import run_db as _run_db
 from medterm4ds.core.config import local_duckdb_config
+from medterm4ds.core.env import env_bool, env_int, env_str
 from medterm4ds.core.models import CodeRef
 from medterm4ds.engines.duckdb import LocalDuckDBEngine
 from medterm4ds.engines.fhir import (
@@ -44,19 +47,40 @@ from medterm4ds.engines.fhir.responses import (
 )
 from medterm4ds.engines.fhir.xml import to_fhir_xml
 from medterm4ds.services.discovery import search_names
+# Row cap enforced by search_names (QC-217). Used to bound $expand filter-
+# mode fetch windows so deep offsets page to an empty result instead of
+# tripping the cap as a 400 (QC-241).
+from medterm4ds.services.discovery import MAX_DISCOVERY_LIMIT as _SEARCH_NAMES_MAX_LIMIT
 from medterm4ds.services.hierarchy import get_descendants_bfs, is_descendant
+from medterm4ds.services.inventory import DEFAULT_INVENTORY_SOURCES, normalize_sources
 from medterm4ds.services.lookup import get_code_infos
 from medterm4ds.services.mapping import get_code_mappings
 from medterm4ds.services.patient_friendly import get_patient_friendly_names
+from medterm4ds.services.search import MAX_QUERY_CHARS as MAX_SEARCH_QUERY_CHARS
+
+# Env-configurable $extract defaults (QC-167). Previously the service's
+# env-var support (MEDTERM4DS_EXTRACTION_MODE / _MIN_GRADE) was silently
+# ignored by the FHIR surface, which hardcoded hybrid/certain. Importing the
+# service defaults keeps one source of truth.
+from medterm4ds.services.extraction import (  # noqa: E402
+    DEFAULT_MIN_GRADE as DEFAULT_EXTRACT_MIN_GRADE,
+    DEFAULT_SEARCH_MODE as DEFAULT_EXTRACT_MODE,
+)
 
 logger = logging.getLogger(__name__)
 
 DEFAULT_PORT = 8001
 # Cap on $extract input text length. medspaCy + GLiNER inference cost scales
-# linearly with input length; without a cap, a single megabyte-text request
-# can starve the single-worker NER executor for seconds. 100K chars is well
-# above any reasonable clinical-note size (a 50-page chart note is ~25K).
-MAX_EXTRACT_TEXT_CHARS = int(os.getenv("MEDTERM4DS_MAX_EXTRACT_TEXT_CHARS", "100000"))
+# superlinearly with input length; without a cap, a single megabyte-text
+# request can starve the single-worker NER executor for seconds. 50K chars is
+# well above any reasonable clinical-note size (a 50-page chart note is ~25K).
+# QC-171 (CRITICAL): notes of 70K-100K chars crash the PyFastNER/PyRuSH C
+# extension (clean SystemError 500 or full-process SIGSEGV — nondeterministic).
+# 60K was verified safe by STRESS_TEST; 50K adds a safety margin below the
+# crash zone while staying far above real clinical-note sizes. Root cause is
+# upstream (PyFastNER C code); this cap is the mitigation. Operators can still
+# override via MEDTERM4DS_MAX_EXTRACT_TEXT_CHARS but should stay below 70K.
+MAX_EXTRACT_TEXT_CHARS = int(os.getenv("MEDTERM4DS_MAX_EXTRACT_TEXT_CHARS", "50000"))
 # Cap on rendered length of user-supplied strings in error messages. Defends
 # against reflected XSS in EHR clients that render OperationOutcome.diagnostics
 # as HTML, and against log-injection via control chars.
@@ -155,6 +179,8 @@ def expand_url_pattern(
     Supports SNOMED intensional URLs:
       ``http://snomed.info/sct/404684003?fhir_vs=isa``
       ``http://snomed.info/sct/404684003?fhir_vs``
+      ``http://snomed.info/sct?fhir_vs=isa/404684003`` (spec-canonical form,
+      concept id in the query string — FHIR R4 snomedct.html)
 
     Other FHIR system URIs (ICD10CM, RXNORM, LNC, etc.) are recognized via
     ``SYSTEM_TO_FHIR_URI`` but only SNOMED has a standard intensional
@@ -188,11 +214,29 @@ def expand_url_pattern(
     base = f"{parsed.scheme}://{parsed.netloc}{parsed.path}"
     path_parts = parsed.path.strip("/").split("/")
     query_params = parse_qs(parsed.query)
-    fhir_vs = query_params.get("fhir_vs", [""])[0]
+    fhir_vs_raw = query_params.get("fhir_vs", [""])[0]
+
+    # QC-411 (HIGH): FHIR R4's spec-canonical implicit ValueSet form carries
+    # the concept id in the QUERY STRING — 'http://snomed.info/sct?fhir_vs=
+    # isa/44054006' (snomedct.html, Implicit Value Sets) — while this code
+    # previously read the code only from the path ('.../sct/44054006?
+    # fhir_vs=isa'), the form 110+ repo conformance tests probe. Accept both:
+    # when the fhir_vs value is 'isa/<code>' or 'refset/<code>', the query
+    # code wins over any path segment (in the spec the path carries the
+    # MODULE id, e.g. '.../sct/731000124108?fhir_vs=isa/<concept>', never
+    # the concept id).
+    query_code: str | None = None
+    fhir_vs = fhir_vs_raw
+    if "/" in fhir_vs_raw:
+        kind, _, maybe_code = fhir_vs_raw.partition("/")
+        maybe_code = maybe_code.strip()
+        if kind.lower() in ("isa", "refset") and maybe_code:
+            query_code = maybe_code
+            fhir_vs = kind
 
     snomed_uri = SYSTEM_TO_FHIR_URI["SNOMEDCT_US"]
-    if snomed_uri in base and len(path_parts) >= 2:
-        code = path_parts[-1]
+    if snomed_uri in base and (query_code is not None or len(path_parts) >= 2):
+        code = query_code if query_code is not None else path_parts[-1]
         source = "SNOMEDCT_US"
         system_uri = snomed_uri
 
@@ -239,6 +283,18 @@ def expand_url_pattern(
                     "code": code,
                     "display": root_infos[0].name or code,
                 })
+            else:
+                # QC-247 (MEDIUM): an unknown root code (typo'd / retired
+                # SCTID, or a non-numeric code like 'ABCDEF') previously
+                # expanded to a silent {'total': 0, 'contains': []} —
+                # indistinguishable from a by-design empty value set. The
+                # sibling $lookup surface returns not-found for the same
+                # code; mirror that by raising (the HTTP layer maps
+                # ValueError → 400 OperationOutcome).
+                raise ValueError(
+                    f"Unknown SNOMED CT code {code!r} in implicit value set "
+                    f"URL {url!r} — no active atom found for the isa root."
+                )
 
         max_depth = _resolve_max_depth()
         # VS-04 TERMINOLOGIST QA-068: descendant_budget MUST reflect the
@@ -304,7 +360,15 @@ def expand_url_pattern(
         # un-truncated count would require an unbounded BFS walk (CF-
         # HISTORIAN-VS02-01); for now we surface the lower bound so
         # clients paging via ``total`` know to request additional pages.
-        if count_limited:
+        # QC-260 (HIGH): the SAME lower-bound treatment applies when only
+        # the DEPTH cap truncated the expansion — the size-field-from-
+        # wrong-source pattern: ``total = len(contains)`` read as the
+        # complete expansion size although the depth-limited walk provably
+        # missed deeper descendants (570 active DM descendants exist; the
+        # depth-5 walk returns 557). Bias to ``len(contains) + 1`` so a
+        # client reading only ``expansion.total`` cannot treat the
+        # truncated count as complete, consistent with count-truncation.
+        if count_limited or depth_cap_hit:
             # Contains has root + descendant_budget descendants = the cap
             # value; at least one more descendant exists beyond it.
             total = len(contains) + 1
@@ -316,8 +380,9 @@ def expand_url_pattern(
 
     raise ValueError(
         f"Unsupported fhir_vs URL pattern: {url!r}. "
-        f"Only SNOMED CT intensional expansions ({snomed_uri}/<code>?fhir_vs=isa) "
-        "are implemented. Other FHIR system URIs are recognized by the server "
+        f"Only SNOMED CT intensional expansions ({snomed_uri}/<code>?fhir_vs=isa "
+        f"or the spec-canonical {snomed_uri}?fhir_vs=isa/<code>) are implemented. "
+        "Other FHIR system URIs are recognized by the server "
         "but lack a standard intensional expansion URL convention."
     )
 
@@ -329,9 +394,27 @@ class FhirApiSettings:
     memory_profile: str = "fast"
     search_index_dir: str = DEFAULT_SEARCH_INDEX_DIR
     prepare_cache: bool = True
-    sources: tuple[str, ...] = (
-        "ICD10CM", "ICD10PCS", "SNOMEDCT_US", "RXNORM", "LNC", "CPT", "HCPCS", "CVX",
-    )
+    # QC-391 (MEDIUM): single source of truth per GLOBAL_RULES — the FHIR
+    # surface had a hardcoded 8-source tuple omitting ATC (the QC-341
+    # divergence class on the surface the original fix missed), so FHIR
+    # prepare_cache scope silently excluded ATC while $lookup/$translate
+    # accepted ATC system URIs.
+    sources: tuple[str, ...] = DEFAULT_INVENTORY_SOURCES
+    # QC-390 (MEDIUM): engine override knobs, mirroring McpSettings. Pre-fix,
+    # an operator setting MEDTERM4DS_MEMORY_LIMIT / MEDTERM4DS_THREADS /
+    # MEDTERM4DS_TEMP_DIR / MEDTERM4DS_QUERY_CHUNK_SIZE / MEDTERM4DS_SOURCES
+    # / MEDTERM4DS_PREPARE_CACHE got the FHIR defaults with no signal while
+    # the MCP server silently honored the same variables — identical
+    # documented workflows ran with materially different engine budgets.
+    memory_limit: str | None = None
+    temp_directory: str | Path | None = None
+    threads: int | None = None
+    query_chunk_size: int | None = None
+    # QC-472 (LOW): MEDTERM4DS_CACHE_INDEXES is part of the documented shared
+    # env contract (README) and honored by the api + MCP servers, but the
+    # FHIR surface had no field and hardcoded create_indexes=False — the
+    # same env var produced 5 indexes on api and 0 on FHIR.
+    cache_indexes: bool = False
 
     @classmethod
     def from_env(cls) -> FhirApiSettings:
@@ -342,6 +425,24 @@ class FhirApiSettings:
             db_path=Path(db_path),
             memory_profile=os.getenv("MEDTERM4DS_MEMORY_PROFILE", "fast"),
             search_index_dir=os.getenv("MEDTERM4DS_SEARCH_INDEX_DIR", DEFAULT_SEARCH_INDEX_DIR),
+            # QC-390: same env contract as the MCP server (apps/mcp.py
+            # McpSettings.from_env) so operators tune both surfaces once.
+            sources=normalize_sources(os.getenv("MEDTERM4DS_SOURCES")),
+            # CR-044 (review-5 finding 6): env_str treats whitespace-only as
+            # unset like the facade/CLI; the old ``or None`` idiom passed
+            # " " through to validate_memory_limit and crashed at startup.
+            memory_limit=env_str("MEDTERM4DS_MEMORY_LIMIT"),
+            temp_directory=env_str("MEDTERM4DS_TEMP_DIR"),
+            # QC-467: env parsing helpers are shared via medterm4ds.core.env
+            # (was a local copy whose comment claimed mcp parity it did not
+            # have). minimum=1 additionally rejects MEDTERM4DS_THREADS=-1 /
+            # QUERY_CHUNK_SIZE=-5 at parse time naming the env var (QC-473),
+            # instead of crashing in lifespan with an anonymous duckdb
+            # SyntaxException.
+            threads=env_int("MEDTERM4DS_THREADS", minimum=1),
+            query_chunk_size=env_int("MEDTERM4DS_QUERY_CHUNK_SIZE", minimum=1),
+            prepare_cache=env_bool("MEDTERM4DS_PREPARE_CACHE", True),
+            cache_indexes=env_bool("MEDTERM4DS_CACHE_INDEXES", False),
         )
 
 
@@ -528,6 +629,8 @@ def _log_startup_banner(
     logger.info("    FHIR_VS_MAX_DEPTH=%s   (cap on $expand?fhir_vs=isa descendant depth)", os.getenv("FHIR_VS_MAX_DEPTH", "5"))
     logger.info("    MEDTERM4DS_MAX_EXTRACT_TEXT_CHARS=%s   (cap on $extract input length)", MAX_EXTRACT_TEXT_CHARS)
     logger.info("    MEDTERM4DS_FHIR_API_PORT  | MEDTERM4DS_API_HOST  (bind config)")
+    logger.info("    MEDTERM4DS_MEMORY_PROFILE | MEDTERM4DS_MEMORY_LIMIT | MEDTERM4DS_THREADS  (engine; shared contract with MCP)")
+    logger.info("    MEDTERM4DS_SOURCES | MEDTERM4DS_PREPARE_CACHE | MEDTERM4DS_TEMP_DIR | MEDTERM4DS_QUERY_CHUNK_SIZE  (engine; shared contract with MCP)")
     logger.info("    MEDTERM4DS_SEARCH_INDEX_DIR | MEDTERM4DS_EMBEDDING_MODEL_DIR  (search assets)")
     logger.info("    MEDTERM4DS_FHIR4PX_BASELINE  (patient_friendly JSONs dir)")
     logger.info("=" * 72)
@@ -539,6 +642,7 @@ try:
     from fastapi.exceptions import RequestValidationError
     from fastapi.responses import Response
     from fastapi.responses import JSONResponse
+    from starlette.exceptions import HTTPException as StarletteHTTPException
 except ImportError:
     FastAPI = None  # type: ignore[assignment,misc]
 
@@ -555,13 +659,42 @@ def expand_intensional_value_set(
     Supports:
     - Explicit concept lists (compose.include[].concept)
     - is-a / descendent-of filters via BFS (bounded by FHIR_VS_MAX_DEPTH)
-    - compose.exclude (removes codes from the expansion)
+    - System-only includes (whole code system, count-capped — QC-243)
+    - compose.exclude (removes codes from the expansion, scoped to the
+      exclude block's own system — QC-244 — and honoring intensional
+      exclude filters — QC-242)
+
+    Raises:
+        ValueError: On an unresolvable compose system URI (QC-252 — the
+            POST compose path must reject fabricated concepts for unknown
+            systems the same way the GET ``system=`` parameter does) or a
+            null/empty ``concept[].code`` (QC-246 — FHIR R4 Coding.code is
+            1..1; ``str(None) == 'None'`` previously fabricated a concept).
 
     Returns ``(deduped, depth_cap_hit)`` where *deduped* is a list of
     ``{"system": str, "code": str, "display": str}`` dicts (deduplicated,
     NOT truncated — callers truncate as needed). Callers needing FHIR
     response shape should wrap with ``build_valueset_expand``.
     """
+
+    def _resolve_compose_system(system_uri: str) -> str:
+        # QC-252 (MEDIUM): the previous ``fhir_uri_to_system(x) or x`` fallback
+        # treated ANY unresolvable system string as an internal source name, so
+        # compose.include[{system: 'http://example.org/nope', concept: [...]}]
+        # fabricated contains entries whose display was the code string — while
+        # the GET surface 400s on the same URI. Mirror the GET contract: an
+        # include/exclude system MUST resolve via the FHIR URI registries or be
+        # a known internal source name; anything else raises.
+        source = fhir_uri_to_system(system_uri)
+        if source is not None:
+            return source
+        if system_uri in SYSTEM_TO_FHIR_URI:
+            return system_uri
+        raise ValueError(
+            f"Unrecognized code system URI in ValueSet.compose: {system_uri!r}. "
+            "Known systems: " + ", ".join(sorted(SYSTEM_TO_FHIR_URI.values()))
+        )
+
     compose = value_set.get("compose", {})
     if not isinstance(compose, dict):
         compose = {}
@@ -573,15 +706,30 @@ def expand_intensional_value_set(
         if not isinstance(include, dict):
             continue
         inc_system = include.get("system", "")
-        source = fhir_uri_to_system(inc_system) or inc_system
-        canonical_inc = canonical_system_uri(inc_system, source=source if source else None)
+        # QC-252 validation applies only when the block DECLARES a system.
+        # A system-less include is the FHIR R4 §4.9.9 ``valueSet`` import
+        # form (or a version-only include) — unimplemented here (CF-
+        # SKEPTIC-VS01-04 carry-forward), silently ignored as before,
+        # NOT a 400.
+        source = _resolve_compose_system(inc_system) if inc_system else ""
+        canonical_inc = canonical_system_uri(inc_system, source=source or None)
 
         # Explicit concept list
         if "concept" in include:
             for concept in include["concept"]:
                 if not isinstance(concept, dict):
                     continue
-                code_str = str(concept.get("code", ""))
+                # QC-246 (MEDIUM): a null/empty code previously became
+                # ``str(None) == 'None'`` / '' and passed through as a
+                # fabricated contains entry. Coding.code is 1..1 — reject.
+                raw_code = concept.get("code")
+                if raw_code is None or not str(raw_code).strip():
+                    raise ValueError(
+                        "compose.include[].concept[].code must be a non-empty "
+                        "string (FHIR R4 Coding.code is 1..1); got "
+                        f"{raw_code!r}."
+                    )
+                code_str = str(raw_code)
                 display = concept.get("display") or ""
                 if not display and code_str:
                     concept_infos = get_code_infos(
@@ -595,6 +743,42 @@ def expand_intensional_value_set(
                     "system": canonical_inc,
                     "code": code_str,
                     "display": display,
+                })
+
+        # System-only include (QC-243, MEDIUM): ``compose.include[{system}]``
+        # with no concept list and no filter means "all codes in the code
+        # system" — the same semantics as the implicit value set URL
+        # ``<system>/vs`` (FHIR R4 §4.7.3.1). The previous code appended
+        # nothing, returning a silently-empty expansion. Count-bounded
+        # enumeration (LIMIT count + 1) so the caller's count_limited
+        # detection sees the truncation; displays resolved via ONE batched
+        # get_code_infos call (not per-code — QC-248 pattern).
+        elif not include.get("filter") and source:
+            # QC-291/293 (MEDIUM): ORDER BY CODE — without it DuckDB's
+            # parallel scan order yielded a DIFFERENT random sample per call,
+            # breaking reproducibility and offset paging (FHIR R4 §4.9.2
+            # assumes stable iteration). QC-296 (HIGH): MTHU####### codes
+            # under SAB='LNC' are UMLS-Metathesaurus surrogates for
+            # unpublished LOINC part concepts — they do not exist in real
+            # LOINC and must not be emitted as http://loinc.org members.
+            # The filter is scoped to LNC only: other SABs (OMIM, ICPC2*)
+            # legitimately carry MTHU-prefixed codes.
+            rows = engine.con.execute(
+                "SELECT DISTINCT CODE FROM mrconso WHERE SAB = ? "
+                "AND SUPPRESS = 'N' "
+                "AND (SAB != 'LNC' OR CODE NOT LIKE 'MTHU%') "
+                "ORDER BY CODE LIMIT ?",
+                [source, count + 1],
+            ).fetchall()
+            sys_codes = [code for (code,) in rows if code]
+            sys_infos = get_code_infos(
+                [CodeRef(source, code) for code in sys_codes], engine=engine,
+            )
+            for code, info in zip(sys_codes, sys_infos):
+                contains.append({
+                    "system": canonical_inc,
+                    "code": code,
+                    "display": (info.name if info else None) or code,
                 })
 
         # Intensional filter (is-a, descendent-of)
@@ -634,17 +818,66 @@ def expand_intensional_value_set(
             else:
                 logger.debug("Unsupported filter: property=%s op=%s", prop, op)
 
-    # Apply excludes
+    # Apply excludes. QC-244 (MEDIUM): exclusion keys are (canonical system,
+    # code) pairs scoped to the exclude block's OWN system — the previous
+    # global code-set removed SNOMED 73211009 because an ICD-10-CM exclude
+    # block listed the same digit string. FHIR R4 compose.exclude is a
+    # compose-with-system construct.
+    # QC-242 (HIGH): intensional exclude filters (is-a / descendent-of) are
+    # expanded and removed too — the previous code read only
+    # ``exclude.get('concept')`` and silently kept every code the client
+    # explicitly carved out (exclusions commonly remove harmful /
+    # not-applicable concepts — clinical-safety failure). The exclusion BFS
+    # runs WITHOUT a row limit: unlike the include walk (count + 1 probe),
+    # under-exclusion is the dangerous direction — a capped walk would
+    # silently re-include truncated exclusion members. Cost is still bounded
+    # by FHIR_VS_MAX_DEPTH.
     for exclude in compose.get("exclude", []):
         if not isinstance(exclude, dict):
             continue
+        exc_system = exclude.get("system", "")
+        # See the include loop: system-less blocks (valueSet imports) are
+        # silently ignored, not rejected (QC-252 covers declared systems).
+        exc_source = _resolve_compose_system(exc_system) if exc_system else ""
+        canonical_exc = canonical_system_uri(exc_system, source=exc_source or None)
+        excluded: set[tuple[str, str]] = set()
         exc_concepts = exclude.get("concept", [])
-        if not isinstance(exc_concepts, list):
-            continue
-        exc_codes = {
-            c.get("code") for c in exc_concepts if isinstance(c, dict)
-        }
-        contains = [c for c in contains if c["code"] not in exc_codes]
+        if isinstance(exc_concepts, list):
+            for c in exc_concepts:
+                if not isinstance(c, dict):
+                    continue
+                raw = c.get("code")
+                # Void entry (null/empty code): excludes nothing — skip
+                # rather than fabricate a 'None' exclusion key.
+                if raw is None or not str(raw).strip():
+                    continue
+                excluded.add((canonical_exc, str(raw)))
+        for filt in exclude.get("filter", []):
+            if not isinstance(filt, dict):
+                continue
+            prop = filt.get("property", "")
+            op = filt.get("op", "")
+            val = filt.get("value", "")
+            if prop == "concept" and op in ("is-a", "descendent-of"):
+                root_code = str(val)
+                if op == "is-a":
+                    excluded.add((canonical_exc, root_code))
+                exc_descendants, _ = get_descendants_bfs(
+                    CodeRef(source=exc_source, code=root_code),
+                    engine=engine,
+                    max_depth=max_depth,
+                )
+                for d in exc_descendants:
+                    excluded.add((canonical_exc, d.target.code))
+            else:
+                logger.debug(
+                    "Unsupported exclude filter: property=%s op=%s", prop, op
+                )
+        if excluded:
+            contains = [
+                c for c in contains
+                if (c.get("system", ""), c.get("code", "")) not in excluded
+            ]
 
     # Deduplicate by (system, code)
     seen: set[tuple[str, str]] = set()
@@ -672,10 +905,24 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
         if not app_settings.db_path.exists():
             raise RuntimeError(f"Database not found: {app_settings.db_path}")
         con = duckdb.connect(str(app_settings.db_path), read_only=True)
-        config = local_duckdb_config(app_settings.memory_profile)
+        # QC-390 (MEDIUM): pass the same engine override knobs the MCP
+        # server honors (memory limit, temp dir, threads, chunk size) —
+        # pre-fix these env vars were silently ignored on this surface.
+        config = local_duckdb_config(
+            app_settings.memory_profile,
+            memory_limit=app_settings.memory_limit,
+            temp_directory=app_settings.temp_directory,
+            threads=app_settings.threads,
+            query_chunk_size=app_settings.query_chunk_size,
+        )
         engine = LocalDuckDBEngine(con, config=config)
         if app_settings.prepare_cache:
-            engine.prepare_cache(app_settings.sources, create_indexes=False)
+            # QC-472: create_indexes follows MEDTERM4DS_CACHE_INDEXES
+            # (default False) instead of a hardcoded False — the FHIR
+            # surface was the only one ignoring the documented knob.
+            engine.prepare_cache(
+                app_settings.sources, create_indexes=app_settings.cache_indexes
+            )
         # Per-app executors. DB work serializes on one worker (DuckDB Python
         # connections aren't thread-safe under concurrent use). NER work also
         # serializes on one worker because medspaCy pipelines aren't
@@ -715,7 +962,9 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
 
     app = FastAPI(
         title="medterm4ds FHIR Terminology Server",
-        version="0.0.1",
+        # QC-487 sibling: single-sourced from the package (was a duplicated
+        # '0.0.1' literal requiring manual pyproject sync).
+        version=__version__,
         lifespan=lifespan,
     )
 
@@ -732,14 +981,23 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
         errors = exc.errors()
         if errors:
             first = errors[0]
-            loc = ".".join(str(p) for p in first.get("loc", []) if p not in ("query", "body"))
+            # QC-403 (LOW): strip the loc CONTAINER by position, not by value.
+            # FastAPI's loc is ('query'|'body'|'path', <field>, ...) — the
+            # prior value filter dropped EVERY element equal to 'query', so a
+            # field literally named 'query' ($search's only required param)
+            # was stripped from its own diagnostic and rendered as
+            # "Parameter 'unknown'".
+            loc_parts = [str(p) for p in first.get("loc", [])]
+            loc = ".".join(loc_parts[1:])
             msg = first.get("msg", "Invalid request")
             diagnostics = f"Parameter '{loc or 'unknown'}': {msg}"
             if len(errors) > 1:
                 diagnostics += f" (and {len(errors) - 1} more validation error(s))"
         else:
             diagnostics = "Request validation failed."
-        return _fhir_error(422, diagnostics)
+        # QC-301: funnel through _fhir_error_response so XML clients get an
+        # XML OperationOutcome (request is in scope here).
+        return _fhir_error_response(request, 422, diagnostics)
 
     # CF-HISTORIAN-CS04-02 (milestone-2 review, CR-019): systemic
     # ``duckdb.Error`` boundary for every per-operation ``_do_*`` handler.
@@ -764,6 +1022,31 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
             request, 503, f"Database temporarily unavailable: {exc}"
         )
 
+    # QC-319 (MEDIUM): framework-generated HTTPExceptions — most notably the
+    # 405 Starlette's router raises for DELETE/PUT/OPTIONS/HEAD on any route —
+    # bypass every handler, so the body was {'detail': 'Method Not Allowed'}
+    # with Content-Type application/json: wrong MIME per FHIR R4 §3.1.0.1.9,
+    # not an OperationOutcome per §3.1.0.1.5, and _format/Accept negotiation
+    # was ignored. Re-render the plain-string-detail form (what the framework
+    # itself produces) as an OperationOutcome via the negotiated format.
+    # Structured (non-string) details keep the default JSON rendering — those
+    # come from application code that chose a payload shape deliberately.
+    # Starlette's extra headers (e.g. the 405 ``Allow`` header) are preserved.
+    @app.exception_handler(StarletteHTTPException)
+    async def _fhir_http_exception_handler(
+        request: Request, exc: StarletteHTTPException
+    ):
+        if isinstance(exc.detail, str):
+            response = _fhir_error_response(request, exc.status_code, exc.detail)
+        else:
+            response = JSONResponse(
+                {"detail": exc.detail}, status_code=exc.status_code
+            )
+        headers = getattr(exc, "headers", None)
+        if headers:
+            response.headers.update(headers)
+        return response
+
     def _engine(request) -> LocalDuckDBEngine:
         return request.app.state.engine
 
@@ -784,7 +1067,8 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
         (OperationOutcome on 4xx/5xx) + §3.1.0.1.9 (correct MIME type).
         """
         if not getattr(request.app.state, "ready", False):
-            return _fhir_error(503, "Service is starting up.")
+            # QC-301: honor negotiated format on the error path.
+            return _fhir_error_response(request, 503, "Service is starting up.")
         return None
 
     def _executor(request) -> ThreadPoolExecutor:
@@ -864,9 +1148,22 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
         """
         # _format takes precedence over Accept per §3.1.0.1.11.
         fmt = request.query_params.get("_format", "").lower().strip()
-        if fmt in ("xml", "text/xml", "application/xml", "application/fhir+xml"):
+        # QC-318 (MEDIUM): query-string form decoding turns a literal '+' into
+        # a space, so the spec-documented full-MIME value
+        # ``_format=application/fhir+xml`` arrives as 'application/fhir xml'
+        # and the exact-match below never fired — silently returning JSON 200
+        # for an explicit XML request (and vice versa for the JSON MIME, where
+        # the wrong default was invisible). Per §3.1.0.1.11 the full MIME
+        # types SHALL be honored; a '+' and a space in a _format value are
+        # equivalent under form decoding, so compare both spellings.
+        fmt_mime = fmt.replace(" ", "+")
+        if fmt in ("xml", "text/xml", "application/xml") or fmt_mime in (
+            "application/fhir+xml",
+        ):
             return True
-        if fmt in ("json", "application/json", "application/fhir+json"):
+        if fmt in ("json", "application/json") or fmt_mime in (
+            "application/fhir+json",
+        ):
             return False
         # _format absent or unrecognized → fall through to Accept header.
         accept = request.headers.get("accept", "").lower()
@@ -908,7 +1205,14 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
                     json_q = q
             elif media in (
                 "application/fhir+xml", "application/xml", "text/xml"
-            ) or media.endswith("+xml") or media.endswith("/xml"):
+            ):
+                # QC-347 (EC-15 LOW): exact-match only. The previous
+                # ``endswith('+xml')`` heuristic classified ANY +xml media
+                # type (image/svg+xml, application/xhtml+xml, atom+xml) as
+                # an XML request — broader than §3.1.0.1.9's valid list and
+                # than this function's own comment. Browsers sending
+                # 'text/html,application/xhtml+xml,*/*' got FHIR XML instead
+                # of the JSON default.
                 if q > xml_q:
                     xml_q = q
             elif media in (
@@ -960,6 +1264,39 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
             )
         return _fhir_json_response(payload, status=status)
 
+    def _respond(request: Request, payload: Any) -> Response:
+        """Single return funnel for operation handlers (QC-301, EC-13).
+
+        Success dicts route through ``_fhir_response`` (format-negotiated).
+        A ``Response`` produced by the request-less ``_fhir_error`` helper
+        inside a ``_do_*`` worker (no ``request`` scope in the executor
+        thread) is always a JSON OperationOutcome — when the client
+        negotiated XML via ``_format``/Accept, re-render the SAME
+        OperationOutcome in the negotiated format per FHIR R4
+        §3.1.0.1.9/§3.1.0.1.5. This is the mechanical-sweep counterpart to
+        ``_fhir_error_response`` (CR-003) for the ~23 error sites that
+        cannot take ``request`` directly; it covers every one of them at
+        the single point where the payload crosses back into handler
+        scope. JSON clients take the fast path (payload returned as-is).
+        """
+        if isinstance(payload, Response):
+            if (
+                payload.status_code >= 400
+                and payload.media_type == "application/fhir+json"
+                and _wants_xml(request)
+            ):
+                try:
+                    body_dict = json.loads(payload.body)
+                except (json.JSONDecodeError, TypeError):
+                    # Not a re-renderable FHIR body — return the original
+                    # valid response unchanged (not an error swallow).
+                    return payload
+                return _fhir_response(
+                    request, body_dict, status=payload.status_code
+                )
+            return payload
+        return _fhir_response(request, payload)
+
     def _fhir_json_response(payload: dict[str, Any], *, status: int = 200) -> Response:
         """Serialize ``payload`` as JSON with the FHIR-spec MIME type.
 
@@ -1007,7 +1344,24 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
            host env var with a scheme OR set MEDTERM4DS_API_SCHEME=https.
         """
         host = os.getenv("MEDTERM4DS_API_HOST", "127.0.0.1")
-        port = int(os.getenv("MEDTERM4DS_FHIR_API_PORT", str(DEFAULT_PORT)))
+        # QC-336 (EC-15 LOW): an invalid MEDTERM4DS_FHIR_API_PORT ('' / 'abc')
+        # raised an unhandled ValueError -> bare 500 text/plain. Validate on
+        # both axes (parse + range 1-65535) and raise a ValueError with an
+        # operator-actionable message; the metadata handler converts it into
+        # a FHIR OperationOutcome per §3.1.0.1.9.
+        port_raw = os.getenv("MEDTERM4DS_FHIR_API_PORT", str(DEFAULT_PORT))
+        try:
+            port = int(port_raw)
+        except ValueError:
+            raise ValueError(
+                f"MEDTERM4DS_FHIR_API_PORT must be an integer between 1 and "
+                f"65535; got {port_raw!r}."
+            ) from None
+        if not 1 <= port <= 65535:
+            raise ValueError(
+                f"MEDTERM4DS_FHIR_API_PORT must be an integer between 1 and "
+                f"65535; got {port!r}."
+            )
         # Honor an explicit scheme-on-host (e.g. "https://fhir.example.com")
         # or a separate scheme env var. The prior behavior hardcoded "http://"
         # which silently downgraded HTTPS deployments (QA-037).
@@ -1022,12 +1376,20 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
         #   ("http://example.com/:8000").
         # Fix: normalize host by stripping trailing slashes unconditionally
         # and detect IPv6 by bracket presence rather than colon presence.
+        #
+        # QC-335 (EC-15 LOW): the scheme-less branch appended the env port
+        # unconditionally, producing a double port for a scheme-less host
+        # that already carries one ('[::1]:9001' -> 'http://[::1]:9001:8001');
+        # and neither branch normalized scheme/host case
+        # ('HTTPS://FHIR.EXAMPLE.COM' passed through verbatim). Scheme and
+        # host are case-insensitive per RFC 3986 §3.1/§3.2.2 — lowercase both.
         if "://" in host:
             # Host already carries scheme — strip trailing slash and use as-is.
             # Append port only if the host string doesn't already include one
             # (excluding IPv6 brackets which always contain `:`).
             stripped = host.rstrip("/")
             scheme_part, rest = stripped.split("://", 1)
+            normalized = f"{scheme_part.lower()}://{rest.lower()}"
             # IPv6 hosts are bracketed: [::1]:port or [::1]. If the host
             # already has a port (form [::1]:port OR hostname:port), don't
             # append another.
@@ -1036,18 +1398,30 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
             if rest.startswith("["):
                 # IPv6 form. Look for `]:` to find a port.
                 if "]" in rest and rest.rfind("]:") != -1:
-                    return stripped  # already has port
-                return f"{stripped}:{port}"
+                    return normalized  # already has port
+                return f"{normalized}:{port}"
             # Regular host: a colon AFTER the first character indicates port.
             # (hostname cannot contain `:`.)
             if ":" in rest:
-                return stripped  # already has port
-            return f"{stripped}:{port}"
+                return normalized  # already has port
+            return f"{normalized}:{port}"
         # Strip trailing slash from host portion (defends against operator
         # typos like "example.com/" producing malformed "host/:port").
         host = host.rstrip("/")
+        # QC-335: a scheme-less host may already carry an explicit port
+        # ('[::1]:9001' or 'fhir.example.com:9001') — honor it instead of
+        # appending a second one. Bracket-aware port detection: look for
+        # ']:' (IPv6) or a single ':' (regular host).
+        already_ported = (
+            (host.startswith("[") and "]:" in host)
+            or (not host.startswith("[") and ":" in host)
+        )
         scheme = os.getenv("MEDTERM4DS_API_SCHEME", "http")
-        return f"{scheme}://{host}:{port}"
+        if already_ported:
+            # Still a URL: prefix the (lowercased) scheme so implementation.url
+            # is never scheme-less ('[::1]:9001' -> 'http://[::1]:9001').
+            return f"{scheme.lower()}://{host.lower()}"
+        return f"{scheme.lower()}://{host.lower()}:{port}"
 
     @app.get("/fhir/metadata")
     async def metadata(request: Request, mode: str | None = Query(None)):
@@ -1061,7 +1435,25 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
         - mode="terminology" → TerminologyCapabilities (item 5)
         - any other value → 400 OperationOutcome (input validation)
         """
-        base_url = _deployment_base_url()
+        # QC-336 (EC-15 LOW): an invalid MEDTERM4DS_FHIR_API_PORT previously
+        # raised an unhandled ValueError -> bare 500 text/plain 'Internal
+        # Server Error'. Operator misconfiguration surfaces as a FHIR
+        # OperationOutcome per §3.1.0.1.9 with an actionable diagnostic.
+        # QC-343 (EC-15 LOW): when NEITHER endpoint env var is set, derive the
+        # advertised base URL from the actual request (scheme://host:port) so a
+        # server started on a non-default uvicorn port no longer advertises
+        # the DEFAULT_PORT endpoint. Explicit env configuration still wins
+        # (GLOBAL_RULES.md "FHIR API Specifics").
+        if (
+            os.getenv("MEDTERM4DS_API_HOST") is None
+            and os.getenv("MEDTERM4DS_FHIR_API_PORT") is None
+        ):
+            base_url = f"{request.url.scheme}://{request.url.netloc}"
+        else:
+            try:
+                base_url = _deployment_base_url()
+            except ValueError as exc:
+                return _fhir_error_response(request, 500, str(exc))
 
         if mode is None or mode in ("full", "normative"):
             payload = build_capability_statement(base_url)
@@ -1121,14 +1513,14 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
         # — return a structured FHIR error, never a Starlette default).
         resource_type = body.get("resourceType")
         if resource_type != "Bundle":
-            return _fhir_error(
-                400,
+            return _fhir_error_response(
+                request, 400,
                 f"POST /fhir requires a Bundle body; got resourceType={resource_type!r}.",
             )
         bundle_type = body.get("type")
         if bundle_type not in ("batch", "transaction"):
-            return _fhir_error(
-                400,
+            return _fhir_error_response(
+                request, 400,
                 f"POST /fhir requires Bundle.type=batch (or transaction); "
                 f"got type={bundle_type!r}.",
             )
@@ -1138,8 +1530,8 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
 
         request_entries = body.get("entry", [])
         if not isinstance(request_entries, list):
-            return _fhir_error(
-                400,
+            return _fhir_error_response(
+                request, 400,
                 "Bundle.entry must be a list (or omitted for an empty batch).",
             )
 
@@ -1153,7 +1545,16 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
             request,
             {
                 "resourceType": "Bundle",
-                "type": "batch-response",
+                # QC-288 (LOW): FHIR R4 http.html#transaction (§3.1.0.11.2)
+                # — the response to a type=transaction Bundle MUST be
+                # type=transaction-response. We process entries
+                # independently (read-only server, no atomicity), but the
+                # response Bundle.type must mirror the request type.
+                "type": (
+                    "transaction-response"
+                    if bundle_type == "transaction"
+                    else "batch-response"
+                ),
                 "entry": response_entries,
             },
         )
@@ -1176,9 +1577,22 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
             return _batch_error_entry(
                 400, "Bundle entry missing 'request' block."
             )
-        method = req_block.get("method", "").upper()
+        # QC-284 (HIGH): an explicit JSON null / non-string `method` bypasses
+        # the `.get(method, "")` default and raised AttributeError BEFORE the
+        # per-entry isolation boundary at the dispatch try/except below — the
+        # WHOLE batch 500'd with text/plain, defeating FHIR R4 §3.7 entry
+        # independence. isinstance guard here (10th PROMOTED pattern) turns
+        # malformed methods into a per-entry 400.
+        method_raw = req_block.get("method", "")
+        if not isinstance(method_raw, str) or not method_raw:
+            return _batch_error_entry(
+                400,
+                "Bundle entry.request.method must be a non-empty string "
+                f"(got {req_block.get('method')!r}).",
+            )
+        method = method_raw.upper()
         url = req_block.get("url", "")
-        if not method or not url:
+        if not url:
             return _batch_error_entry(
                 400,
                 "Bundle entry.request requires both 'method' and 'url'.",
@@ -1198,15 +1612,33 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
         # pass via the resource Parameters body.
         params: dict[str, str] = {}
         body_resource: dict[str, Any] | None = entry.get("resource")
-        if method == "GET":
+        if method in ("GET", "POST"):
+            # QC-298 (MEDIUM): POST entries ALSO honor query-string params —
+            # the direct routes read them (e.g. $closure?name=X on POST), so
+            # the batch dispatcher must parse the query string for POST too,
+            # not just GET. POST-specific extractors below only consult
+            # `params` where the direct handler does ($closure name).
             params.update(query_string)
-        elif method == "POST":
-            # POST entries: the resource is a Parameters body.
-            if body_resource is None:
-                return _batch_error_entry(
-                    400,
-                    f"POST entry requires a 'resource' (Parameters body).",
-                )
+            if method == "POST":
+                # POST entries: the resource is a Parameters body (or, for
+                # $expand, a ValueSet body — QC-286).
+                if body_resource is None:
+                    return _batch_error_entry(
+                        400,
+                        f"POST entry requires a 'resource' (Parameters body).",
+                    )
+                # QC-285 (MEDIUM): a non-dict entry.resource (string/int/
+                # list) flowed into _parse_parameters/_extract_* helpers and
+                # produced a per-entry 500 with AttributeError internals
+                # leaked into the diagnostics. Type-check here (10th
+                # PROMOTED pattern) so a malformed body is a per-entry 400
+                # 'invalid'.
+                if not isinstance(body_resource, dict):
+                    return _batch_error_entry(
+                        400,
+                        "POST entry 'resource' must be a JSON object "
+                        f"(got {type(body_resource).__name__}).",
+                    )
         elif method in ("PUT", "PATCH", "DELETE"):
             # medterm4ds is read-only; write methods not supported.
             # DELETE is a documented write operation per FHIR R4 §3.1.0.7
@@ -1261,19 +1693,32 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
                 f"{type(exc).__name__}: {exc}",
             )
 
-    def _batch_error_entry(status: int, message: str) -> dict[str, Any]:
+    def _batch_error_entry(
+        status: int, message: str, issue_code: str | None = None,
+    ) -> dict[str, Any]:
         """Build a batch-response entry for a malformed/failed entry.
 
         Per-entry error isolation: the entry carries the OperationOutcome
         as its resource and the appropriate 4xx status in response.status.
+
+        QC-297 (MEDIUM): ``issue_code`` lets dispatch-failure entries mirror
+        the direct routes' IssueType (unknown operation -> 'processing',
+        unknown resource path -> 'not-found') instead of blanket 'invalid'.
+
+        QC-346 (EC-15 MEDIUM): the OperationOutcome is ALSO placed at
+        ``response.outcome`` — Bundle.entry.response.outcome exists precisely
+        to convey 'hints and warnings, as well as errors, that occurred in
+        processing the entry'; without it a batch client sees a bare status
+        and loses the diagnostics the direct route returns.
         """
+        outcome = build_operation_outcome(
+            "error",
+            issue_code or ("invalid" if status < 500 else "exception"),
+            message,
+        )
         return {
-            "response": {"status": str(status)},
-            "resource": build_operation_outcome(
-                "error",
-                "invalid" if status < 500 else "exception",
-                message,
-            ),
+            "response": {"status": str(status), "outcome": outcome},
+            "resource": outcome,
         }
 
     def _parse_batch_entry_url(url: str) -> tuple[str | None, dict[str, str]]:
@@ -1385,17 +1830,44 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
             elif path == "/ValueSet/$expand":
                 # Mandatory per §4.7.1.2 — found missing from batch dispatcher
                 # by HISTORIAN TS-04 QA-039 (4-tuple coverage audit).
-                url_param, filter_text, count, system_uri = _extract_expand_params(
+                url_param, filter_text, count, system_uri, offset_val = _extract_expand_params(
                     method, params, body_resource,
                 )
+                # QC-286 (MEDIUM): the direct POST route accepts a bare
+                # ValueSet body AND a Parameters-with-valueSet body; the
+                # batch dispatcher must honor the same body conventions
+                # (dual-invocation equivalence). Wire the existing
+                # _extract_valueset_from_parameters helper (previously only
+                # used by expand_post) into the batch path.
+                value_set_body: dict[str, Any] | None = None
+                if method == "POST" and isinstance(body_resource, dict):
+                    if body_resource.get("resourceType") == "ValueSet":
+                        value_set_body = body_resource
+                    else:
+                        value_set_body = _extract_valueset_from_parameters(
+                            body_resource,
+                        )
                 payload = await _run_db(
                     executor, _do_expand, engine,
                     url=url_param, filter_text=filter_text, count=count,
-                    system_uri=system_uri,
+                    system_uri=system_uri, value_set=value_set_body,
+                    offset=offset_val,
                 )
             elif path == "/CodeSystem/$closure":
                 # Mandatory per §4.7.1.2 — found missing from batch dispatcher
                 # by HISTORIAN TS-04 QA-039.
+                if method != "POST":
+                    # QC-310 (LOW): mirror the direct surface — there is no
+                    # GET route for $closure, so a direct GET falls to the
+                    # read_resource $-id guard (404 'processing', "Unknown
+                    # operation"). The batch side previously returned a
+                    # body-presence 400, a direct/batch divergence.
+                    return _batch_error_entry(
+                        404,
+                        f"Unknown operation '$closure'. "
+                        "See /fhir/metadata for the list of supported operations.",
+                        issue_code="processing",
+                    )
                 if body_resource is None:
                     return _batch_error_entry(
                         400,
@@ -1411,6 +1883,29 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
                     executor, _do_closure, engine, body_resource, name_val,
                 )
             else:
+                # QC-297 (MEDIUM): mirror the direct routes' IssueType and
+                # diagnostics so the identical request produces the same
+                # OperationOutcome data whether it rode in a batch or not:
+                #   - unknown $operation on a resource type -> 'processing'
+                #     (direct: read_resource's $-id guard)
+                #   - unknown resource path/id -> 'not-found' (direct:
+                #     read_resource / catch-all routes)
+                parts = [p for p in path.split("/") if p]
+                if len(parts) == 2 and parts[1].startswith("$"):
+                    return _batch_error_entry(
+                        404,
+                        f"Unknown operation {parts[1]!r}. "
+                        "See /fhir/metadata for the list of supported operations.",
+                        issue_code="processing",
+                    )
+                if len(parts) == 2:
+                    return _batch_error_entry(
+                        404,
+                        f"No stored {parts[0]} resource with id {parts[1]!r}. "
+                        "medterm4ds exposes terminology operations ($lookup, "
+                        "$expand, etc.) rather than persisted resource instances.",
+                        issue_code="not-found",
+                    )
                 return _batch_error_entry(
                     404,
                     f"Unknown operation or resource path in batch entry: {path!r}. "
@@ -1418,6 +1913,7 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
                     "CodeSystem/$subsumes, CodeSystem/$closure, "
                     "ValueSet/$validate-code, ValueSet/$expand, "
                     "ConceptMap/$translate.",
+                    issue_code="not-found",
                 )
         except ValueError as exc:
             return _batch_error_entry(400, str(exc))
@@ -1432,8 +1928,14 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
                 body_dict = build_operation_outcome(
                     "error", "exception", "Batch entry failed."
                 )
+            # QC-346 (EC-15 MEDIUM): surface the OperationOutcome at
+            # response.outcome so batch clients see the same diagnostics
+            # the direct route returns (not just a bare status).
             return {
-                "response": {"status": str(payload.status_code)},
+                "response": {
+                    "status": str(payload.status_code),
+                    "outcome": body_dict,
+                },
                 "resource": body_dict,
             }
         # Success path: payload is a FHIR resource dict.
@@ -1547,15 +2049,23 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
         PROMOTED).
         """
         if method == "GET":
+            # QC-289 (MEDIUM): the R4 OperationDefinition names the source
+            # code parameter "sourceCode"; the direct GET route accepts both
+            # `code` (shorthand) and `sourceCode` (spec name) — the batch
+            # GET branch must too, or the identical request 400s only
+            # because it rode in a $batch (cross-handler-helper-wiring).
+            code = params.get("code") or params.get("sourceCode")
             return (
-                params.get("system"), params.get("code"),
+                params.get("system"), code,
                 params.get("targetsystem"),
             )
         if body_resource is None:
             return None, None, None
         p = _parse_parameters(body_resource)
         system = p.get("system")
-        code = p.get("code")
+        # QC-289: sourceCode alias on the POST branch too (the direct POST
+        # route uses this same extractor).
+        code = p.get("code") or p.get("sourceCode")
         targetsystem = p.get("targetsystem")
         if not system or not code:
             coding_pair = _extract_named_coding_from_parameters(body_resource, "coding")
@@ -1599,18 +2109,37 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
         if body_resource is None:
             return None, None, None
         p = _parse_parameters(body_resource)
-        return p.get("system"), p.get("codeA"), p.get("codeB")
+        system = p.get("system")
+        code_a = p.get("codeA")
+        code_b = p.get("codeB")
+        # Per FHIR R4 §4.8.21.3 In Parameters: codingA/codingB (valueCoding)
+        # are spec-listed alternatives to codeA/codeB (valueCode). The
+        # dedicated POST handler consults _extract_named_coding_from_
+        # parameters; the batch path must too, or the identical body gets
+        # a per-entry 400 on /fhir $batch while succeeding on the direct
+        # route (QC-273 — the cross-handler-helper-wiring pattern,
+        # GLOBAL_RULES count=4).
+        if not code_a:
+            coding_a_pair = _extract_named_coding_from_parameters(body_resource, "codingA")
+            if coding_a_pair is not None:
+                code_a = coding_a_pair[1]
+        if not code_b:
+            coding_b_pair = _extract_named_coding_from_parameters(body_resource, "codingB")
+            if coding_b_pair is not None:
+                code_b = coding_b_pair[1]
+        return system, code_a, code_b
 
     def _extract_expand_params(
         method: str,
         params: dict[str, str],
         body_resource: dict[str, Any] | None,
-    ) -> tuple[str | None, str | None, int, str | None]:
-        """Extract (url, filter, count, system) for $expand.
+    ) -> tuple[str | None, str | None, int, str | None, int]:
+        """Extract (url, filter, count, system, offset) for $expand.
 
         Returns count with default=20 if absent; None otherwise for absent
-        optional params. Used by the batch dispatcher (HISTORIAN TS-04
-        QA-039 — closed the 4-tuple coverage gap for $expand).
+        optional params; offset with default=0. Used by the batch dispatcher
+        (HISTORIAN TS-04 QA-039 — closed the 4-tuple coverage gap for
+        $expand).
 
         CR-006/CR-017 (v0.0.1 code review): the prior `count_val or 20`
         silently substituted 20 when the client sent an INVALID count
@@ -1620,6 +2149,18 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
         ``except ValueError`` catches and translates to a per-entry 400
         OperationOutcome. Same shape as ``_parse_count_param`` usage on
         the per-operation POST route.
+
+        QC-307 (MEDIUM): offset is returned so batch paging clients get
+        the same page the direct route returns (the dispatcher previously
+        never passed offset, so _do_expand defaulted to 0 and every page
+        was page 1).
+
+        QC-308 (MEDIUM): on POST, the query-string ``count``/``offset``
+        are the request defaults (FHIR R4 §4.7.5 — In parameters may
+        arrive via query string OR Parameters body; the direct POST route
+        honors this per the QC-251 contract). The merged ``params`` dict
+        the dispatcher passes carries the entry's query string; an
+        explicit body value still wins.
         """
         if method == "GET":
             url_param = params.get("url")
@@ -1629,20 +2170,41 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
                 raise ValueError(
                     f"count must be an integer in [1, 1000] (got {params.get('count')!r})."
                 )
+            offset_val = _parse_offset_param(params.get("offset"), default=0)
+            if offset_val is None:
+                raise ValueError(
+                    f"offset must be a non-negative integer (got {params.get('offset')!r})."
+                )
             system_uri = params.get("system")
-            return url_param, filter_text, count_val, system_uri
+            return url_param, filter_text, count_val, system_uri, offset_val
         # POST: parse Parameters body. $expand also accepts a ValueSet
         # resource body but that path is operation-specific; the batch
         # dispatcher always passes a Parameters body for entry.resource.
+        query_count = _parse_count_param(params.get("count"), default=20)
+        if query_count is None:
+            raise ValueError(
+                f"count must be an integer in [1, 1000] (got {params.get('count')!r})."
+            )
+        query_offset = _parse_offset_param(params.get("offset"), default=0)
+        if query_offset is None:
+            raise ValueError(
+                f"offset must be a non-negative integer (got {params.get('offset')!r})."
+            )
         if body_resource is None:
-            return None, None, 20, None
+            return None, None, query_count, None, query_offset
         p = _parse_parameters(body_resource)
-        count_val = _parse_count_param(p.get("count"), default=20)
+        # QC-308: body value wins over the query-string default.
+        count_val = _parse_count_param(p.get("count"), default=query_count)
         if count_val is None:
             raise ValueError(
                 f"count must be an integer in [1, 1000] (got {p.get('count')!r})."
             )
-        return p.get("url"), p.get("filter"), count_val, p.get("system")
+        offset_val = _parse_offset_param(p.get("offset"), default=query_offset)
+        if offset_val is None:
+            raise ValueError(
+                f"offset must be a non-negative integer (got {p.get('offset')!r})."
+            )
+        return p.get("url"), p.get("filter"), count_val, p.get("system"), offset_val
 
     # -- Lightweight liveness probe --
     # Pure async, no executor / DB / model touch. Returns instantly even when
@@ -1690,7 +2252,7 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
         )
         # Pass through Accept/_format negotiation. If _do_lookup returned a Response
         # (error path), return it as-is — already a FHIR-formatted Response.
-        return payload if isinstance(payload, Response) else _fhir_response(request, payload)
+        return _respond(request, payload)
 
     @app.post("/fhir/CodeSystem/$lookup")
     async def lookup_post(request: Request, body: dict[str, Any]):
@@ -1714,7 +2276,7 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
             request.app.state.patient_friendly_cache,
             system, code,
         )
-        return payload if isinstance(payload, Response) else _fhir_response(request, payload)
+        return _respond(request, payload)
 
     def _do_lookup(
         engine: LocalDuckDBEngine,
@@ -1869,7 +2431,7 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
             _executor(request), _do_validate, _engine(request),
             system, code, display=display, codeable_concept_pairs=None,
         )
-        return payload if isinstance(payload, Response) else _fhir_response(request, payload)
+        return _respond(request, payload)
 
     @app.post("/fhir/CodeSystem/$validate-code")
     async def validate_post(request: Request, body: dict[str, Any]):
@@ -1903,7 +2465,7 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
             _executor(request), _do_validate, _engine(request),
             system, code, display=display, codeable_concept_pairs=codeable_pairs,
         )
-        return payload if isinstance(payload, Response) else _fhir_response(request, payload)
+        return _respond(request, payload)
 
     def _do_validate(
         engine: LocalDuckDBEngine,
@@ -2051,7 +2613,7 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
             url=url, code=code, system_uri=system, display=display,
             codeable_concept_pairs=None,
         )
-        return payload if isinstance(payload, Response) else _fhir_response(request, payload)
+        return _respond(request, payload)
 
     @app.post("/fhir/ValueSet/$validate-code")
     async def vs_validate_post(request: Request, body: dict[str, Any]):
@@ -2094,7 +2656,7 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
             url=url, code=code, system_uri=system_uri, display=display,
             codeable_concept_pairs=codeable_pairs,
         )
-        return payload if isinstance(payload, Response) else _fhir_response(request, payload)
+        return _respond(request, payload)
 
     def _do_vs_validate(
         engine: LocalDuckDBEngine,
@@ -2240,7 +2802,11 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
         # via _extract_translate_params.
         code: str | None = Query(None, min_length=1, description="Source code (shorthand)"),
         sourceCode: str | None = Query(None, min_length=1, description="Source code (R4 spec name)"),
-        targetsystem: str | None = Query(None, description="Target system URI"),
+        # QC-423 (MEDIUM): min_length=1 — an empty targetsystem previously
+        # fell through the `if target_uri:` truthiness check in _do_translate
+        # and WIDENED to all targets, identical to omitting the parameter
+        # (the sibling CLI/Python/MCP surfaces reject the same input).
+        targetsystem: str | None = Query(None, min_length=1, description="Target system URI"),
         source: str | None = Query(
             None,
             description="Canonical ConceptMap URL to use (per FHIR R4 $translate). Passed through; not yet used to select a named ConceptMap.",
@@ -2254,7 +2820,7 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
         if not actual_code:
             return _fhir_error_response(request, 422, "Either 'code' or 'sourceCode' parameter is required.")
         payload = await _run_db(_executor(request), _do_translate, _engine(request), system, actual_code, targetsystem)
-        return payload if isinstance(payload, Response) else _fhir_response(request, payload)
+        return _respond(request, payload)
 
     @app.post("/fhir/ConceptMap/$translate")
     async def translate_post(request: Request, body: dict[str, Any]):
@@ -2273,13 +2839,21 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
         if not system or not code:
             return _fhir_error_response(request, 400, "system and code are required.")
         payload = await _run_db(_executor(request), _do_translate, _engine(request), system, code, targetsystem)
-        return payload if isinstance(payload, Response) else _fhir_response(request, payload)
+        return _respond(request, payload)
 
     def _do_translate(engine: LocalDuckDBEngine, source_uri: str, code: str, target_uri: str | None):
         source = fhir_uri_to_system(source_uri)
         if source is None:
             return _fhir_error(400, f"Unrecognized source system URI: {source_uri}")
         target_sources = []
+        if target_uri is not None and not target_uri.strip():
+            # QC-423 (MEDIUM): a whitespace-only targetsystem reached here via
+            # the POST Parameters body (the GET route blocks '' with
+            # min_length=1). An empty value is NOT "no filter" — reject
+            # instead of widening to all systems.
+            return _fhir_error(
+                400, "targetsystem must be a non-empty system URI when provided."
+            )
         if target_uri:
             target_source = fhir_uri_to_system(target_uri)
             if target_source is None:
@@ -2325,7 +2899,7 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
         version: str | None = Query(None, description="Code system version (passed through)"),
     ):
         payload = await _run_db(_executor(request), _do_subsumes, _engine(request), system, codeA, codeB)
-        return payload if isinstance(payload, Response) else _fhir_response(request, payload)
+        return _respond(request, payload)
 
     @app.post("/fhir/CodeSystem/$subsumes")
     async def subsumes_post(request: Request, body: dict[str, Any]):
@@ -2371,7 +2945,7 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
                 f"system {system!r}; cross-system relationships are not defined.",
             )
         payload = await _run_db(_executor(request), _do_subsumes, _engine(request), system, code_a, code_b)
-        return payload if isinstance(payload, Response) else _fhir_response(request, payload)
+        return _respond(request, payload)
 
     def _do_subsumes(engine: LocalDuckDBEngine, system_uri: str, code_a: str, code_b: str):
         source = fhir_uri_to_system(system_uri)
@@ -2402,11 +2976,17 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
         If concepts are provided, adds them and returns the updated state.
         """
         params = _parse_parameters(body)
-        name = params.get("name")
+        # QC-306 (MEDIUM): per FHIR R4 §3.1.0.1.1, operation parameters MAY
+        # come from the query string on POST. The QC-298 fix wired query
+        # ``name`` into the BATCH dispatcher but this direct route only
+        # consulted the Parameters body — the identical request succeeded
+        # as a batch entry and 400'd direct. Mirror the batch side: body
+        # wins, query string is the fallback.
+        name = params.get("name") or request.query_params.get("name")
         if not name:
             return _fhir_error_response(request, 400, "name parameter is required for $closure.")
         payload = await _run_db(_executor(request), _do_closure, _engine(request), body, name)
-        return payload if isinstance(payload, Response) else _fhir_response(request, payload)
+        return _respond(request, payload)
 
     def _do_closure(engine: LocalDuckDBEngine, body: dict[str, Any], name: str):
         from medterm4ds.engines.fhir.closure import (
@@ -2430,32 +3010,79 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
         # — programming bugs MUST propagate); the guard at the data-
         # access boundary is the conformant fix.
         concepts: list[tuple[str, str, str]] = []  # (code, system, display)
-        for param in body.get("parameter", []):
+        saw_concept_entry = False
+        for param in _parameter_entries(body):
             # isinstance guard: see _parse_parameters (CS-04 SKEPTIC QA-001).
             if not isinstance(param, dict):
                 continue
             if param.get("name") != "concept":
                 continue
+            saw_concept_entry = True
             coding = param.get("valueCoding")
             if not isinstance(coding, dict):
                 # Malformed valueCoding (non-dict) — silently drop this
                 # concept entry. Mirrors the silent-drop semantic for
-                # missing-code / missing-system cases below.
+                # missing-code / missing-system cases below (when at least
+                # one well-formed entry survives; the all-malformed case is
+                # rejected after the loop, QC-264).
                 continue
             system_uri = coding.get("system", "")
             code = coding.get("code", "")
-            display = coding.get("display", code)
             if code and system_uri:
-                source = fhir_uri_to_system(system_uri) or system_uri
-                concepts.append((code, source, display))
+                # QC-271 (HIGH): the prior ``fhir_uri_to_system(x) or x``
+                # fallback accepted unresolvable system URIs (uppercase
+                # path, unknown URI, internal source names) at 200 where
+                # $lookup/$subsumes/$expand all 400 — the stored concept
+                # then silently produced ZERO subsumption relations because
+                # its source matched no hierarchy. Enforce the same
+                # GET-surface contract (the exact QC-252 fix pattern).
+                source = fhir_uri_to_system(system_uri)
+                if source is None:
+                    return _fhir_error(
+                        400, f"Unrecognized system URI: {system_uri}"
+                    )
+                concepts.append((code, source, coding.get("display", "")))
+
+        if saw_concept_entry and not concepts:
+            # QC-264 (HIGH): a POST that carries concept entries but whose
+            # entries are ALL malformed (non-dict valueCoding, missing
+            # system, missing code) previously fell through to the
+            # reset(name) branch below and silently WIPED the closure at
+            # 200 OK. An add request must never be interpreted as
+            # init/reset; only a body with NO concept entries initializes.
+            return _fhir_error(
+                400,
+                "$closure concept entries present but none are well-formed "
+                "(each requires valueCoding with both system and code); "
+                "refusing to add, and not resetting the closure.",
+            )
 
         if not concepts:
-            # Initialize / reset
+            # Initialize / reset (no concept entries at all)
             closure = manager.reset(name)
         else:
-            # Add concepts (batched — 2 walks per source, not 2 per concept)
+            # QC-282 (HIGH) + QC-269 (LOW): canonicalize displays through
+            # the engine (ONE batched get_code_infos call — the same
+            # preferred-atom source $lookup uses) instead of echoing the
+            # client-supplied display verbatim or fabricating one from the
+            # raw code string. Codes that resolve to no active atom are
+            # rejected, mirroring $lookup's not-found contract — they could
+            # never form subsumption relationships anyway.
+            infos = engine.get_code_infos(
+                [CodeRef(source, code) for code, source, _ in concepts]
+            )
+            resolved: list[tuple[str, str, str]] = []
+            for (code, source, _display), info in zip(concepts, infos):
+                if info is None or not info.name:
+                    canonical = system_to_fhir_uri(source) or source
+                    return _fhir_error(
+                        400,
+                        f"Unknown code {code} in system {canonical}: no "
+                        "active atom found — not added to the closure.",
+                    )
+                resolved.append((code, source, info.name))
             closure = manager.get_or_create(name)
-            closure.add_concepts(concepts, engine)
+            closure.add_concepts(resolved, engine)
 
         return build_closure_response(closure)
 
@@ -2472,14 +3099,16 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
         payload = await _run_db(
             _executor(request), _do_expand, _engine(request),
             url=url, filter_text=filter, count=count, system_uri=system,
+            offset=offset,
         )
-        return payload if isinstance(payload, Response) else _fhir_response(request, payload)
+        return _respond(request, payload)
 
     @app.post("/fhir/ValueSet/$expand")
     async def expand_post(
         request: Request,
         body: dict[str, Any],
         count: int = Query(20, ge=1, le=1000),
+        offset: int = Query(0, ge=0, description="Paging offset (per FHIR R4 $expand)"),
     ):
         """Expand a ValueSet. Accepts either a ValueSet resource (intensional)
         or a Parameters resource (filter mode).
@@ -2493,8 +3122,8 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
         """
         resource_type = body.get("resourceType", "")
         if resource_type == "ValueSet":
-            payload = await _run_db(_executor(request), _do_expand, _engine(request), value_set=body, count=count)
-            return payload if isinstance(payload, Response) else _fhir_response(request, payload)
+            payload = await _run_db(_executor(request), _do_expand, _engine(request), value_set=body, count=count, offset=offset)
+            return _respond(request, payload)
         # Per FHIR R4 §4.7.5 In Parameters ``valueSet`` (0..1 ValueSet):
         # "The value set is provided directly as part of the request." The
         # body shape is a Parameters resource with a parameter carrying a
@@ -2530,21 +3159,40 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
                     request, 400,
                     f"count must be an integer in [1, 1000] (got {inline_params.get('count')!r})."
                 )
-            payload = await _run_db(_executor(request), _do_expand, _engine(request), value_set=inline_vs, count=inline_count)
-            return payload if isinstance(payload, Response) else _fhir_response(request, payload)
-        # Parameters-style: extract url, filter, count
+            inline_offset = _parse_offset_param(
+                inline_params.get("offset"), default=offset
+            )
+            if inline_offset is None:
+                return _fhir_error_response(
+                    request, 400,
+                    f"offset must be a non-negative integer (got {inline_params.get('offset')!r})."
+                )
+            payload = await _run_db(_executor(request), _do_expand, _engine(request), value_set=inline_vs, count=inline_count, offset=inline_offset)
+            return _respond(request, payload)
+        # Parameters-style: extract url, filter, count, offset
         params = _parse_parameters(body)
-        count = _parse_count_param(params.get("count"), default=20)
+        # QC-251 (MEDIUM): the query-param ``count`` is the default for this
+        # request (FHIR R4 §4.7.5 — In parameters may arrive via query string
+        # OR Parameters body). The prior ``default=20`` hardcode meant a POST
+        # with a Parameters-with-url body and ``?count=1`` on the query
+        # string silently expanded at 20 — the query count was honored for
+        # the bare-ValueSet body on the SAME route but not here. Body count
+        # still wins when present.
+        count = _parse_count_param(params.get("count"), default=count)
         if count is None:
             return _fhir_error_response(request, 400, f"count must be an integer in [1, 1000] (got {params.get('count')!r}).")
+        body_offset = _parse_offset_param(params.get("offset"), default=offset)
+        if body_offset is None:
+            return _fhir_error_response(request, 400, f"offset must be a non-negative integer (got {params.get('offset')!r}).")
         payload = await _run_db(
             _executor(request), _do_expand, _engine(request),
             url=params.get("url"),
             filter_text=params.get("filter"),
             count=count,
             system_uri=params.get("system"),
+            offset=body_offset,
         )
-        return payload if isinstance(payload, Response) else _fhir_response(request, payload)
+        return _respond(request, payload)
 
     def _do_expand(
         engine: LocalDuckDBEngine,
@@ -2553,6 +3201,7 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
         count: int = 20,
         system_uri: str | None = None,
         value_set: dict[str, Any] | None = None,
+        offset: int = 0,
     ):
         """Expand a ValueSet.
 
@@ -2560,11 +3209,43 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
         1. Intensional (inline ValueSet with compose.include.filter) — hierarchy walk
         2. URL-based (fhir_vs pattern) — SNOMED intensional shorthand
         3. Filter (text search) — EHR autocomplete
+
+        QC-241 (HIGH): FHIR R4 $expand ``offset`` — "If paging is being
+        used, the offset at which this resource starts." The route always
+        declared the parameter but never applied it, so a client paging
+        with ``count=N&offset=N`` received page 1 forever. Implementation:
+        fetch a window of ``offset + count`` entries from the underlying
+        mode (so each mode's truncation detection and ``total`` are
+        computed against the full window) and slice the requested page out
+        of the built payload. ``expansion.total`` is derived by each mode
+        from the UN-truncated window, so it needs no adjustment here.
+
+        QC-311 (HIGH): combining ``url`` and ``filter`` is rejected with
+        400. The prior mode dispatch returned from the url-bearing
+        branches (implicit URL, fhir_vs) BEFORE the filter branch, so
+        ``filter`` was silently dropped when a url was present — and a
+        non-fhir_vs url fell through to the filter branch so the url was
+        silently dropped instead. Either direction is a silent-wrong-
+        answer. Applying a display filter INSIDE a url expansion is
+        feature work (per-mode post-filter + truncation/total semantics);
+        until then the combination must fail loudly per FHIR R4 §4.9.2
+        ("Combining parameters must either work or the server returns an
+        error") rather than silently drop one parameter.
         """
+        if url and filter_text:
+            return _fhir_error(
+                400,
+                "Cannot combine 'url' and 'filter' in $expand: applying a "
+                "text filter inside a url-based expansion is not supported. "
+                "Expand the value set (url) or run a text search "
+                "(filter), not both.",
+            )
+        page_end = offset + count
 
         # Mode 1: Inline ValueSet with compose rules
         if value_set:
-            return _expand_intensional(engine, value_set, count)
+            payload = _expand_intensional(engine, value_set, page_end)
+            return _expand_slice_page(payload, offset, page_end)
 
         # Mode 2: Implicit value set URL — FHIR R4 §4.7.3.1 convention-based
         # value set URLs derived from code system URIs. Two forms:
@@ -2574,12 +3255,14 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
         # The server SHOULD expand these even though no explicit ValueSet
         # resource exists. Found by SKEPTIC iteration TS-03 (QA-032).
         if url and _is_implicit_value_set_url(url):
-            return _expand_implicit_value_set(engine, url, count)
+            payload = _expand_implicit_value_set(engine, url, page_end)
+            return _expand_slice_page(payload, offset, page_end)
 
         # Mode 3: URL with fhir_vs pattern (SNOMED intensional shorthand with
         # a code in the path: http://snomed.info/sct/<code>?fhir_vs=isa)
         if url and "fhir_vs" in url:
-            return _expand_url_pattern(engine, url, count)
+            payload = _expand_url_pattern(engine, url, page_end)
+            return _expand_slice_page(payload, offset, page_end)
 
         # Mode 4: Text filter (existing EHR autocomplete)
         if filter_text:
@@ -2594,9 +3277,9 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
             # VS-02 SKEPTIC resweep QA-001: use the "+1 probe" pattern
             # (mirror of the implicit-value-set path's ``LIMIT count + 1``
             # trick at apps/fhir_api.py:2800-2853). Call search_names with
-            # limit=count+1 so we can detect truncation: when
-            # len(results) > count, the natural match count is at least
-            # count+1 (lower bound; exact count requires unbounded search
+            # limit=page_end+1 so we can detect truncation: when
+            # len(results) > page_end, the natural match count is at least
+            # page_end+1 (lower bound; exact count requires unbounded search
             # per CF-HISTORIAN-VS02-01 for the BFS-capped intensional path).
             # This lets us:
             #   (a) pass the un-truncated lower-bound ``total`` to
@@ -2610,39 +3293,71 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
             # The "+1 probe" is also the structural pattern used by
             # expand_url_pattern at apps/fhir_api.py:266 (``limit =
             # descendant_budget + 1``) per VS-04 TERMINOLOGIST QA-068.
+            # QC-241: the probe budget is the paging window (offset + count)
+            # so later pages can still detect truncation beyond the window.
+            # Deep offsets (offset + count beyond the search_names row cap
+            # from QC-217) are bounded at the cap instead of erroring: a
+            # client probing past the end of the expansion must get an
+            # empty page, not a 400. When the capped fetch returns a full
+            # cap of rows, count_limited still fires (matches provably
+            # continue beyond the fetch).
+            probe_budget = min(page_end, _SEARCH_NAMES_MAX_LIMIT - 1)
             try:
                 results = search_names(
-                    filter_text, engine=engine, sources=sources, limit=count + 1
+                    filter_text, engine=engine, sources=sources, limit=probe_budget + 1
                 )
             except ValueError as exc:
                 return _fhir_error(400, f"Invalid filter: {exc}")
-            count_limited = len(results) > count
-            # Truncate to the requested count (the +1 probe result, if
-            # any, is dropped — it served only as a truncation signal).
-            results = results[:count]
+            count_limited = len(results) > probe_budget
+            # Slice the requested page out of the full match list (the +1
+            # probe result, if any, is dropped — it served only as a
+            # truncation signal).
+            page = results[offset:page_end]
+            # QC-258 (HIGH): contains[].display MUST be the engine preferred
+            # term (best_atoms rank=1), NOT the matched synonym. search_names
+            # ranks atoms by (match_type, TTY, length) per code, so a
+            # prefix-matching entry term (e.g. ICD-10-CM E11 'diabetes NOS',
+            # TTY=ET) beat the contains-matching preferred term ('Type 2
+            # diabetes mellitus') — 1048 $expand displays diverged from
+            # $lookup on the SAME server. Resolve the canonical display via
+            # ONE batched get_code_infos call (the same service $lookup
+            # uses), falling back to the matched synonym only when the code
+            # has no resolvable preferred atom.
+            page_infos = get_code_infos([r.code for r in page], engine=engine)
             contains = [
                 {
                     "system": system_to_fhir_uri(r.code.source) or r.code.source,
                     "code": r.code.code,
-                    "display": r.name,
+                    "display": (info.name if info else None) or r.name,
                 }
-                for r in results
+                for r, info in zip(page, page_infos)
             ]
-            # Build the toocostly extension when truncation fired.
+            # Build the toocostly extension when truncation fired — but
+            # ONLY on a full page (or page 1): a short page on a PAGING
+            # request (offset > 0) means the expansion ended inside the
+            # fetched window (or the offset is past the probe cap, where no
+            # further pages are servable anyway), so claiming "too costly"
+            # would leave a paging client with no termination signal
+            # (QC-316, HIGH). Mirror of the rule in _expand_slice_page for
+            # the url/intensional modes; page 1 keeps the signal (QC-260).
             max_depth = _resolve_max_depth()
-            extensions = _truncation_extensions(
-                count_limited=count_limited,
-                depth_cap_hit=False,
-                count=count,
-                max_depth=max_depth,
-            )
+            if offset > 0 and len(page) < count:
+                extensions = []
+            else:
+                extensions = _truncation_extensions(
+                    count_limited=count_limited,
+                    depth_cap_hit=False,
+                    count=page_end,
+                    max_depth=max_depth,
+                )
             # Per FHIR R4 §4.9.2 + VS-02 SKEPTIC QA-057 (count=3 PROMOTED
             # at GLOBAL_RULES.md line 136): pass the UN-truncated size as
-            # ``total``. When count_limited, we know the natural match
-            # count is at least count+1; we surface that lower bound so
-            # clients paging via ``total`` know to request additional
-            # pages. When not count_limited, total == len(contains).
-            untruncated_total = len(results) + 1 if count_limited else len(results)
+            # ``total``. ``results`` is the full fetched match list (up to
+            # probe_budget + 1 rows): when count_limited, len(results) is
+            # the observed lower bound (at least that many matches exist);
+            # when not count_limited it is the exact count. The page is a
+            # slice of this list, so offset never changes the arithmetic.
+            untruncated_total = len(results)
             return build_valueset_expand(
                 contains,
                 url=url,
@@ -2656,15 +3371,68 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
             "Provide a ValueSet body, a fhir_vs URL, or a filter parameter.",
         )
 
+    def _expand_slice_page(payload: Any, offset: int, page_end: int) -> Any:
+        """QC-241: apply FHIR $expand offset paging to a built payload.
+
+        The mode handlers were invoked with the full window budget
+        (``offset + count``), so ``expansion.contains`` holds up to that
+        many entries and ``expansion.total`` already reflects the
+        UN-truncated window. Slicing contains to ``[offset:page_end]``
+        yields the requested page without touching total.
+
+        QC-316 (HIGH): when a PAGING request (``offset > 0``) yields a SHORT
+        page (fewer entries than ``count``), the expansion reached its
+        natural end inside the fetched window — this is the terminal page.
+        The valueset-toocostly extension was computed for the FULL window
+        budget, so it must NOT ride along: a page with 0-N < count concepts
+        claiming "truncated because too costly" leaves an R4 offset-paging
+        client with no termination signal (truncated=true + total > seen on
+        every page, forever). The extension is only meaningful on a FULL
+        page, where the window cap provably hid further results — or on
+        page 1 (offset=0), where a non-paging client relies on it as the
+        sole truncation signal for the count/depth caps (QC-260 contract).
+        Reference: https://hl7.org/fhir/R4/extension-valueset-toocostly.html
+        """
+        if offset <= 0 or not isinstance(payload, dict):
+            return payload
+        expansion = payload.get("expansion")
+        if not isinstance(expansion, dict):
+            return payload
+        current = expansion.get("contains")
+        if isinstance(current, list):
+            page = current[offset:page_end]
+            expansion["contains"] = page
+            page_size = page_end - offset
+            if len(page) < page_size:
+                extensions = expansion.get("extension")
+                if isinstance(extensions, list) and extensions:
+                    kept = [
+                        e for e in extensions
+                        if not (
+                            isinstance(e, dict)
+                            and e.get("url") == TRUNCATION_EXT_URL
+                        )
+                    ]
+                    if kept:
+                        expansion["extension"] = kept
+                    else:
+                        expansion.pop("extension", None)
+        return payload
+
     def _expand_intensional(engine, value_set: dict[str, Any], count: int):
         """Expand a ValueSet with compose.include/exclude rules.
 
         Thin wrapper around the module-level expand_intensional_value_set
         that adds FHIR response wrapping (build_valueset_expand +
         truncation extensions). All core logic lives in the module-level
-        function — this just adds the FHIR response envelope.
+        function — this just adds the FHIR response envelope. ValueError
+        from the module function (unresolvable compose system — QC-252;
+        null/empty concept code — QC-246) maps to a 400 OperationOutcome.
         """
-        deduped, depth_cap_hit = expand_intensional_value_set(engine, value_set, count)
+        try:
+            deduped, depth_cap_hit = expand_intensional_value_set(engine, value_set, count)
+        except ValueError as exc:
+            return _fhir_error(400, str(exc))
         max_depth = _resolve_max_depth()
         count_limited = len(deduped) > count
         extensions = _truncation_extensions(
@@ -2673,11 +3441,21 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
             count=count,
             max_depth=max_depth,
         )
+        # QC-260 (HIGH): when the DEPTH cap truncated the expansion, the
+        # size-field-from-wrong-source pattern applied: ``total=len(deduped)``
+        # read as the complete expansion size although deeper descendants
+        # provably exist beyond the cap. Bias to ``len(deduped) + 1``
+        # (lower bound), consistent with count-truncation treatment per
+        # the QA-057/VS-02 "total MUST reflect the UN-truncated size"
+        # contract. When only count_limited fired, deduped already carries
+        # the +1 probe (BFS/system-only LIMIT count + 1), so len(deduped)
+        # is already a lower bound.
+        total = len(deduped) + 1 if depth_cap_hit else len(deduped)
         return build_valueset_expand(
             deduped[:count],
             url=value_set.get("url"),
             extensions=extensions,
-            total=len(deduped),
+            total=total,
         )
 
     def _expand_url_pattern(engine, url: str, count: int):
@@ -2822,8 +3600,18 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
         # NOT broad Exception — programming errors MUST propagate.
         import duckdb
         try:
+            # QC-287/293 (MEDIUM): ORDER BY CODE for deterministic pages —
+            # the same request previously returned disjoint random samples
+            # per call (zero overlap across 3 calls), breaking offset paging
+            # per FHIR R4 §4.9.2. QC-296 (HIGH): exclude MTHU####### UMLS
+            # surrogate codes from the LNC expansion — they are not real
+            # LOINC identifiers and a strict LOINC validator rejects them.
+            # Scoped to LNC only (other SABs legitimately carry MTHU codes).
             rows = engine.con.execute(
-                "SELECT DISTINCT CODE FROM mrconso WHERE SAB = ? AND SUPPRESS = 'N' LIMIT ?",
+                "SELECT DISTINCT CODE FROM mrconso WHERE SAB = ? "
+                "AND SUPPRESS = 'N' "
+                "AND (SAB != 'LNC' OR CODE NOT LIKE 'MTHU%') "
+                "ORDER BY CODE LIMIT ?",
                 [source, count + 1],
             ).fetchall()
         except duckdb.Error as exc:
@@ -2833,12 +3621,17 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
             )
 
         contains: list[dict[str, Any]] = []
-        for (code,) in rows:
-            if len(contains) >= count:
-                break
-            # Resolve display via get_code_infos for the canonical name.
-            infos = get_code_infos([CodeRef(source, code)], engine=engine)
-            display = (infos[0].name if infos and infos[0] else None) or code
+        # QC-248 (MEDIUM): resolve displays via ONE batched get_code_infos
+        # call for the whole page (the service accepts a list and the
+        # prepared path batches by source). The prior per-code loop cost one
+        # prepared lookup per row — a count=200 LOINC page issued 200
+        # sequential queries and dominated the 18.7s request time.
+        page_codes = [code for (code,) in rows[:count]]
+        page_infos = get_code_infos(
+            [CodeRef(source, code) for code in page_codes], engine=engine,
+        )
+        for code, info in zip(page_codes, page_infos):
+            display = (info.name if info else None) or code
             contains.append({
                 "system": system_uri,
                 "code": code,
@@ -2872,33 +3665,55 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
         # VS-02 SKEPTIC QA-057: pass UN-truncated ``total`` so the response
         # reflects the full expansion size (FHIR R4 §4.9.2). The implicit
         # value set path queries ``LIMIT count + 1`` so we can detect
-        # truncation: when len(rows) > count, the true total is unknown
-        # (could be much larger); use len(rows) which is count+1 — this is
-        # the minimum correct lower bound and matches the toocostly signal.
+        # truncation.
+        # QC-299 (MEDIUM): when truncation fired, the true total is UNKNOWN
+        # (could be much larger — LOINC ~100K vs the reported count+1). A
+        # fabricated lower-bound total misleads R4 offset-paging clients
+        # into believing the expansion is complete after 2 pages. Per R4
+        # §4.9.2 the conformant behavior when the server cannot compute the
+        # true size is to OMIT total (paging clients then rely on offset +
+        # the toocostly extension). When NOT truncated, len(rows) IS the
+        # exact size and is passed through.
         untruncated_total = len(rows) if len(rows) > count else len(contains)
-        return build_valueset_expand(
+        payload = build_valueset_expand(
             contains[:count], url=url, extensions=extensions, total=untruncated_total,
         )
+        if len(rows) > count:
+            payload["expansion"].pop("total", None)
+        return payload
 
     def _resolve_sources(system_uri: str | None) -> list[str] | None:
         """Resolve a FHIR system URI to a list of medterm4ds source names."""
-        if system_uri:
+        # QC-226: an explicitly-provided EMPTY system previously fell through
+        # ``if system_uri:`` to the hidden 4-source default — a 200 with a
+        # mixed-system expansion the client never asked for, while
+        # system=NOSUCH correctly 400s. ``is not None`` distinguishes
+        # "absent" (defaults apply) from "present but empty" (rejected as
+        # unrecognized, same as any other unresolvable URI).
+        if system_uri is not None:
             source = fhir_uri_to_system(system_uri)
             return [source] if source else None
         return ["SNOMEDCT_US", "ICD10CM", "RXNORM", "LNC"]
 
     # -- CodeSystem $search (custom, modeled after Patient $match) --
-    # Uses asyncio.to_thread (default executor, multi-worker) because $search
-    # doesn't touch the FHIR engine's DuckDB connection — it reads
-    # module-global BM25 indexes (read-only) and the SapBERT singleton
-    # (torch models in eval mode are thread-safe). Multi-worker lets
-    # concurrent $search calls run in parallel without blocking the DB
-    # executor that $lookup etc. depend on.
+    # Runs on the SINGLE db_executor (max_workers=1) like every other
+    # terminology operation. History: QC-137 (CRITICAL) bounded $search to a
+    # dedicated 2-worker search_executor because the default asyncio.to_thread
+    # executor allowed ~32 concurrent SapBERT embeds that OOM-killed the
+    # server. But QC-408 (CRITICAL) found the 2nd worker raced the shared
+    # DuckDB connection: _do_search resolves entry displays via get_code_infos
+    # on the engine, so concurrent $search + $lookup produced silent
+    # "Code not found" 200s, 503 'query was cancelled', and heap corruption.
+    # A single-worker executor still bounds SapBERT concurrency (at 1, tighter
+    # than the old 2), preserving QC-137's OOM protection while restoring
+    # result identity under load.
     @app.get("/fhir/CodeSystem/$search")
     async def search_get(
         request: Request,
-        query: str = Query(..., min_length=1, description="Text to search for"),
-        system: str | None = Query(None, description="Restrict to system URI"),
+        query: str = Query(..., min_length=1, max_length=MAX_SEARCH_QUERY_CHARS, description="Text to search for"),
+        # QC-423 (MEDIUM): min_length=1 — an empty system previously passed
+        # the `if system:` check and WIDENED to all systems on $search.
+        system: str | None = Query(None, min_length=1, description="Restrict to system URI"),
         count: int = Query(20, ge=1, le=200),
         searchMode: str = Query("lexical", pattern="^(lexical|hybrid|semantic|canonical)$"),
         resultTypes: str | None = Query(None, description="Comma-separated result types for canonical mode (condition,medication,drug_class,lab,vital,procedure,vaccine,symptom)"),
@@ -2906,28 +3721,56 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
         not_ready = _check_ready(request)
         if not_ready is not None:
             return not_ready
+        # QC-122: min_length=1 only rejects the empty string — whitespace-only
+        # queries passed through and returned confidently-ranked anchors.
+        if not query.strip():
+            return _fhir_error_response(request, 400, "query must not be empty or whitespace-only.")
         result_types = resultTypes.split(",") if resultTypes else None
-        payload = await asyncio.to_thread(_do_search, query, system, count, searchMode, result_types)
-        return payload if isinstance(payload, Response) else _fhir_response(request, payload)
+        payload = await _run_db(_executor(request), _do_search, _engine(request), query, system, count, searchMode, result_types)
+        return _respond(request, payload)
 
     @app.post("/fhir/CodeSystem/$search")
     async def search_post(request: Request, body: dict[str, Any]):
         not_ready = _check_ready(request)
         if not_ready is not None:
             return not_ready
+        # QC-127/QC-136: reject wrong-typed values (e.g. searchMode sent as
+        # valueBoolean) instead of silently dropping them to the default —
+        # the QC-046 fix removed valueBoolean from _parse_parameters to stop
+        # str(True)='True' coercion, but the drop made the server silently
+        # use the DEFAULT mode while the client believed their value applied.
+        wrong_typed = _wrong_typed_parameter(
+            body, {"query", "_query", "system", "count", "searchMode", "resultTypes"},
+        )
+        if wrong_typed is not None:
+            return _fhir_error_response(
+                request, 400,
+                f"Parameter {wrong_typed!r} must carry a string/integer value "
+                "(valueString, valueUri, valueCode, or valueInteger); "
+                "other value[x] types are rejected.",
+            )
         params = _parse_parameters(body)
         query_text = params.get("query") or params.get("_query")
         system = params.get("system")
-        count = _parse_count_param(params.get("count"), default=20)
+        count = _parse_count_param(params.get("count"), default=20, max_value=200)
         if count is None:
-            return _fhir_error_response(request, 400, f"count must be an integer in [1, 1000] (got {params.get('count')!r}).")
+            return _fhir_error_response(request, 400, f"count must be an integer in [1, 200] (got {params.get('count')!r}).")
         search_mode = params.get("searchMode", "lexical")
         if not query_text:
             return _fhir_error_response(request, 400, "query is required.")
+        # QC-122: whitespace-only query (truthy) must not reach SapBERT.
+        if not query_text.strip():
+            return _fhir_error_response(request, 400, "query must not be empty or whitespace-only.")
+        # QC-140: POST had no query-length cap (GET had max_length).
+        if len(query_text) > MAX_SEARCH_QUERY_CHARS:
+            return _fhir_error_response(
+                request, 400,
+                f"query length {len(query_text)} exceeds max {MAX_SEARCH_QUERY_CHARS} chars.",
+            )
         result_types_str = params.get("resultTypes")
         result_types = result_types_str.split(",") if result_types_str else None
-        payload = await asyncio.to_thread(_do_search, str(query_text), system, count, search_mode, result_types)
-        return payload if isinstance(payload, Response) else _fhir_response(request, payload)
+        payload = await _run_db(_executor(request), _do_search, _engine(request), str(query_text), system, count, search_mode, result_types)
+        return _respond(request, payload)
 
     # -- CodeSystem $extract (custom: NER + ConText + search) --
     # Uses a dedicated NER executor (max_workers=1) because medspaCy pipelines
@@ -2940,18 +3783,38 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
         format: str = Query("codes", pattern="^(codes|terms|annotated)$"),
         nerLabels: str | None = Query(None, description="Comma-separated NER labels to detect (default: lab test,vital sign,panel,therapeutic agent,therapeutic class,immunization,medical intervention,disorder,symptom)"),
         resultTypes: str | None = Query(None, description="Comma-separated result types to filter (condition,medication,drug_class,lab,vital,procedure,vaccine,symptom)"),
-        mode: str = Query("hybrid", pattern="^(lexical|semantic|hybrid)$"),
-        minGrade: str = Query("certain", pattern="^(certain|probable|possible)$"),
+        mode: str = Query(DEFAULT_EXTRACT_MODE, pattern="^(lexical|semantic|hybrid|canonical)$"),
+        minGrade: str = Query(DEFAULT_EXTRACT_MIN_GRADE, pattern="^(certain|exact|probable|possible|broader)$"),
         includeNegated: bool = Query(False),
+        includeUncertain: bool = Query(False),
+        includeHistorical: bool = Query(False),
+        includeFamily: bool = Query(False),
     ):
         # CR-005: return-don't-raise (see search_get).
         not_ready = _check_ready(request)
         if not_ready is not None:
             return not_ready
+        # QC-305 (MEDIUM): format=annotated returns a non-FHIR JSON document
+        # (concepts/annotated_text/spans — no resourceType), which cannot be
+        # rendered as FHIR XML. The prior behavior silently downgraded a
+        # negotiated _format=xml to a JSON 200 — a format-contract mismatch
+        # while the CapabilityStatement advertises [json, xml]. Reject with
+        # 406 (Not Acceptable) so the client knows to re-request as JSON.
+        if format == "annotated" and _wants_xml(request):
+            return _fhir_error_response(
+                request, 406,
+                "format=annotated returns a non-FHIR JSON document and "
+                "cannot be served as XML. Re-send with _format=json (or "
+                "format=codes/terms for a Bundle that serializes to XML).",
+            )
         # CR-001 (milestone-1 review): funnel through _fhir_response so the
         # Content-Type is application/fhir+json (or application/fhir+xml when
         # negotiated), not Starlette's application/json default.
-        payload = await _run_db(_ner_executor(request), _do_extract, text, format, nerLabels, resultTypes, mode, minGrade, includeNegated)
+        payload = await _run_db(
+            _ner_executor(request), _do_extract, text, format, nerLabels,
+            resultTypes, mode, minGrade, includeNegated, includeUncertain,
+            includeHistorical, includeFamily,
+        )
         return _fhir_response(request, payload)
 
     @app.post("/fhir/CodeSystem/$extract")
@@ -2960,6 +3823,23 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
         not_ready = _check_ready(request)
         if not_ready is not None:
             return not_ready
+        # QC-156: reject wrong-typed values (e.g. includeNegated sent as
+        # valueBoolean) instead of silently dropping them to the default —
+        # same QC-127/QC-136 fix shape as $search POST. _parse_parameters
+        # drops non-scalar value[x] entries, so a valueBoolean includeNegated
+        # silently fell back to 'false' and the client got an empty Bundle
+        # while believing negated findings were requested.
+        wrong_typed = _wrong_typed_parameter(
+            body,
+            {"text", "format", "nerLabels", "resultTypes", "mode", "minGrade"},
+        )
+        if wrong_typed is not None:
+            return _fhir_error_response(
+                request, 400,
+                f"Parameter {wrong_typed!r} must carry a string/integer value "
+                "(valueString, valueUri, valueCode, or valueInteger); "
+                "other value[x] types are rejected.",
+            )
         params = _parse_parameters(body)
         text = params.get("text")
         if not text:
@@ -2971,19 +3851,57 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
                 f"text length {len(text)} exceeds max {MAX_EXTRACT_TEXT_CHARS} chars "
                 f"(set MEDTERM4DS_MAX_EXTRACT_TEXT_CHARS to override).",
             )
+        # QC-163/QC-174: GET validates format/mode/minGrade via Query patterns
+        # (422 before any NER work); POST validated nothing and burned the full
+        # NER pass (23s CPU on a 10K-char note) before the ValueError surfaced
+        # as a plaintext 500. Validate the enums BEFORE dispatching to the NER
+        # executor so POST and GET behave identically and garbage fails in
+        # milliseconds.
+        fmt = params.get("format", "codes")
+        # QC-167: fall back to the env-configurable service defaults
+        # (MEDTERM4DS_EXTRACTION_MODE / _MIN_GRADE) rather than hardcoding
+        # hybrid/certain — the env vars were documented but silently ignored
+        # by every wire surface.
+        mode = params.get("mode") or DEFAULT_EXTRACT_MODE
+        min_grade = params.get("minGrade") or DEFAULT_EXTRACT_MIN_GRADE
+        for name, value, pattern in (
+            ("format", fmt, r"^(codes|terms|annotated)$"),
+            ("mode", mode, r"^(lexical|semantic|hybrid|canonical)$"),
+            ("minGrade", min_grade, r"^(certain|exact|probable|possible|broader)$"),
+        ):
+            if not re.fullmatch(pattern, value):
+                return _fhir_error_response(
+                    request, 400,
+                    f"Invalid {name} {value!r}: must match {pattern}.",
+                )
         # CR-001: see extract_get — funnel through _fhir_response.
+        # QC-305: reject annotated+XML on POST too (mirror extract_get).
+        if fmt == "annotated" and _wants_xml(request):
+            return _fhir_error_response(
+                request, 406,
+                "format=annotated returns a non-FHIR JSON document and "
+                "cannot be served as XML. Re-send with _format=json (or "
+                "format=codes/terms for a Bundle that serializes to XML).",
+            )
         payload = await _run_db(
             _ner_executor(request), _do_extract, str(text),
-            params.get("format", "codes"),
+            fmt,
             params.get("nerLabels"),
             params.get("resultTypes"),
-            params.get("mode", "hybrid"),
-            params.get("minGrade", "certain"),
+            mode,
+            min_grade,
             params.get("includeNegated", "false").lower() == "true",
+            params.get("includeUncertain", "false").lower() == "true",
+            params.get("includeHistorical", "false").lower() == "true",
+            params.get("includeFamily", "false").lower() == "true",
         )
         return _fhir_response(request, payload)
 
-    def _do_extract(text, fmt, ner_labels_str, result_types_str, mode, min_grade, include_negated):
+    def _do_extract(
+        text, fmt, ner_labels_str, result_types_str, mode, min_grade,
+        include_negated, include_uncertain=False, include_historical=False,
+        include_family=False,
+    ):
         from medterm4ds.services.extraction import extract as extract_service
 
         ner_labels = ner_labels_str.split(",") if ner_labels_str else None
@@ -2996,11 +3914,24 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
             mode=mode,
             min_grade=min_grade,
             include_negated=include_negated,
+            include_uncertain=include_uncertain,
+            include_historical=include_historical,
+            include_family=include_family,
         )
 
-        # format="annotated" returns a dict, not a list
+        # format="annotated" returns a dict, not a list. QC-151: the dict's
+        # "concepts" holds raw ExtractedConcept dataclasses that json.dumps
+        # cannot serialize (500 + plaintext on the wire). Serialize via
+        # to_dict(), mirroring apps/cli.py's annotated output path.
         if fmt == "annotated" and isinstance(results, dict):
-            return results
+            return {
+                "concepts": [
+                    c.to_dict() if hasattr(c, "to_dict") else c
+                    for c in results.get("concepts", [])
+                ],
+                "annotated_text": results.get("annotated_text", ""),
+                "spans": results.get("spans", []),
+            }
 
         entries = []
         for r in results:
@@ -3012,7 +3943,8 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
             })
         return {"resourceType": "Bundle", "type": "searchset", "total": len(entries), "entry": entries}
 
-    def _do_search(query_text: str,
+    def _do_search(engine: LocalDuckDBEngine,
+        query_text: str,
         system_uri: str | None,
         count: int,
         search_mode: str,
@@ -3063,11 +3995,32 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
 
             results = service.search(
                 query_text, mode=search_mode, sources=sources, count=count,
+                # QC-400: display canonicalization moved INTO the service so
+                # Python/CLI/MCP/FHIR share one display convention; this was
+                # previously an FHIR-only post-step (the QC-317 fix).
+                engine=engine,
             )
         except RuntimeError as exc:
             return _fhir_error(503, str(exc))
+        except ValueError as exc:
+            # GLOBAL_RULES service-delegation pattern (count=6 recurring):
+            # service functions raise ValueError for input validation
+            # (unknown resultTypes, whitespace query, over-length query,
+            # invalid count). Without this wrapper the exception propagates
+            # as an uncaught 500 with a plaintext non-FHIR body (QC-123).
+            return _fhir_error(400, str(exc))
 
         entries = []
+        # QC-317 (MEDIUM) / QC-400: entry displays are the engine preferred
+        # term of the (source, code) the entry claims — the same QC-258 fix
+        # applied to the $expand filter path. The BM25 search index is
+        # cross-source: the matched ``r.display`` can be an anchor/CHV
+        # synonym that does not exist in the entry's own code system
+        # (e.g. SNOMED 73211009 surfaced as 'Diabetes', which is not any
+        # SNOMED synonym, while $lookup returns 'Diabetes mellitus'). The
+        # resolution now happens inside SearchService.search (engine= above)
+        # so every surface — Python facade, MCP, CLI-with-engine, FHIR —
+        # emits the same display for the same result row.
         for r in results:
             sys_uri = system_to_fhir_uri(r.source.upper()) or r.source
             entries.append({
@@ -3078,6 +4031,55 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
                 "match_grade": r.match_grade,
             })
         return build_bundle_search(entries, query=query_text, search_mode=search_mode)
+
+    def _parameter_entries(body: dict[str, Any]) -> list[Any]:
+        """Return the ``parameter`` list from a FHIR Parameters body, defensively.
+
+        FHIR R4 §3.1.0.1.5 + §3.1.0.1.9 mandate that a malformed body MUST
+        produce a FHIR OperationOutcome, not a 500 + traceback. The naive
+        ``body.get("parameter", [])`` returns the literal value ``None`` when
+        the client explicitly sends ``"parameter": null`` (the default only
+        fires when the key is ABSENT) — iterating ``None`` raises TypeError
+        that propagates as 500 + text/plain (information-disclosure surface).
+        Non-list values (``parameter: 42``, ``parameter: "str"``) hit the
+        same crash. The per-entry ``isinstance(param, dict)`` guard added by
+        CS-04 SKEPTIC QA-001 is downstream of the iteration; this helper is
+        the conformant fix at the iteration boundary. Found by QC-001
+        (EDGE_CASE) — regression of the 10th PROMOTED pattern's intent.
+        """
+        raw = body.get("parameter")
+        return raw if isinstance(raw, list) else []
+
+    def _wrong_typed_parameter(
+        body: dict[str, Any], names: set[str]
+    ) -> str | None:
+        """Return the first parameter name in ``names`` carrying a wrong-typed
+        value, or None (QC-127/QC-136).
+
+        ``_parse_parameters`` (per the QC-046 fix) drops entries without a
+        scalar ``value*`` key so ``str(True)='True'`` coercion can't happen —
+        but the drop is silent: a client sending ``searchMode`` as
+        ``valueBoolean`` believes their mode applied while the server uses the
+        default. This probe detects that case so the caller can 400 instead.
+        ``valueInteger`` is a scalar and passes (it is str()-coerced
+        downstream, where value validation catches garbage).
+        """
+        for param in _parameter_entries(body):
+            if not isinstance(param, dict):
+                continue
+            name = param.get("name", "")
+            if name not in names:
+                continue
+            has_scalar = any(
+                key in param
+                for key in ("valueString", "valueUri", "valueCode", "valueInteger")
+            )
+            has_other_value = any(
+                isinstance(key, str) and key.startswith("value") for key in param
+            )
+            if has_other_value and not has_scalar:
+                return str(name)
+        return None
 
     def _parse_parameters(body: dict[str, Any]) -> dict[str, str]:
         """Extract named scalar parameters from a FHIR Parameters resource body.
@@ -3090,7 +4092,7 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
         $validate-code; the helper below closes that spec-compliance gap.
         """
         out: dict[str, str] = {}
-        for param in body.get("parameter", []):
+        for param in _parameter_entries(body):
             # Per FHIR R4 §3.1.0.1.5 + §3.1.0.1.9: a malformed Parameters
             # body MUST produce a FHIR OperationOutcome (not a 500 +
             # traceback). The ``isinstance(param, dict)`` guard is load-
@@ -3107,8 +4109,27 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
             if not isinstance(param, dict):
                 continue
             name = param.get("name", "")
-            for key in ("valueString", "valueUri", "valueCode", "valueInteger", "valueBoolean"):
-                if key in param:
+            # QC-046/QC-056 (HIGH): the previous iteration included
+            # ``valueBoolean`` and called ``str(value)`` on it. Python's
+            # ``str(True) == 'True'`` (capital T) silently coerces a wrong-
+            # type parameter into a string and returns 200 + silent-wrong-
+            # answer (e.g. $subsumes codeA:valueBoolean=true was accepted
+            # as codeA='True' and returned outcome=not-subsumed). Per
+            # GLOBAL_RULES.md "FHIR API Specifics" and the boolean-
+            # rendering PROMOTED pattern, the fix is to DROP valueBoolean
+            # from the scalar-extraction iteration — the parameters this
+            # helper extracts (system, code, codeA, codeB, etc.) are all
+            # string-typed per FHIR R4 §4.8.x operation definitions; a
+            # client supplying valueBoolean for them is a type error and
+            # should surface as 'missing parameter' downstream (400),
+            # which is the conformant behavior.
+            for key in ("valueString", "valueUri", "valueCode", "valueInteger"):
+                # QC-245 (MEDIUM): a JSON null value means the parameter is
+                # absent — the prior key-presence-only check coerced
+                # ``str(None) == 'None'`` and e.g. $expand?filter=None
+                # searched for the literal string 'None'. Skip nulls like
+                # the missing-key case (downstream 400 'missing parameter').
+                if key in param and param[key] is not None:
                     out[name] = str(param[key])
                     break
         return out
@@ -3142,7 +4163,7 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
         Returns ``(system, code)`` if a coding with both fields is present
         under the named parameter, else ``None``.
         """
-        for param in body.get("parameter", []):
+        for param in _parameter_entries(body):
             # isinstance guard: see _parse_parameters (CS-04 SKEPTIC QA-001).
             if not isinstance(param, dict):
                 continue
@@ -3181,7 +4202,7 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
         coding silently wrong-answers when the first coding is invalid but
         a later coding is valid).
         """
-        for param in body.get("parameter", []):
+        for param in _parameter_entries(body):
             # isinstance guard: see _parse_parameters (CS-04 SKEPTIC QA-001).
             if not isinstance(param, dict):
                 continue
@@ -3220,7 +4241,7 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
         Returns the list of ``(system, code)`` pairs from the first
         codeableConcept with at least one valid coding, else ``None``.
         """
-        for param in body.get("parameter", []):
+        for param in _parameter_entries(body):
             # isinstance guard: see _parse_parameters (CS-04 SKEPTIC QA-001).
             if not isinstance(param, dict):
                 continue
@@ -3267,7 +4288,7 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
         return None and let the caller fall through to the existing 400
         path (graceful degradation, no crash).
         """
-        for param in body.get("parameter", []):
+        for param in _parameter_entries(body):
             # isinstance guard: see _parse_parameters (CS-04 SKEPTIC QA-001).
             if not isinstance(param, dict):
                 continue
@@ -3280,21 +4301,40 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
                 return resource
         return None
 
-    def _parse_count_param(value: str | None, default: int) -> int | None:
+    def _parse_count_param(value: str | None, default: int, max_value: int = 1000) -> int | None:
         """Parse a `count`-style parameter. Returns None on invalid input so the
         caller can return a 400 OperationOutcome instead of letting int() raise
         ValueError inside the executor (which would surface as a 500).
 
         Mirrors the GET handlers' `Query(ge=1, le=1000)` boundary so POST
         can't bypass the upper limit (memory-exhaustion vector) or accept
-        count<=0 (silent empty/negative-slice results)."""
+        count<=0 (silent empty/negative-slice results). ``max_value`` lets
+        callers enforce a tighter bound ($search POST uses 200 to match its
+        GET sibling — QC-132/QC-139 cross-method divergence)."""
         if value is None or value == "":
             return default
         try:
             parsed = int(value)
         except (TypeError, ValueError):
             return None
-        if parsed < 1 or parsed > 1000:
+        if parsed < 1 or parsed > max_value:
+            return None
+        return parsed
+
+    def _parse_offset_param(value: str | None, default: int) -> int | None:
+        """Parse an ``offset``-style parameter (QC-241: POST-body offset).
+
+        Returns None on invalid input so the caller can return a 400
+        OperationOutcome instead of letting int() raise inside the executor.
+        Mirrors the GET handlers' ``Query(0, ge=0)`` boundary — negative
+        offsets would silently produce empty pages via negative slicing."""
+        if value is None or value == "":
+            return default
+        try:
+            parsed = int(value)
+        except (TypeError, ValueError):
+            return None
+        if parsed < 0:
             return None
         return parsed
 
@@ -3466,7 +4506,9 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
                 # $-prefixed id explicitly — those are operation names misused
                 # as resource ids.
                 if resource_id.startswith("$"):
-                    return _fhir_error(
+                    # QC-301: honor negotiated format on the error path.
+                    return _fhir_error_response(
+                        request,
                         404,
                         f"Unknown operation {resource_id!r}. "
                         f"See /fhir/metadata for the list of supported operations.",
@@ -3502,11 +4544,12 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
                 # match against, so an empty Bundle is the conformant response.
                 # The spec-required params (url/version/name/title/status) are
                 # accepted structurally — clients get a 200 Bundle with total=0.
+                # QC-330: no ``entry: []`` — FHIR JSON omits valueless
+                # properties so the JSON and XML shapes stay equivalent.
                 bundle = {
                     "resourceType": "Bundle",
                     "type": "searchset",
                     "total": 0,
-                    "entry": [],
                 }
                 return _fhir_response(request, bundle)
 
@@ -3645,6 +4688,19 @@ def main() -> int:
     import uvicorn
 
     host = os.getenv("MEDTERM4DS_API_HOST", "127.0.0.1")
+    # QC-344 (EC-15 LOW): MEDTERM4DS_API_HOST is documented as optionally
+    # scheme-carrying ('https://fhir.example.com') for the advertised base
+    # URL, but uvicorn's bind address must be a bare host — feeding the
+    # scheme-carrying form to uvicorn.run(host=...) failed getaddrinfo.
+    # Strip the scheme (and any explicit port, which MEDTERM4DS_FHIR_API_PORT
+    # already supplies) before binding.
+    if "://" in host:
+        host = host.split("://", 1)[1]
+    if host.startswith("["):
+        # IPv6 literal: keep brackets, strip any trailing :port.
+        host = host.split("]", 1)[0] + "]"
+    elif ":" in host:
+        host = host.split(":", 1)[0]
     port = int(os.getenv("MEDTERM4DS_FHIR_API_PORT", str(DEFAULT_PORT)))
     if host not in {"127.0.0.1", "::1", "localhost"}:
         logger.warning(

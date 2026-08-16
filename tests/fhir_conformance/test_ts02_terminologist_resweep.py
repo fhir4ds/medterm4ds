@@ -837,17 +837,11 @@ class TestLens6CapabilityStatementClinical:
     def test_t61_terminology_capabilities_content_not_example_for_real_systems(
         self, fhir_client
     ):
-        """TerminologyCapabilities codeSystem.content MUST NOT be 'example' for real systems.
-
-        Per FHIR R4 CodeSystemContentMode
-        (https://hl7.org/fhir/R4/codesystem.html#content):
-          - 'example' = "The code system content is illustrative value sets
-            defined by HL7 and not the actual code system content."
-          - 'not-present' = "None of the content is present."
-
-        SNOMEDCT_US, RXNORM, ICD10CM, LNC are REAL external code systems.
-        Advertising them as 'example' is a clinical correctness violation:
-        clients would treat the data as illustrative and not authoritative.
+        """Superseded by EC-15 QC-333: ``content`` is NOT an R4
+        TerminologyCapabilities.codeSystem child (R5-only on this backbone,
+        verified against the R4 definitions page). The R4-correct probe:
+        the element MUST be absent, and hierarchical systems MUST declare
+        subsumption=true so clients can rely on $subsumes for real systems.
         """
         resp = fhir_client.get("/fhir/metadata", params={"mode": "terminology"})
         body = resp.json()
@@ -856,15 +850,23 @@ class TestLens6CapabilityStatementClinical:
         assert code_systems, "TerminologyCapabilities MUST advertise codeSystem[]"
         for cs in code_systems:
             uri = cs.get("uri")
-            content = cs.get("content")
-            assert content != "example", (
-                f"Real code system {uri!r} advertised as content='example' "
-                f"— clinically misleading. Real systems MUST use "
-                f"'not-present' or 'fragment'."
+            assert "content" not in cs, (
+                f"Real code system {uri!r} carries the R5-only 'content' "
+                f"element on the R4 TC backbone (EC-15 QC-333)."
             )
-            assert content in ("not-present", "fragment", "complete"), (
-                f"content={content!r} for {uri!r} — not a valid "
-                f"CodeSystemContentMode value."
+        # Real hierarchical systems (SNOMED/RxNorm/ICD10CM/LNC) declare
+        # subsumption support — the clinically load-bearing R4 declaration.
+        by_uri = {cs.get("uri"): cs for cs in code_systems}
+        for uri in (
+            "http://snomed.info/sct",
+            "http://www.nlm.nih.gov/research/umls/rxnorm",
+            "http://hl7.org/fhir/sid/icd-10-cm",
+            "http://loinc.org",
+        ):
+            assert by_uri.get(uri, {}).get("subsumption") is True, (
+                f"{uri!r} missing subsumption=true — clients would conclude "
+                f"$subsumes is unsupported for a real hierarchical system "
+                f"(EC-15 QC-339)."
             )
 
     def test_t62_capability_statement_uses_canonical_uris_only(

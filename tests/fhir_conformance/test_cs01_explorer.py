@@ -691,10 +691,15 @@ def test_e80_lookup_on_all_advertised_systems(fhir_client):
 
 def test_e81_capabilitystatement_advertises_all_8_systems(fhir_client):
     """The CapabilityStatement extension `capabilitystatement-supported-system`
-    MUST advertise all 8 systems in SYSTEM_TO_FHIR_URI. Cross-check the
-    advertisement (extension[]) against the canonical map.
+    MUST advertise all real code systems in SYSTEM_TO_FHIR_URI. Cross-check
+    the advertisement (extension[]) against the canonical map.
+
+    QC-367: internal pseudo-sources (PATIENT_FRIENDLY — an output namespace,
+    not a lookupable code system) live in the canonical registry but are
+    excluded from the advertisement via PSEUDO_SYSTEM_SOURCES, so the
+    contract here is the filtered set.
     """
-    from medterm4ds.engines.fhir import SYSTEM_TO_FHIR_URI
+    from medterm4ds.engines.fhir import PSEUDO_SYSTEM_SOURCES, SYSTEM_TO_FHIR_URI
 
     SUPPORTED_SYS_URL = "http://hl7.org/fhir/StructureDefinition/capabilitystatement-supported-system"
     r = fhir_client.get("/fhir/metadata")
@@ -706,10 +711,24 @@ def test_e81_capabilitystatement_advertises_all_8_systems(fhir_client):
         for e in extensions
         if e.get("url") == SUPPORTED_SYS_URL
     }
-    canonical = set(SYSTEM_TO_FHIR_URI.values())
+    canonical = {
+        uri
+        for source, uri in SYSTEM_TO_FHIR_URI.items()
+        if source not in PSEUDO_SYSTEM_SOURCES
+    }
     missing = canonical - advertised
     assert not missing, (
         f"CapabilityStatement extension missing advertised systems: {sorted(missing)}"
+    )
+    # Pseudo-sources must NOT be advertised (they are not $lookup-able).
+    pseudo_uris = {
+        uri
+        for source, uri in SYSTEM_TO_FHIR_URI.items()
+        if source in PSEUDO_SYSTEM_SOURCES
+    }
+    leaked = pseudo_uris & advertised
+    assert not leaked, (
+        f"CapabilityStatement advertises non-lookupable pseudo-systems: {sorted(leaked)}"
     )
 
 

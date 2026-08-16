@@ -718,26 +718,44 @@ def test_h50_fhir_r4_content_modes_registry_value_set():
 
 
 def test_h51_termcaps_content_not_present_for_all_systems(fhir_client):
-    """CF-SKEPTIC-CS01-RESWEEP-01 LOW DEFERRED: every system advertised in
-    TerminologyCapabilities uses content='not-present' (correct for a non-
-    persisting server per AGENTS.md NOT A BUG Registry line 145).
+    """CF-SKEPTIC-CS01-RESWEEP-01 LOW DEFERRED — superseded by EC-15 QC-333:
+    ``content`` is NOT a FHIR R4 TerminologyCapabilities.codeSystem child
+    (R4 children: uri, version, subsumption; verified against
+    https://hl7.org/fhir/R4/terminologycapabilities-definitions.html —
+    ``content`` on this backbone is R5-only). The earlier NOT A BUG blessing
+    of content='not-present' applied CodeSystem-resource semantics to the
+    TC backbone; EC-15 removed the element and added ``subsumption: true``
+    for hierarchical systems (QC-339).
 
-    HISTORIAN behavioral probe: verify the current behavior. The carry-
-    forward is about promoting the constant to canonical location, NOT
-    about the value — the value 'not-present' is correct.
-    Regression cite: CF-SKEPTIC-CS01-RESWEEP-01 + NOT A BUG Registry.
+    HISTORIAN behavioral probe: verify the R4-correct shape.
+    Regression cite: CF-SKEPTIC-CS01-RESWEEP-01 + EC-15 QC-333/QC-339.
     """
     body = fhir_client.get("/fhir/metadata?mode=terminology").json()
-    not_present_count = sum(
-        1 for e in body.get("codeSystem", []) if e.get("content") == "not-present"
+    entries = body.get("codeSystem", [])
+    total = len(entries)
+    with_content = [e.get("uri") for e in entries if "content" in e]
+    pytest.current_report_extra = f"r5_content_leak={with_content}"
+    assert not with_content, (
+        f"codeSystem[] entries still carry the R5-only 'content' element: "
+        f"{with_content}. Per EC-15 QC-333 the R4 TC backbone has no "
+        f"'content' child."
     )
-    total = len(body.get("codeSystem", []))
-    pytest.current_report_extra = f"not_present={not_present_count}/{total}"
-    assert not_present_count == total, (
-        f"Expected every system to advertise content='not-present'; got "
-        f"{not_present_count}/{total}. A non-persisting server MUST use "
-        f"'not-present' (NOT 'example' which is clinically misleading)."
+    # QC-339: hierarchical systems declare subsumption support so the TC no
+    # longer contradicts the CapabilityStatement's $subsumes operation.
+    from medterm4ds.engines.fhir.responses import _subsumption_capable
+    from medterm4ds.engines.fhir import FHIR_URI_TO_SYSTEM
+
+    missing = [
+        e["uri"] for e in entries
+        if _subsumption_capable(FHIR_URI_TO_SYSTEM[e["uri"]])
+        and e.get("subsumption") is not True
+    ]
+    assert not missing, (
+        f"Hierarchical systems missing subsumption=true: {missing}. Per "
+        f"EC-15 QC-339 the TC must declare subsumption for systems where "
+        f"$subsumes works."
     )
+    assert total > 0
 
 
 def test_h52_fhir_init_does_not_yet_define_content_modes_constant():

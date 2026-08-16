@@ -1079,13 +1079,19 @@ class TestSourceReadFallbackChain:
         )
 
     def test_s93_filter_mode_uses_engine_display(self):
-        """Source-read: filter mode uses r.name (engine canonical) for
-        display, NOT the raw code or empty string."""
+        """Source-read: filter mode display comes from the batched
+        get_code_infos preferred atom (engine canonical), falling back to
+        the matched synonym r.name — QC-258 (EC-10, HIGH). Pre-QC-258 the
+        raw matched synonym r.name WAS the display, diverging from
+        $lookup for 1048 codes; the canonical display is now resolved
+        explicitly and r.name is only the no-preferred-atom fallback."""
         src = _get_func_source(_FHIR_API_PATH, "create_fhir_app", "_do_expand")
         assert src
-        # Per apps/fhir_api.py:2470: "display": r.name
-        assert '"display": r.name' in src or '"display":r.name' in src or "\"display\":r.name" in src, (
-            "filter mode does not use r.name for display"
+        assert "page_infos = get_code_infos(" in src, (
+            "filter mode must batch-resolve canonical displays via get_code_infos (QC-258)"
+        )
+        assert '(info.name if info else None) or r.name' in src, (
+            "display must prefer the canonical preferred term over the matched synonym (QC-258)"
         )
 
     def test_s94_compose_isinstance_guard_present(self):

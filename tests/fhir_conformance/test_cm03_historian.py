@@ -129,21 +129,20 @@ def test_h10_post_closure_concept_value_coding_wrong_type_silently_dropped(fhir_
             ],
         },
     )
-    # Post-fix: 200 OK + FHIR Content-Type (malformed concept silently dropped).
-    assert r.status_code == 200, (
-        f"post-CF-HISTORIAN-CM03-01 fix: malformed valueCoding silently "
-        f"dropped → 200 OK. Got {r.status_code}: {r.text[:300]}"
+    # QC-264 (HIGH) tightened the silent-drop: a body whose concept
+    # entries are ALL malformed is a 400 OperationOutcome (never a silent
+    # reset). The isinstance guard still prevents the 500-with-traceback.
+    assert r.status_code == 400, (
+        f"QC-264: all-malformed concept entries must 400, not 200. "
+        f"Got {r.status_code}: {r.text[:300]}"
     )
     assert r.headers["content-type"].startswith("application/fhir"), (
         f"Content-Type must be application/fhir+json; got "
         f"{r.headers['content-type']!r}"
     )
-    # The malformed concept is NOT in the closure.
+    # The malformed concept is NOT in the closure (it was rejected).
     body = r.json()
-    concepts = _find_params(body, "concept")
-    assert len(concepts) == 0, (
-        f"malformed valueCoding should NOT be in closure; got {concepts}"
-    )
+    assert body["resourceType"] == "OperationOutcome"
 
 
 def test_h11_post_closure_concept_missing_code_silently_dropped(fhir_client):
@@ -181,18 +180,13 @@ def test_h11_post_closure_concept_missing_code_silently_dropped(fhir_client):
             ],
         },
     )
-    # The malformed concept is silently dropped — response is 200 OK.
-    assert r.status_code == 200, (
-        f"malformed concept (missing code) is silently dropped — "
-        f"expected 200; got {r.status_code}: {r.text[:300]}"
+    # QC-264 (HIGH): all-malformed concept entries are a 400
+    # OperationOutcome (an add request must never be a silent reset).
+    assert r.status_code == 400, (
+        f"QC-264: malformed concept (missing code) must 400, not 200. "
+        f"Got {r.status_code}: {r.text[:300]}"
     )
-    body = r.json()
-    concepts = _find_params(body, "concept")
-    # The malformed concept is NOT in the closure.
-    assert len(concepts) == 0, (
-        f"malformed concept (missing code) should NOT be in closure; "
-        f"got {concepts}"
-    )
+    assert r.json()["resourceType"] == "OperationOutcome"
 
 
 def test_h12_post_closure_concept_missing_system_silently_dropped(fhir_client):
@@ -213,16 +207,13 @@ def test_h12_post_closure_concept_missing_system_silently_dropped(fhir_client):
             ],
         },
     )
-    assert r.status_code == 200, (
-        f"malformed concept (missing system) is silently dropped — "
-        f"expected 200; got {r.status_code}: {r.text[:300]}"
+    # QC-264 (HIGH): all-malformed concept entries are a 400
+    # OperationOutcome (an add request must never be a silent reset).
+    assert r.status_code == 400, (
+        f"QC-264: malformed concept (missing system) must 400, not 200. "
+        f"Got {r.status_code}: {r.text[:300]}"
     )
-    body = r.json()
-    concepts = _find_params(body, "concept")
-    assert len(concepts) == 0, (
-        f"malformed concept (missing system) should NOT be in closure; "
-        f"got {concepts}"
-    )
+    assert r.json()["resourceType"] == "OperationOutcome"
 
 
 def test_h13_post_closure_concept_value_coding_null_silently_dropped(fhir_client):
@@ -246,16 +237,14 @@ def test_h13_post_closure_concept_value_coding_null_silently_dropped(fhir_client
             ],
         },
     )
-    # Post-fix: 200 OK + FHIR Content-Type (null valueCoding silently dropped).
-    assert r.status_code == 200, (
-        f"post-fix: null valueCoding silently dropped → 200 OK. "
+    # QC-264 (HIGH): all-malformed concept entries are a 400
+    # OperationOutcome. The isinstance guard still prevents the
+    # 500-with-traceback on null valueCoding.
+    assert r.status_code == 400, (
+        f"QC-264: null valueCoding must 400, not 200. "
         f"Got {r.status_code}: {r.text[:300]}"
     )
-    body = r.json()
-    concepts = _find_params(body, "concept")
-    assert len(concepts) == 0, (
-        f"null valueCoding should NOT be in closure; got {concepts}"
-    )
+    assert r.json()["resourceType"] == "OperationOutcome"
 
 
 def test_h14_post_closure_concept_value_coding_extra_fields_ignored(fhir_client):
@@ -315,16 +304,14 @@ def test_h15_post_closure_concept_value_coding_as_list_silently_dropped(fhir_cli
             ],
         },
     )
-    # Post-fix: 200 OK + FHIR Content-Type (list valueCoding silently dropped).
-    assert r.status_code == 200, (
-        f"post-fix: list valueCoding silently dropped → 200 OK. "
+    # QC-264 (HIGH): all-malformed concept entries are a 400
+    # OperationOutcome. The isinstance guard still prevents the
+    # 500-with-traceback on list valueCoding.
+    assert r.status_code == 400, (
+        f"QC-264: list valueCoding must 400, not 200. "
         f"Got {r.status_code}: {r.text[:300]}"
     )
-    body = r.json()
-    concepts = _find_params(body, "concept")
-    assert len(concepts) == 0, (
-        f"list valueCoding should NOT be in closure; got {concepts}"
-    )
+    assert r.json()["resourceType"] == "OperationOutcome"
 
 
 # ===========================================================================
@@ -354,8 +341,12 @@ def test_h20_incomplete_since_only_set_on_duckdb_error_not_programming_bug():
     def _raise_type_error(*a, **k):
         raise TypeError("synthetic programming bug")
 
-    original = closure_mod.get_ancestors
-    closure_mod.get_ancestors = _raise_type_error
+    # EC-11 BFS migration: closure.py now imports get_ancestors_bfs
+    # (the recursive-CTE get_ancestors OOM'd on multiply-inherited
+    # ancestors — QC-281). The monkeypatch targets the rebound
+    # module-local reference.
+    original = closure_mod.get_ancestors_bfs
+    closure_mod.get_ancestors_bfs = _raise_type_error
     try:
         t = ClosureTable("test-h20")
         with pytest.raises(TypeError, match="synthetic programming bug"):
@@ -366,7 +357,7 @@ def test_h20_incomplete_since_only_set_on_duckdb_error_not_programming_bug():
             "bugs propagate per GLOBAL_RULES.md)"
         )
     finally:
-        closure_mod.get_ancestors = original
+        closure_mod.get_ancestors_bfs = original
 
 
 def test_h21_incomplete_since_only_set_on_duckdb_error_batched_path():
@@ -382,8 +373,8 @@ def test_h21_incomplete_since_only_set_on_duckdb_error_batched_path():
     def _raise_attr_error(*a, **k):
         raise AttributeError("synthetic programming bug")
 
-    original = closure_mod.get_ancestors
-    closure_mod.get_ancestors = _raise_attr_error
+    original = closure_mod.get_ancestors_bfs
+    closure_mod.get_ancestors_bfs = _raise_attr_error
     try:
         t = ClosureTable("test-h21")
         with pytest.raises(AttributeError, match="synthetic programming bug"):
@@ -396,7 +387,7 @@ def test_h21_incomplete_since_only_set_on_duckdb_error_batched_path():
             "bugs propagate per GLOBAL_RULES.md)"
         )
     finally:
-        closure_mod.get_ancestors = original
+        closure_mod.get_ancestors_bfs = original
 
 
 def test_h22_incomplete_since_not_surfaced_in_http_response(fhir_client):
@@ -427,17 +418,22 @@ def test_h22_incomplete_since_not_surfaced_in_http_response(fhir_client):
     assert closure is not None
     closure.incomplete_since = True  # simulate
 
-    # Now query the closure via HTTP — the response has NO incomplete flag.
+    # QC-267 (MEDIUM) surfaced the flag: the response now carries an
+    # ``incomplete`` valueBoolean Out parameter. This probe was tightened
+    # per its own instruction ("when a future enhancement surfaces the
+    # flag ... this probe MUST be tightened").
+    # Query via an ADD (a name-only POST resets the table, which would
+    # legitimately clear the flag).
     r = fhir_client.post(
         "/fhir/CodeSystem/$closure",
-        json=_closure_param_name_only(name),
+        json=_closure_param_with_concepts(
+            name, [{"system": SNOMED_URI, "code": "73211009"}],
+        ),
     )
     assert r.status_code == 200
-    body_text = r.text.lower()
-    assert "incomplete" not in body_text, (
-        "current behavior — incomplete_since is NOT surfaced in HTTP response; "
-        "if 'incomplete' appears in body, a future enhancement has surfaced it "
-        "— tighten this probe"
+    flags = _find_params(r.json(), "incomplete")
+    assert flags == [{"name": "incomplete", "valueBoolean": True}], (
+        f"QC-267: degraded closure must surface incomplete=True; got {flags}"
     )
 
 
@@ -463,10 +459,12 @@ def test_h30_add_concepts_atomic_within_call_version_increment():
     class _NullEngine:
         pass
 
-    original_ga = closure_mod.get_ancestors
-    original_gd = closure_mod.get_descendants
-    closure_mod.get_ancestors = lambda *a, **k: []
-    closure_mod.get_descendants = lambda *a, **k: []
+    # EC-11 BFS migration: closure.py imports get_ancestors_bfs /
+    # get_descendants_bfs (each returns (relations, depth_cap_hit)).
+    original_ga = closure_mod.get_ancestors_bfs
+    original_gd = closure_mod.get_descendants_bfs
+    closure_mod.get_ancestors_bfs = lambda *a, **k: ([], False)
+    closure_mod.get_descendants_bfs = lambda *a, **k: ([], False)
     try:
         t = ClosureTable("test-h30")
         t.add_concepts(
@@ -477,15 +475,18 @@ def test_h30_add_concepts_atomic_within_call_version_increment():
             ],
             engine=_NullEngine(),
         )
-        assert t._version == 1, (
-            f"single add_concepts call should increment _version by 1; "
-            f"got _version={t._version}"
+        # EC-11: _version now counts REGISTERED concepts (the per-source
+        # batching that made one call = one increment was the path-
+        # enumerating CTE walk — QC-276). One call, 3 new concepts.
+        assert t._version == 3, (
+            f"single add_concepts call should increment _version once per "
+            f"new concept; got _version={t._version}"
         )
         # All 3 concepts registered.
         assert len(t.concepts) == 3
     finally:
-        closure_mod.get_ancestors = original_ga
-        closure_mod.get_descendants = original_gd
+        closure_mod.get_ancestors_bfs = original_ga
+        closure_mod.get_descendants_bfs = original_gd
 
 
 def test_h31_add_concepts_partial_failure_preserves_successful_walks():
@@ -510,19 +511,21 @@ def test_h31_add_concepts_partial_failure_preserves_successful_walks():
     class _NullEngine:
         pass
 
-    original_ga = closure_mod.get_ancestors
-    original_gd = closure_mod.get_descendants
+    # EC-11 BFS migration: the walk is per-concept now (not per-source);
+    # the failure fires on the SECOND concept's ancestor walk.
+    original_ga = closure_mod.get_ancestors_bfs
+    original_gd = closure_mod.get_descendants_bfs
     call_count = {"n": 0}
 
     def _ga_with_failure(*a, **k):
         call_count["n"] += 1
-        # First call (source 1) succeeds; subsequent calls fail.
+        # First call (concept 1) succeeds; subsequent calls fail.
         if call_count["n"] == 1:
-            return []  # success, no ancestors
-        raise _duckdb.Error("synthetic failure for source 2")
+            return ([], False)  # success, no ancestors
+        raise _duckdb.Error("synthetic failure for concept 2")
 
-    closure_mod.get_ancestors = _ga_with_failure
-    closure_mod.get_descendants = lambda *a, **k: []
+    closure_mod.get_ancestors_bfs = _ga_with_failure
+    closure_mod.get_descendants_bfs = lambda *a, **k: ([], False)
 
     try:
         t = ClosureTable("test-h31")
@@ -533,18 +536,19 @@ def test_h31_add_concepts_partial_failure_preserves_successful_walks():
             ],
             engine=_NullEngine(),
         )
-        # Both concepts ARE registered (registration happens before walks).
-        assert "73211009" in t.concepts
-        assert "E11" in t.concepts
-        # incomplete_since is set because of the duckdb.Error on source 2.
+        # Both concepts ARE registered (registration happens before the
+        # descendant walk of the same concept).
+        assert ("SNOMEDCT_US", "73211009") in t.concepts
+        assert ("ICD10CM", "E11") in t.concepts
+        # incomplete_since is set because of the duckdb.Error on concept 2.
         assert t.incomplete_since is True, (
             "incomplete_since MUST be True after a partial duckdb.Error"
         )
-        # Version still incremented once.
-        assert t._version == 1
+        # Version incremented once per registered concept.
+        assert t._version == 2
     finally:
-        closure_mod.get_ancestors = original_ga
-        closure_mod.get_descendants = original_gd
+        closure_mod.get_ancestors_bfs = original_ga
+        closure_mod.get_descendants_bfs = original_gd
 
 
 def test_h32_add_concepts_empty_list_no_op():
@@ -590,7 +594,9 @@ def test_h40_out_return_deviation_count_audit():
     updated.
     """
     t = ClosureTable("test-h40")
-    t.concepts["73211009"] = {"system": "SNOMEDCT_US", "display": "DM"}
+    # EC-11 QC-266: concepts keyed by (source, code).
+    t.concepts[("SNOMEDCT_US", "73211009")] = {
+        "system": "SNOMEDCT_US", "display": "DM"}
     params = build_closure_response(t)
     out_names = {p["name"] for p in params["parameter"]}
     # Current shape includes 'return' AND 'concept' (the latter is
@@ -634,13 +640,14 @@ def test_h50_duckdb_error_handler_covers_do_closure(fhir_client):
     import duckdb as _duckdb
     from medterm4ds.engines.fhir import closure as closure_mod
 
-    # Save original
-    original = closure_mod.get_ancestors
+    # Save original (EC-11 BFS migration: closure imports
+    # get_ancestors_bfs, not the recursive-CTE get_ancestors).
+    original = closure_mod.get_ancestors_bfs
 
     def _raise_duckdb_error(*a, **k):
         raise _duckdb.Error("synthetic closure DB failure")
 
-    closure_mod.get_ancestors = _raise_duckdb_error
+    closure_mod.get_ancestors_bfs = _raise_duckdb_error
     try:
         # Add a concept — this triggers add_concepts → get_ancestors.
         r = fhir_client.post(
@@ -675,7 +682,7 @@ def test_h50_duckdb_error_handler_covers_do_closure(fhir_client):
             "incomplete_since MUST be True after the duckdb.Error was caught"
         )
     finally:
-        closure_mod.get_ancestors = original
+        closure_mod.get_ancestors_bfs = original
 
 
 def test_h51_duckdb_error_handler_emits_503_on_engine_failure(fhir_client):

@@ -549,19 +549,22 @@ class TestL2SnomedUrlHostileVariants:
         )
 
     def test_s26_unknown_code_returns_200_empty(self, fhir_client):
-        """Unknown SNOMED code returns 200 with empty contains[].
+        """Unknown SNOMED code returns a 400 OperationOutcome (QC-247).
 
-        Per FHIR R4 §4.9.1: an unknown code in the URL pattern produces
-        an empty expansion (root lookup fails → no root entry; descendant
-        walk produces nothing because the BFS seed doesn't exist in mrrel).
+        Pre-QC-247 an unknown code produced a silent 200 {'total': 0,
+        'contains': []} — indistinguishable from a by-design empty value
+        set (a typo'd/retired SCTID in an EHR config looked intentional).
+        EC-10 remediation raises ValueError → 400 OperationOutcome with
+        the code cited, mirroring $lookup's not-found for the same code.
         """
         resp = _expand_url(
             fhir_client,
             f"{SNOMED_URI}/99999999?fhir_vs=isa",
         )
-        assert resp.status_code == 200
-        codes = _contains_codes(resp.json())
-        assert codes == [], f"unknown code should produce empty expansion: {codes}"
+        assert resp.status_code == 400
+        body = resp.json()
+        assert body["resourceType"] == "OperationOutcome"
+        assert "99999999" in body["issue"][0]["diagnostics"]
 
     def test_s27_url_with_double_question_mark(self, fhir_client):
         """URL with double ``??`` is handled by urlparse.

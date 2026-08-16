@@ -1382,14 +1382,21 @@ class TestLens9SourceReadStructuralContracts:
         )
 
     def test_t95_filter_mode_uses_engine_name_for_display(self):
-        """Filter mode uses r.name (engine canonical preferred term) for
-        contains[].display — NOT a raw code or empty string."""
+        """Filter mode resolves contains[].display via the batched
+        get_code_infos preferred atom (engine canonical preferred term —
+        the SAME service $lookup uses), falling back to the matched
+        synonym r.name only when no preferred atom resolves. QC-258
+        (EC-10, HIGH): the raw matched synonym previously WAS the display
+        and diverged from $lookup for 1048 codes."""
         src = _get_nested_func_source("create_fhir_app", "_do_expand")
         assert src is not None
-        # The load-bearing line: contains.append({..., "display": r.name, ...})
-        assert '"display": r.name' in src, (
-            "_do_expand filter mode does not use r.name for display — "
-            "canonical-DISPLAY invariant regression risk on filter mode."
+        assert "page_infos = get_code_infos(" in src, (
+            "_do_expand filter mode must batch-resolve canonical displays "
+            "via get_code_infos (QC-258)"
+        )
+        assert '(info.name if info else None) or r.name' in src, (
+            "display must prefer the canonical preferred term over the "
+            "matched synonym (QC-258)"
         )
 
     def test_t96_isinstance_guards_present_in_expand_intensional(self):

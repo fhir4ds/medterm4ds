@@ -16,7 +16,26 @@ SYSTEM_TO_FHIR_URI: dict[str, str] = {
     "CPT": "http://www.ama-assn.org/go/cpt",
     "HCPCS": "http://www.cms.gov/Medicare/Coding/HCPCSReleaseCodeSets",
     "CVX": "http://hl7.org/fhir/sid/cvx",
+    # ATC (Anatomical Therapeutic Chemical classification) — WHO-DDD canonical
+    # URI. The engine supports ATC hierarchy/lookup (sources/__init__.py +
+    # _engine_base.py:_RELA_ISA_HIERARCHY_SOURCES), so omitting it from the
+    # FHIR map created a cross-surface gap (Python/CLI/MCP resolve ATC; FHIR
+    # rejected with 400 'Unrecognized system URI'). Found by QC-006
+    # (CROSS_SURFACE HIGH).
+    "ATC": "http://www.whocc.no/atc",
+    # QC-367 (LOW): the internal patient-friendly pseudo-source previously
+    # lived only in outputs/fhir.py:FHIR_CODE_SYSTEMS (a registry fork), so
+    # any other surface handling a patient-friendly mapping emitted the raw
+    # SAB string 'PATIENT_FRIENDLY' where Coding.system (type uri) requires
+    # a URI. Moved here — the canonical registry per GLOBAL_RULES.md.
+    "PATIENT_FRIENDLY": "urn:medterm4ds:CodeSystem:patient-friendly",
 }
+
+# Internal pseudo-sources that resolve via SYSTEM_TO_FHIR_URI but are OUTPUT
+# namespaces, not client-facing code systems — the server cannot $lookup /
+# $validate-code against them, so they are excluded from the
+# CapabilityStatement supported-system advertisement (QC-367).
+PSEUDO_SYSTEM_SOURCES: frozenset[str] = frozenset({"PATIENT_FRIENDLY"})
 
 # FHIR R4 canonical URI -> internal source name (for request parsing).
 FHIR_URI_TO_SYSTEM: dict[str, str] = {v: k for k, v in SYSTEM_TO_FHIR_URI.items()}
@@ -38,6 +57,16 @@ FHIR_URI_ALIASES: dict[str, str] = {
     # resolve. Per HL7 THO v5.5.0 the canonical URI is
     # http://www.cms.gov/Medicare/Coding/HCPCSReleaseCodeSets (see QA-012).
     "http://terminology.hl7.org/CodeSystem/hcpcs-Level-II": "HCPCS",
+    # Also accept the THO-deprecated short form ``http://hl7.org/fhir/sid/hcpcs``
+    # — older FHIR clients (and many examples in the wild) use this URI.
+    # Found by QC-006 (CROSS_SURFACE HIGH): same logical source resolved via
+    # Python/CLI/MCP but rejected via FHIR with 400 'Unrecognized system URI'.
+    "http://hl7.org/fhir/sid/hcpcs": "HCPCS",
+    # ATC aliases: the WHO-DDD site publishes the URI with a trailing slash
+    # and an https variant. Both forms appear in the wild.
+    "http://www.whocc.no/atc/": "ATC",
+    "https://www.whocc.no/atc": "ATC",
+    "https://www.whocc.no/atc/": "ATC",
 }
 
 
@@ -46,31 +75,31 @@ def fhir_uri_to_system(uri: str) -> str | None:
 
     Per RFC 3986 §3.1 (referenced by FHIR R4 §3.1.0.1.9 for HTTP semantics):
     'Although schemes are case-insensitive... An implementation should accept
-    uppercase letters as equivalent to lowercase in scheme names.' The
-    registries ``FHIR_URI_TO_SYSTEM`` and ``FHIR_URI_ALIASES`` are keyed by
-    canonical lowercase-scheme URIs; without scheme normalization, an
-    uppercase-scheme URI (e.g. ``HTTP://snomed.info/sct``) would fail the
-    exact-string lookup and be rejected. Found by EXPLORER iteration TS-03
-    (QA-001).
+    uppercase letters as equivalent to lowercase in scheme names.' And per
+    RFC 3986 §3.2.2 the host is also case-insensitive. The registries
+    ``FHIR_URI_TO_SYSTEM`` and ``FHIR_URI_ALIASES`` are keyed by canonical
+    lowercase-scheme + lowercase-host URIs; without scheme + host
+    normalization, an uppercase-scheme OR uppercase-host URI (e.g.
+    ``HTTP://SNOMED.INFO/sct``) would fail the exact-string lookup and be
+    rejected. Found by EXPLORER iteration TS-03 (QA-001); extended to host
+    normalization by QC-010 (CROSS_SURFACE MEDIUM) after the same crash
+    fired for uppercase host.
 
-    Note: per RFC 3986 §3.2.1 the path is case-sensitive and per §3.2.2 the
-    host is case-insensitive — but this function does NOT normalize path or
-    host case. Only the SCHEME is normalized (the narrowest fix required by
-    RFC 3986 §3.1's SHOULD). Host case-insensitivity is a separate
-    enhancement (e.g. ``HTTP://SNOMED.INFO/sct`` would still be rejected
-    because the host is uppercase).
+    Note: per RFC 3986 §3.2.1 the path is case-sensitive — this function
+    does NOT normalize path case. ``HTTP://snomed.info/SCT`` (uppercase
+    path) would still be rejected; the canonical URIs use lowercase paths.
     """
     from urllib.parse import urlparse
 
-    # Normalize scheme to lowercase. urlparse parses the scheme
-    # case-insensitively (``urlparse("HTTP://x").scheme == "http"``), but
-    # the ``.scheme`` attribute is already lowercased — we just need to
-    # reconstruct the URI string via ``geturl()`` so the registry lookup
-    # sees the canonical lowercase-scheme form. Reconstruct unconditionally
-    # when the URI has a scheme (cheap operation; idempotent for already-
-    # lowercase inputs).
+    # Normalize scheme and host to lowercase. urlparse parses the scheme
+    # case-insensitively (``urlparse("HTTP://x").scheme == "http"``) but
+    # ``geturl()`` only lowercases the scheme; we additionally lowercase
+    # the host via ``parsed._replace(host=parsed.host.lower())`` for the
+    # case-insensitive-host guarantee per RFC 3986 §3.2.2.
     parsed = urlparse(uri)
     if parsed.scheme:
+        if parsed.hostname:
+            parsed = parsed._replace(netloc=parsed.hostname.lower())
         uri = parsed.geturl()
     if uri in FHIR_URI_TO_SYSTEM:
         return FHIR_URI_TO_SYSTEM[uri]

@@ -239,7 +239,7 @@ def test_s11_init_with_hostile_name_then_add_then_check_roundtrip(fhir_client):
         f"closure {name!r} not retrievable after init+add — name was silently "
         f"mangled or rejected"
     )
-    assert "73211009" in closure.concepts, (
+    assert ("SNOMEDCT_US", "73211009") in closure.concepts, (
         f"concept not registered under hostile name {name!r}"
     )
 
@@ -322,10 +322,12 @@ def test_s14_init_with_two_hostile_names_isolated(fhir_client):
     assert a is not b, (
         "two hostile-name closures should be distinct instances"
     )
-    assert "73211009" in a.concepts and "44054006" not in a.concepts, (
+    assert ("SNOMEDCT_US", "73211009") in a.concepts and \
+        ("SNOMEDCT_US", "44054006") not in a.concepts, (
         f"closure {name_a!r} should only have its own concept"
     )
-    assert "44054006" in b.concepts and "73211009" not in b.concepts, (
+    assert ("SNOMEDCT_US", "44054006") in b.concepts and \
+        ("SNOMEDCT_US", "73211009") not in b.concepts, (
         f"closure {name_b!r} should only have its own concept"
     )
 
@@ -357,9 +359,12 @@ def test_s20_add_concept_with_value_coding_as_string_does_not_500(fhir_client):
             [{"name": "concept", "valueCoding": "not-a-dict"}],
         ),
     )
-    assert r.status_code == 200, (
-        f"valueCoding as string — expected 200 (silent drop via isinstance "
-        f"guard); got {r.status_code}: {r.text}"
+    # QC-264 (HIGH): a body whose ONLY concept entry is malformed is a
+    # 400 OperationOutcome — never a 500-with-traceback (the isinstance
+    # guard still holds) and never a silent reset.
+    assert r.status_code == 400, (
+        f"valueCoding as string — expected 400 (QC-264 all-malformed "
+        f"rejection); got {r.status_code}: {r.text}"
     )
     assert _is_fhir_response(r)
 
@@ -373,9 +378,9 @@ def test_s21_add_concept_with_value_coding_as_int_does_not_500(fhir_client):
             [{"name": "concept", "valueCoding": 12345}],
         ),
     )
-    assert r.status_code == 200, (
-        f"valueCoding as int — expected 200 (silent drop via isinstance "
-        f"guard); got {r.status_code}: {r.text}"
+    assert r.status_code == 400, (
+        f"valueCoding as int — expected 400 (QC-264 all-malformed "
+        f"rejection); got {r.status_code}: {r.text}"
     )
 
 
@@ -388,9 +393,9 @@ def test_s22_add_concept_with_value_coding_as_null_does_not_500(fhir_client):
             [{"name": "concept", "valueCoding": None}],
         ),
     )
-    assert r.status_code == 200, (
-        f"valueCoding as null — expected 200 (silent drop via isinstance "
-        f"guard); got {r.status_code}: {r.text}"
+    assert r.status_code == 400, (
+        f"valueCoding as null — expected 400 (QC-264 all-malformed "
+        f"rejection); got {r.status_code}: {r.text}"
     )
 
 
@@ -403,9 +408,9 @@ def test_s23_add_concept_with_value_coding_as_list_does_not_500(fhir_client):
             [{"name": "concept", "valueCoding": [{"system": SNOMED_URI, "code": "X"}]}],
         ),
     )
-    assert r.status_code == 200, (
-        f"valueCoding as list — expected 200 (silent drop via isinstance "
-        f"guard); got {r.status_code}: {r.text}"
+    assert r.status_code == 400, (
+        f"valueCoding as list — expected 400 (QC-264 all-malformed "
+        f"rejection); got {r.status_code}: {r.text}"
     )
 
 
@@ -455,13 +460,9 @@ def test_s25_add_concept_missing_code_silently_dropped(fhir_client):
             [{"name": "concept", "valueCoding": {"system": SNOMED_URI}}],
         ),
     )
-    assert r.status_code == 200
-    body = r.json()
-    # The concept should NOT be in the closure (silently dropped).
-    concepts = _find_params(body, "concept")
-    assert len(concepts) == 0, (
-        f"missing-code concept should be silently dropped; got {concepts}"
-    )
+    # QC-264 (HIGH): all-malformed concept entries are a 400.
+    assert r.status_code == 400
+    assert r.json()["resourceType"] == "OperationOutcome"
 
 
 def test_s26_add_concept_missing_system_silently_dropped(fhir_client):
@@ -474,12 +475,9 @@ def test_s26_add_concept_missing_system_silently_dropped(fhir_client):
             [{"name": "concept", "valueCoding": {"code": "73211009"}}],
         ),
     )
-    assert r.status_code == 200
-    body = r.json()
-    concepts = _find_params(body, "concept")
-    assert len(concepts) == 0, (
-        f"missing-system concept should be silently dropped; got {concepts}"
-    )
+    # QC-264 (HIGH): all-malformed concept entries are a 400.
+    assert r.status_code == 400
+    assert r.json()["resourceType"] == "OperationOutcome"
 
 
 def test_s27_add_concept_missing_both_code_and_system_silently_dropped(fhir_client):
@@ -491,10 +489,9 @@ def test_s27_add_concept_missing_both_code_and_system_silently_dropped(fhir_clie
             [{"name": "concept", "valueCoding": {}}],
         ),
     )
-    assert r.status_code == 200
-    body = r.json()
-    concepts = _find_params(body, "concept")
-    assert len(concepts) == 0
+    # QC-264 (HIGH): all-malformed concept entries are a 400.
+    assert r.status_code == 400
+    assert r.json()["resourceType"] == "OperationOutcome"
 
 
 def test_s28_add_concept_mixed_valid_and_invalid_entries(fhir_client):
@@ -562,11 +559,13 @@ def test_s29_add_concept_large_batch_does_not_500(fhir_client):
             ],
         },
     )
-    assert r.status_code == 200, (
-        f"large batch — expected 200; got {r.status_code}: {r.text[:500]}"
+    # QC-269 (LOW): codes with no active atom are now rejected (mirroring
+    # $lookup) — a 1000-bogus-code batch is a 400, not a 200 that silently
+    # pollutes the closure. The load-bearing no-5xx contract still holds.
+    assert r.status_code == 400, (
+        f"large batch of unknown codes — expected 400 (QC-269); "
+        f"got {r.status_code}: {r.text[:500]}"
     )
-    body = r.json()
-    assert len(_find_params(body, "concept")) >= 1000
 
 
 def test_s2a_add_concept_with_very_long_code_value(fhir_client):
@@ -582,7 +581,9 @@ def test_s2a_add_concept_with_very_long_code_value(fhir_client):
             [{"system": SNOMED_URI, "code": long_code, "display": "X"}],
         ),
     )
-    assert r.status_code == 200, (
+    # QC-269: unknown code rejected at 400 — and critically NOT a 5xx
+    # (the no-crash contract on hostile values).
+    assert r.status_code == 400, (
         f"10K-char code — got {r.status_code}: {r.text[:500]}"
     )
 
@@ -604,15 +605,16 @@ def test_s2b_add_concept_with_sql_injection_code_value(fhir_client):
             [{"system": SNOMED_URI, "code": "73211009'; DROP TABLE mrrel; --", "display": "X"}],
         ),
     )
-    assert r.status_code == 200, (
+    # QC-269: the injection-shaped code resolves to no active atom and is
+    # rejected at 400 — parameterized queries mean no crash/corruption
+    # either way (the load-bearing contract).
+    assert r.status_code == 400, (
         f"SQL-injection code — got {r.status_code}: {r.text[:500]}"
     )
-    # The closure table is intact (no SQL injection occurred).
+    # The closure was never created (the add was rejected before any
+    # registration) — no SQL injection occurred.
     closure = get_closure_manager().get("skeptic-sql-code-2b")
-    assert closure is not None
-    assert any("DROP TABLE" in c for c in closure.concepts), (
-        "SQL-injection code should be stored verbatim as a code value"
-    )
+    assert closure is None
 
 
 # ===========================================================================
@@ -657,7 +659,7 @@ def test_s30_add_concept_with_alias_system_resolves_to_same_source(fhir_client, 
     assert closure is not None
     # The concept MUST be registered under the resolved source label
     # (SNOMEDCT_US), not the raw alias.
-    info = closure.concepts.get("73211009")
+    info = closure.concepts.get(("SNOMEDCT_US", "73211009"))
     assert info is not None, "concept not registered"
     # The source should resolve to the canonical SNOMEDCT_US label.
     assert info["system"] == "SNOMEDCT_US", (
@@ -704,7 +706,9 @@ def test_s40_init_add_reinit_add_full_lifecycle(fhir_client):
     h2 = _return_hash(r2.json())
     assert h2 != h1, "add MUST change hash"
     closure = get_closure_manager().get(name)
-    assert "73211009" in closure.concepts, "concept should be registered"
+    assert ("SNOMEDCT_US", "73211009") in closure.concepts, (
+        "concept should be registered"
+    )
 
     # 3. re-init (MUST clear concepts)
     r3 = fhir_client.post(
@@ -716,7 +720,9 @@ def test_s40_init_add_reinit_add_full_lifecycle(fhir_client):
     assert h3 == h1, "re-init hash MUST equal original empty hash"
     closure = get_closure_manager().get(name)
     assert len(closure.concepts) == 0, "re-init MUST clear concepts"
-    assert "73211009" not in closure.concepts, "re-init MUST clear concepts"
+    assert ("SNOMEDCT_US", "73211009") not in closure.concepts, (
+        "re-init MUST clear concepts"
+    )
 
     # 4. add T2DM after re-init
     r4 = fhir_client.post(
@@ -729,8 +735,10 @@ def test_s40_init_add_reinit_add_full_lifecycle(fhir_client):
     h4 = _return_hash(r4.json())
     assert h4 != h3, "second add MUST change hash"
     closure = get_closure_manager().get(name)
-    assert "44054006" in closure.concepts, "second add should register concept"
-    assert "73211009" not in closure.concepts, (
+    assert ("SNOMEDCT_US", "44054006") in closure.concepts, (
+        "second add should register concept"
+    )
+    assert ("SNOMEDCT_US", "73211009") not in closure.concepts, (
         "second add should NOT re-introduce the pre-reinit concept"
     )
 
@@ -821,11 +829,13 @@ def test_s43_add_same_concept_twice_is_idempotent_in_concepts_dict(fhir_client):
     assert codes.count("73211009") == 1, (
         f"duplicate add should overwrite, not append; got codes {codes}"
     )
-    # The display should reflect the LATEST add (DM-v2 wins).
+    # EC-11 QC-282/QC-278: displays are canonicalized through the engine
+    # (ONE preferred term per code) and a re-add is a NO-OP — the
+    # client-supplied DM-v2 display can no longer overwrite anything.
     closure = get_closure_manager().get(name)
-    assert closure.concepts["73211009"]["display"] == "DM-v2", (
-        "second add should overwrite display"
-    )
+    assert closure.concepts[("SNOMEDCT_US", "73211009")]["display"] == (
+        "Diabetes mellitus"
+    ), "display must stay the engine canonical preferred term"
 
 
 def test_s44_reinit_clears_incomplete_since_flag(fhir_client):
@@ -893,17 +903,22 @@ def test_s51_version_hash_changes_per_add_increment(fhir_client):
         json=_closure_param_name_only(name),
     )
     hashes = []
-    for i in range(3):
+    # EC-11 QC-269: codes must resolve to an active atom — use real
+    # fixture codes (one NEW concept per add so the content changes).
+    for code in ("73211009", "44054006", "E11"):
+        system = RXNORM_URI if code == "860975" else (
+            ICD10CM_URI if code == "E11" else SNOMED_URI)
         r = fhir_client.post(
             "/fhir/CodeSystem/$closure",
             json=_closure_param_with_concepts(
                 name,
-                [{"system": SNOMED_URI, "code": f"X{i}", "display": f"X{i}"}],
+                [{"system": system, "code": code}],
             ),
         )
         hashes.append(_return_hash(r.json()))
     assert len(set(hashes)) == 3, (
-        f"3 consecutive adds should produce 3 unique hashes; got {hashes}"
+        f"3 consecutive adds of new concepts should produce 3 unique "
+        f"hashes; got {hashes}"
     )
 
 
@@ -932,12 +947,13 @@ def test_s52_version_hash_incorporates_display_changes(fhir_client):
     )
     h1 = _return_hash(r1.json())
     h2 = _return_hash(r2.json())
-    # The hash incorporates _version, which increments on each add.
-    # So h2 != h1 (version differs). But the concept COUNT is the same
-    # (1), and the keys are the same (["73211009"]). The display change
-    # is invisible to the hash payload.
-    assert h1 != h2, (
-        "version counter increments on each add — hash MUST differ"
+    # EC-11 QC-270/QC-278: the hash is content-addressed and excludes
+    # the internal call counter. A re-add of an already-present concept
+    # is a no-op, and client display changes never reach the stored
+    # state (displays are engine-canonical per QC-282) — so identical
+    # content yields the identical hash.
+    assert h1 == h2, (
+        "display-only re-add is a content no-op — hash MUST be identical"
     )
 
 
@@ -952,14 +968,17 @@ def test_s53_version_hash_payload_does_not_include_display():
     """
     t1 = ClosureTable("t1")
     t2 = ClosureTable("t2")
-    t1.concepts["X"] = {"system": "S", "display": "Display-A"}
-    t1._subsumes[("X", "X")] = True
-    t1._version = 1
-    t2.concepts["X"] = {"system": "S", "display": "Display-B"}
-    t2._subsumes[("X", "X")] = True
-    t2._version = 1
-    assert t1.version_hash() == t2.version_hash(), (
-        "display values MUST NOT influence hash; same code+count+version → same hash"
+    # EC-11 QC-266/QC-283: concepts keyed by (source, code) and the hash
+    # payload now covers the FULL state (concepts AND relations). Display
+    # is part of the content — and since QC-282 it is always the engine
+    # canonical preferred term, so a display change can only mean the
+    # underlying terminology release changed (a real state change).
+    t1.concepts[("S", "X")] = {"system": "S", "display": "Display-A"}
+    t1._subsumes[(("S", "X"), ("S", "X"))] = True
+    t2.concepts[("S", "X")] = {"system": "S", "display": "Display-B"}
+    t2._subsumes[(("S", "X"), ("S", "X"))] = True
+    assert t1.version_hash() != t2.version_hash(), (
+        "QC-283: display/content changes MUST change the hash"
     )
 
 
@@ -974,13 +993,11 @@ def test_s54_version_hash_deterministic_across_manager_instances():
     assert t1.version_hash() == t2.version_hash(), (
         "fresh closures should produce identical hash (deterministic)"
     )
-    # Same state mutation
-    t1.concepts["X"] = {"system": "S", "display": "X"}
-    t1._subsumes[("X", "X")] = True
-    t1._version = 1
-    t2.concepts["X"] = {"system": "S", "display": "X"}
-    t2._subsumes[("X", "X")] = True
-    t2._version = 1
+    # Same state mutation (EC-11 QC-266: (source, code) keys)
+    t1.concepts[("S", "X")] = {"system": "S", "display": "X"}
+    t1._subsumes[(("S", "X"), ("S", "X"))] = True
+    t2.concepts[("S", "X")] = {"system": "S", "display": "X"}
+    t2._subsumes[(("S", "X"), ("S", "X"))] = True
     assert t1.version_hash() == t2.version_hash(), (
         "same closure state should produce identical hash across instances"
     )
@@ -1266,8 +1283,10 @@ def test_s80_do_closure_has_isinstance_guard_on_param(fhir_client):
     src_app = inspect.getsource(create_fhir_app)
     src = _get_func_source(src_app, "_do_closure")
     assert src, "Could not find _do_closure source"
-    # The loop MUST be present.
-    assert "for param in body.get(\"parameter\", [])" in src, (
+    # The loop MUST be present. (EC-11: it iterates the defensive
+    # ``_parameter_entries`` helper — QC-001's parameter:null guard —
+    # which the raw ``body.get("parameter", [])`` cannot provide.)
+    assert "for param in _parameter_entries(body)" in src, (
         f"_do_closure missing the parameter iteration loop:\n{src}"
     )
     # The isinstance guard MUST be present inside the loop body.
@@ -1611,7 +1630,7 @@ def test_s110_concurrent_init_two_names_no_interference(fhir_client):
     manager = get_closure_manager()
     a = manager.get(name_a)
     b = manager.get(name_b)
-    assert "73211009" in a.concepts
+    assert ("SNOMEDCT_US", "73211009") in a.concepts
     assert len(b.concepts) == 0, (
         f"closure B should be empty (isolated from A); got {list(b.concepts)}"
     )

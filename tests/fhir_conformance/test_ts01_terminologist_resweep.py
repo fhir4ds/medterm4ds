@@ -337,10 +337,10 @@ class TestLens3ContentValues:
 
     def test_t33_snomed_content_is_clinically_appropriate(self, fhir_client):
         """SNOMED CT (the most clinically-critical code system for
-        terminology servers) MUST be advertised with a clinically sensible
-        content value. ``not-present`` is appropriate for a non-persisting
-        server (per AGENTS.md NOT A BUG registry line 147); ``fragment`` is
-        also appropriate; ``example`` is NOT (covered by t32).
+        terminology servers) — superseded by EC-15 QC-333/QC-339: the R4
+        TC backbone has no ``content`` child (R5-only). The clinically
+        meaningful R4 declaration for SNOMED CT is ``subsumption: true``
+        (the server answers $subsumes over the SNOMED isa hierarchy).
         """
         r = fhir_client.get("/fhir/metadata?mode=terminology")
         snomed_cs = next(
@@ -349,13 +349,15 @@ class TestLens3ContentValues:
             None,
         )
         assert snomed_cs is not None
-        # not-present is the established per-NOT-A-BUG-registry decision;
-        # fragment would also be clinically defensible. Either is acceptable.
-        # example is NOT (caught by t32). complete would overpromise.
-        assert snomed_cs.get("content") in {"not-present", "fragment"}, (
-            f"SNOMED CT content={snomed_cs.get('content')!r} — clinically "
-            f"unexpected. Per NOT A BUG registry, not-present is the "
-            f"documented decision; fragment is also defensible."
+        # EC-15 QC-333: the R5-only element must not appear at all.
+        assert "content" not in snomed_cs, (
+            f"SNOMED CT carries the R5-only 'content' element on the R4 "
+            f"TC surface: {snomed_cs.get('content')!r}."
+        )
+        # EC-15 QC-339: SNOMED has a full isa hierarchy — declare subsumption.
+        assert snomed_cs.get("subsumption") is True, (
+            f"SNOMED CT subsumption={snomed_cs.get('subsumption')!r} — "
+            f"expected true (the server answers $subsumes over SNOMED)."
         )
 
 

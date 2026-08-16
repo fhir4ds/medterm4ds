@@ -451,15 +451,17 @@ class TestLens2CarryForwardSourceAudit:
         reading audit confirms.
         """
         source = _fhir_api_text()
-        intensional_text = _function_text(source, "_expand_intensional")
+        # CF-SKEPTIC-VS01-02 RESOLVED by QC-242 (EC-10): exclude[].filter[]
+        # (is-a / descendent-of) IS honored. Core logic lives in the
+        # module-level expand_intensional_value_set.
+        intensional_text = _function_text(source, "expand_intensional_value_set")
         assert intensional_text
-        # The exclude loop only reads exclude[].concept[], not exclude[].filter[].
+        # The exclude loop reads BOTH exclude[].concept[] AND exclude[].filter[].
         assert 'exclude.get("concept"' in intensional_text or "exclude.get('concept'" in intensional_text, (
             "exclude loop should iterate concept[]"
         )
-        # Confirm there's no exclude[].filter[] handling.
-        assert "exclude" in intensional_text and ".get(\"filter\")" not in intensional_text and ".get('filter')" not in intensional_text, (
-            "exclude[].filter[] should NOT be handled (CF-SKEPTIC-VS01-02)"
+        assert 'exclude.get("filter"' in intensional_text or "exclude.get('filter'" in intensional_text, (
+            "exclude[].filter[] MUST be handled (QC-242 / CF-SKEPTIC-VS01-02 RESOLVED)"
         )
 
     def test_h22_cf_vs01_03_exclude_ignores_system(self):
@@ -470,11 +472,14 @@ class TestLens2CarryForwardSourceAudit:
         from a different system. Source-reading audit confirms.
         """
         source = _fhir_api_text()
-        intensional_text = _function_text(source, "_expand_intensional")
+        # CF-SKEPTIC-VS01-03 RESOLVED by QC-244 (EC-10): the exclude
+        # matching key is the (canonical system, code) PAIR. Core logic
+        # lives in the module-level expand_intensional_value_set.
+        intensional_text = _function_text(source, "expand_intensional_value_set")
         assert intensional_text
-        # The exclude matching key is c["code"] only — not (system, code).
-        assert 'c["code"] not in exc_codes' in intensional_text, (
-            "exclude matches on c['code'] alone — CF-SKEPTIC-VS01-03 applies"
+        assert '(c.get("system", ""), c.get("code", "")) not in excluded' in intensional_text, (
+            "exclude must match on the (system, code) pair (QC-244 / "
+            "CF-SKEPTIC-VS01-03 RESOLVED)"
         )
 
     def test_h23_cf_vs01_04_compose_metadata_silently_ignored(self):
@@ -681,12 +686,14 @@ class TestLens4HardcodedDefaultRecurrence:
         source = _fhir_api_text()
         post_text = _function_text(source, "expand_post")
         assert post_text, "expand_post not found"
-        # expand_post declares count but not offset.
+        # CF-SKEPTIC-VS02-02 RESOLVED by QC-241 (EC-10): expand_post
+        # declares offset (FHIR R4 §4.7.5 — offset is a top-level In
+        # parameter, not GET-only) and forwards it to _do_expand.
         assert "count: int = Query" in post_text, (
             "expand_post should declare count as Query parameter"
         )
-        assert "offset: int = Query" not in post_text, (
-            "expand_post does NOT declare offset (CF-SKEPTIC-VS02-02 partial)"
+        assert "offset: int = Query" in post_text, (
+            "expand_post MUST declare offset (QC-241 / CF-SKEPTIC-VS02-02 RESOLVED)"
         )
 
 

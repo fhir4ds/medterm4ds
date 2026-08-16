@@ -340,31 +340,34 @@ def test_e12_combined_lifecycle_check_api_works_post_reset(fhir_client):
     name = "explorer-e12-check-api"
     # 1. create + add
     table = manager.get_or_create(name)
-    # Don't add via add_concepts (needs engine); just populate concepts dict
+    # Don't add via add_concepts (needs engine); just populate concepts dict.
+    # QC-266: concepts/subsumes are keyed by (source, code) pairs.
+    dm_key = ("SNOMEDCT_US", DM_CODE)
+    t2dm_key = ("SNOMEDCT_US", T2DM_CODE)
     table.concepts = {
-        DM_CODE: {"system": "SNOMEDCT_US", "display": "DM"},
-        T2DM_CODE: {"system": "SNOMEDCT_US", "display": "T2DM"},
+        dm_key: {"system": "SNOMEDCT_US", "display": "DM"},
+        t2dm_key: {"system": "SNOMEDCT_US", "display": "T2DM"},
     }
     # Manually populate subsumption (DM subsumes T2DM)
     table._subsumes = {
-        (DM_CODE, DM_CODE): True,
-        (T2DM_CODE, T2DM_CODE): True,
-        (DM_CODE, T2DM_CODE): True,
-        (T2DM_CODE, DM_CODE): False,
+        (dm_key, dm_key): True,
+        (t2dm_key, t2dm_key): True,
+        (dm_key, t2dm_key): True,
+        (t2dm_key, dm_key): False,
     }
     # 2. Check DM subsumes T2DM
-    assert table.check(DM_CODE, T2DM_CODE) == "subsumes"
-    assert table.check(T2DM_CODE, DM_CODE) == "subsumed-by"
-    assert table.check(DM_CODE, DM_CODE) == "equivalent"
+    assert table.check(DM_CODE, T2DM_CODE, "SNOMEDCT_US") == "subsumes"
+    assert table.check(T2DM_CODE, DM_CODE, "SNOMEDCT_US") == "subsumed-by"
+    assert table.check(DM_CODE, DM_CODE, "SNOMEDCT_US") == "equivalent"
 
     # 3. Reset the closure
     table_after = manager.reset(name)
     assert table_after is not table  # fresh instance
 
     # 4. After reset, codes not in closure -> not-subsumed
-    assert table_after.check(DM_CODE, T2DM_CODE) == "not-subsumed"
+    assert table_after.check(DM_CODE, T2DM_CODE, "SNOMEDCT_US") == "not-subsumed"
     # The OLD table instance still has its data (not mutated)
-    assert table.check(DM_CODE, T2DM_CODE) == "subsumes"
+    assert table.check(DM_CODE, T2DM_CODE, "SNOMEDCT_US") == "subsumes"
 
 
 def test_e13_combined_lifecycle_three_cycles_no_state_leak(fhir_client):
@@ -715,15 +718,15 @@ def test_e40_hash_deterministic_across_two_manager_instances():
     m2 = ClosureManager()
     t1 = m1.get_or_create("explorer-e40-determinism")
     t2 = m2.get_or_create("explorer-e40-determinism")
+    # EC-11 QC-266: (source, code) keys.
     t1.concepts = {
-        DM_CODE: {"system": "SNOMEDCT_US", "display": "DM"},
-        T2DM_CODE: {"system": "SNOMEDCT_US", "display": "T2DM"},
+        ("SNOMEDCT_US", DM_CODE): {"system": "SNOMEDCT_US", "display": "DM"},
+        ("SNOMEDCT_US", T2DM_CODE): {"system": "SNOMEDCT_US", "display": "T2DM"},
     }
     t2.concepts = {
-        DM_CODE: {"system": "SNOMEDCT_US", "display": "DM"},
-        T2DM_CODE: {"system": "SNOMEDCT_US", "display": "T2DM"},
+        ("SNOMEDCT_US", DM_CODE): {"system": "SNOMEDCT_US", "display": "DM"},
+        ("SNOMEDCT_US", T2DM_CODE): {"system": "SNOMEDCT_US", "display": "T2DM"},
     }
-    # _version defaults to 0 on both
     assert t1.version_hash() == t2.version_hash()
 
 
@@ -741,8 +744,10 @@ def test_e41_hash_payload_documented_in_source():
         / "src" / "medterm4ds" / "engines" / "fhir" / "closure.py"
     )
     src = closure_path.read_text()
-    # Payload composition is load-bearing — must use sorted(concepts.keys())
-    assert "sorted(self.concepts.keys())" in src
+    # EC-11 QC-270/QC-283: the payload covers the FULL state (concepts
+    # AND relations) and excludes the internal call counter.
+    assert "relation_items" in src
+    assert "concept_items" in src
     # MD5 algorithm is pinned
     assert "hashlib.md5" in src
     # [:12] truncation is pinned
@@ -1029,8 +1034,9 @@ def test_e62_do_closure_inline_concept_loop_present():
     next_def = src.find("\n    def ", idx + 1)
     assert next_def > idx, "Could not bound _do_closure"
     body = src[idx:next_def]
-    # Inline loop is load-bearing
-    assert 'for param in body.get("parameter", []):' in body
+    # Inline loop is load-bearing (EC-11 QC-001: iterates the defensive
+    # _parameter_entries helper rather than the raw body.get)
+    assert 'for param in _parameter_entries(body):' in body
     # isinstance guard (CF-HISTORIAN-CM03-01 fix) is present
     assert "isinstance(param, dict)" in body
     assert "isinstance(coding, dict)" in body
@@ -1060,7 +1066,9 @@ def test_e64_do_closure_dispatches_to_get_or_create_on_add_path():
     next_def = src.find("\n    def ", idx + 1)
     body = src[idx:next_def]
     assert "manager.get_or_create(name)" in body
-    assert "closure.add_concepts(concepts, engine)" in body
+    # EC-11 QC-282: the add path canonicalizes displays via the engine
+    # first, then adds the resolved list.
+    assert "closure.add_concepts(resolved, engine)" in body
 
 
 def test_e65_do_closure_calls_build_closure_response():
@@ -1182,12 +1190,11 @@ def test_e71_batch_mixed_valid_invalid_entries_isolation(fhir_client):
     # Entry 1: 400
     assert entries[1]["response"]["status"] == "400"
     assert entries[1]["resource"]["resourceType"] == "OperationOutcome"
-    # Entry 2: 200 (malformed silently dropped, valid name accepted)
-    assert entries[2]["response"]["status"] == "200"
-    assert entries[2]["resource"]["resourceType"] == "Parameters"
-    # Entry 2 has 0 concepts (the malformed one was dropped)
-    e2_concepts = _find_params(entries[2]["resource"], "concept")
-    assert len(e2_concepts) == 0
+    # Entry 2: QC-264 (HIGH) — an entry whose ONLY concept entry is
+    # malformed is a per-entry 400 OperationOutcome (never a silent
+    # reset).
+    assert entries[2]["response"]["status"] == "400"
+    assert entries[2]["resource"]["resourceType"] == "OperationOutcome"
 
 
 def test_e72_batch_interleaved_op_isolation(fhir_client):
@@ -1320,18 +1327,26 @@ def test_e91_in_concept_zero_or_more_accepts_zero(fhir_client):
 
 def test_e92_in_concept_zero_or_more_accepts_many(fhir_client):
     """L9c: In `concept` is 0..* — many concepts accepted."""
-    concepts = [
-        {"system": SNOMED_URI, "code": f"X{i:03d}", "display": f"X{i}"}
-        for i in range(20)
+    # EC-11 QC-269: codes must resolve to an active atom — bogus X-codes
+    # are rejected. Use the real fixture codes (repetition is fine: set
+    # semantics keep the concept list small, and the 0..* contract is
+    # exercised by SENDING 20 entries).
+    real = [
+        {"system": SNOMED_URI, "code": DM_CODE},
+        {"system": SNOMED_URI, "code": T2DM_CODE},
+        {"system": ICD10CM_URI, "code": "E11"},
+        {"system": RXNORM_URI, "code": "860975"},
     ]
+    concepts = [dict(real[i % len(real)]) for i in range(20)]
     r = fhir_client.post(
         "/fhir/CodeSystem/$closure",
         json=_closure_with_concepts("explorer-e92-many-concepts", concepts),
     )
     assert r.status_code == 200, r.text
     body = r.json()
+    # Set semantics: 4 distinct (system, code) pairs retained.
     response_concepts = _find_params(body, "concept")
-    assert len(response_concepts) == 20
+    assert len(response_concepts) == len(real)
 
 
 def test_e93_out_return_always_present(fhir_client):
@@ -1481,12 +1496,12 @@ def test_e113_manager_two_distinct_names_independent_state():
     t_a = m.get_or_create("explorer-e113-a")
     t_b = m.get_or_create("explorer-e113-b")
     assert t_a is not t_b
-    t_a.concepts = {"X": {"system": "S", "display": "X"}}
-    t_b.concepts = {"Y": {"system": "S", "display": "Y"}}
-    assert "X" in t_a.concepts
-    assert "Y" not in t_a.concepts
-    assert "Y" in t_b.concepts
-    assert "X" not in t_b.concepts
+    t_a.concepts = {("S", "X"): {"system": "S", "display": "X"}}
+    t_b.concepts = {("S", "Y"): {"system": "S", "display": "Y"}}
+    assert ("S", "X") in t_a.concepts
+    assert ("S", "Y") not in t_a.concepts
+    assert ("S", "Y") in t_b.concepts
+    assert ("S", "X") not in t_b.concepts
     # Different version hashes
     assert t_a.version_hash() != t_b.version_hash()
 
@@ -1504,9 +1519,11 @@ def test_e120_build_closure_response_empty_concepts():
     response = build_closure_response(closure)
     assert response["resourceType"] == "Parameters"
     params = response["parameter"]
-    assert len(params) == 1
+    # EC-11 QC-267: the ``incomplete`` flag parameter is also present.
+    assert len(params) == 2
     assert params[0]["name"] == "return"
     assert "valueString" in params[0]
+    assert params[1]["name"] == "incomplete"
 
 
 def test_e121_build_closure_response_canonicalizes_all_known_sources():
@@ -1514,9 +1531,9 @@ def test_e121_build_closure_response_canonicalizes_all_known_sources():
     its FHIR R4 URI."""
     closure = ClosureTable("explorer-e121-canonical")
     closure.concepts = {
-        "73211009": {"system": "SNOMEDCT_US", "display": "DM"},
-        "E11": {"system": "ICD10CM", "display": "T2DM"},
-        "860975": {"system": "RXNORM", "display": "Metformin"},
+        ("SNOMEDCT_US", "73211009"): {"system": "SNOMEDCT_US", "display": "DM"},
+        ("ICD10CM", "E11"): {"system": "ICD10CM", "display": "T2DM"},
+        ("RXNORM", "860975"): {"system": "RXNORM", "display": "Metformin"},
     }
     response = build_closure_response(closure)
     concept_entries = _find_params(response, "concept")
@@ -1531,7 +1548,7 @@ def test_e122_build_closure_response_unknown_source_passthrough():
     as-is (per system_to_fhir_uri contract)."""
     closure = ClosureTable("explorer-e122-unknown")
     closure.concepts = {
-        "X1": {"system": "UNKNOWN_SOURCE", "display": "Unknown"},
+        ("UNKNOWN_SOURCE", "X1"): {"system": "UNKNOWN_SOURCE", "display": "Unknown"},
     }
     response = build_closure_response(closure)
     concept_entries = _find_params(response, "concept")
@@ -1544,7 +1561,8 @@ def test_e123_build_closure_response_concept_count_matches():
     """L12d: build_closure_response concept count matches concepts dict size."""
     closure = ClosureTable("explorer-e123-count")
     for i in range(10):
-        closure.concepts[f"C{i:03d}"] = {"system": "SNOMEDCT_US", "display": f"C{i}"}
+        closure.concepts[("SNOMEDCT_US", f"C{i:03d}")] = {
+            "system": "SNOMEDCT_US", "display": f"C{i}"}
     response = build_closure_response(closure)
     concept_entries = _find_params(response, "concept")
     assert len(concept_entries) == 10
@@ -1648,14 +1666,16 @@ def test_e141_cf_historian_cm03_02_incomplete_since_not_in_response_body(fhir_cl
 
     CF-HISTORIAN-CM03-02 (LOW — DEFERRED) pin via body-shape audit.
     """
+    # EC-11 QC-267 CLOSED CF-HISTORIAN-CM03-02: the response now carries
+    # an ``incomplete`` valueBoolean Out parameter (False on a healthy
+    # closure, True when any walk has failed since reset).
     r = fhir_client.post(
         "/fhir/CodeSystem/$closure",
         json=_closure_name_only("explorer-e141-cf-hist"),
     )
     assert r.status_code == 200, r.text
-    body_text = r.text
-    assert "incomplete" not in body_text.lower()
-    assert "incomplete_since" not in body_text
+    flags = _find_params(r.json(), "incomplete")
+    assert flags == [{"name": "incomplete", "valueBoolean": False}]
 
 
 def test_e142_cf_skeptic_cm03_01_return_value_string_format_pin(fhir_client):
@@ -1794,9 +1814,10 @@ def test_e160_add_same_concept_twice_hash_stable(fhir_client):
     concepts2 = _find_params(r2.json(), "concept")
     # Concepts dict still has 1 entry (deduplicated)
     assert len(concepts2) == 1
-    # Hashes DIFFER because _version advances per add_concepts call
-    # (per the NON-IDEMPOTENT semantic)
-    assert hash1 != hash2
+    # EC-11 QC-270/QC-278: the hash is content-addressed and the call
+    # counter is excluded — a redundant re-add keeps the same hash so
+    # delta-protocol clients can skip work.
+    assert hash1 == hash2
 
 
 def test_e161_add_same_concept_set_twice_via_batch(fhir_client):
@@ -1818,5 +1839,6 @@ def test_e161_add_same_concept_set_twice_via_batch(fhir_client):
         json=_bundle_with_closure_entry(name, concepts),
     )
     hash2 = _return_hash(r2.json()["entry"][0]["resource"])
-    # Same NON-IDEMPOTENT semantic via batch
-    assert hash1 != hash2
+    # EC-11 QC-270/QC-278: content-identical re-add keeps the same hash
+    # (batch path behaves identically to the direct route).
+    assert hash1 == hash2
