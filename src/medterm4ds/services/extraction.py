@@ -68,29 +68,196 @@ DEFAULT_LABELS = [
 DEFAULT_THRESHOLD = float(os.getenv("MEDTERM4DS_NER_THRESHOLD", "0.15"))
 
 # NLP label → canonical search result types (passed to SearchService.canonical
-# as result_types=...). All values are None — we let SapBERT find the best match
-# across ALL anchor categories regardless of NER label. This avoids systematic
-# resolution failures when GLiNER mislabels (e.g., "serum creatinine" labeled
-# as "vital sign" would miss VAL-LAB anchors if we filtered to "vital" only).
-# The result_type on each resolved concept tells you what was actually found.
-# Callers who need category restriction pass result_types explicitly.
+# as result_types=...). Values are the label's canonical anchor categories.
+#
+# Constrain-then-fallback (QC-182 follow-up, 2026-08-16): an external QC
+# report found 10,433 wrong-type extractions — diseases resolving to lab
+# anchors (diabetes → LOINC LP128793-9), lab analytes resolving to drug
+# anchors (creatinine → RxNorm 2913), drugs resolving to their drug-level
+# LOINC (carbamazepine → LP16061-1). GLiNER's label is usually RIGHT even
+# when SapBERT's top unfiltered hit is the wrong category, so resolve_spans
+# first searches with the label's categories; if nothing clears the grade
+# floor it retries UNFILTERED — a constraint can never reduce recall vs. the
+# old all-None behavior (QC-182's original concern, e.g. "serum creatinine"
+# mislabeled "vital sign", is covered by that fallback). Explicit caller
+# result_types still wins and stays a hard filter (QC-153).
+#
+# Adjacent clinical types are paired (condition+symptom, medication+
+# drug_class) so near-miss labels resolve without burning the fallback.
 _LABEL_TO_SEARCH_CATEGORIES: dict[str, str | list[str] | None] = {
-    "lab test": None,
-    "panel": None,
-    "vital sign": None,
-    "therapeutic agent": None,
-    "therapeutic class": None,
-    "immunization": None,
-    "medical intervention": None,
-    "disorder": None,
-    "symptom": None,
+    "lab test": "lab",
+    "panel": "lab",
+    # Vitals share a measurement namespace with labs, and GLiNER often tags
+    # plain labs as "vital sign" ("serum creatinine") — allow both.
+    "vital sign": ["vital", "lab"],
+    "therapeutic agent": ["medication", "drug_class"],
+    "therapeutic class": ["drug_class", "medication"],
+    "immunization": "vaccine",
+    "medical intervention": "procedure",
+    "disorder": ["condition", "symptom"],
+    "symptom": ["symptom", "condition"],
     # Back-compat labels
-    "disease": None,
-    "medication": None,
-    "procedure": None,
-    "vital": None,
+    "disease": ["condition", "symptom"],
+    "medication": ["medication", "drug_class"],
+    "procedure": "procedure",
+    "vital": ["vital", "lab"],
+    # No body-structure anchors exist in the canonical vocabulary — no
+    # constraint is possible (the fallback search handles these spans).
     "body structure": None,
 }
+
+# Labels whose spans denote drugs. Used by the analyte/TDM context rules
+# below to decide when a drug-labeled span actually wants a LAB anchor.
+_DRUG_LABELS = frozenset({
+    "therapeutic agent", "therapeutic class", "medication",
+})
+
+# Ambiguous analyte names that ALSO exist as RxNorm chemicals/drugs, so
+# SapBERT's unfiltered top hit is often the drug anchor even though the
+# clinical text means the measurement (QC report pattern 2: creatinine →
+# RxNorm 2913, potassium → ATC A12BA, glucose/sodium/calcium/magnesium/
+# cholesterol likewise). Spans matching one of these (after stripping
+# leading specimen qualifiers) prefer the "lab" category when GLiNER
+# labeled them a drug — unless an administration context is present
+# (see _ADMINISTRATION_CONTEXT_RE). Salt-form drug names ("potassium
+# chloride", "sodium bicarbonate") are deliberately NOT matched: only
+# the bare analyte, optionally qualified by a specimen prefix.
+_ANALYTE_NAMES = frozenset({
+    # QC report offenders first
+    "creatinine", "potassium", "glucose", "calcium", "sodium",
+    "magnesium", "cholesterol",
+    # Same-shape additions from routine chemistry panels
+    "albumin", "bilirubin", "hemoglobin", "hematocrit", "platelets",
+    "phosphate", "lactate", "uric acid", "triglycerides", "cortisol",
+    "ferritin", "iron", "vitamin b12", "folate",
+})
+
+# Specimen/setting qualifiers GLiNER may include in the span ahead of the
+# analyte name ("serum creatinine"). Stripped (single leading words) before
+# analyte matching only.
+_ANALYTE_QUALIFIERS = frozenset({
+    "serum", "plasma", "blood", "urine", "urinary",
+    "fasting", "random", "spot", "csf",
+})
+
+# Administration context: nearby tokens indicating the span is a substance
+# being GIVEN to the patient, not measured (creatinine/potassium/iron
+# supplements, potassium infusion). Checked against the span text plus the
+# surrounding context window captured on FilteredSpan. Small and
+# deliberately conservative — when in doubt the analyte rule applies.
+_ADMINISTRATION_CONTEXT_RE = re.compile(
+    r"\b(?:"
+    r"give|gives|given|gave|"
+    r"administers?|administered|administration|"
+    r"infus\w*|inject\w*|"
+    r"supplements?|supplementation|"
+    r"dose|dosing|dosage|"
+    r"prescrib\w*"
+    r")\b",
+    re.IGNORECASE,
+)
+
+# Therapeutic-drug-monitoring context: a drug-labeled span mentioning (or
+# sitting next to) "level"/"levels"/"concentration" denotes the measurement,
+# not the therapy ("carbamazepine level", "check cyclosporine
+# concentration"). QC report pattern 4 wants plain drug mentions to stay
+# drugs (the label constraint handles that); this only flips spans that
+# explicitly reference a level/concentration.
+_LEVEL_CONTEXT_RE = re.compile(
+    r"\b(?:levels?|concentrations?)\b",
+    re.IGNORECASE,
+)
+
+# Characters of surrounding text captured per span for the context
+# heuristics above. Not part of the public span payload (to_dict omits it).
+_CONTEXT_WINDOW_CHARS = 48
+
+
+def _strip_analyte_qualifiers(text_lower: str) -> str:
+    """Drop leading specimen qualifiers from a lowercased span text.
+
+    "serum creatinine" → "creatinine"; "uric acid" is left intact.
+    """
+    words = text_lower.split()
+    while words and words[0] in _ANALYTE_QUALIFIERS:
+        words = words[1:]
+    return " ".join(words)
+
+
+def _has_adjacent_level_word(span: "FilteredSpan") -> bool:
+    """True when a level/concentration word sits next to the span.
+
+    Matches the level word inside the span text itself ("carbamazepine
+    level") or within 2 tokens of the span inside the captured context
+    window ("check cyclosporine concentration", "level of tacrolimus").
+    A level word elsewhere in the window — a different entity's clause
+    ("Continue metformin. Glucose levels stable.") — does NOT count.
+    """
+    if _LEVEL_CONTEXT_RE.search(span.text):
+        return True
+    if not span.context:
+        return False
+    idx = span.context.find(span.text)
+    if idx < 0:
+        return False
+    end = idx + len(span.text)
+
+    def _tokens(fragment: str, last: bool) -> str:
+        # Whitespace tokens, punctuation left intact — a "." token stops the
+        # 2-token window at a sentence boundary ("…stable. Continue" does not
+        # reach a "levels" in the next clause).
+        words = fragment.split()
+        return " ".join(words[-2:] if last else words[:2])
+
+    before = _tokens(span.context[max(0, idx - 24):idx], last=True)
+    after = _tokens(span.context[end:end + 24], last=False)
+    return bool(_LEVEL_CONTEXT_RE.search(before) or _LEVEL_CONTEXT_RE.search(after))
+
+
+def _span_search_categories(span: "FilteredSpan") -> str | list[str] | None:
+    """Effective canonical search categories for a span (constrain step).
+
+    Starts from _LABEL_TO_SEARCH_CATEGORIES, then applies two context
+    adjustments for drug-labeled spans:
+
+    - Analyte rule (QC pattern 2): bare analyte names prefer "lab" unless an
+      administration context (give/administered/infusion/supplement/...) is
+      present in the span text or its context window.
+    - TDM rule (QC pattern 4 counterpart): an adjacent "level(s)/
+      concentration" word flips the span to "lab" (see
+      _has_adjacent_level_word).
+
+    Returns None when the label implies no category constraint.
+    """
+    label = span.entity_type.lower()
+    if label in _DRUG_LABELS:
+        text = span.text.lower().strip()
+        # Combined text searched for administration cues: span text first,
+        # then the captured context window around the span in the source text.
+        blob = f"{span.text} {span.context}" if span.context else span.text
+        if _strip_analyte_qualifiers(text) in _ANALYTE_NAMES:
+            if _ADMINISTRATION_CONTEXT_RE.search(blob):
+                # Administered substance — keep the drug constraint.
+                return _LABEL_TO_SEARCH_CATEGORIES.get(label)
+            return "lab"
+        if _has_adjacent_level_word(span):
+            return "lab"
+    return _LABEL_TO_SEARCH_CATEGORIES.get(label)
+
+
+def _categories_to_prefixes(
+    categories: str | list[str] | None,
+) -> set[str] | None:
+    """Map canonical search categories to canonical_id prefixes.
+
+    None (or an empty mapping) → None = no constraint. Raises ValueError for
+    unknown categories (delegates to search._result_types_to_prefixes).
+    """
+    if categories is None:
+        return None
+    from medterm4ds.services.search import _result_types_to_prefixes
+    prefixes = _result_types_to_prefixes(categories)
+    return prefixes or None
 
 # result_type → display label for annotation output.
 # Maps our internal result_type to the NER label vocabulary the team uses.
@@ -203,6 +370,12 @@ def _split_on_conjunction(text: str) -> list[str] | None:
 # Common non-medical words that GLiNER may wrongly classify at threshold 0.3
 _FALSE_POSITIVE_WORDS = frozenset({
     "patient", "patients", "male", "female", "man", "woman", "child",
+    # QC report (2026-08-16) pattern 3: populations extracted as disorders
+    # (adults 140x, women 73x, patients, ...). Complete the population set —
+    # the singular forms were already filtered but plurals/inflections and
+    # age-group nouns leaked through and resolved to condition anchors.
+    "adults", "men", "women", "children", "infant", "infants",
+    "neonate", "neonates", "elderly", "males", "females",
     "year", "years", "old", "age", "date", "time", "day", "days", "week",
     "hospital", "clinic", "center", "department", "service",
     "doctor", "nurse", "physician", "provider",
@@ -296,6 +469,11 @@ class FilteredSpan:
     span_start: int = 0
     span_end: int = 0
     ner_confidence: float = 0.0
+    # Small window of source text around the span (_CONTEXT_WINDOW_CHARS
+    # each side), captured for resolve_spans context heuristics (administration
+    # verbs, TDM "level"/"concentration" cues). Internal only — omitted from
+    # to_dict. Empty for hand-built spans (heuristics fall back to span text).
+    context: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -574,6 +752,10 @@ class NlpPipeline:
                 span_start=start,
                 span_end=end,
                 ner_confidence=score,
+                context=text[
+                    max(0, start - _CONTEXT_WINDOW_CHARS):
+                    min(len(text), end + _CONTEXT_WINDOW_CHARS)
+                ],
             ))
 
         return spans
@@ -731,65 +913,97 @@ class ExtractionService:
                             source_set.add("RXNORM")
 
                 resolved = False
-                for r in results:
-                    # Source filter
-                    if source_set and r.anchor_system not in source_set:
-                        continue
-                    # Result-type filter (QC-153: previously the batch path
-                    # ignored result_types entirely — FHIR resultTypes=condition
-                    # still returned medications)
-                    if result_type_prefixes and not any(
-                        r.canonical_id.startswith(p) for p in result_type_prefixes
-                    ):
-                        continue
-                    # Grade filter
-                    if _GRADE_ORDER.get(r.match_grade, 2) > _GRADE_ORDER.get(grade_threshold, 0):
-                        continue
-                    canonical_id = getattr(r, "canonical_id", "") or ""
-                    combination_members = getattr(r, "combination_members", None) or []
-                    concepts.append(ExtractedConcept(
-                        code=r.code,
-                        source=r.source,
-                        display=r.display,
-                        matched_text=span.text,
-                        status=span.status,
-                        section=span.section,
-                        confidence=r.score,
-                        match_grade=r.match_grade,
-                        ner_label=span.entity_type,
-                        span_start=span.span_start,
-                        span_end=span.span_end,
-                        canonical_id=canonical_id,
-                        combination_members=combination_members,
-                    ))
-                    resolved = True
-                    break
+                # Constrain-then-fallback (QC-182 follow-up): try the label's
+                # categories first; if no result clears the floor, retry
+                # unfiltered so the constraint never reduces recall. An
+                # explicit caller result_types stays a hard filter (QC-153)
+                # and disables the label constraint entirely.
+                label_prefixes = (
+                    None if result_type_prefixes
+                    else _categories_to_prefixes(_span_search_categories(span))
+                )
+                prefix_attempts: list[set[str] | None] = (
+                    [label_prefixes, None] if label_prefixes else [None]
+                )
+                for label_pf in prefix_attempts:
+                    for r in results:
+                        # Source filter
+                        if source_set and r.anchor_system not in source_set:
+                            continue
+                        # Result-type filter (QC-153: previously the batch path
+                        # ignored result_types entirely — FHIR resultTypes=condition
+                        # still returned medications)
+                        if result_type_prefixes and not any(
+                            r.canonical_id.startswith(p) for p in result_type_prefixes
+                        ):
+                            continue
+                        # Label-derived category constraint (constrain pass;
+                        # the fallback pass re-runs with label_pf=None)
+                        if label_pf and not any(
+                            r.canonical_id.startswith(p) for p in label_pf
+                        ):
+                            continue
+                        # Grade filter
+                        if _GRADE_ORDER.get(r.match_grade, 2) > _GRADE_ORDER.get(grade_threshold, 0):
+                            continue
+                        canonical_id = getattr(r, "canonical_id", "") or ""
+                        combination_members = getattr(r, "combination_members", None) or []
+                        concepts.append(ExtractedConcept(
+                            code=r.code,
+                            source=r.source,
+                            display=r.display,
+                            matched_text=span.text,
+                            status=span.status,
+                            section=span.section,
+                            confidence=r.score,
+                            match_grade=r.match_grade,
+                            ner_label=span.entity_type,
+                            span_start=span.span_start,
+                            span_end=span.span_end,
+                            canonical_id=canonical_id,
+                            combination_members=combination_members,
+                        ))
+                        resolved = True
+                        break
+                    if resolved:
+                        break
 
                 # Conjunction split on failure (individual search for split parts)
                 if not resolved:
                     search_text = _strip_trailing_values(span.text)
                     parts = _split_on_conjunction(search_text)
                     if parts:
-                        rt = result_types if result_types is not None else _LABEL_TO_SEARCH_CATEGORIES.get(span.entity_type.lower())
+                        # Same constrain-then-fallback per split part.
+                        rt_attempts: list[str | list[str] | None]
+                        if result_types is not None:
+                            rt_attempts = [result_types]
+                        else:
+                            rt = _span_search_categories(span)
+                            rt_attempts = [rt, None] if rt is not None else [None]
                         for part in parts:
-                            part_results = search.canonical(
-                                part, result_types=rt, sources=ss, count=5,
-                            )
-                            for r in part_results:
-                                if _GRADE_ORDER.get(r.match_grade, 2) > _GRADE_ORDER.get(grade_threshold, 0):
-                                    continue
-                                canonical_id = getattr(r, "canonical_id", "") or ""
-                                combination_members = getattr(r, "combination_members", None) or []
-                                concepts.append(ExtractedConcept(
-                                    code=r.code, source=r.source, display=r.display,
-                                    matched_text=part, status=span.status,
-                                    section=span.section, confidence=r.score,
-                                    match_grade=r.match_grade, ner_label=span.entity_type,
-                                    span_start=span.span_start, span_end=span.span_end,
-                                    canonical_id=canonical_id,
-                                    combination_members=combination_members,
-                                ))
-                                break
+                            part_resolved = False
+                            for part_rt in rt_attempts:
+                                part_results = search.canonical(
+                                    part, result_types=part_rt, sources=ss, count=5,
+                                )
+                                for r in part_results:
+                                    if _GRADE_ORDER.get(r.match_grade, 2) > _GRADE_ORDER.get(grade_threshold, 0):
+                                        continue
+                                    canonical_id = getattr(r, "canonical_id", "") or ""
+                                    combination_members = getattr(r, "combination_members", None) or []
+                                    concepts.append(ExtractedConcept(
+                                        code=r.code, source=r.source, display=r.display,
+                                        matched_text=part, status=span.status,
+                                        section=span.section, confidence=r.score,
+                                        match_grade=r.match_grade, ner_label=span.entity_type,
+                                        span_start=span.span_start, span_end=span.span_end,
+                                        canonical_id=canonical_id,
+                                        combination_members=combination_members,
+                                    ))
+                                    part_resolved = True
+                                    break
+                                if part_resolved:
+                                    break
 
             # Deduplicate by canonical_id (preferred) or source:code (legacy).
             # QC-183: the key includes status — without it a negated mention
@@ -825,10 +1039,14 @@ class ExtractionService:
         # results by (search_text, sources-key) so repeated mentions of the
         # same entity text resolve once. Canonical multi-span path already
         # batches; this covers the per-span legacy/single-span route.
-        _search_cache: dict[tuple[str, str], list[Any]] = {}
+        # Cache key includes rt: two spans with the same text but different
+        # labels (hence different label-derived categories) must not share
+        # entries once the values are no longer uniformly None.
+        _search_cache: dict[tuple[str, str, str], list[Any]] = {}
 
         def _search_span_texts(text: str, ss_key: str, ss, rt) -> list[Any]:
-            cache_key = (text, ss_key)
+            rt_key = rt if isinstance(rt, str) or rt is None else ",".join(rt)
+            cache_key = (text, ss_key, rt_key)
             if cache_key in _search_cache:
                 return _search_cache[cache_key]
             if search_mode == "canonical":
@@ -846,47 +1064,63 @@ class ExtractionService:
             search_text = _strip_trailing_values(span.text)
             ss = _LABEL_TO_SOURCES.get(span.entity_type.lower())
             ss_key = ",".join(ss) if ss else ""
-            rt = result_types if result_types is not None else _LABEL_TO_SEARCH_CATEGORIES.get(span.entity_type.lower())
-            results = _search_span_texts(search_text, ss_key, ss, rt)
+            # Constrain-then-fallback (QC-182 follow-up): label-derived
+            # categories first, then an unfiltered retry. Explicit caller
+            # result_types is the only attempt (hard filter, QC-153).
+            rt_attempts: list[str | list[str] | None]
+            if result_types is not None:
+                rt_attempts = [result_types]
+            else:
+                rt = _span_search_categories(span)
+                rt_attempts = [rt, None] if rt is not None else [None]
 
             resolved = False
-            for r in results:
-                if _GRADE_ORDER.get(r.match_grade, 2) > _GRADE_ORDER.get(grade_threshold, 0):
-                    continue
-                canonical_id = getattr(r, "canonical_id", "") or ""
-                combination_members = getattr(r, "combination_members", None) or []
-                concepts.append(ExtractedConcept(
-                    code=r.code, source=r.source, display=r.display,
-                    matched_text=span.text, status=span.status,
-                    section=span.section, confidence=r.score,
-                    match_grade=r.match_grade, ner_label=span.entity_type,
-                    span_start=span.span_start, span_end=span.span_end,
-                    canonical_id=canonical_id,
-                    combination_members=combination_members,
-                ))
-                resolved = True
-                break
+            for rt in rt_attempts:
+                results = _search_span_texts(search_text, ss_key, ss, rt)
+                for r in results:
+                    if _GRADE_ORDER.get(r.match_grade, 2) > _GRADE_ORDER.get(grade_threshold, 0):
+                        continue
+                    canonical_id = getattr(r, "canonical_id", "") or ""
+                    combination_members = getattr(r, "combination_members", None) or []
+                    concepts.append(ExtractedConcept(
+                        code=r.code, source=r.source, display=r.display,
+                        matched_text=span.text, status=span.status,
+                        section=span.section, confidence=r.score,
+                        match_grade=r.match_grade, ner_label=span.entity_type,
+                        span_start=span.span_start, span_end=span.span_end,
+                        canonical_id=canonical_id,
+                        combination_members=combination_members,
+                    ))
+                    resolved = True
+                    break
+                if resolved:
+                    break
 
             if not resolved:
                 parts = _split_on_conjunction(search_text)
                 if parts:
                     for part in parts:
-                        part_results = _search_span_texts(part, ss_key, ss, rt)
-                        for r in part_results:
-                            if _GRADE_ORDER.get(r.match_grade, 2) > _GRADE_ORDER.get(grade_threshold, 0):
-                                continue
-                            canonical_id = getattr(r, "canonical_id", "") or ""
-                            combination_members = getattr(r, "combination_members", None) or []
-                            concepts.append(ExtractedConcept(
-                                code=r.code, source=r.source, display=r.display,
-                                matched_text=part, status=span.status,
-                                section=span.section, confidence=r.score,
-                                match_grade=r.match_grade, ner_label=span.entity_type,
-                                span_start=span.span_start, span_end=span.span_end,
-                                canonical_id=canonical_id,
-                                combination_members=combination_members,
-                            ))
-                            break
+                        part_resolved = False
+                        for part_rt in rt_attempts:
+                            part_results = _search_span_texts(part, ss_key, ss, part_rt)
+                            for r in part_results:
+                                if _GRADE_ORDER.get(r.match_grade, 2) > _GRADE_ORDER.get(grade_threshold, 0):
+                                    continue
+                                canonical_id = getattr(r, "canonical_id", "") or ""
+                                combination_members = getattr(r, "combination_members", None) or []
+                                concepts.append(ExtractedConcept(
+                                    code=r.code, source=r.source, display=r.display,
+                                    matched_text=part, status=span.status,
+                                    section=span.section, confidence=r.score,
+                                    match_grade=r.match_grade, ner_label=span.entity_type,
+                                    span_start=span.span_start, span_end=span.span_end,
+                                    canonical_id=canonical_id,
+                                    combination_members=combination_members,
+                                ))
+                                part_resolved = True
+                                break
+                            if part_resolved:
+                                break
 
         seen: dict[tuple[str, str], ExtractedConcept] = {}
         for c in concepts:
