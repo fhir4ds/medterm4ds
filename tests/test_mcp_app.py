@@ -284,3 +284,54 @@ def test_code_refs_accepts_one_source_for_many_codes():
 def test_code_refs_validates_lengths():
     with pytest.raises(ValueError, match="sources must contain"):
         build_code_refs(["E11.9", "208"], ["ICD10CM", "CVX", "RXNORM"])
+
+
+def test_code_refs_rejects_none_codes():
+    """QC-050 (MEDIUM): codes=None must raise TypeError, not leak
+    'object of type NoneType has no len()' raw TypeError."""
+    with pytest.raises(TypeError):
+        build_code_refs(codes=None, sources=["ICD10CM"])  # type: ignore[arg-type]
+
+
+def test_code_refs_rejects_empty_codes_symmetric_with_empty_sources():
+    """QC-060 (MEDIUM): empty codes must raise ValueError, symmetric with
+    the existing empty-sources ValueError. Pre-fix empty-codes silently
+    returned [] while empty-sources raised."""
+    with pytest.raises(ValueError, match="codes must not be empty"):
+        build_code_refs(codes=[], sources=["ICD10CM"])
+    with pytest.raises(ValueError, match="sources must not be empty"):
+        build_code_refs(codes=["E11.9"], sources=[])
+
+
+def test_code_refs_rejects_none_entry_in_codes():
+    """QC-052 (MEDIUM): a single None entry in codes must surface a clear
+    TypeError pointing at the bad entry, not leak CodeRef's internal
+    'CodeRef.code must be a string, got None' error that fails the batch."""
+    with pytest.raises(TypeError, match="each code must be a string"):
+        build_code_refs(codes=["44054006", None], sources=["SNOMEDCT_US"])  # type: ignore[list-item]
+
+
+# =============================================================================
+# Regression: single-code MCP tools validate code/source before CodeRef.
+# Found by QC-078 (MEDIUM) + QC-086 (MEDIUM): patient_friendly_name /
+# cross_reference / optimize / guidelines_for_code construct CodeRef
+# directly, bypassing build_code_refs validation. Pre-fix, CodeRef's raw
+# TypeError 'CodeRef.code must be a string, got NoneType' leaked.
+# =============================================================================
+
+
+def test_mcp_single_code_tools_reject_none_inputs(tmp_path):
+    """QC-078/QC-086 (MEDIUM): single-code MCP tools raise clean TypeError
+    with a clear message ('code must be a string') rather than the raw
+    CodeRef.__post_init__ error."""
+    from medterm4ds.apps.mcp import _validate_single_code_inputs
+
+    with pytest.raises(TypeError, match="code must be a string"):
+        _validate_single_code_inputs(code=None, source="ICD10CM")
+    with pytest.raises(TypeError, match="source must be a string"):
+        _validate_single_code_inputs(code="E11.9", source=None)
+    with pytest.raises(TypeError, match="code must be a string"):
+        _validate_single_code_inputs(code=42, source="ICD10CM")
+    # Valid inputs pass without raising.
+    _validate_single_code_inputs(code="E11.9", source="ICD10CM")
+
