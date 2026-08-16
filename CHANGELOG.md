@@ -106,6 +106,16 @@ derived tables on existing databases** — see Upgrade notes.
 
 Of ~340 fixes in this release; the most user-visible:
 
+- **`search --result-types` with a small `--limit` returned zero results.**
+  The CLI applied the category filter client-side AFTER the service had
+  truncated to `--limit`, discarding truncated slots instead of backfilling
+  (`search "Potassium" --result-types lab --limit 1` → 0 results; `--limit 8`
+  → the LOINC potassium anchor at 0.999). The filter now forwards
+  service-side for every mode: canonical filters by canonical_id prefix
+  (with the existing filter-aware over-fetch), and lexical/semantic/hybrid
+  restrict the category indexes searched before retrieval, so `--limit`
+  caps the filtered set. Unknown `--result-types` values still return an
+  empty result (with the QC-129 warning on legacy modes), never a crash.
 - **Prepared-table correctness** — CPT prepared priority ranked ETCF above PT,
   returning the wrong CUI/display/TTY for ~90% of CPT codes; the RxNorm
   hierarchy was entirely absent from `mt4ds.walk_edges` (0 of 238,329 isa
@@ -166,21 +176,53 @@ Of ~340 fixes in this release; the most user-visible:
 - **Remote/local parity**: `patient_friendly` no longer silently forces
   `resolve_current` on the remote leg regardless of the caller's mode.
   [QC-495]
+- **NER wrong-type resolution** (external QC report: 10,433 wrong-type
+  extractions). `resolve_spans` now constrains each span's canonical search
+  to its GLiNER label's anchor categories first (disorder → condition/symptom,
+  therapeutic agent → medication/drug_class, lab test → lab, …) and retries
+  unfiltered only when nothing clears the grade floor, so a constraint can
+  never reduce recall. This stops diseases resolving to lab anchors
+  (diabetes → LOINC LP128793-9) and drugs resolving to their drug-level
+  LOINC (carbamazepine → LP16061-1). Ambiguous analytes (creatinine,
+  potassium, glucose, …) labeled as drugs prefer lab anchors unless an
+  administration context (give/administered/infusion/supplement/…) is
+  present; a drug span adjacent to "level(s)/concentration" prefers lab
+  (TDM), while plain drug mentions stay drugs. Population terms (adults,
+  women, men, children, infants, elderly, neonates, males, females) are
+  added to the NER false-positive blocklist (previously extracted as
+  disorders). Explicit caller `result_types` remains a hard filter.
+- **CR-031 (HIGH) — closure-accelerated walks returned `[]` for
+  RXNORM/ATC/MSH.** `walk_closure_table()` dispatched to
+  `mt4ds.walk_closure_limited` whenever the table existed and depth ≤ 5,
+  with no per-source coverage probe — for a source with zero closure rows
+  every ancestor walk silently returned `[]` (hierarchy-assisted mappings,
+  prepared `walk` paths, and the SNOMED patient-friendly fallback) while
+  `mt4ds.walk_edges` had the edges. The dispatch now probes per source
+  (memoized `LIMIT 1`, warning on the miss) and falls back to the
+  `walk_edges` BFS path, so answers are correct on ANY prepared DB
+  regardless of build vintage. The build-side seed whitelist is also derived
+  from `SOURCE_STRATEGIES` (was a hardcoded 6-source list excluding
+  RXNORM/ATC/MSH), so the closure table gains those sources on the NEXT
+  rebuild — a 0.9 rebuild that predates this change serves those sources via
+  the BFS fallback (correct, unaccelerated); `PREPARED_SCHEMA_VERSION`
+  intentionally stays 0.9 so an in-flight rebuild's output is not gated
+  stale for this.
+- **CR-032 (HIGH) — `$extract` POST now expresses the four `include*`
+  booleans.** A POSTed `{name: "includeNegated", valueBoolean: true}` was
+  silently dropped and defaulted to `false` with no 400 (POST was the only
+  dead surface; GET and the CLI worked). The booleans are extracted through
+  a parallel `valueBoolean` channel, and a wrong-typed scalar for them
+  (`valueInteger`, `valueString`, …) now 400s naming `valueBoolean`
+  (inverse of the QC-127 scalar contract; `valueBoolean: null` still means
+  absent per QC-245).
+- **CR-035 — `_EngineState` broad excepts narrowed.** The three remaining
+  `except Exception: logger.debug` blocks (prepare-cache index DDL, SNOMED
+  parent-link cache table/index) are now `except duckdb.Error` +
+  `logger.warning`, so programming bugs propagate and degraded paths are
+  operator-visible (EC-20 treatment).
 
 ### Known issues
 
-- **CR-031 (HIGH) — closure-accelerated walks return `[]` for
-  RXNORM/ATC/MSH after the rebuild.** The `walk_closure_limited` seed
-  whitelist still excludes those three sources, so hierarchy-assisted
-  mappings, prepared `walk` paths, and the SNOMED patient-friendly fallback
-  silently return `[]` at the default depth once the rebuild adds their
-  `walk_edges` rows. **Workaround**: pass `max_depth >= 6` for those sources.
-  Fix queued post-release.
-- **CR-032 (HIGH) — `$extract` POST cannot express the four `include*`
-  booleans.** A POSTed `{name: "includeNegated", valueBoolean: true}` is
-  silently dropped and defaults to `false` with no 400. **Workaround**: use
-  GET query parameters (`?includeNegated=true`) or the CLI `--include-*`
-  flags. Fix queued post-release.
 - **Pre-existing environment failure**: `tests/test_fhir_conformance.py` —
   4 tests fail with pydantic `rest.0.url Extra inputs are not permitted`
   (`fhir.resources` library-version drift, not a code regression). Fix by
