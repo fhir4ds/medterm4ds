@@ -14,6 +14,7 @@ from collections import defaultdict, deque
 from collections.abc import Iterable
 from datetime import datetime, timezone
 from pathlib import Path
+from urllib.error import HTTPError
 from urllib.parse import urlencode
 from urllib.request import urlopen
 
@@ -64,10 +65,34 @@ def download_release(
     out_dir.mkdir(parents=True, exist_ok=True)
     output_path = out_dir / str(file_name)
     query = urlencode({"url": download_url, "apiKey": key})
-    with urlopen(f"{DOWNLOAD_URL}?{query}") as response:  # noqa: S310
-        with output_path.open("wb") as handle:
-            shutil.copyfileobj(response, handle)
-    if extract and zipfile.is_zipfile(output_path):
+    # QC-442 (MEDIUM): stream into a temp sibling, validate, then atomically
+    # rename. Pre-fix, a truncated zip (network drop, disk full) or a non-zip
+    # 200 response landed at the final path and --extract silently skipped
+    # the is_zipfile() branch, reporting success with an unusable artifact.
+    # QC-443 (MEDIUM): bound the fetch (the CVX fetch below uses timeout=15)
+    # and surface HTTP 401/403 as a credential error naming UMLS_API_KEY.
+    tmp_path = output_path.with_name(output_path.name + ".part")
+    try:
+        try:
+            with urlopen(f"{DOWNLOAD_URL}?{query}", timeout=15) as response:  # noqa: S310
+                with tmp_path.open("wb") as handle:
+                    shutil.copyfileobj(response, handle)
+        except HTTPError as exc:
+            if exc.code in (401, 403):
+                raise RuntimeError(
+                    f"UTS rejected the API credentials (HTTP {exc.code}: {exc.reason}). "
+                    "Check the UMLS_API_KEY / --api-key value."
+                ) from exc
+            raise
+        if not zipfile.is_zipfile(tmp_path):
+            raise RuntimeError(
+                f"Downloaded release is not a valid zip archive (truncated download or "
+                f"non-archive response): {tmp_path}"
+            )
+        os.replace(tmp_path, output_path)
+    finally:
+        tmp_path.unlink(missing_ok=True)
+    if extract:
         extract_dir = out_dir / output_path.stem
         with zipfile.ZipFile(output_path) as archive:
             _safe_zip_extract(archive, extract_dir)
@@ -146,7 +171,9 @@ def current_release(
     if current is not None:
         query_args["current"] = str(current).lower()
     query = urlencode(query_args)
-    with urlopen(f"{RELEASES_URL}?{query}") as response:  # noqa: S310
+    # QC-443 (MEDIUM): bound the fetch like the download/CVX calls — a
+    # stalled UTS connection previously hung `data download` indefinitely.
+    with urlopen(f"{RELEASES_URL}?{query}", timeout=15) as response:  # noqa: S310
         payload = json.loads(_read_capped(response).decode("utf-8"))
     if isinstance(payload, list):
         if not payload:
@@ -168,6 +195,32 @@ def current_release(
             f"Available releases: {available}"
         )
     return releases[0]
+
+
+def _reject_connection_string_path(path: Path, *, flag: str = "--db") -> None:
+    # QC-449/QC-457 (HIGH/LOW): DuckDB accepts connection-string suffixes on
+    # connect paths ('db.duckdb?mode=ro', '?threads=4', ...). In create mode
+    # it writes a full/junk DB at the LITERAL filename (including the '?'),
+    # honoring none of the requested semantics — build-duckdb even reported
+    # SUCCESS with a complete DB named 'b.duckdb?mode=ro'. Reject '?' in any
+    # --db/--output-db path; configuration belongs on the documented flags.
+    if "?" in path.name:
+        raise RuntimeError(
+            f"{flag} must be a plain filesystem path, not a DuckDB connection "
+            f"string (found '?' in {str(path)!r}). Configure read-only mode, "
+            f"threads, or memory via the documented CLI flags / MEDTERM4DS_* "
+            f"environment variables instead."
+        )
+
+
+def _require_existing_db(path: Path, *, flag: str = "--db") -> None:
+    # QC-439 (HIGH): prepare/verify/annotate operate on an existing DB, but
+    # duckdb.connect() runs in create mode and silently materialized a 12KB
+    # junk file at a typo'd path before failing — the exact fingerprint of
+    # the '?mode=ro' artifacts found in data/. Fail fast with a clear error
+    # and never create files from read-intent commands.
+    if not path.exists():
+        raise RuntimeError(f"Database not found: {path} ({flag})")
 
 
 def build_duckdb_from_rrf(
@@ -193,66 +246,83 @@ def build_duckdb_from_rrf(
     _ = batch_size  # Kept for backward-compatible CLI/API signatures.
     source_dir = Path(rrf_dir)
     db_path = Path(output_db)
+    _reject_connection_string_path(db_path, flag="--output-db")
     if db_path.name == "umls_local.duckdb":
         raise RuntimeError(
             "Refusing ambiguous output DB name 'umls_local.duckdb'. "
             "Use a role/release-specific path such as data/umls_current.duckdb "
             "or data/umls_2025ab.duckdb."
         )
-    if db_path.exists():
-        if replace:
-            db_path.unlink()
-        else:
-            raise RuntimeError(f"Output database exists: {db_path}")
+    if db_path.exists() and not replace:
+        raise RuntimeError(f"Output database exists: {db_path}")
 
     with tempfile.TemporaryDirectory(prefix="medterm4ds_rrf_") as staging:
         staging_dir = Path(staging)
+        # QC-438 (HIGH): RRF discovery runs BEFORE the output DB is touched.
+        # Pre-fix, --replace unlinked the previous DB first, so a directory
+        # missing MRREL destroyed the only working DB and left nothing behind.
         mrconso = _find_rrf_sources(source_dir, "MRCONSO.RRF", staging_dir=staging_dir)
         mrrel = _find_rrf_sources(source_dir, "MRREL.RRF", staging_dir=staging_dir)
         mrsat = _find_rrf_sources(source_dir, "MRSAT.RRF", staging_dir=staging_dir, required=False)
 
-        con = duckdb.connect(str(db_path))
+        # QC-440 (MEDIUM): build into a sibling temp DB and atomically rename
+        # on success — a failed build never leaves a partial DB at the target
+        # (which previously made retries fail with a misleading 'Output
+        # database exists') and --replace never removes the previous DB until
+        # the new one is complete.
+        tmp_db = db_path.with_name(f"{db_path.name}.build-{os.getpid()}.tmp")
         try:
-            _create_rrf_table(
-                con,
-                table="mrconso",
-                sources=mrconso,
-                columns=_MRCONSO_COLUMNS,
-                selected=("CUI", "AUI", "SAB", "TTY", "CODE", "STR", "SUPPRESS"),
-            )
-            _create_rrf_table(
-                con,
-                table="mrrel",
-                sources=mrrel,
-                columns=_MRREL_COLUMNS,
-                selected=("AUI1", "AUI2", "REL", "RELA"),
-            )
-            if mrsat:
+            con = duckdb.connect(str(tmp_db))
+            try:
                 _create_rrf_table(
                     con,
-                    table="mrsat",
-                    sources=mrsat,
-                    columns=_MRSAT_COLUMNS,
-                    selected=("CODE", "SAB", "ATN", "ATV"),
+                    table="mrconso",
+                    sources=mrconso,
+                    columns=_MRCONSO_COLUMNS,
+                    selected=("CUI", "AUI", "SAB", "TTY", "CODE", "STR", "SUPPRESS"),
                 )
-            else:
-                con.execute("CREATE TABLE mrsat (CODE VARCHAR, SAB VARCHAR, ATN VARCHAR, ATV VARCHAR)")
-            con.execute("CREATE INDEX IF NOT EXISTS idx_mrconso_sab_code ON mrconso(SAB, CODE)")
-            con.execute("CREATE INDEX IF NOT EXISTS idx_mrconso_aui ON mrconso(AUI)")
-            con.execute("CREATE INDEX IF NOT EXISTS idx_mrrel_aui1 ON mrrel(AUI1)")
-            con.execute("CREATE INDEX IF NOT EXISTS idx_mrrel_aui2 ON mrrel(AUI2)")
-            con.execute("CREATE INDEX IF NOT EXISTS idx_mrsat_ndc ON mrsat(SAB, ATN, ATV)")
-            prepare_derived_tables(con, replace=True)
-            from medterm4ds.engines.duckdb.prepared import prepare_mt4ds_schema
-            prepare_mt4ds_schema(
-                con,
-                replace=True,
-                db_role=db_role,
-                umls_release=release_version,
-                source_archive=str(source_archive) if source_archive else None,
-            )
+                _validate_mrconso_alignment(con)
+                _create_rrf_table(
+                    con,
+                    table="mrrel",
+                    sources=mrrel,
+                    columns=_MRREL_COLUMNS,
+                    selected=("AUI1", "AUI2", "REL", "RELA"),
+                )
+                if mrsat:
+                    _create_rrf_table(
+                        con,
+                        table="mrsat",
+                        sources=mrsat,
+                        columns=_MRSAT_COLUMNS,
+                        selected=("CODE", "SAB", "ATN", "ATV"),
+                    )
+                else:
+                    con.execute("CREATE TABLE mrsat (CODE VARCHAR, SAB VARCHAR, ATN VARCHAR, ATV VARCHAR)")
+                con.execute("CREATE INDEX IF NOT EXISTS idx_mrconso_sab_code ON mrconso(SAB, CODE)")
+                con.execute("CREATE INDEX IF NOT EXISTS idx_mrconso_aui ON mrconso(AUI)")
+                con.execute("CREATE INDEX IF NOT EXISTS idx_mrrel_aui1 ON mrrel(AUI1)")
+                con.execute("CREATE INDEX IF NOT EXISTS idx_mrrel_aui2 ON mrrel(AUI2)")
+                con.execute("CREATE INDEX IF NOT EXISTS idx_mrsat_ndc ON mrsat(SAB, ATN, ATV)")
+                prepare_derived_tables(con, replace=True)
+                from medterm4ds.engines.duckdb.prepared import prepare_mt4ds_schema
+                prepare_mt4ds_schema(
+                    con,
+                    replace=True,
+                    db_role=db_role,
+                    umls_release=release_version,
+                    source_archive=str(source_archive) if source_archive else None,
+                )
+            finally:
+                con.close()
+            if db_path.exists():
+                if not replace:
+                    raise RuntimeError(f"Output database exists: {db_path}")
+                db_path.unlink()
+            os.replace(tmp_db, db_path)
         finally:
-            con.close()
+            tmp_db.unlink(missing_ok=True)
+            Path(str(tmp_db) + ".wal").unlink(missing_ok=True)
     return db_path
 
 
@@ -290,6 +360,8 @@ def prepare_umls_duckdb(
     import duckdb
 
     path = Path(db_path)
+    _reject_connection_string_path(path)
+    _require_existing_db(path)
     con = duckdb.connect(str(path))
     try:
         report = prepare_derived_tables(con, replace=replace)
@@ -328,6 +400,8 @@ def annotate_umls_duckdb(
     if not annotations:
         return {}
 
+    _reject_connection_string_path(path)
+    _require_existing_db(path)
     con = duckdb.connect(str(path))
     try:
         con.execute("CREATE SCHEMA IF NOT EXISTS mt4ds")
@@ -469,8 +543,9 @@ def prepare_derived_tables(con, *, replace: bool = True) -> dict[str, object]:
 
             con.execute("CREATE TABLE snomed_top_level_depth (code VARCHAR, min_top_depth INTEGER)")
             if code_depths:
-                con.executemany(
-                    "INSERT INTO snomed_top_level_depth VALUES (?, ?)",
+                _insert_rows_batched(
+                    con,
+                    "INSERT INTO snomed_top_level_depth VALUES",
                     list(code_depths.items()),
                 )
             con.execute("DROP TABLE IF EXISTS mt4ds_active_snomed_atoms")
@@ -500,7 +575,11 @@ def prepare_derived_tables(con, *, replace: bool = True) -> dict[str, object]:
                 for line in lines:
                     parts = line.split('|')
                     if len(parts) >= 4:
-                        cvx_rows.append((parts[1].strip(), parts[3].strip(), parts[3].strip()))
+                        # QC-447 (LOW): VG.txt layout is ShortDesc|CVX|Status|
+                        # Full Name. Pre-fix the full name (parts[3]) was
+                        # stored in BOTH group_name and short_name and the
+                        # CDC short description (parts[0]) was discarded.
+                        cvx_rows.append((parts[1].strip(), parts[3].strip(), parts[0].strip()))
 
             if cvx_rows:
                 con.executemany("INSERT INTO cvx_metadata VALUES (?, ?, ?)", cvx_rows)
@@ -525,38 +604,117 @@ def prepare_derived_tables(con, *, replace: bool = True) -> dict[str, object]:
     return results
 
 
-def verify_duckdb(db_path: str | Path, *, sources: Iterable[str]) -> dict[str, object]:
-    """Return a small structural verification report for a local DuckDB database."""
+def verify_duckdb(
+    db_path: str | Path,
+    *,
+    sources: Iterable[str] | None = None,
+    memory_limit: str | None = None,
+    threads: int | None = None,
+    temp_directory: str | Path | None = None,
+) -> dict[str, object]:
+    """Return a small structural verification report for a local DuckDB database.
+
+    ``memory_limit`` / ``threads`` / ``temp_directory`` map to the same
+    DuckDB knobs as the CLI's common engine args (QC-452) so the verify
+    connection honors --memory-profile/--memory-limit/--threads/--temp-dir
+    instead of silently ignoring them.
+    """
     import duckdb
 
     path = Path(db_path)
+    _reject_connection_string_path(path)
+    _require_existing_db(path)
+    # QC-446/QC-453 (LOW): the CLI guard (_normalize_sources_or_exit) had no
+    # Python-API counterpart — sources=[] built 'SAB IN ()' (ParserException)
+    # and sources=None raised TypeError. None now means the canonical default
+    # and an empty iterable is a clean client error.
+    if sources is None:
+        sources = DEFAULT_UMLS_VERIFY_SOURCES
     source_tuple = tuple(sources)
-    con = duckdb.connect(str(path), read_only=True)
+    if not source_tuple:
+        raise ValueError(
+            "sources must contain at least one vocabulary name (e.g. SNOMEDCT_US)."
+        )
+    config = {
+        key: value
+        for key, value in (
+            ("memory_limit", memory_limit),
+            ("threads", threads),
+            ("temp_directory", str(temp_directory) if temp_directory else None),
+        )
+        if value is not None
+    }
+    if config:
+        con = duckdb.connect(str(path), read_only=True, config=config)
+    else:
+        con = duckdb.connect(str(path), read_only=True)
     try:
         tables = {row[0] for row in con.execute("show tables").fetchall()}
-        source_counts = {
-            source: int(count)
-            for source, count in con.execute(
-                f"""
-                SELECT SAB, COUNT(DISTINCT CODE)
-                FROM mrconso
-                WHERE SUPPRESS = 'N'
-                  AND SAB IN ({','.join(['?'] * len(source_tuple))})
-                GROUP BY SAB
-                ORDER BY SAB
-                """,
-                list(source_tuple),
-            ).fetchall()
-        }
+        # QC-441 (MEDIUM): check the table inventory BEFORE the source-count
+        # query — a DB missing mrconso previously crashed with a raw
+        # CatalogException instead of returning has_required_tables: false.
+        if "mrconso" in tables:
+            source_counts = {
+                source: int(count)
+                for source, count in con.execute(
+                    f"""
+                    SELECT SAB, COUNT(DISTINCT CODE)
+                    FROM mrconso
+                    WHERE SUPPRESS = 'N'
+                      AND SAB IN ({','.join(['?'] * len(source_tuple))})
+                    GROUP BY SAB
+                    ORDER BY SAB
+                    """,
+                    list(source_tuple),
+                ).fetchall()
+            }
+        else:
+            source_counts = {}
+        # QC-407 (MEDIUM): surface prepared-table staleness. The mt4ds
+        # prepared tables are built by builder SQL that evolves; when the
+        # manifest's prepared_schema_version predates PREPARED_SCHEMA_VERSION,
+        # the tables silently serve stale answers (QC-404/QC-405/QC-412).
+        # `data verify` previously reported healthy in exactly that state
+        # because it never looked at the mt4ds schema. Only runs when the
+        # mt4ds schema exists — DBs built without prepare stay unchanged.
+        prepared_report: dict[str, object] | None = None
+        if any(t[0] == "prepare_manifest" for t in con.execute(
+            "SELECT table_name FROM information_schema.tables "
+            "WHERE table_schema = 'mt4ds'"
+        ).fetchall()):
+            from medterm4ds.engines.duckdb.prepared import verify_mt4ds_schema
+
+            prepared_report = verify_mt4ds_schema(con)
     finally:
         con.close()
-    return {
+    report: dict[str, object] = {
         "db": str(path),
         "tables": sorted(tables),
         "has_required_tables": {"mrconso", "mrrel"}.issubset(tables),
         "has_snomed_top_level_depth": "snomed_top_level_depth" in tables,
         "source_counts": source_counts,
     }
+    if prepared_report is not None:
+        report["prepared_schema"] = {
+            key: prepared_report.get(key)
+            for key in (
+                "prepared_schema_version",
+                "patient_friendly_policy_version",
+                "package_version",
+                "errors",
+            )
+        }
+    # QC-451 (MEDIUM): machine-readable verdict. Pre-fix, `data verify`
+    # always exited 0 — a DB missing required tables or with zero codes in
+    # every requested source reported a 'successful' verification, so
+    # `verify && deploy` gates were no-ops. ok=False when required tables
+    # are missing, every requested source has zero codes, or the prepared
+    # schema verification reported errors.
+    ok = bool(source_counts) and bool(report["has_required_tables"])
+    if prepared_report is not None:
+        ok = ok and not prepared_report.get("errors")
+    report["ok"] = ok
+    return report
 
 
 def verify_umls_duckdb(
@@ -681,17 +839,79 @@ def _sql_path_list(paths: tuple[Path, ...]) -> str:
     # Defense-in-depth (Tier B hardening): paths come from _find_rrf_files
     # traversal of a CLI-supplied directory. An attacker with write access to
     # that directory could otherwise name a file with characters that break
-    # out of the SQL string literal. Allow only safe path characters.
-    _PATH_ALLOWED = re.compile(r"^[A-Za-z0-9._/\-:\\]+$")
+    # out of the SQL string literal.
+    #
+    # QC-444 (MEDIUM): the previous allowlist regex over-blocked legal paths
+    # — a space or any unicode character (common on Windows/macOS layouts
+    # like 'C:\Users\John Doe\Downloads\2026AA\') was rejected even though
+    # _sql_string escapes single quotes. The guard now blocks only control
+    # characters (illegal in filenames anyway) and the quote itself (already
+    # escaped by _sql_string — kept as belt-and-suspenders).
+    _PATH_FORBIDDEN = re.compile(r"[\x00-\x1f']")
     parts: list[str] = []
     for path in paths:
         path_str = str(path)
-        if not _PATH_ALLOWED.match(path_str):
+        if _PATH_FORBIDDEN.search(path_str):
             raise RuntimeError(
-                f"Refusing SQL path with disallowed characters: {path_str!r}"
+                f"Refusing SQL path with control characters or quotes: {path_str!r}"
             )
         parts.append(_sql_string(path_str))
     return "[" + ", ".join(parts) + "]"
+
+
+def _insert_rows_batched(con, insert_prefix: str, rows: list[tuple], *, chunk_size: int = 1000) -> None:
+    """Insert rows via chunked multi-row VALUES statements.
+
+    QC-456 (MEDIUM): ``con.executemany`` runs DuckDB prepared-statement round
+    trips per row (~1.2 ms/row locally — ~37 min for production's 386k
+    snomed_top_level_depth rows). Multi-row VALUES batches measured ~100x
+    faster for the same data. Bounded chunk size keeps each statement's
+    parameter count modest.
+    """
+    for start in range(0, len(rows), chunk_size):
+        batch = rows[start : start + chunk_size]
+        placeholders = ", ".join(
+            "(" + ", ".join(["?"] * len(row)) + ")" for row in batch
+        )
+        con.execute(
+            f"{insert_prefix} {placeholders}",
+            [value for row in batch for value in row],
+        )
+
+
+def _validate_mrconso_alignment(con) -> None:
+    """Refuse MRCONSO ingests whose columns are silently shifted (QC-462 LOW).
+
+    A hand-trimmed or tool-generated MRCONSO that drops one mid-file column
+    can still produce exactly 18 pipe-delimited slots (the trailing pipe pads
+    the loss), which ``strict_mode=false`` accepts. Every column from the
+    drop point onward is then shifted (SAB holds TTY values, CODE holds STR)
+    and the build previously exited 0 with garbage data. A non-empty mrconso
+    where not a single row carries a known UMLS SAB is that corruption
+    signature — real UMLS subsets always contain at least one recognized
+    vocabulary.
+    """
+    total = int(con.execute("SELECT COUNT(*) FROM mrconso").fetchone()[0])
+    if total == 0:
+        return
+    from medterm4ds.sources import SOURCE_STRATEGIES
+
+    known_sabs = sorted(set(SOURCE_STRATEGIES) | {"MTH"})
+    placeholders = ", ".join(["?"] * len(known_sabs))
+    known = int(
+        con.execute(
+            f"SELECT COUNT(*) FROM mrconso WHERE SAB IN ({placeholders})",  # noqa: S608
+            known_sabs,
+        ).fetchone()[0]
+    )
+    if known == 0:
+        raise RuntimeError(
+            "MRCONSO field alignment check failed: 0 of "
+            f"{total} rows carry a known UMLS SAB (expected one of "
+            f"{', '.join(known_sabs[:8])}, ...). The RRF file's columns are "
+            "likely shifted (a dropped mid-file column padded by the "
+            "trailing pipe produces exactly 18 slots)."
+        )
 
 
 def _sql_string(value: str) -> str:

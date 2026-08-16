@@ -7,6 +7,7 @@ for provenance tracking, and builds prepared runtime tables from raw UMLS data.
 from __future__ import annotations
 
 import logging
+import re
 from datetime import datetime, timezone
 
 import duckdb
@@ -14,6 +15,9 @@ import duckdb
 from medterm4ds.sources import (
     BROAD_CHV_NAMES,
     BROAD_MEDLINEPLUS_NAMES,
+    LOINC_CLASS_RELA,
+    RELA_HIERARCHY_CHILD_SIDE,
+    RELA_HIERARCHY_PARENT_SIDE,
     RXNORM_BASE_TTY_PRIORITY,
     RXNORM_TTY_TOPOLOGY,
     SOURCE_STRATEGIES,
@@ -22,7 +26,17 @@ from medterm4ds.sources import (
 
 logger = logging.getLogger(__name__)
 
-PREPARED_SCHEMA_VERSION = "0.8"
+# QC-407 (MEDIUM): bumped 0.8 -> 0.9 because the sweep changed prepared-table
+# BUILDER LOGIC without bumping (QC-016 best_atoms CPT PT-first ranking;
+# QC-340/345/349/350 hierarchy_edges/walk_edges RELA vocabulary incl. RXNORM/
+# MSH isa-family + LNC class_of; same_cui_edges is_active semantics). The
+# production manifest still says 0.8, so with this bump `medterm4ds data
+# verify`, verify_mt4ds_schema(), and the runtime
+# _prepared_schema_version_is_current() gate all DETECT the stale tables and
+# steer the operator to rebuild instead of silently serving stale answers
+# (QC-404 walk_edges, QC-405 best_atoms, QC-412 same_cui_edges). ANY change
+# to builder SQL below must bump this value.
+PREPARED_SCHEMA_VERSION = "0.9"
 PATIENT_FRIENDLY_POLICY_VERSION = "0.2"
 
 _UMLS_TABLES = ("mrconso", "mrrel", "mrsat")
@@ -145,22 +159,53 @@ def _current_catalog(con) -> str:
     return "memory"
 
 
+# QC-459 (HIGH): views previously baked the build-time catalog (DB filename
+# stem) into their DDL ('... FROM "valid"."main"."mrconso"'). DuckDB re-binds
+# view bodies at query time, so any copy/rename of a built DB (deploy.sh
+# copies, role-split names, backups) dangled the baked reference and every
+# umls.* read failed with 'Binder Error: Catalog "valid" does not exist'.
+# A three-part (catalog.schema.table) reference right after FROM is the
+# fingerprint of a baked view; schema-qualified references (main.<table>)
+# resolve against the CURRENT catalog and survive renames.
+_BAKED_CATALOG_REF = re.compile(r"\bFROM\s+[^\s,;]+(?:\.[^\s,;]+){2,}")
+
+
+def _umls_view_sql(con, table: str) -> str | None:
+    """Return the stored SQL of umls.<table> if it is a view, else None."""
+    rows = con.execute(
+        "SELECT sql FROM duckdb_views() "
+        "WHERE schema_name = 'umls' AND view_name = ? AND internal = false",
+        [table],
+    ).fetchall()
+    return str(rows[0][0]) if rows else None
+
+
 def _ensure_views(con, locations: dict[str, str]) -> list[str]:
     """Create stable ``umls`` schema views over raw ``main`` UMLS tables.
 
     If a raw table already exists in ``umls``, it is treated as authoritative
     and is not replaced. Builders still use ``_raw_ref`` so either layout works.
+
+    Views reference ``main.<table>`` WITHOUT a catalog qualifier (QC-459) so
+    the DB file stays relocatable; a pre-existing view whose SQL still bakes
+    a catalog name (built by an older medterm4ds) is dropped and recreated.
     """
     views: list[str] = []
     for table in _UMLS_TABLES:
         if locations.get(table) != "main":
             continue
-        if _table_exists(con, "umls", table):
+        existing_sql = _umls_view_sql(con, table)
+        if existing_sql is not None and not _BAKED_CATALOG_REF.search(existing_sql):
             continue
-        catalog = _current_catalog(con)
+        if existing_sql is not None:
+            con.execute(f'DROP VIEW "{_current_catalog(con)}"."umls"."{table}"')
+        # Three-part TARGET (unambiguous even when the DB filename stem equals
+        # a schema name, e.g. 'umls.duckdb' -> catalog 'umls'), two-part BODY
+        # (relocatable: 'main.<table>' re-binds against the current catalog
+        # after any copy/rename).
         con.execute(
-            f'CREATE VIEW "{catalog}"."umls"."{table}" AS '
-            f'SELECT * FROM "{catalog}"."main"."{table}"'
+            f'CREATE VIEW "{_current_catalog(con)}"."umls"."{table}" AS '
+            f'SELECT * FROM "main"."{table}"'
         )
         views.append(table)
     return views
@@ -182,8 +227,12 @@ def _upsert_manifest(con, key: str, value: str) -> None:
 # Sources that use REL='PAR' AND RELA IS NULL for hierarchy
 _PAR_SOURCES = frozenset({"ICD10CM", "ICD10PCS", "HCPCS", "LNC"})
 
-# Sources that use RELA='isa' for hierarchy
-_RELA_ISA_SOURCES = frozenset({"CPT", "ATC", "MSH"})
+# Sources that use the RELA isa/inverse_isa family (+ ATC has_member /
+# member_of, LOINC-not) for hierarchy. RXNORM added by QC-349 (EC-15 HIGH):
+# its 238,329 isa/inverse_isa edges were previously excluded because
+# RxNormStrategy.hierarchy_edge_sql() returned None, leaving the prepared
+# hierarchy empty for RxNorm while $subsumes was advertised.
+_RELA_ISA_SOURCES = frozenset({"CPT", "ATC", "MSH", "RXNORM"})
 
 _REPLACEMENT_RELAS = (
     "same_as",
@@ -225,9 +274,15 @@ def _best_atom_order_sql() -> str:
                   END
                 WHEN source = 'CPT' THEN
                   CASE upper(tty)
-                    WHEN 'ETCF' THEN 0
-                    WHEN 'ETCLIN' THEN 1
-                    WHEN 'PT' THEN 2
+                    -- PT (AMA's published preferred term) is rank 0; ETCF/ETCLIN
+                    -- are CMS clinical-equivalent atoms added for billing, NOT
+                    -- the canonical CPT display. Pre-QC-016 this ranked ETCF
+                    -- above PT, returning the wrong CUI/display/tty for ~90% of
+                    -- CPT codes and diverging from the legacy mrconso path
+                    -- (which uses PT>MH>LN>else). Found by DATA_INTEGRITY lens.
+                    WHEN 'PT' THEN 0
+                    WHEN 'ETCF' THEN 1
+                    WHEN 'ETCLIN' THEN 2
                     WHEN 'SY' THEN 3
                     ELSE 4
                   END
@@ -282,14 +337,14 @@ def _prepare_atoms(con, *, replace: bool) -> dict[str, object]:
         """
     )
     for ddl in (
-        f"CREATE INDEX idx_mt4ds_atoms_source_code ON {qualified}(source, code)",
-        f"CREATE INDEX idx_mt4ds_atoms_aui ON {qualified}(aui)",
-        f"CREATE INDEX idx_mt4ds_atoms_cui_source ON {qualified}(cui, source)",
+        f"CREATE INDEX IF NOT EXISTS idx_mt4ds_atoms_source_code ON {qualified}(source, code)",
+        f"CREATE INDEX IF NOT EXISTS idx_mt4ds_atoms_aui ON {qualified}(aui)",
+        f"CREATE INDEX IF NOT EXISTS idx_mt4ds_atoms_cui_source ON {qualified}(cui, source)",
     ):
         try:
             con.execute(ddl)
-        except Exception as exc:
-            logger.debug("Skipping index on %s: %s", qualified, exc)
+        except duckdb.Error as exc:
+            logger.warning("Skipping index on %s: %s", qualified, exc)
 
     rows = _row_count(con, qualified)
     logger.info("Built %s: %s rows", qualified, rows)
@@ -322,11 +377,11 @@ def _prepare_best_atoms(con, *, replace: bool) -> dict[str, object]:
     )
     try:
         con.execute(
-            f"CREATE INDEX idx_mt4ds_best_atoms_source_code_rank "
+            f"CREATE INDEX IF NOT EXISTS idx_mt4ds_best_atoms_source_code_rank "
             f"ON {qualified}(source, code, rank)"
         )
-    except Exception as exc:
-        logger.debug("Skipping index on %s: %s", qualified, exc)
+    except duckdb.Error as exc:
+        logger.warning("Skipping index on %s: %s", qualified, exc)
 
     rows = _row_count(con, qualified)
     logger.info("Built %s: %s rows", qualified, rows)
@@ -462,12 +517,12 @@ def _prepare_hierarchy_edges(con, *, replace: bool) -> dict[str, object]:
               AND child.code != parent.code
             """
         )
-
-    # RELA='isa' sources (CPT, ATC, MSH). Direction must respect REL:
-    # PAR/inverse_isa rows store child in AUI1 and parent in AUI2, while
-    # CHD/isa rows store parent in AUI1 and child in AUI2.
-    if rela_isa_sources:
-        sab_list = ", ".join(f"'{s}'" for s in sorted(rela_isa_sources))
+        # LOINC multiaxial hierarchy (found by QC-350, EC-15 HIGH): REL='RO'
+        # RELA='class_of' rows (284,774 in UMLS 2026AA) connect every lab code
+        # to its multiaxial classes (Laboratory/Chemistry/Hematology/...).
+        # These rows store the code (child) in AUI1 and the class (parent) in
+        # AUI2; they are NOT mirrored in UMLS, so a single SELECT suffices.
+        # RELA vocabulary is canonical in sources.base (LOINC_CLASS_RELA).
         union_parts.append(
             f"""
             SELECT DISTINCT
@@ -481,8 +536,38 @@ def _prepare_hierarchy_edges(con, *, replace: bool) -> dict[str, object]:
             FROM {mrrel_ref} r
             JOIN mt4ds.atoms child ON child.aui = r.AUI1
             JOIN mt4ds.atoms parent ON parent.aui = r.AUI2
-            WHERE r.REL = 'PAR'
-              AND r.RELA IN ('isa', 'inverse_isa')
+            WHERE r.REL = 'RO' AND r.RELA = '{LOINC_CLASS_RELA}'
+              AND child.source IN ({sab_list})
+              AND parent.source = child.source
+              AND child.code != parent.code
+            """
+        )
+
+    # RELA isa-family sources (CPT, ATC, MSH, RXNORM). Direction must respect
+    # REL, never RELA (found by QC-340/345/349, EC-15): UMLS mirrors every
+    # hierarchy edge twice. PAR/RB rows (RELA inverse_isa, has_member) store
+    # child in AUI1 and parent in AUI2; CHD/RN rows (RELA isa, member_of)
+    # store parent in AUI1 and child in AUI2. Vocabulary is canonical in
+    # sources.base (RELA_HIERARCHY_PARENT_SIDE / RELA_HIERARCHY_CHILD_SIDE).
+    if rela_isa_sources:
+        sab_list = ", ".join(f"'{s}'" for s in sorted(rela_isa_sources))
+        parent_side_relas = ", ".join(f"'{v}'" for v in RELA_HIERARCHY_PARENT_SIDE)
+        child_side_relas = ", ".join(f"'{v}'" for v in RELA_HIERARCHY_CHILD_SIDE)
+        union_parts.append(
+            f"""
+            SELECT DISTINCT
+              child.source,
+              child.code AS from_code, child.aui AS from_aui,
+              child.cui AS from_cui, child.tty AS from_tty,
+              parent.code AS to_code, parent.aui AS to_aui,
+              parent.cui AS to_cui, parent.tty AS to_tty,
+              'isa' AS relationship, 'parent' AS direction,
+              'umls_mrrel' AS edge_source
+            FROM {mrrel_ref} r
+            JOIN mt4ds.atoms child ON child.aui = r.AUI1
+            JOIN mt4ds.atoms parent ON parent.aui = r.AUI2
+            WHERE r.REL IN ('PAR', 'RB')
+              AND r.RELA IN ({parent_side_relas})
               AND child.source IN ({sab_list})
               AND parent.source = child.source
               AND child.code != parent.code
@@ -501,8 +586,8 @@ def _prepare_hierarchy_edges(con, *, replace: bool) -> dict[str, object]:
             FROM {mrrel_ref} r
             JOIN mt4ds.atoms parent ON parent.aui = r.AUI1
             JOIN mt4ds.atoms child ON child.aui = r.AUI2
-            WHERE r.REL = 'CHD'
-              AND r.RELA IN ('isa', 'inverse_isa')
+            WHERE r.REL IN ('CHD', 'RN')
+              AND r.RELA IN ({child_side_relas})
               AND child.source IN ({sab_list})
               AND parent.source = child.source
               AND child.code != parent.code
@@ -521,14 +606,14 @@ def _prepare_hierarchy_edges(con, *, replace: bool) -> dict[str, object]:
         )
 
     for ddl in (
-        f"CREATE INDEX idx_mt4ds_hier_from_aui_dir ON {qualified}(source, from_aui, direction)",
-        f"CREATE INDEX idx_mt4ds_hier_to_aui ON {qualified}(source, to_aui)",
-        f"CREATE INDEX idx_mt4ds_hier_from_code ON {qualified}(source, from_code)",
+        f"CREATE INDEX IF NOT EXISTS idx_mt4ds_hier_from_aui_dir ON {qualified}(source, from_aui, direction)",
+        f"CREATE INDEX IF NOT EXISTS idx_mt4ds_hier_to_aui ON {qualified}(source, to_aui)",
+        f"CREATE INDEX IF NOT EXISTS idx_mt4ds_hier_from_code ON {qualified}(source, from_code)",
     ):
         try:
             con.execute(ddl)
-        except Exception as exc:
-            logger.debug("Skipping index on %s: %s", qualified, exc)
+        except duckdb.Error as exc:
+            logger.warning("Skipping index on %s: %s", qualified, exc)
 
     rows = _row_count(con, qualified)
     logger.info("Built %s: %s rows", qualified, rows)
@@ -551,14 +636,14 @@ def _prepare_walk_edges(con, *, replace: bool) -> dict[str, object]:
         """
     )
     for ddl in (
-        f"CREATE INDEX idx_mt4ds_walk_from_aui_dir ON {qualified}(source, from_aui, direction)",
-        f"CREATE INDEX idx_mt4ds_walk_to_aui ON {qualified}(source, to_aui)",
-        f"CREATE INDEX idx_mt4ds_walk_from_code ON {qualified}(source, from_code)",
+        f"CREATE INDEX IF NOT EXISTS idx_mt4ds_walk_from_aui_dir ON {qualified}(source, from_aui, direction)",
+        f"CREATE INDEX IF NOT EXISTS idx_mt4ds_walk_to_aui ON {qualified}(source, to_aui)",
+        f"CREATE INDEX IF NOT EXISTS idx_mt4ds_walk_from_code ON {qualified}(source, from_code)",
     ):
         try:
             con.execute(ddl)
-        except Exception as exc:
-            logger.debug("Skipping index on %s: %s", qualified, exc)
+        except duckdb.Error as exc:
+            logger.warning("Skipping index on %s: %s", qualified, exc)
 
     rows = _row_count(con, qualified)
     logger.info("Built %s: %s rows", qualified, rows)
@@ -659,14 +744,14 @@ def _prepare_walk_closure_limited(
         """
     )
     for ddl in (
-        f"CREATE INDEX idx_mt4ds_walk_closure_from ON {qualified}(source, from_aui, depth)",
-        f"CREATE INDEX idx_mt4ds_walk_closure_to ON {qualified}(source, to_aui)",
-        f"CREATE INDEX idx_mt4ds_walk_closure_code ON {qualified}(source, from_code)",
+        f"CREATE INDEX IF NOT EXISTS idx_mt4ds_walk_closure_from ON {qualified}(source, from_aui, depth)",
+        f"CREATE INDEX IF NOT EXISTS idx_mt4ds_walk_closure_to ON {qualified}(source, to_aui)",
+        f"CREATE INDEX IF NOT EXISTS idx_mt4ds_walk_closure_code ON {qualified}(source, from_code)",
     ):
         try:
             con.execute(ddl)
-        except Exception as exc:
-            logger.debug("Skipping index on %s: %s", qualified, exc)
+        except duckdb.Error as exc:
+            logger.warning("Skipping index on %s: %s", qualified, exc)
 
     rows = _row_count(con, qualified)
     logger.info("Built %s: %s rows", qualified, rows)
@@ -687,18 +772,26 @@ def _prepare_same_cui_edges(con, *, replace: bool) -> dict[str, object]:
     logger.info("Building %s", qualified)
     con.execute(f"DROP TABLE IF EXISTS {qualified}")
 
-    # Step 1: find CUIs that appear as primary meaning in more than one source
+    # Step 1: find CUIs that appear in more than one source (any active atom).
+    # Note: we intentionally do NOT filter on rank=1 here. A source/code may have
+    # multiple atoms across multiple CUIs (different meanings); the rank=1 atom
+    # is the preferred DISPLAY, but other active atoms carry valid cross-source
+    # CUI links. Filtering rank=1 silently drops same-CUI mappings for codes
+    # whose preferred-display atom points to a single-source CUI while a
+    # non-preferred atom points to a multi-source CUI (QC-041/QC-043).
     con.execute(
         "CREATE TEMP TABLE IF NOT EXISTS _mt4ds_multi_cui AS "
         "SELECT cui FROM mt4ds.best_atoms "
-        "WHERE rank = 1 "
+        "WHERE is_active "
         "GROUP BY cui HAVING COUNT(DISTINCT source) > 1"
     )
     con.execute(
         "CREATE INDEX IF NOT EXISTS idx__mt4ds_multi_cui ON _mt4ds_multi_cui(cui)"
     )
 
-    # Step 2: join only multi-source CUIs using primary meaning (rank=1)
+    # Step 2: join active atoms across sources sharing a multi-source CUI.
+    # SELECT DISTINCT deduplicates edges that arise from multiple atoms per
+    # (source, code, cui) within the same source.
     con.execute(
         f"""
         CREATE TABLE {qualified} AS
@@ -708,20 +801,20 @@ def _prepare_same_cui_edges(con, *, replace: bool) -> dict[str, object]:
           a2.aui AS target_aui, a2.cui AS target_cui,
           a2.tty AS target_tty
         FROM _mt4ds_multi_cui mc
-        JOIN mt4ds.best_atoms a1 ON a1.cui = mc.cui AND a1.rank = 1
-        JOIN mt4ds.best_atoms a2 ON a2.cui = mc.cui AND a2.rank = 1 AND a2.source != a1.source
+        JOIN mt4ds.best_atoms a1 ON a1.cui = mc.cui AND a1.is_active
+        JOIN mt4ds.best_atoms a2 ON a2.cui = mc.cui AND a2.is_active AND a2.source != a1.source
         """
     )
     con.execute("DROP TABLE IF EXISTS _mt4ds_multi_cui")
     for ddl in (
-        f"CREATE INDEX idx_mt4ds_samecui_source_code ON {qualified}(source, code)",
-        f"CREATE INDEX idx_mt4ds_samecui_target ON {qualified}(target_source, target_code)",
-        f"CREATE INDEX idx_mt4ds_samecui_cui ON {qualified}(cui)",
+        f"CREATE INDEX IF NOT EXISTS idx_mt4ds_samecui_source_code ON {qualified}(source, code)",
+        f"CREATE INDEX IF NOT EXISTS idx_mt4ds_samecui_target ON {qualified}(target_source, target_code)",
+        f"CREATE INDEX IF NOT EXISTS idx_mt4ds_samecui_cui ON {qualified}(cui)",
     ):
         try:
             con.execute(ddl)
-        except Exception as exc:
-            logger.debug("Skipping index on %s: %s", qualified, exc)
+        except duckdb.Error as exc:
+            logger.warning("Skipping index on %s: %s", qualified, exc)
 
     rows = _row_count(con, qualified)
     logger.info("Built %s: %s rows", qualified, rows)
@@ -763,14 +856,14 @@ def _prepare_crosswalk_edges(con, *, replace: bool) -> dict[str, object]:
         """
     )
     for ddl in (
-        f"CREATE INDEX idx_mt4ds_crosswalk_source_code ON {qualified}(source, code)",
-        f"CREATE INDEX idx_mt4ds_crosswalk_target ON {qualified}(target_source, target_code)",
-        f"CREATE INDEX idx_mt4ds_crosswalk_match ON {qualified}(match_type, priority)",
+        f"CREATE INDEX IF NOT EXISTS idx_mt4ds_crosswalk_source_code ON {qualified}(source, code)",
+        f"CREATE INDEX IF NOT EXISTS idx_mt4ds_crosswalk_target ON {qualified}(target_source, target_code)",
+        f"CREATE INDEX IF NOT EXISTS idx_mt4ds_crosswalk_match ON {qualified}(match_type, priority)",
     ):
         try:
             con.execute(ddl)
-        except Exception as exc:
-            logger.debug("Skipping index on %s: %s", qualified, exc)
+        except duckdb.Error as exc:
+            logger.warning("Skipping index on %s: %s", qualified, exc)
 
     rows = _row_count(con, qualified)
     logger.info("Built %s: %s rows", qualified, rows)
@@ -804,13 +897,13 @@ def _prepare_friendly_atoms(con, *, replace: bool) -> dict[str, object]:
         """
     )
     for ddl in (
-        f"CREATE INDEX idx_mt4ds_friendly_cui ON {qualified}(cui)",
-        f"CREATE INDEX idx_mt4ds_friendly_source_code ON {qualified}(source, code)",
+        f"CREATE INDEX IF NOT EXISTS idx_mt4ds_friendly_cui ON {qualified}(cui)",
+        f"CREATE INDEX IF NOT EXISTS idx_mt4ds_friendly_source_code ON {qualified}(source, code)",
     ):
         try:
             con.execute(ddl)
-        except Exception as exc:
-            logger.debug("Skipping index on %s: %s", qualified, exc)
+        except duckdb.Error as exc:
+            logger.warning("Skipping index on %s: %s", qualified, exc)
 
     rows = _row_count(con, qualified)
     logger.info("Built %s: %s rows", qualified, rows)
@@ -992,14 +1085,14 @@ def _prepare_rxnorm_tty_edges(con, *, replace: bool) -> dict[str, object]:
         """
     )
     for ddl in (
-        f"CREATE INDEX idx_mt4ds_rxntty_source_aui ON {qualified}(source_aui, target_tty)",
-        f"CREATE INDEX idx_mt4ds_rxntty_source_code ON {qualified}(source_code, source_tty)",
-        f"CREATE INDEX idx_mt4ds_rxntty_target_aui ON {qualified}(target_aui)",
+        f"CREATE INDEX IF NOT EXISTS idx_mt4ds_rxntty_source_aui ON {qualified}(source_aui, target_tty)",
+        f"CREATE INDEX IF NOT EXISTS idx_mt4ds_rxntty_source_code ON {qualified}(source_code, source_tty)",
+        f"CREATE INDEX IF NOT EXISTS idx_mt4ds_rxntty_target_aui ON {qualified}(target_aui)",
     ):
         try:
             con.execute(ddl)
-        except Exception as exc:
-            logger.debug("Skipping index on %s: %s", qualified, exc)
+        except duckdb.Error as exc:
+            logger.warning("Skipping index on %s: %s", qualified, exc)
 
     rows = _row_count(con, qualified)
     logger.info("Built %s: %s rows", qualified, rows)
@@ -1038,9 +1131,9 @@ def _prepare_cvx_metadata(con, *, replace: bool) -> dict[str, object]:
         )
 
     try:
-        con.execute(f"CREATE INDEX idx_mt4ds_cvx_metadata_code ON {qualified}(code)")
-    except Exception as exc:
-        logger.debug("Skipping index on %s: %s", qualified, exc)
+        con.execute(f"CREATE INDEX IF NOT EXISTS idx_mt4ds_cvx_metadata_code ON {qualified}(code)")
+    except duckdb.Error as exc:
+        logger.warning("Skipping index on %s: %s", qualified, exc)
 
     rows = _row_count(con, qualified)
     logger.info("Built %s: %s rows", qualified, rows)
@@ -1052,7 +1145,17 @@ def _prepare_code_replacements(con, *, replace: bool) -> dict[str, object]:
     table = "code_replacements"
     qualified = f"mt4ds.{table}"
     if not replace and _table_exists(con, "mt4ds", table):
-        return {table: {"status": "exists", "rows": _row_count(con, qualified)}}
+        rows = _row_count(con, qualified)
+        if rows:
+            return {table: {"status": "exists", "rows": rows}}
+        # QC-398 (HIGH): an existing-but-EMPTY table means the original
+        # build derived nothing (mrrel absent/truncated at prepare time).
+        # Early-returning 'exists:0' here preserved the emptiness forever
+        # and pinned --resolve-mode to the degraded path. Rebuild instead.
+        logger.warning(
+            "%s exists with 0 rows; rebuilding from MRREL replacement RELAs",
+            qualified,
+        )
 
     logger.info("Building %s", qualified)
     con.execute(f"DROP TABLE IF EXISTS {qualified}")
@@ -1124,13 +1227,13 @@ def _prepare_code_replacements(con, *, replace: bool) -> dict[str, object]:
         )
 
     for ddl in (
-        f"CREATE INDEX idx_mt4ds_replacements_old ON {qualified}(source, old_code)",
-        f"CREATE INDEX idx_mt4ds_replacements_new ON {qualified}(source, new_code)",
+        f"CREATE INDEX IF NOT EXISTS idx_mt4ds_replacements_old ON {qualified}(source, old_code)",
+        f"CREATE INDEX IF NOT EXISTS idx_mt4ds_replacements_new ON {qualified}(source, new_code)",
     ):
         try:
             con.execute(ddl)
-        except Exception as exc:
-            logger.debug("Skipping index on %s: %s", qualified, exc)
+        except duckdb.Error as exc:
+            logger.warning("Skipping index on %s: %s", qualified, exc)
 
     rows = _row_count(con, qualified)
     logger.info("Built %s: %s rows", qualified, rows)
@@ -1169,10 +1272,10 @@ def _prepare_snomed_top_level_depth(con, *, replace: bool) -> dict[str, object]:
 
     try:
         con.execute(
-            f"CREATE INDEX idx_mt4ds_snomed_tld_code ON {qualified}(code)"
+            f"CREATE INDEX IF NOT EXISTS idx_mt4ds_snomed_tld_code ON {qualified}(code)"
         )
-    except Exception as exc:
-        logger.debug("Skipping index on %s: %s", qualified, exc)
+    except duckdb.Error as exc:
+        logger.warning("Skipping index on %s: %s", qualified, exc)
 
     rows = _row_count(con, qualified)
     logger.info("Built %s: %s rows", qualified, rows)
@@ -1370,12 +1473,15 @@ def prepare_mt4ds_schema(
 
     # --- Source row counts ---
     source_counts: dict[str, int | None] = {}
+    catalog = _current_catalog(con)
     for table in _UMLS_TABLES:
         location = locations.get(table, "")
         if location == "umls":
-            count = _row_count(con, f'umls."{table}"')
+            # Catalog-qualified (see verify_mt4ds_schema): two-part refs are
+            # ambiguous when the DB filename stem equals the schema name.
+            count = _row_count(con, f'"{catalog}"."umls"."{table}"')
         elif location == "main":
-            count = _row_count(con, f'main."{table}"')
+            count = _row_count(con, f'"{catalog}"."main"."{table}"')
         else:
             count = None
         source_counts[table] = count
@@ -1458,17 +1564,30 @@ def verify_mt4ds_schema(con) -> dict[str, object]:
             source_count_clauses.append((table, location))
     source_counts: dict[str, int] = {}
     if source_count_clauses:
+        # Catalog-qualified refs: a two-part 'umls."mrconso"' is ambiguous
+        # when the DB filename stem equals the schema name (e.g.
+        # 'umls.duckdb' -> catalog 'umls') — the count batch silently failed
+        # (WARNING + None) for such DBs before this was qualified.
+        catalog = _current_catalog(con)
         union_sql = " UNION ALL ".join(
-            f"SELECT '{t}' AS t, COUNT(*) AS n FROM {loc}.\"{t}\""
+            f"SELECT '{t}' AS t, COUNT(*) AS n FROM \"{catalog}\".{loc}.\"{t}\""
             for t, loc in source_count_clauses
         )
         try:
             for row in con.execute(union_sql).fetchall():
                 source_counts[str(row[0])] = int(row[1])
         except duckdb.Error as exc:
+            # QC-459 (HIGH): a broken umls.* view (e.g. catalog-baked view DDL
+            # after a DB copy/rename) previously logged a WARNING and reported
+            # row counts as None while verify still passed. A failing count
+            # probe means the source tables/views are unreadable — surface it
+            # in the report errors so the verdict flips to failure.
             logging.getLogger(__name__).warning(
                 "verify_mt4ds_schema source-table count batch failed: %s. "
                 "Row counts will be reported as None.", exc,
+            )
+            result["errors"].append(  # type: ignore[union-attr]
+                f"source-table count query failed: {exc}"
             )
     for table in _UMLS_TABLES:
         location = locations.get(table, "")
@@ -1512,9 +1631,14 @@ def verify_mt4ds_schema(con) -> dict[str, object]:
             for row in con.execute(union_sql).fetchall():
                 prepared_counts[str(row[0])] = int(row[1])
         except duckdb.Error as exc:
+            # QC-459 (HIGH): same treatment as the source-table batch — an
+            # unreadable prepared table is an error, not a WARNING + None.
             logging.getLogger(__name__).warning(
                 "verify_mt4ds_schema prepared-table count batch failed: %s. "
                 "Row counts will be reported as None.", exc,
+            )
+            result["errors"].append(  # type: ignore[union-attr]
+                f"prepared-table count query failed: {exc}"
             )
 
     prepared_tables: dict[str, dict[str, object]] = {}
@@ -1556,6 +1680,37 @@ def verify_mt4ds_schema(con) -> dict[str, object]:
         result["errors"].append(
             f"missing prepared tables: {', '.join(missing_prepared)}"
         )  # type: ignore[union-attr]
+
+    # QC-460 (MEDIUM): compare live row counts against the golden counts the
+    # manifest recorded at prepare time (source_count.<table> and
+    # table.<name> 'status:rows'). Pre-fix, a DB mutated after prepare —
+    # truncated mrconso, deleted mt4ds rows — verified with errors: [] by
+    # construction: the drift-detection data sat unused in the manifest.
+    if result["manifest_exists"]:
+        try:
+            rows = con.execute(
+                "SELECT key, value FROM mt4ds.prepare_manifest "
+                "WHERE key LIKE 'source_count.%' OR key LIKE 'table.%'"
+            ).fetchall()
+        except duckdb.Error as exc:
+            result["errors"].append(f"manifest golden-count read error: {exc}")  # type: ignore[union-attr]
+        else:
+            for key, value in rows:
+                table = str(key).split(".", 1)[1]
+                try:
+                    golden = int(str(value).rsplit(":", 1)[-1])
+                except ValueError:
+                    continue  # 'status:?' placeholder rows have no count
+                if str(key).startswith("source_count."):
+                    live = source_counts.get(table)
+                else:
+                    live = prepared_counts.get(table)
+                if live is not None and live != golden:
+                    result["errors"].append(  # type: ignore[union-attr]
+                        f"manifest drift on {table}: manifest recorded {golden} rows, "
+                        f"live table has {live} (database changed after prepare)"
+                    )
+
     prepared_version = result.get("prepared_schema_version")
     if prepared_version is not None and str(prepared_version) != PREPARED_SCHEMA_VERSION:
         result["errors"].append(

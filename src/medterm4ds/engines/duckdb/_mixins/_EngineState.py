@@ -3,10 +3,17 @@
 
 from __future__ import annotations
 
+import duckdb
+
 from medterm4ds.engines.duckdb._engine_base import *  # noqa: F401,F403
 from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from medterm4ds.core.config import LocalDuckDBConfig
+from medterm4ds.core.sql import chunks
+
+# Multi-row VALUES batch size for temp-table staging (QC-371). ~1000 keeps
+# each INSERT statement small while amortizing per-statement overhead.
+_TEMP_CODE_BATCH_SIZE = 1000
 
 
 class _EngineState:
@@ -49,18 +56,33 @@ class _EngineState:
         self.cache_prepared = False
         self._snomed_parent_links_cache_prepared = False
         self._prepared_tables_available: bool | None = None
+        # QC-435: warn once per engine instance on prepared-schema version
+        # skew (per-call logging would spam batch patient-friendly workloads).
+        self._prepared_version_mismatch_warned = False
+        # QC-437: distinct missing-table sets already warned about by the
+        # patient-friendly prepared gate (avoids per-call log spam).
+        self._pf_gate_refusal_warned: set[frozenset[str]] = set()
         # Per-instance cache of (table_name -> exists). A single prepare run
         # can issue 60-100+ _table_exists probes against information_schema;
         # memoizing collapses that to one round-trip per unique name.
         # Invalidate via _invalidate_table_exists_cache() after any DDL.
         self._table_exists_cache: dict[str, bool] = {}
         self._active_source_code_cache: dict[str, set[str]] = {}
+        # Per-source walk_edges coverage memo (QC-402). Keyed by source name.
+        self._walk_edges_source_cache: dict[str, bool] = {}
         self.con.execute(f"SET preserve_insertion_order={str(preserve_insertion_order).lower()}")
-        if threads:
+        # QC-465 (MEDIUM): these were falsy checks (``if threads:``), so
+        # explicit-but-falsy overrides were silently DROPPED instead of
+        # applied: threads=0 kept the profile default, memory_limit=''
+        # reverted to DuckDB's ~80%-of-RAM default despite profile='low',
+        # temp_directory='' was ignored. ``None`` means "use the profile
+        # default"; anything else is forwarded (and local_duckdb_config
+        # has already rejected malformed values with a named ValueError).
+        if threads is not None:
             self.con.execute(f"PRAGMA threads={int(threads)}")
-        if memory_limit:
+        if memory_limit is not None:
             self.con.execute(f"PRAGMA memory_limit='{memory_limit}'")
-        if temp_directory:
+        if temp_directory is not None:
             self.con.execute(f"PRAGMA temp_directory='{Path(temp_directory)}'")
 
 
@@ -235,6 +257,38 @@ class _EngineState:
         self._table_exists_cache[name] = result
         return result
 
+    def _walk_edges_cover_source(self, source: str) -> bool:
+        """QC-402 (MEDIUM): per-source non-empty gate on ``mt4ds.walk_edges``.
+
+        Mirrors the QC-398 gate on ``code_replacements``: production prepared
+        tables can predate builder fixes that ADDED whole sources (RXNORM/MSH
+        have 0 rows) or new edge vocabularies (ATC partial, LNC missing
+        class_of). Gating the prepared hierarchy dispatch on TABLE EXISTENCE
+        alone let a source with no rows silently return [] on every surface
+        while raw mrrel has the edges. A source with no walk_edges rows defers
+        to the raw-mrrel path. ``LIMIT 1`` keeps the probe bounded (indexed on
+        the leading ``source`` column); memoized because the dispatch runs per
+        (source, chunk).
+        """
+        cached = self._walk_edges_source_cache.get(source)
+        if cached is not None:
+            return cached
+        probe = self.con.execute(
+            "SELECT 1 FROM mt4ds.walk_edges WHERE source = ? LIMIT 1",
+            [source],
+        ).fetchone()
+        covered = probe is not None
+        if not covered:
+            logger.warning(
+                "mt4ds.walk_edges has 0 rows for source %r — hierarchy ops for "
+                "this source fall back to the raw mrrel path (prepared tables "
+                "are stale or partial; rebuild with `medterm4ds data "
+                "prepare-derived --db <db>`).",
+                source,
+            )
+        self._walk_edges_source_cache[source] = covered
+        return covered
+
     def _invalidate_table_exists_cache(self) -> None:
         """Clear the _table_exists cache. Call after any DDL that may have
         created or dropped tables (prepare_cache, CREATE TEMP TABLE, etc.)."""
@@ -251,7 +305,13 @@ class _EngineState:
                     "WHERE table_schema = 'mt4ds' AND table_name = 'best_atoms'"
                 ).fetchall()
                 self._prepared_tables_available = len(rows) > 0
-            except Exception:
+            except duckdb.Error as exc:
+                # QC-437 sibling: narrow to duckdb.Error, log the degraded probe.
+                logger.warning(
+                    "Failed to probe for mt4ds.best_atoms (%s); prepared-table "
+                    "paths treated as unavailable.",
+                    exc,
+                )
                 self._prepared_tables_available = False
         return self._prepared_tables_available
 
@@ -281,8 +341,40 @@ class _EngineState:
                 return True
             from medterm4ds.engines.duckdb.prepared import PREPARED_SCHEMA_VERSION
 
-            return str(row[0]) == PREPARED_SCHEMA_VERSION
-        except Exception:
+            if str(row[0]) != PREPARED_SCHEMA_VERSION:
+                # QC-435 (HIGH)/QC-437 (LOW): the version gate silently
+                # disabled the prepared patient-friendly/crosswalk paths —
+                # every answer came from the legacy resolver (LNC raising
+                # NotImplementedError) with no operator signal. Loudly warn
+                # ONCE per engine instance naming both versions and the
+                # consequence; remediation is a rebuild of the PERSISTED
+                # mt4ds schema (engine.prepare_cache only builds temp tables
+                # and cannot re-version it).
+                if not self._prepared_version_mismatch_warned:
+                    logger.warning(
+                        "Prepared mt4ds schema version %s does not match package "
+                        "version %s — prepared patient-friendly/crosswalk paths are "
+                        "DISABLED for this connection; answers are served by the "
+                        "legacy raw-mrrel resolver (LNC patient-friendly unsupported). "
+                        "Rebuild the persisted mt4ds schema: medterm4ds data "
+                        "prepare-derived --db <db>.",
+                        row[0],
+                        PREPARED_SCHEMA_VERSION,
+                    )
+                    self._prepared_version_mismatch_warned = True
+                return False
+            return True
+        except duckdb.Error as exc:
+            # QC-437: narrow the bare ``except Exception`` to duckdb.Error so
+            # programming bugs propagate; a failed probe is still a degraded
+            # gate and must be visible, not silent.
+            logger.warning(
+                "Failed to read mt4ds.prepare_manifest (%s); treating the "
+                "prepared schema version as NOT current — prepared "
+                "patient-friendly/crosswalk paths are disabled and the legacy "
+                "resolver serves answers.",
+                exc,
+            )
             return False
 
     @contextmanager
@@ -292,10 +384,20 @@ class _EngineState:
         table = f"_mt4ds_codes_{uuid4().hex}"
         self.con.execute(f"CREATE TEMP TABLE {table} (code VARCHAR)")
         try:
-            self.con.executemany(
-                f"INSERT INTO {table} VALUES (?)",
-                [(str(code),) for code in _dedupe(codes)],
-            )
+            # QC-371 (LOW): executemany issued one single-row INSERT per code
+            # (~4.7K rows/s), dominating batch-lookup wall time at 100K
+            # inputs. Stage via multi-row VALUES batches instead — WITH
+            # bound placeholders (not sql_values literals) so codes carrying
+            # control characters / quote bytes stay safe (regression caught
+            # by test_xml_control_chars_sanitized_qc300: code "a\0b" broke
+            # the literal form with a Parser Error).
+            rows = [(str(code),) for code in _dedupe(codes)]
+            for batch in chunks(rows, _TEMP_CODE_BATCH_SIZE):
+                placeholders = ", ".join(["(?)"] * len(batch))
+                self.con.execute(
+                    f"INSERT INTO {table} VALUES {placeholders}",
+                    [value for row in batch for value in row],
+                )
             yield table
         finally:
             self.con.execute(f"DROP TABLE IF EXISTS {table}")
