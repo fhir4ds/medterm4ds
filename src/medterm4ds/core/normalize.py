@@ -53,6 +53,40 @@ def normalize_source(source: str) -> str:
     return SOURCE_MAP.get(source.strip().upper(), source.strip().upper())
 
 
+def validate_source_sab(source: str) -> None:
+    """Reject empty/whitespace and URI/OID-form source names.
+
+    QC-422 (MEDIUM): the CLI (_code_source_pairs, QC-324/378) and MCP
+    (_validate_source_sab, QC-322/389) boundaries reject these inputs, but
+    the Python facade funneled the same inputs into the service layer, which
+    returned success-shaped empty data. Canonical messages live here so every
+    surface inherits identical diagnostics. An UNKNOWN-but-well-formed SAB is
+    valid (it legitimately resolves to not-found); only malformed forms are
+    rejected.
+    """
+    if not source.strip():
+        raise ValueError(
+            "source must be a non-empty vocabulary name (UMLS SAB, "
+            f"e.g. SNOMEDCT_US), got {source!r}."
+        )
+    if "://" in source or source.lower().startswith("urn:oid:"):
+        raise ValueError(
+            f"source expects a UMLS SAB string (e.g. SNOMEDCT_US), got "
+            f"{source!r} (looks like a URI/OID). FHIR URIs are not accepted "
+            f"here; use the SAB form."
+        )
+
+
+def validate_code_nonempty(code: str) -> None:
+    """Reject empty/whitespace code values (QC-324 empty-code family).
+
+    An empty code is never a valid invocation — reject with a diagnostic
+    instead of a success-shaped null-field record.
+    """
+    if not code.strip():
+        raise ValueError(f"code must be a non-empty string, got {code!r}")
+
+
 def normalize_icd10_to_category(code: str) -> str:
     """Map an ICD-10-CM code to its category-level parent.
 

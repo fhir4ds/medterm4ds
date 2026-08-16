@@ -18,6 +18,15 @@ class CodeRef:
     code: str
 
     def __post_init__(self) -> None:
+        # Per GLOBAL_RULES "Silent Fallbacks": programming bugs MUST propagate.
+        # ``str(None) == 'None'`` would silently turn a None code into the
+        # literal string 'None', producing a misleading 'not found' instead of
+        # a type error. Found by QC-003 (EDGE_CASE LOW). Same shape applies to
+        # ``source`` (str(None) is 'None', not a real SAB).
+        if self.source is None:
+            raise TypeError("CodeRef.source must be a string, got None")
+        if self.code is None:
+            raise TypeError("CodeRef.code must be a string, got None")
         object.__setattr__(self, "source", normalize_source(self.source))
         object.__setattr__(self, "code", str(self.code))
 
@@ -362,7 +371,9 @@ class ConceptMapRow:
             source_display=result.technical_name,
             target=target,
             target_display=result.name,
-            relationship=conceptmap_relationship(result.match_type),
+            relationship=conceptmap_relationship(
+                result.match_type, match_depth=result.match_depth
+            ),
             friendly_source=result.friendly_source,
             match_type=result.match_type,
             match_depth=result.match_depth,
@@ -457,8 +468,37 @@ class OptimizeResult:
         }
 
 
-def conceptmap_relationship(match_type: str | None) -> str:
-    """Map patient-friendly match types to a small stable relationship vocabulary."""
+# Match types that represent a depth-0 self-hit / exact / same-CUI match
+# (semantically equivalent to the source concept). All other depth>0
+# hierarchical / TTY-traversal / fallback match types are narrower-than-target.
+# Found by QC-074/QC-081/QC-094/QC-095 (CRITICAL x3 + HIGH): pre-fix,
+# conceptmap_relationship only checked match_type.startswith('broader'),
+# mislabeling snomed_fallback / snomed_to_target_* / group depth>0 /
+# ingredient depth>0 / cvx_group as 'equivalent' (100K+ production rows).
+_EQUIVALENT_MATCH_TYPES: frozenset[str] = frozenset({
+    "exact",
+    "same_cui",
+})
+
+
+def conceptmap_relationship(match_type: str | None, *, match_depth: int = 0) -> str:
+    """Map patient-friendly match types to a small stable relationship vocabulary.
+
+    Dispatches on the (match_type, match_depth) tuple:
+
+      * None / 'none' -> 'unmatched'
+      * 'original' -> 'not-translated' (no translation in target system)
+      * 'component' / 'first_axis' / 'loinc_common' -> 'related-to'
+        (related but not equivalent)
+      * depth==0 self-hits ('exact', 'same_cui', 'group', 'ingredient')
+        -> 'equivalent'
+      * ALL depth>0 hierarchical / TTY-traversal / cross-source fallback
+        match types ('broader*', 'snomed_fallback', 'snomed_to_target_*',
+        'group' at depth>0, 'ingredient' at depth>0, 'cvx_group') ->
+        'source-is-narrower-than-target' (the source is a specific concept
+        that maps to a broader / generic / family-level patient-friendly
+        name)
+    """
     if not match_type or match_type == "none":
         return "unmatched"
     if match_type.startswith("broader"):
@@ -467,6 +507,19 @@ def conceptmap_relationship(match_type: str | None) -> str:
         return "related-to"
     if match_type == "original":
         return "not-translated"
+    # depth>0 always means the friendly name is broader (ancestor, generic
+    # group, or disease family). snomed_fallback / snomed_to_target_* /
+    # cvx_group always carry depth>0 semantics by construction.
+    if match_depth > 0:
+        return "source-is-narrower-than-target"
+    # depth==0 with a depth-self-hit match type (exact, same_cui, group,
+    # ingredient) is a true equivalence.
+    if match_type in _EQUIVALENT_MATCH_TYPES:
+        return "equivalent"
+    # 'group'/'ingredient'/'cvx_group' at depth==0 are self-hits (TTY
+    # traversal that landed on the same concept) -> equivalent.
+    if match_type in {"group", "ingredient", "cvx_group"}:
+        return "equivalent"
     return "equivalent"
 
 
