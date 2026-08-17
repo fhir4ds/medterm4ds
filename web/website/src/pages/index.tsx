@@ -21,10 +21,11 @@ info = terms.lookup("SNOMEDCT_US", "44054006")
 print(info.name)
 # → "Type 2 diabetes mellitus"
 
-friendly = terms.patient_friendly("SNOMEDCT_US", "44054006")
-print(friendly.name)
-# → "Diabetes Type 2"`,
-    desc: 'Look up any code and get its display name, properties, and patient-friendly name.',
+# Any code system, same API
+info = terms.lookup("RXNORM", "860975")
+print(info.name)
+# → "Metformin Oral Product"`,
+    desc: 'Look up any code and get its display name, properties, and metadata.',
   },
   {
     title: 'Hierarchy',
