@@ -804,9 +804,9 @@ class TestComposeExcludeEdgeCases:
         status, body = _post_expand(fhir_client, vs)
         assert status == 200, f"body={body}"
         codes = _contains_codes(body)
-        # exclude.filter is ignored → both concepts remain.
-        assert (SNOMED_URI, SNOMED_DIABETES_MELLITUS) in codes
-        assert (SNOMED_URI, SNOMED_T2DM) in codes
+        # QC-242 (EC-10, HIGH) RESOLVED: exclude.filter is honored — the
+        # is-a exclusion removes the whole subtree (root + descendant).
+        assert codes == []
 
     def test_e53_exclude_after_filter_keeps_filter_descendants(self, fhir_client):
         """exclude after a filter-based include: the exclude operates on
@@ -1049,12 +1049,13 @@ class TestHierarchicalExpansionNotPaged:
         body_b = r.json()
         codes_b = _contains_codes(body_b)
 
-        # Hierarchical expansion: offset is ignored per spec. The two
-        # contains lists MUST be identical (both contain root + descendants).
-        # WHEN paging lands for hierarchical expansions, this assertion MUST
-        # be updated.
-        assert set(codes_a) == set(codes_b), (
-            f"hierarchical expansion differs with offset: "
+        # QC-241 (EC-10, HIGH) RESOLVED: offset pages every $expand mode.
+        # medterm4ds expansions are FLAT (expansion.contains is a list, no
+        # hierarchical CodeSystem-style nesting), so the FHIR R4 "hierarchical
+        # expansions SHALL not be paged" caveat does not apply — offset=10
+        # past this fixture's 2-code expansion pages to an empty page.
+        assert codes_b == [], (
+            f"flat expansion must page with offset: "
             f"no_offset={set(codes_a)!r}, offset=10={set(codes_b)!r}"
         )
 

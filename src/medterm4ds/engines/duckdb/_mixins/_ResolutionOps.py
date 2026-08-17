@@ -49,12 +49,21 @@ class _ResolutionOps:
         if source == "RXNORM":
             return self._resolve_rxnorm(codes)
         if source == "LNC":
+            # QC-435: the old message pointed at engine.prepare_cache(['LNC'])
+            # / prepare_cache=True — which only builds TEMP mrconso/mrrel
+            # tables and can never satisfy this requirement, so the named
+            # remediation always failed. Name the actual fix: rebuild the
+            # PERSISTED mt4ds prepared schema (check the WARNING the version
+            # gate logs when manifest and package versions diverge).
             raise NotImplementedError(
-                "LOINC patient-friendly resolution requires the prepared cache. "
-                "Call engine.prepare_cache(['LNC']) (or pass prepare_cache=True to "
-                "mt.connect / your app's settings) before querying LOINC codes. "
-                "The legacy raw-mrrel path was removed because it silently missed "
-                "patient-friendly names that the prepared path finds "
+                "LOINC patient-friendly resolution requires the persisted "
+                "prepared schema (mt4ds.best_atoms / friendly_atoms / "
+                "walk_edges), which this connection does not have at the "
+                "current version. engine.prepare_cache() cannot fix this — "
+                "it only builds temp tables. Rebuild the persisted mt4ds "
+                "schema with: medterm4ds data prepare-derived --db <db>. "
+                "The legacy raw-mrrel path was removed because it silently "
+                "missed patient-friendly names that the prepared path finds "
                 "(see scripts/loinc_legacy_prepared_diff.py for the audit)."
             )
         if source == "CPT":

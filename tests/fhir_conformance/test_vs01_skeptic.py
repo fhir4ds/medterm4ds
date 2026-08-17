@@ -841,11 +841,9 @@ class TestEdgeCases:
         status, body = _post_expand(fhir_client, vs)
         assert status == 200
         codes = _contains_codes(body)
-        # Current behavior: exclude.filter is silently ignored → both codes
-        # remain in the expansion. If this fails, exclude filters are now
-        # honored → both codes should be removed.
-        assert (SNOMED_URI, SNOMED_DIABETES_MELLITUS) in codes
-        assert (SNOMED_URI, SNOMED_T2DM) in codes
+        # QC-242 (EC-10, HIGH) RESOLVED: exclude.filter is honored — the
+        # is-a exclusion removes the whole subtree (root + descendant).
+        assert codes == []
 
     def test_s81_exclude_ignores_system_when_matching_codes(self, fhir_client):
         """The exclude path matches `c["code"] not in exc_codes` (line 1993).
@@ -867,21 +865,22 @@ class TestEdgeCases:
                     # behavior).
                     {"system": ICD10CM_URI, "concept": [{"code": ICD10CM_T2DM}]},
                 ],
-                # Exclude by code "E11" without matching system.
+                # Exclude by code "E11" in a DIFFERENT real, resolvable
+                # system (an unresolvable exclude system now 400s per
+                # QC-252, so the drift probe uses a real second system).
                 "exclude": [
-                    {"system": "http://example.org/different-system", "concept": [{"code": ICD10CM_T2DM}]}
+                    {"system": SNOMED_URI, "concept": [{"code": ICD10CM_T2DM}]}
                 ],
             },
         }
         status, body = _post_expand(fhir_client, vs)
         assert status == 200
         codes = _contains_codes(body)
-        # Current behavior: exclude matches on code alone, ignoring system.
-        # The ICD10CM E11 IS removed even though the exclude references a
-        # different system. Pinning the cross-system-drift behavior.
-        assert (ICD10CM_URI, ICD10CM_T2DM) not in codes, (
-            "If this fails, exclude is now scoped by (system, code) — "
-            "update the probe to assert the code REMAINS."
+        # QC-244 (EC-10, MEDIUM) RESOLVED: exclude is scoped by
+        # (canonical system, code) → the ICD-10-CM E11 REMAINS despite the
+        # SNOMED exclude block listing the same digit string.
+        assert (ICD10CM_URI, ICD10CM_T2DM) in codes, (
+            "exclude must be scoped to the exclude block's system (QC-244)"
         )
 
     def test_s82_multi_system_compose_union(self, fhir_client):

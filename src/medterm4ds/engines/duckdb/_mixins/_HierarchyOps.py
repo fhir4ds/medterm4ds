@@ -24,8 +24,13 @@ class _HierarchyOps:
         direction: str,
         max_depth: int = 1,
         limit: int | None = None,
+        include_retired: bool = False,
     ) -> list[CodeRelation]:
-        """Return same-source hierarchy relationships for input codes."""
+        """Return same-source hierarchy relationships for input codes.
+
+        ``include_retired=True`` includes retired/editorial-suppressed
+        concepts as walk targets (default prunes to active-only).
+        """
         if not codes:
             return []
         if max_depth < 1:
@@ -55,6 +60,7 @@ class _HierarchyOps:
                         upward=upward,
                         max_depth=max_depth,
                         limit=limit,
+                        include_retired=include_retired,
                     )
                 )
         return [
@@ -81,6 +87,7 @@ class _HierarchyOps:
         upward: bool,
         max_depth: int,
         limit: int | None = None,
+        include_retired: bool = False,
     ) -> list[tuple[int, CodeRelation]]:
         return _hierarchy.get_source_code_relations(
             self,
@@ -90,6 +97,7 @@ class _HierarchyOps:
             upward=upward,
             max_depth=max_depth,
             limit=limit,
+            include_retired=include_retired,
         )
 
 
@@ -102,6 +110,7 @@ class _HierarchyOps:
         relationship: str,
         upward: bool,
         max_depth: int,
+        include_retired: bool = False,
     ) -> list[tuple[int, CodeRelation]]:
         return _hierarchy.get_source_code_relations_prepared(
             self,
@@ -110,5 +119,6 @@ class _HierarchyOps:
             relationship=relationship,
             upward=upward,
             max_depth=max_depth,
+            include_retired=include_retired,
         )
 

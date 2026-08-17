@@ -5,6 +5,10 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from typing import Any
 
+# Cap on inferred (non-explicit) table columns; dropping columns beyond this
+# is surfaced via a "... N more columns" suffix (QC-370).
+_MAX_INFERRED_COLUMNS = 8
+
 
 def render_table(
     rows: Sequence[Mapping[str, Any]],
@@ -13,11 +17,21 @@ def render_table(
     max_width: int = 36,
     max_rows: int | None = None,
 ) -> str:
-    """Render dictionaries as a compact ASCII table."""
+    """Render dictionaries as a compact ASCII table.
+
+    When ``columns`` is not supplied, at most ``_MAX_INFERRED_COLUMNS``
+    columns render (preferred keys first); a ``... N more columns`` suffix
+    mirrors the row-truncation marker so dropped columns are visible
+    (QC-370).
+    """
     visible_rows = list(rows[:max_rows] if max_rows is not None else rows)
     if not visible_rows:
         return "(no rows)"
-    selected_columns = list(columns or _infer_columns(visible_rows))
+    selected_columns = list(columns) if columns else _infer_columns(visible_rows)
+    hidden_columns = 0
+    if not columns and len(selected_columns) > _MAX_INFERRED_COLUMNS:
+        hidden_columns = len(selected_columns) - _MAX_INFERRED_COLUMNS
+        selected_columns = selected_columns[:_MAX_INFERRED_COLUMNS]
     widths = {
         column: min(
             max(
@@ -43,6 +57,8 @@ def render_table(
     suffix = []
     if max_rows is not None and len(rows) > max_rows:
         suffix.append(f"... {len(rows) - max_rows} more rows")
+    if hidden_columns:
+        suffix.append(f"... {hidden_columns} more columns")
     return "\n".join([header, divider, *body, *suffix])
 
 
@@ -50,10 +66,15 @@ def render_tree(
     data: Mapping[str, Any] | Sequence[Mapping[str, Any]],
     *,
     title: str | None = None,
-    max_depth: int = 4,
-    max_items: int = 20,
+    max_depth: int | None = 4,
+    max_items: int | None = 20,
 ) -> str:
-    """Render nested dictionaries/lists as a compact ASCII tree."""
+    """Render nested dictionaries/lists as a compact ASCII tree.
+
+    ``max_depth``/``max_items`` of ``None`` render the full structure
+    (file exports pass None so record data is never clipped — QC-358/369);
+    the defaults keep interactive stdout compact.
+    """
     lines: list[str] = []
     if title:
         lines.append(str(title))
@@ -67,8 +88,15 @@ def render_output(
     output_format: str = "dict",
     table_columns: Sequence[str] | None = None,
     title: str | None = None,
+    max_rows: int | None = 50,
 ) -> Any:
-    """Return payload unchanged or rendered as table/tree text."""
+    """Return payload unchanged or rendered as table/tree text.
+
+    ``max_rows`` caps the table render (None renders every row). Callers
+    whose rows are all load-bearing — e.g. optimize rules, where the CLI
+    table is untruncated — pass ``max_rows=None`` for cross-surface parity
+    (QC-203/QC-210).
+    """
     normalized = output_format.lower().strip()
     if normalized in {"dict", "json", "raw"}:
         return payload
@@ -79,7 +107,7 @@ def render_output(
         return render_table(
             [row for row in rows if isinstance(row, Mapping)],
             columns=table_columns,
-            max_rows=50,
+            max_rows=max_rows,
         )
     if normalized == "tree":
         return render_tree(payload, title=title)
@@ -103,7 +131,7 @@ def _infer_columns(rows: Sequence[Mapping[str, Any]]) -> list[str]:
     keys = list(dict.fromkeys(key for row in rows for key in row))
     ordered = [key for key in preferred if key in keys]
     ordered.extend(key for key in keys if key not in ordered)
-    return ordered[:8]
+    return ordered
 
 
 def _render_node(
@@ -112,15 +140,15 @@ def _render_node(
     *,
     prefix: str,
     depth: int,
-    max_depth: int,
-    max_items: int,
+    max_depth: int | None,
+    max_items: int | None,
 ) -> None:
-    if depth >= max_depth:
+    if max_depth is not None and depth >= max_depth:
         lines.append(f"{prefix}...")
         return
     if isinstance(value, Mapping):
         for index, (key, item) in enumerate(value.items()):
-            if index >= max_items:
+            if max_items is not None and index >= max_items:
                 lines.append(f"{prefix}... {len(value) - max_items} more")
                 break
             if isinstance(item, Mapping | list | tuple):
@@ -138,7 +166,7 @@ def _render_node(
         return
     if isinstance(value, list | tuple):
         for index, item in enumerate(value):
-            if index >= max_items:
+            if max_items is not None and index >= max_items:
                 lines.append(f"{prefix}... {len(value) - max_items} more")
                 break
             if isinstance(item, Mapping | list | tuple):

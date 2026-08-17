@@ -437,7 +437,7 @@ def test_h31_bfs_handles_multi_parent_dag_synthetic():
     class _StubHierarchyEngine:
         """Minimal HierarchyEngine stub returning a fixed multi-parent DAG."""
 
-        def get_code_relations(self, refs, *, direction, max_depth, limit):
+        def get_code_relations(self, refs, *, direction, max_depth, limit, include_retired=False):
             # Only "children" direction is used by get_descendants_bfs.
             out: list[CodeRelation] = []
             for ref in refs:
@@ -495,7 +495,7 @@ def test_h32_bfs_handles_cycle_synthetic():
     B = "B"
 
     class _CyclicStubEngine:
-        def get_code_relations(self, refs, *, direction, max_depth, limit):
+        def get_code_relations(self, refs, *, direction, max_depth, limit, include_retired=False):
             out: list[CodeRelation] = []
             for ref in refs:
                 if ref.code == A:

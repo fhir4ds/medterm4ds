@@ -25,13 +25,28 @@ def get_source_code_relations(
     upward: bool,
     max_depth: int,
     limit: int | None = None,
+    include_retired: bool = False,
 ) -> list[tuple[int, CodeRelation]]:
     """Return same-source hierarchy rows for one source + chunk of codes.
 
-    Dispatches to the prepared path if mt4ds.walk_edges + best_atoms exist;
-    otherwise falls back to raw mrrel/mrconso traversal.
+    Dispatches to the prepared path if mt4ds.walk_edges + best_atoms exist AND
+    walk_edges covers the requested source; otherwise falls back to raw
+    mrrel/mrconso traversal.
+
+    ``include_retired=True`` skips the QC-238 retired-concept pruning on both
+    paths: retired/editorial-suppressed concepts are included as walk targets
+    (and seeds), so the result is a superset of the default active-only walk.
     """
-    if engine._table_exists("walk_edges") and engine._table_exists("best_atoms"):
+    # QC-402 (MEDIUM): the gate previously checked TABLE EXISTENCE only, so a
+    # source with 0 rows in production walk_edges (RXNORM, MSH — the builder
+    # fixes that added them postdate the production prepare) silently returned
+    # [] while raw mrrel carried the edges. Per-source non-empty gate mirrors
+    # the QC-398 fix on code_replacements.
+    if (
+        engine._table_exists("walk_edges")
+        and engine._table_exists("best_atoms")
+        and engine._walk_edges_cover_source(source)
+    ):
         return get_source_code_relations_prepared(
             engine,
             source,
@@ -40,6 +55,7 @@ def get_source_code_relations(
             upward=upward,
             max_depth=max_depth,
             limit=limit,
+            include_retired=include_retired,
         )
 
     # Late import to avoid circular dependency (engine module defines these helpers).
@@ -58,6 +74,11 @@ def get_source_code_relations(
         "w.target_aui",
         upward=upward,
     )
+
+    # include_retired=True: skip the SUPPRESS='N' pruning on the seed and on
+    # every walked target (retired/editorial-suppressed concepts join the walk).
+    _seed_suppress = "" if include_retired else "AND c.SUPPRESS = 'N'"
+    _target_suppress = "" if include_retired else "AND t.SUPPRESS = 'N'"
 
     with engine._temp_code_ordinals(code_ordinals) as temp:
         rows = engine.con.execute(
@@ -80,12 +101,26 @@ def get_source_code_relations(
                 FROM {temp} i
                 JOIN mrconso c ON c.CODE = i.code
                 WHERE c.SAB = ?
-                  AND c.SUPPRESS = 'N'
+                  {_seed_suppress}
             ),
+            -- QC-349/350 (EC-15 HIGH): seed EVERY active atom of the input
+            -- code, not just the rn=1 one — the same multi-atom fix the
+            -- prepared path got for QC-067/QC-070. RxNorm codes carry a
+            -- TMSY atom alongside the SCD/SCDG atom and LOINC class codes
+            -- carry LPN alongside LPDN; the hierarchy edges attach to the
+            -- non-display atom, so an rn=1-only seed silently returned 0
+            -- children/parents (engine-mode divergence vs the prepared
+            -- path). Canonical display fields still come from the rn=1
+            -- atom; the ``ranked`` CTE dedups by (ordinal, target_code)
+            -- so multi-atom seeds don't duplicate target rows.
             seed AS (
-                SELECT ordinal, source_code, source_name, source_cui, source_aui
-                FROM base
-                WHERE rn = 1
+                SELECT b.ordinal, b.source_code,
+                       d.source_name, d.source_cui,
+                       b.source_aui
+                FROM base b
+                JOIN base d
+                  ON d.ordinal = b.ordinal
+                 AND d.rn = 1
             ),
             walk AS (
                 SELECT s.ordinal, s.source_code, s.source_name, s.source_cui,
@@ -97,7 +132,7 @@ def get_source_code_relations(
                 JOIN mrrel r ON {source_join}
                 JOIN mrconso t ON t.AUI = {source_target}
                 WHERE t.SAB = ?
-                  AND t.SUPPRESS = 'N'
+                  {_target_suppress}
 
                 UNION ALL
 
@@ -111,7 +146,7 @@ def get_source_code_relations(
                 JOIN mrconso t ON t.AUI = {recursive_target}
                 WHERE w.depth < ?
                   AND t.SAB = ?
-                  AND t.SUPPRESS = 'N'
+                  {_target_suppress}
                   AND strpos('>' || w.path || '>', '>' || t.AUI || '>') = 0
             ),
             ranked AS (
@@ -176,6 +211,7 @@ def get_source_code_relations_prepared(
     upward: bool,
     max_depth: int,
     limit: int | None = None,
+    include_retired: bool = False,
 ) -> list[tuple[int, CodeRelation]]:
     """Prepared-table path: traverse mt4ds.walk_edges instead of raw mrrel.
 
@@ -185,6 +221,9 @@ def get_source_code_relations_prepared(
     building CodeRelation objects for rows the caller will discard. For
     pathological hierarchies (e.g. SNOMED diabetes), the walk itself is the
     bottleneck; see `_expand_url_pattern` for the depth-cap contract.
+
+    ``include_retired=True`` skips the QC-238 is_active pruning on the seed
+    and on walk targets (retired/editorial-suppressed concepts join the walk).
     """
     if upward:
         first_join = "e.from_aui = s.source_aui"
@@ -201,18 +240,54 @@ def get_source_code_relations_prepared(
 
     with engine._temp_code_ordinals(code_ordinals) as temp:
         limit_clause = f"LIMIT {int(limit)}" if limit is not None else ""
+        # QC-067/QC-070 (CRITICAL): the seed step previously joined to
+        # ``mt4ds.best_atoms`` with ``rank = 1``, then matched ``walk_edges``
+        # by AUI. When a SNOMED code has multiple atoms and a CHD/isa edge
+        # in mrrel attaches to a non-rank-1 atom of the parent, that edge
+        # is silently dropped from the walk — losing 34,471 PT-child
+        # relationships across 5,848 SNOMED parent codes. Fix: seed against
+        # ``mt4ds.best_atoms`` WITHOUT the ``rank = 1`` filter (best_atoms
+        # is built from mt4ds.atoms and contains ALL atoms), so any AUI of
+        # the input code can match ``walk_edges``. Canonical display fields
+        # (source_name/source_cui) are taken from the rank-1 atom via a
+        # correlated LEFT JOIN. The downstream ``ranked`` CTE dedups by
+        # ``(ordinal, target_code)`` so multi-atom seeds don't produce
+        # duplicate target rows.
+        #
+        # QC-238 (HIGH): filter retired (suppressed) atoms from the walk —
+        # the raw-mrrel path below already enforces ``t.SUPPRESS = 'N'`` on
+        # every walked target, but this prepared path had no ``is_active``
+        # check, leaking 8,069 retired SNOMED concepts (16.2%) into the
+        # depth-3 descendants of 404684003. The EXISTS check prunes edges
+        # whose TARGET atom is suppressed, so paths through retired concepts
+        # are cut exactly like the raw path.
+        # ``include_retired=True`` disables both checks (seed + targets).
+        _seed_active = "" if include_retired else "AND b.is_active = true"
+        _active_target = (
+            "true"
+            if include_retired
+            else (
+                "EXISTS (SELECT 1 FROM mt4ds.best_atoms ba "
+                "WHERE ba.source = e.source AND ba.aui = {aui} "
+                "AND ba.is_active = true)"
+            )
+        )
         rows = engine.con.execute(
             f"""
             WITH RECURSIVE
             seed AS (
                 SELECT i.ordinal, i.code AS source_code,
-                       b.name AS source_name, b.cui AS source_cui,
+                       d.name AS source_name, d.cui AS source_cui,
                        b.aui AS source_aui
                 FROM {temp} i
                 JOIN mt4ds.best_atoms b
                   ON b.source = ?
                  AND b.code = i.code
-                 AND b.rank = 1
+                 {_seed_active}
+                LEFT JOIN mt4ds.best_atoms d
+                  ON d.source = b.source
+                 AND d.code = b.code
+                 AND d.rank = 1
             ),
             walk AS (
                 SELECT s.ordinal, s.source_code, s.source_name,
@@ -228,6 +303,7 @@ def get_source_code_relations_prepared(
                   ON e.source = ?
                  AND e.direction = 'parent'
                  AND {first_join}
+                 AND {_active_target.format(aui=target_aui)}
 
                 UNION ALL
 
@@ -244,6 +320,7 @@ def get_source_code_relations_prepared(
                   ON e.source = ?
                  AND e.direction = 'parent'
                  AND {recursive_join}
+                 AND {_active_target.format(aui=target_aui)}
                 WHERE w.depth < ?
                   AND strpos('>' || w.path || '>', '>' || {target_aui} || '>') = 0
             ),

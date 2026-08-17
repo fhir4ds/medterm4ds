@@ -68,6 +68,18 @@ class _PatientFriendlyOps:
         grouped = {source: _dedupe(values) for source, values in grouped.items()}
 
         non_snomed: dict[tuple[str, str], _Row] = {}
+        # QC-436 (MEDIUM): per-source isolation. One source the legacy path
+        # cannot resolve (LNC without the prepared schema) previously raised
+        # for the ENTIRE batch — 9 clinically valid codes got no answer
+        # because a 10th was LOINC. Catch NotImplementedError per source,
+        # keep a WARNING (the message carries the actionable remediation),
+        # and let the output loop below emit per-code original-name rows at
+        # the exact positions, mirroring lookup_codes' null-field-record
+        # isolation for bogus codes. Not a silent fallback: the whole batch
+        # failing (every source unsupported) still re-raises so single-source
+        # callers keep the loud, actionable error.
+        unsupported_source_error: NotImplementedError | None = None
+        any_source_resolved = False
         for source, source_codes in grouped.items():
             source_chunks = list(_chunks(source_codes, self.query_chunk_size))
             for chunk_index, source_chunk in enumerate(source_chunks, 1):
@@ -75,10 +87,27 @@ class _PatientFriendlyOps:
                     f"resolving {source} chunk {chunk_index}/{len(source_chunks)} "
                     f"({len(source_chunk)} codes)"
                 )
-                rows = self._resolve_source(source, source_chunk, max_depth)
+                try:
+                    rows = self._resolve_source(source, source_chunk, max_depth)
+                except NotImplementedError as exc:
+                    logger.warning(
+                        "Patient-friendly resolution for source %r is unsupported "
+                        "on this connection (%s); emitting original-name rows for "
+                        "%d codes at their exact positions.",
+                        source,
+                        exc,
+                        len(source_chunk),
+                    )
+                    unsupported_source_error = exc
+                    continue
+                any_source_resolved = True
                 self._apply_snomed_fallback(source, rows, max_depth)
                 for row in rows:
                     non_snomed[(row.source, row.code)] = row
+        if unsupported_source_error is not None and not any_source_resolved and not snomed_codes:
+            # Nothing was resolvable — surface the loud actionable error
+            # instead of an all-original batch that looks like success.
+            raise unsupported_source_error
 
         if snomed_codes:
             self._progress(f"resolving SNOMEDCT_US ({len(snomed_codes)} codes)")
@@ -138,6 +167,8 @@ class _PatientFriendlyOps:
 
     def _has_patient_friendly_prepared_tables(self, sources: set[str]) -> bool:
         if not self._prepared_schema_version_is_current():
+            # QC-435: the version-mismatch WARNING is logged by the gate
+            # itself (once per engine instance).
             return False
         required = {
             "best_atoms",
@@ -172,10 +203,32 @@ class _PatientFriendlyOps:
                 """.format(", ".join(["?"] * len(required))),
                 list(required),
             ).fetchall()
-        except Exception:
+        except duckdb.Error as exc:
+            # QC-437: narrow the bare ``except Exception`` to duckdb.Error so
+            # programming bugs propagate; a failed probe is a degraded gate
+            # and must be visible.
+            logger.warning(
+                "Failed to probe mt4ds prepared patient-friendly tables (%s); "
+                "falling back to the legacy raw-mrrel resolver (LNC "
+                "patient-friendly unsupported).",
+                exc,
+            )
             return False
         available = {str(row[0]) for row in rows}
         if available != required:
+            # QC-437: a stale/partial prepared schema refused the gate
+            # silently before — log the refusal and its consequence once per
+            # distinct missing-table set.
+            missing = frozenset(required - available)
+            if missing not in self._pf_gate_refusal_warned:
+                logger.warning(
+                    "mt4ds prepared schema is missing patient-friendly tables "
+                    "%s — falling back to the legacy raw-mrrel resolver (LNC "
+                    "patient-friendly unsupported). Rebuild the persisted "
+                    "mt4ds schema: medterm4ds data prepare-derived --db <db>.",
+                    sorted(missing),
+                )
+                self._pf_gate_refusal_warned.add(missing)
             return False
         needs_crosswalk = (
             bool(sources - {"RXNORM"})

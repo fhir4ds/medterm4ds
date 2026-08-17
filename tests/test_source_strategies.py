@@ -188,8 +188,13 @@ class TestHierarchySql:
     the contract legitimately changes.
     """
 
-    def test_rxnorm_no_hierarchy(self):
-        assert RxNormStrategy().hierarchy_edge_sql() is None
+    def test_rxnorm_isa_hierarchy(self):
+        """QC-349 (EC-15 HIGH): RxNorm isa/inverse_isa subsumption edges are
+        now part of the hierarchy contract (238,329 RB/RN pairs in UMLS
+        2026AA). REL is authoritative for direction."""
+        assert RxNormStrategy().hierarchy_edge_sql() == (
+            "r.REL IN ('RB', 'RN') AND r.RELA IN ('isa', 'inverse_isa')"
+        )
 
     def test_snomed_isa_hierarchy(self):
         assert SnomedStrategy().hierarchy_edge_sql() == (

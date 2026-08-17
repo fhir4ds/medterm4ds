@@ -45,6 +45,15 @@ from medterm4ds.sources.base import (
 from medterm4ds.sources.base import (
     BROAD_MEDLINEPLUS_NAMES as _BROAD_MEDLINEPLUS_NAMES,
 )
+from medterm4ds.sources.base import (
+    LOINC_CLASS_RELA as _LOINC_CLASS_RELA,
+)
+from medterm4ds.sources.base import (
+    RELA_HIERARCHY_CHILD_SIDE as _RELA_HIERARCHY_CHILD_SIDE,
+)
+from medterm4ds.sources.base import (
+    RELA_HIERARCHY_PARENT_SIDE as _RELA_HIERARCHY_PARENT_SIDE,
+)
 from medterm4ds.sources.cvx import (
     CVX_GROUP_URL as _CVX_GROUP_URL,
 )
@@ -491,7 +500,16 @@ def _ndc_candidates(code: str) -> list[str]:
         if (len(labeler), len(product), len(package)) == (5, 4, 2):
             return [f"{labeler}{product}{package}"]
         return []
-    digits = re.sub(r"\D", "", raw)
+    # Reject any input containing non-digit, non-whitespace characters.
+    # Found by QC-101 (EDGE_CASE MEDIUM): pre-fix, ``re.sub(r"\D", "", raw)``
+    # silently stripped letters, turning '00338O11704' (invalid — letter O)
+    # into '0033811704' which then zero-padded to a valid NDC that matched
+    # mrsat — caller received ndc_resolved for a malformed input. Whitespace
+    # is still stripped because real-world NDC inputs sometimes include
+    # cosmetic spaces; letters are NOT (NDC is digits-only by FDA spec).
+    if any(not (ch.isdigit() or ch.isspace()) for ch in raw):
+        return []
+    digits = re.sub(r"\s", "", raw)
     if len(digits) == 11:
         return [digits]
     if len(digits) == 10:
@@ -531,31 +549,59 @@ def _source_hierarchy_join_sql(
     rel_alias: str = "r",
     upward: bool,
 ) -> tuple[str, str]:
-    """Return an MRREL join predicate and target AUI expression for source hierarchy."""
+    """Return an MRREL join predicate and target AUI expression for source hierarchy.
+
+    Direction is derived from mrrel REL, never RELA (found by QC-340/345/349,
+    EC-15): UMLS mirrors every hierarchy edge twice — PAR/RB rows store the
+    child in AUI1 and the parent in AUI2 (RELA inverse_isa / has_member), while
+    CHD/RN rows store the parent in AUI1 and the child in AUI2 (RELA isa /
+    member_of). The RELA vocabulary is canonical in sources.base.
+    """
     family = _source_hierarchy_family(source)
     if family == "par":
+        # LOINC multiaxial classes (QC-350): REL='RO' RELA='class_of' rows
+        # store the code (child) in AUI1 and the class (parent) in AUI2; not
+        # mirrored. Harmless for ICD/HCPCS (no class_of rows).
         if upward:
             return (
                 f"(({rel_alias}.AUI1 = {current_aui_expr} AND {rel_alias}.REL = 'PAR') "
-                f"OR ({rel_alias}.AUI2 = {current_aui_expr} AND {rel_alias}.REL = 'CHD'))",
+                f"OR ({rel_alias}.AUI2 = {current_aui_expr} AND {rel_alias}.REL = 'CHD') "
+                f"OR ({rel_alias}.AUI1 = {current_aui_expr} AND {rel_alias}.REL = 'RO' "
+                f"AND {rel_alias}.RELA = '{_LOINC_CLASS_RELA}'))",
                 f"CASE WHEN {rel_alias}.AUI1 = {current_aui_expr} "
                 f"THEN {rel_alias}.AUI2 ELSE {rel_alias}.AUI1 END",
             )
         return (
             f"(({rel_alias}.AUI2 = {current_aui_expr} AND {rel_alias}.REL = 'PAR') "
-            f"OR ({rel_alias}.AUI1 = {current_aui_expr} AND {rel_alias}.REL = 'CHD'))",
+            f"OR ({rel_alias}.AUI1 = {current_aui_expr} AND {rel_alias}.REL = 'CHD') "
+            f"OR ({rel_alias}.AUI2 = {current_aui_expr} AND {rel_alias}.REL = 'RO' "
+            f"AND {rel_alias}.RELA = '{_LOINC_CLASS_RELA}'))",
             f"CASE WHEN {rel_alias}.AUI2 = {current_aui_expr} "
             f"THEN {rel_alias}.AUI1 ELSE {rel_alias}.AUI2 END",
         )
     if family == "rela_isa":
+        parent_side = ", ".join(f"'{v}'" for v in _RELA_HIERARCHY_PARENT_SIDE)
+        child_side = ", ".join(f"'{v}'" for v in _RELA_HIERARCHY_CHILD_SIDE)
         if upward:
             return (
-                f"{rel_alias}.AUI1 = {current_aui_expr} AND {rel_alias}.RELA = 'isa'",
-                f"{rel_alias}.AUI2",
+                f"(({rel_alias}.AUI1 = {current_aui_expr} "
+                f"AND {rel_alias}.REL IN ('PAR', 'RB') "
+                f"AND {rel_alias}.RELA IN ({parent_side})) "
+                f"OR ({rel_alias}.AUI2 = {current_aui_expr} "
+                f"AND {rel_alias}.REL IN ('CHD', 'RN') "
+                f"AND {rel_alias}.RELA IN ({child_side})))",
+                f"CASE WHEN {rel_alias}.AUI1 = {current_aui_expr} "
+                f"THEN {rel_alias}.AUI2 ELSE {rel_alias}.AUI1 END",
             )
         return (
-            f"{rel_alias}.AUI2 = {current_aui_expr} AND {rel_alias}.RELA = 'isa'",
-            f"{rel_alias}.AUI1",
+            f"(({rel_alias}.AUI2 = {current_aui_expr} "
+            f"AND {rel_alias}.REL IN ('PAR', 'RB') "
+            f"AND {rel_alias}.RELA IN ({parent_side})) "
+            f"OR ({rel_alias}.AUI1 = {current_aui_expr} "
+            f"AND {rel_alias}.REL IN ('CHD', 'RN') "
+            f"AND {rel_alias}.RELA IN ({child_side})))",
+            f"CASE WHEN {rel_alias}.AUI2 = {current_aui_expr} "
+            f"THEN {rel_alias}.AUI1 ELSE {rel_alias}.AUI2 END",
         )
     if upward:
         return (

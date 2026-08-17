@@ -7,6 +7,14 @@ from medterm4ds.engines.duckdb._engine_base import *  # noqa: F401,F403
 from collections.abc import Sequence
 from medterm4ds.core.models import CodeRef, OptimizeResult
 
+# QC-208/QC-214 (HIGH): production hierarchies reach depth 18 (SNOMED,
+# per mt4ds.snomed_top_level_depth) and 15 (LNC). The previous cap of 12
+# silently dropped ancestors and leaf descendants on those deep paths —
+# include rules silently under-covered deep subtrees. The BFS loop breaks
+# as soon as a level yields no new codes, so sources with shallower
+# hierarchies (ICD10CM, max depth 7) pay no extra round-trips.
+_OPTIMIZE_MAX_DEPTH = 18
+
 
 class _OptimizeOps:
     """Compact a valueset into include/exclude hierarchy rules.
@@ -41,9 +49,26 @@ class _OptimizeOps:
         if len(sources) != 1:
             raise ValueError("optimize_codes requires all codes to use the same source")
         source = refs[0].source
+        # QC-196 (MEDIUM): empty string is never a valid code or source
+        # (promoted GLOBAL_RULES pattern — min_length=1 equivalent at the
+        # service boundary). Pre-fix, CodeRef('ICD10CM','') produced a rule
+        # whose include was ''.
+        if not source.strip():
+            raise ValueError("source must be a non-empty string")
+        for ref in refs:
+            if not ref.code.strip():
+                raise ValueError(f"code must be a non-empty string, got {ref.code!r}")
         rel = relationship or _DEFAULT_OPTIMIZE_REL.get(source, "isa")
         if str(rel).lower() == "prefix":
             raise ValueError("prefix optimize is not supported; use UMLS hierarchy relationships")
+        # QC-195 (MEDIUM): an unknown source used to silently succeed with
+        # echo rules (include_source='NOSUCHSOURCE'). Reject at the boundary
+        # when the source has no codes in this database.
+        if not self._optimize_source_exists(source):
+            raise ValueError(
+                f"source {source!r} has no codes in this database "
+                f"(check the SAB spelling, e.g. ICD10CM / SNOMEDCT_US)"
+            )
 
         leaves = self._normalize_optimize_input(refs, rel)
         remaining = set(leaves)
@@ -52,7 +77,7 @@ class _OptimizeOps:
                 source=source,
                 relationship=rel,
                 rules=(),
-                original_count=len(refs),
+                original_count=len(leaves),
                 optimized_count=0,
                 reduction=0.0,
             )
@@ -62,7 +87,8 @@ class _OptimizeOps:
             sorted(remaining),
             relationship=rel,
             upward=True,
-            max_depth=12,
+            max_depth=_OPTIMIZE_MAX_DEPTH,
+            warn_truncated=True,
         )
         candidate_set = set(remaining)
         for ancestors in ancestor_cache.values():
@@ -87,15 +113,30 @@ class _OptimizeOps:
                 if not covered:
                     continue
                 excluded = descendant_leaves - remaining
-                mentions = 1 + len(excluded)
-                score = len(covered) / mentions
+                # QC-192 (HIGH): score candidates on rule-count reduction —
+                # rules emitted if this candidate is picked = 1 include +
+                # len(excluded) excludes, versus len(covered) singleton rules
+                # otherwise. The previous covered/(1+excluded) ratio was
+                # always dominated by singleton candidates at 1.0, so the
+                # exclude branch was dead code on every input.
+                score = len(covered) - (1 + len(excluded))
                 if (
                     score > best_score
                     or (
                         score == best_score
                         and (
                             len(excluded) < len(best_excluded)
-                            or (best_code is not None and candidate > best_code)
+                            or (
+                                # QC-212 (HIGH): on full ties prefer a
+                                # candidate that is itself an input-derived
+                                # code over an ancestor of it. The previous
+                                # lexical ``candidate > best_code`` tie-break
+                                # picked ancestors (e.g. LOINC 'LP' grouping
+                                # nodes) over the user's codes.
+                                len(excluded) == len(best_excluded)
+                                and candidate in remaining
+                                and best_code not in remaining
+                            )
                         )
                     )
                 ):
@@ -131,14 +172,19 @@ class _OptimizeOps:
                 )
             remaining -= best_covered
 
+        # QC-194/QC-215 (HIGH): compute original_count/reduction on the
+        # normalized-leaf basis — the actual valueset content being compacted.
+        # The previous len(refs) basis counted literal duplicates and made
+        # ['E11'] vs ['E11','E11.9'] vs ['E11.9']*3 report 0%/50%/66.7%
+        # reduction for semantically identical valuesets.
         reduction = 0.0
-        if refs:
-            reduction = round((1 - (len(rules) / len(refs))) * 100, 2)
+        if leaves:
+            reduction = round((1 - (len(rules) / len(leaves))) * 100, 2)
         return OptimizeResult(
             source=source,
             relationship=rel,
             rules=tuple(rules),
-            original_count=len(refs),
+            original_count=len(leaves),
             optimized_count=len(rules),
             reduction=reduction,
         )
@@ -160,6 +206,32 @@ class _OptimizeOps:
 
 
 
+    def _optimize_source_exists(self, source: str) -> bool:
+        """QC-195 (MEDIUM): reject sources with no codes in this database.
+
+        Checks the prepared walk_edges table first (cheap columnar probe),
+        then falls back to mrconso. Returns True when neither table exists
+        (nothing to validate against — e.g. minimal test fixtures).
+        """
+        if self._table_exists("walk_edges"):
+            row = self.con.execute(
+                "SELECT 1 FROM mt4ds.walk_edges WHERE source = ? LIMIT 1",
+                [source],
+            ).fetchone()
+            if row is not None:
+                return True
+        if self._table_exists("mrconso"):
+            return (
+                self.con.execute(
+                    "SELECT 1 FROM mrconso WHERE SAB = ? LIMIT 1",
+                    [source],
+                ).fetchone()
+                is not None
+            )
+        return True
+
+
+
     def _leaf_descendants_for_candidates(
         self,
         source: str,
@@ -171,7 +243,8 @@ class _OptimizeOps:
             codes,
             relationship=relationship,
             upward=False,
-            max_depth=12,
+            max_depth=_OPTIMIZE_MAX_DEPTH,
+            warn_truncated=True,
         )
         all_descendants = sorted({code for descendants in descendant_map.values() for code in descendants})
         if not all_descendants:

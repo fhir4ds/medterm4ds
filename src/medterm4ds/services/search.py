@@ -22,7 +22,8 @@ import logging
 import math
 import os
 import re
-from dataclasses import dataclass, field
+import unicodedata
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
@@ -54,6 +55,43 @@ DEFAULT_CANONICAL_CONCEPTS_INDEX = str(_CACHE_DIR / "canonical" / "canonical_con
 DEFAULT_CANONICAL_CONCEPTS_META = str(_CACHE_DIR / "canonical" / "canonical_concepts_metadata.json")
 SEARCH_CATEGORIES = ("condition", "lab", "medication", "procedure", "vaccine", "body_structure")
 
+# Upper bound on query length accepted by every search entry point
+# (QC-126/QC-140: no cap existed — 10K-char queries were silently tokenized).
+# Matches the FHIR $search GET max_length; a ValueError (not silent truncation)
+# is raised so clients learn their input was rejected.
+MAX_QUERY_CHARS = 1000
+
+
+def _validate_query(query: Any) -> str:
+    """Validate free-text query at the service boundary.
+
+    Raises TypeError for non-str input (QC-128: list/dict/int/bool queries
+    previously crashed deep in the tokenizer with a bare AttributeError) and
+    ValueError for empty/whitespace-only or over-length queries (QC-122:
+    whitespace queries were silently embedded by SapBERT and returned
+    confidently-ranked anchors; QC-126: unbounded input length).
+    """
+    if not isinstance(query, str):
+        raise TypeError(f"query must be a string, got {type(query).__name__}")
+    if not query.strip():
+        raise ValueError("query must not be empty")
+    if len(query) > MAX_QUERY_CHARS:
+        raise ValueError(
+            f"query length {len(query)} exceeds max {MAX_QUERY_CHARS} chars."
+        )
+    return query
+
+
+def _validate_count(count: Any) -> int:
+    """Validate result count at the service boundary (QC-125).
+
+    Negative counts previously hit Python slice semantics (count=-1 silently
+    returned all-but-last); floats/strings raised bare TypeError mid-pipeline.
+    """
+    if not isinstance(count, int) or isinstance(count, bool) or count < 1:
+        raise ValueError(f"count must be a positive integer, got {count!r}")
+    return count
+
 
 def _hf_download(allow_patterns: list[str]) -> None:
     """Download artifacts from Hugging Face Hub to the cache directory.
@@ -82,6 +120,7 @@ def _hf_download(allow_patterns: list[str]) -> None:
         repo_type="model",
         local_dir=str(_CACHE_DIR),
         allow_patterns=allow_patterns,
+        token=os.getenv("HF_TOKEN"),
     )
     logger.info("Download complete → %s", _CACHE_DIR)
 
@@ -222,6 +261,11 @@ _RESULT_TYPE_TO_PREFIXES: dict[str, tuple[str, ...]] = {
     "vaccine": ("VAL-VAX-",),
 }
 
+# Valid canonical-mode result types (the keys above), for callers that need
+# to validate/intersect --result-types values before they reach
+# ``SearchService.canonical`` (which raises on unknown types).
+CANONICAL_RESULT_TYPES: tuple[str, ...] = tuple(_RESULT_TYPE_TO_PREFIXES)
+
 
 def _result_types_to_prefixes(result_types: str | list[str] | None) -> set[str]:
     """Normalize result_types parameter to a set of canonical_id prefixes.
@@ -267,6 +311,35 @@ def _prefix_to_result_type(canonical_id: str) -> str:
     return ""
 
 
+def _strip_accents(text: str) -> str:
+    """Fold Latin accents to ASCII (NFD + drop combining marks).
+
+    QC-329 (HIGH): the pre-built BM25 indexes tokenize documents with an
+    ASCII-only ``[a-zA-Z]{3,}`` regex (``build_bm25_v2.tokenize``), so every
+    posting key is unaccented. Query tokens taken verbatim
+    (``query.lower().split()``) kept accents AND punctuation attached, so
+    accented clinical queries ('Guillain-Barré', 'Chédiak', 'Déjà vu')
+    silently returned 0 hits for concepts whose preferred terms exist
+    verbatim in mrconso. Fold accents + extract alphanumeric runs so the
+    query tokenizes exactly like the indexed documents.
+    """
+    decomposed = unicodedata.normalize("NFD", text)
+    return "".join(ch for ch in decomposed if not unicodedata.combining(ch))
+
+
+def _query_tokens(query: str) -> list[str]:
+    """Tokenize a free-text query for BM25 lookup (QC-329).
+
+    Mirrors the index-build tokenizer (ASCII alphanumeric runs of >= 3
+    chars, lowercased, accents folded): hyphens and other punctuation split
+    tokens the same way the build split them, and accented characters fold
+    to their unaccented base instead of acting as token boundaries. Index
+    postings only contain build-token keys, so shorter/digit-only runs could
+    never match anyway.
+    """
+    return re.findall(r"[a-z0-9]{3,}", _strip_accents(query.lower()))
+
+
 def _stem_token(token: str) -> str:
     """Porter-like stemmer to match pre-built BM25 tokenization."""
     token = token.lower()
@@ -292,6 +365,36 @@ def _stem_token(token: str) -> str:
                 return token[:-1] + "i"
             return token[: -len(suffix)]
     return token
+
+
+def apply_preferred_display(
+    results: list[SearchResult],
+    engine,
+) -> list[SearchResult]:
+    """Canonicalize legacy-mode result displays to the engine preferred term.
+
+    QC-400 (MEDIUM) — the QC-317 fix was applied on the FHIR $search surface
+    only, so the same query/mode returned identical codes, scores, and ranking
+    but DIFFERENT display strings on FHIR vs Python/CLI/MCP. The fix lives in
+    this service (single source of truth) so every surface that passes an
+    engine inherits it. The BM25 search index is cross-source: the matched
+    ``display`` can be an anchor/CHV synonym that does not exist in the
+    result's own code system (e.g. SNOMED 73211009 surfaced as 'Diabetes',
+    which is not any SNOMED synonym). Resolve via ONE batched get_code_infos
+    call; fall back to the matched index synonym only when no preferred atom
+    resolves. Requires an engine — the CLI ``search`` command deliberately
+    opens no database (QC-382) and therefore keeps the index display.
+    """
+    from medterm4ds.services.lookup import get_code_infos
+
+    infos = get_code_infos(
+        [CodeRef(r.source, r.code) for r in results], engine=engine
+    )
+    updated: list[SearchResult] = []
+    for r, info in zip(results, infos):
+        name = info.name if info else None
+        updated.append(replace(r, display=name) if name else r)
+    return updated
 
 
 class SearchService:
@@ -393,6 +496,29 @@ class SearchService:
         return list(dict.fromkeys(cats))  # dedupe, preserve order
 
     @staticmethod
+    def _restrict_categories(
+        categories: list[str], result_types: str | list[str] | None
+    ) -> list[str]:
+        """Intersect search categories with requested ``result_types``.
+
+        Legacy-mode analogue of ``canonical(result_types=...)``: restricts
+        which category indexes are searched BEFORE retrieval, so ``count``
+        caps the filtered result set instead of truncating before a
+        client-side filter drops non-matching rows (``search
+        --result-types lab --limit 1`` returned 0 results pre-fix).
+
+        Values that are not SEARCH_CATEGORIES (e.g. canonical-only types
+        like "symptom") intersect away; an empty intersection means the
+        request can match nothing, which callers turn into an empty result.
+        """
+        if not result_types:
+            return categories
+        if isinstance(result_types, str):
+            result_types = [result_types]
+        wanted = set(result_types)
+        return [c for c in categories if c in wanted]
+
+    @staticmethod
     def _filter_by_source(
         results: list["SearchResult"], sources: list[str] | None
     ) -> list["SearchResult"]:
@@ -407,6 +533,25 @@ class SearchService:
             return results
         allowed = {s.upper() for s in sources}
         return [r for r in results if r.source.upper() in allowed]
+
+    @staticmethod
+    def _total_member_count(vset: dict, m: dict | None = None) -> int:
+        """Resolve the value set's true member count (QC-143).
+
+        Read-side fallback chain — the deployed artifacts are NOT rebuilt:
+        (a) ``total_member_count`` on the value-set JSON (absent on all
+        47,266 deployed value sets), (b) ``total_member_count`` on the
+        concepts-metadata entry (present but 0 on all 91,398 entries — the
+        index build never populated it), (c) ``member_count`` on the
+        value-set JSON (present on 18,917), (d) ``len(members)``.
+        """
+        total = vset.get("total_member_count", (m or {}).get("total_member_count", 0))
+        if total:
+            return int(total)
+        total = vset.get("member_count", 0)
+        if total:
+            return int(total)
+        return len(vset.get("members", []))
 
     def _ensure_concepts(self):
         """Lazy-load canonical concept FAISS index + metadata (Option C-B)."""
@@ -522,7 +667,7 @@ class SearchService:
                 match_grade="exact" if score > 0.95 else "probable" if score > 0.80 else "possible",
                 matched_via_code=f"concept:{m['anchor_code']}",
                 matched_via_display=m["patient_friendly_name"],
-                total_member_count=vset.get("total_member_count", m.get("total_member_count", 0)),
+                total_member_count=self._total_member_count(vset, m),
                 members=vset.get("members", []),
                 combination_members=vset.get("combination_members", []),
             ))
@@ -559,6 +704,16 @@ class SearchService:
         # Find SNOMED candidate codes for the query
         sem_results = self.semantic(query, sources=['SNOMEDCT_US'], count=max(count * 3, 10))
         if not sem_results:
+            return []
+        # QC-148: confidence floor on the semantic seed. The direct concept
+        # search above thresholds at 0.70, but this fallback previously took
+        # the top SNOMED hit unconditionally — for nonsense input SapBERT
+        # still returns a nearest neighbor (~0.4-0.5) whose CHV-bearing
+        # ancestors surfaced as sensitive 'broader' anchors (Paraphilia,
+        # Sexual Sadism Disorder) at scores as low as 0.20. Gate the ancestor
+        # walk on the same 0.70 floor so garbage queries return [] like the
+        # concept-index path.
+        if sem_results[0].score < 0.70:
             return []
 
         # Collect unique SNOMED codes to check
@@ -651,7 +806,7 @@ class SearchService:
                         match_grade="broader",
                         matched_via_code=f"chv-ancestor:{a_code}",
                         matched_via_display=vset.get("patient_friendly_name", ""),
-                        total_member_count=vset.get("total_member_count", 0),
+                        total_member_count=self._total_member_count(vset),
                         members=vset.get("members", []),
                 combination_members=vset.get("combination_members", []),
                     ))
@@ -676,7 +831,7 @@ class SearchService:
                             match_grade="broader",
                             matched_via_code=f"ancestor:{a_code}",
                             matched_via_display=vset.get("patient_friendly_name", ""),
-                            total_member_count=vset.get("total_member_count", 0),
+                            total_member_count=self._total_member_count(vset),
                             members=vset.get("members", []),
                 combination_members=vset.get("combination_members", []),
                         ))
@@ -707,6 +862,9 @@ class SearchService:
         Does NOT apply source or result_type filtering — caller post-filters
         per query. Over-fetches (count*3) to leave room for post-filtering.
         """
+        _validate_count(count)
+        for q in queries:
+            _validate_query(q)
         self._ensure_canonical()
         self._ensure_concepts()
         if self._concepts_faiss is None or not queries:
@@ -761,7 +919,7 @@ class SearchService:
                     match_grade="exact" if score > 0.95 else "probable" if score > 0.80 else "possible",
                     matched_via_code=f"concept:{m['anchor_code']}",
                     matched_via_display=m["patient_friendly_name"],
-                    total_member_count=vset.get("total_member_count", m.get("total_member_count", 0)),
+                    total_member_count=self._total_member_count(vset, m),
                     members=vset.get("members", []),
                     combination_members=vset.get("combination_members", []),
                 ))
@@ -800,6 +958,8 @@ class SearchService:
             Code-system filter (RXNORM, ATC, LOINC, SNOMEDCT_US, CPT, CVX).
             AND-composed with result_types if both are set.
         """
+        _validate_query(query)
+        _validate_count(count)
         self._ensure_canonical()
         self._ensure_concepts()
 
@@ -858,7 +1018,7 @@ class SearchService:
                     match_grade=r.match_grade,
                     matched_via_code=f"{r.source}:{r.code}",
                     matched_via_display=r.display,
-                    total_member_count=vset["total_member_count"],
+                    total_member_count=self._total_member_count(vset),
                     members=vset.get("members", []),
                 combination_members=vset.get("combination_members", []),
                 ))
@@ -873,13 +1033,35 @@ class SearchService:
         *,
         sources: list[str] | None = None,
         count: int = 20,
+        result_types: str | list[str] | None = None,
     ) -> list[SearchResult]:
-        """BM25 lexical search (~1ms). Token matching with stemming."""
+        """BM25 lexical search (~1ms). Token matching with stemming.
+
+        ``result_types`` restricts which category indexes are searched
+        (see ``_restrict_categories``) so ``count`` caps the FILTERED set —
+        the service-side replacement for the CLI's former post-truncation
+        client filter.
+        """
+        _validate_query(query)
+        _validate_count(count)
         self._ensure_bm25()
-        categories = self._resolve_categories(sources)
-        query_tokens = query.lower().split()
+        categories = self._restrict_categories(
+            self._resolve_categories(sources), result_types
+        )
+        if not categories:
+            return []
+        # QC-329: fold accents + split on non-alphanumerics so accented
+        # queries match the accent-stripped index (see _query_tokens).
+        query_tokens = _query_tokens(query)
         if not query_tokens:
             return []
+        # QC-124: over-fetch per category when a source filter is set so the
+        # filter doesn't drop the top-N slice down to 0 cross-source hits
+        # (e.g., 'insulin' sources=['RXNORM'] count=1: the first RXNORM hit
+        # ranks #6 in the shared medication index behind 5 SNOMED entries).
+        # Mirrors the semantic (count*3) over-fetch with a floor of 10 — the
+        # measured first-cross-source rank for tight single-token queries.
+        fetch_count = max(count * 3, 10) if sources else count
 
         results: list[SearchResult] = []
         for category in categories:
@@ -914,7 +1096,7 @@ class SearchService:
             # only on query_tokens and idf, both of which are constant across
             # the top-N results. Previously recomputed once per result.
             idf_denom = sum(idf.get(_stem_token(t), idf.get(t, 1.0)) for t in query_tokens) * 2.5 + 0.001
-            for rid, score in sorted(scores.items(), key=lambda x: -x[1])[:count]:
+            for rid, score in sorted(scores.items(), key=lambda x: -x[1])[:fetch_count]:
                 code = rid_to_code[rid] if rid < len(rid_to_code) else str(rid)
                 display = rid_to_friendly[rid] if rid < len(rid_to_friendly) else code
                 sys_name = (rid_to_system[rid] if rid < len(rid_to_system) else "").upper()
@@ -935,10 +1117,23 @@ class SearchService:
         *,
         sources: list[str] | None = None,
         count: int = 20,
+        result_types: str | list[str] | None = None,
     ) -> list[SearchResult]:
-        """SapBERT embedding + FAISS ANN search (~100ms on CPU)."""
+        """SapBERT embedding + FAISS ANN search (~100ms on CPU).
+
+        ``result_types`` restricts which category indexes are searched
+        (see ``_restrict_categories``); an empty intersection returns []
+        WITHOUT calling the engine — ``SemanticSearchEngine.search`` treats
+        an empty categories list as "search all".
+        """
+        _validate_query(query)
+        _validate_count(count)
         engine = self._ensure_semantic()
-        categories = self._resolve_categories(sources)
+        categories = self._restrict_categories(
+            self._resolve_categories(sources), result_types
+        )
+        if not categories:
+            return []
         # Over-fetch when filtering by source so we still have `count` results
         # after the source filter drops cross-source hits (e.g., ICD-10 codes
         # that share a name with a SNOMED concept).
@@ -962,17 +1157,39 @@ class SearchService:
         *,
         sources: list[str] | None = None,
         count: int = 20,
+        result_types: str | list[str] | None = None,
     ) -> list[SearchResult]:
-        """BM25 retrieve + SapBERT re-rank (~110ms on CPU)."""
+        """BM25 retrieve + SapBERT re-rank (~110ms on CPU).
+
+        The BM25 candidate pool is capped at ``max(50, count)`` — the former
+        hard cap of 50 silently truncated hybrid(count=N>50) requests (QC-138).
+
+        ``result_types`` restricts the category indexes searched in both the
+        BM25 stage and the semantic-only fallback (see
+        ``_restrict_categories``).
+        """
+        _validate_query(query)
+        _validate_count(count)
         self._ensure_bm25()
         engine = self._ensure_semantic()
-        categories = self._resolve_categories(sources)
+        categories = self._restrict_categories(
+            self._resolve_categories(sources), result_types
+        )
+        if not categories:
+            return []
 
         # Stage 1: BM25 retrieve
-        bm25_results = self.lexical(query, sources=sources, count=min(count * 3, 50))
+        bm25_results = self.lexical(
+            query,
+            sources=sources,
+            count=min(count * 3, max(50, count)),
+            result_types=result_types,
+        )
         if not bm25_results:
             # Fall back to semantic-only
-            return self.semantic(query, sources=sources, count=count)
+            return self.semantic(
+                query, sources=sources, count=count, result_types=result_types
+            )
 
         # Stage 2: SapBERT re-rank
         candidates = [{"code": r.code, "system": r.source, "display": r.display} for r in bm25_results]
@@ -999,17 +1216,49 @@ class SearchService:
         mode: str = "lexical",
         sources: list[str] | None = None,
         count: int = 20,
+        engine=None,
+        result_types: str | list[str] | None = None,
     ) -> list[SearchResult] | list[CanonicalSearchResult]:
-        """Unified entry point. mode: 'lexical', 'semantic', 'hybrid', or 'canonical'."""
-        if mode == "lexical":
-            return self.lexical(query, sources=sources, count=count)
-        if mode == "semantic":
-            return self.semantic(query, sources=sources, count=count)
-        if mode == "hybrid":
-            return self.hybrid(query, sources=sources, count=count)
+        """Unified entry point. mode: 'lexical', 'semantic', 'hybrid', or 'canonical'.
+
+        ``engine`` (optional) canonicalizes legacy-mode result displays to the
+        engine preferred term (QC-400). Pass it wherever a terminology engine
+        is already open — Python facade, MCP, FHIR $search — so all surfaces
+        emit ONE display convention for the same result row.
+
+        ``result_types`` filters SERVICE-SIDE in every mode: canonical mode
+        filters by canonical_id prefix (``canonical(result_types=...)``);
+        legacy modes restrict the category indexes searched
+        (``_restrict_categories``). In both cases ``count`` caps the
+        FILTERED result set — callers must not truncate before filtering.
+        Legacy modes accept only SEARCH_CATEGORIES values; values outside
+        that set (e.g. canonical-only "symptom") match nothing.
+        """
         if mode == "canonical":
-            return self.canonical(query, sources=sources, count=count)
-        raise ValueError(f"Unknown search mode: {mode}. Use 'lexical', 'semantic', 'hybrid', or 'canonical'.")
+            # Canonical results carry the anchor's patient_friendly_name by
+            # design — no preferred-term canonicalization applies.
+            return self.canonical(
+                query, result_types=result_types, sources=sources, count=count
+            )
+        if mode == "lexical":
+            results = self.lexical(
+                query, sources=sources, count=count, result_types=result_types
+            )
+        elif mode == "semantic":
+            results = self.semantic(
+                query, sources=sources, count=count, result_types=result_types
+            )
+        elif mode == "hybrid":
+            results = self.hybrid(
+                query, sources=sources, count=count, result_types=result_types
+            )
+        else:
+            raise ValueError(
+                f"Unknown search mode: {mode}. Use 'lexical', 'semantic', 'hybrid', or 'canonical'."
+            )
+        if engine is not None and results:
+            results = apply_preferred_display(results, engine)
+        return results
 
 
 # Reverse lookup: lowercase system label → internal source name
@@ -1076,6 +1325,8 @@ def search(
     mode: str = "lexical",
     sources: list[str] | None = None,
     count: int = 20,
+    engine=None,
+    result_types: str | list[str] | None = None,
 ) -> list[SearchResult]:
     """Search for medical codes by free text.
 
@@ -1085,10 +1336,40 @@ def search(
     mode : 'lexical' (BM25, ~1ms), 'semantic' (SapBERT, ~100ms), or 'hybrid' (cascade, ~110ms).
     sources : Restrict to specific source systems (e.g., ["SNOMEDCT_US"]). None = all.
     count : Maximum results to return.
+    engine : Optional terminology engine. When provided, legacy-mode result
+        displays are canonicalized to the engine preferred term (QC-400) so
+        all surfaces emit one display convention for the same result.
+    result_types : Filter by clinical result type, applied SERVICE-SIDE so
+        ``count`` caps the filtered set (canonical mode filters by
+        canonical_id prefix; legacy modes restrict the category indexes
+        searched). Legacy modes accept only SEARCH_CATEGORIES values.
 
     Returns
     -------
     list[SearchResult]
         Ranked results with score and match_grade (certain/probable/possible).
     """
-    return get_search_service().search(query, mode=mode, sources=sources, count=count)
+    if sources is not None:
+        # QC-425 (MEDIUM): an all-empty source filter (e.g. sources=[''])
+        # previously returned silent 0-row success on the BM25 path while
+        # the LIKE sibling (search_names) WIDENED and source_stats rejected —
+        # one input, three behaviors. Reject, matching get_source_stats'
+        # QC-395 guard; ``sources=None`` still means all.
+        if isinstance(sources, (str, bytes)) or not isinstance(sources, (list, tuple)):
+            raise TypeError(
+                "sources must be a list of vocabulary names, got "
+                f"{type(sources).__name__}"
+            )
+        if not [s for s in sources if isinstance(s, str) and s.strip()]:
+            raise ValueError(
+                "sources must contain at least one non-empty vocabulary name "
+                "(e.g. SNOMEDCT_US) when provided."
+            )
+        # QC-424 note: unknown-source presence for BM25/semantic modes is NOT
+        # validated here — those modes read the search indexes, not the
+        # terminology tables, so a DB probe is the wrong instrument. The LIKE
+    # path (search_names) presence-checks in the engine.
+    return get_search_service().search(
+        query, mode=mode, sources=sources, count=count, engine=engine,
+        result_types=result_types,
+    )

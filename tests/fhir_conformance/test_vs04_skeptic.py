@@ -294,14 +294,24 @@ class TestVS04Item4SnomedUrlPatterns:
         )
 
     def test_s33_unknown_code_returns_200_empty(self, fhir_client):
-        """Unknown SNOMED code returns 200 with empty contains[] (not 500)."""
+        """Unknown SNOMED code surfaces as a 400 OperationOutcome (QC-247).
+
+        Pre-QC-247 the isa root lookup failed silently and the expansion
+        returned {'total': 0, 'contains': []} — indistinguishable from a
+        by-design empty value set. EC-10 remediation changed this to a
+        ValueError → 400 OperationOutcome, mirroring $lookup's not-found
+        for the same code (a typo'd/retired SCTID in an EHR config must
+        fail loudly). NOT acceptable: 500 with traceback, non-FHIR body,
+        or a silent 200 empty expansion.
+        """
         resp = _expand_url(
             fhir_client,
             "http://snomed.info/sct/99999999?fhir_vs=isa",
         )
-        assert resp.status_code == 200, f"unknown code crashed: {resp.status_code}"
-        codes = _contains_codes(resp.json())
-        assert codes == [], f"Unknown code should produce empty expansion: {codes}"
+        assert resp.status_code == 400, f"unknown code must 400, got {resp.status_code}"
+        body = resp.json()
+        assert body["resourceType"] == "OperationOutcome"
+        assert "99999999" in body["issue"][0]["diagnostics"]
 
 
 class TestVS04Item5VersionedSnomedUrl:

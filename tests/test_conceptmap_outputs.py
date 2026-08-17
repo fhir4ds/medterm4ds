@@ -182,3 +182,90 @@ def test_output_helpers_write_concept_map_records(tmp_path):
         csv_record = next(csv.DictReader(file))
     assert csv_record["target_display"] == "Diabetes"
     assert json.loads(csv_record["matched_via"])["strategy"] == "test"
+
+
+# =============================================================================
+# Regression: conceptmap_relationship dispatch on (match_type, match_depth).
+# Found by QC-074 / QC-081 / QC-094 / QC-095 (CRITICAL x3 + HIGH): pre-fix,
+# conceptmap_relationship only checked match_type.startswith('broader'),
+# mislabeling snomed_fallback / snomed_to_target_* / group depth>0 /
+# ingredient depth>0 / cvx_group as 'equivalent' (100K+ production rows
+# affected, including FHIR ConceptMap export's equivalence field).
+# =============================================================================
+
+
+def test_conceptmap_relationship_dispatches_on_match_type_and_depth():
+    """conceptmap_relationship returns the clinically-correct relationship.
+
+    The fix dispatches on (match_type, match_depth):
+      * depth>0 always means the friendly name is broader (ancestor, generic
+        group, disease family) -> 'source-is-narrower-than-target'.
+      * depth==0 with a depth-self-hit match type (exact, same_cui, group,
+        ingredient, cvx_group) -> 'equivalent'.
+      * broader* -> 'source-is-narrower-than-target' (preserved from pre-fix).
+      * component / first_axis / loinc_common -> 'related-to'.
+      * original -> 'not-translated'.
+      * None / 'none' -> 'unmatched'.
+    """
+    from medterm4ds.core.models import conceptmap_relationship as f
+
+    # depth>0 hierarchical / fallback / TTY-traversal cases — the bug.
+    assert f("snomed_fallback", match_depth=4) == "source-is-narrower-than-target"
+    assert f("snomed_to_target_native_hierarchy", match_depth=4) == "source-is-narrower-than-target"
+    assert f("snomed_to_target_snomed_fallback", match_depth=4) == "source-is-narrower-than-target"
+    assert f("group", match_depth=2) == "source-is-narrower-than-target"
+    assert f("ingredient", match_depth=1) == "source-is-narrower-than-target"
+    assert f("cvx_group", match_depth=1) == "source-is-narrower-than-target"
+    assert f("broader", match_depth=1) == "source-is-narrower-than-target"
+
+    # depth==0 self-hit cases — equivalent.
+    assert f("exact", match_depth=0) == "equivalent"
+    assert f("same_cui", match_depth=0) == "equivalent"
+    assert f("group", match_depth=0) == "equivalent"
+    assert f("ingredient", match_depth=0) == "equivalent"
+    assert f("cvx_group", match_depth=0) == "equivalent"
+
+    # Other paths preserved.
+    assert f("original", match_depth=0) == "not-translated"
+    assert f("component", match_depth=0) == "related-to"
+    assert f("first_axis", match_depth=0) == "related-to"
+    assert f("loinc_common", match_depth=0) == "related-to"
+    assert f(None, match_depth=0) == "unmatched"
+    assert f("none", match_depth=0) == "unmatched"
+
+
+def test_conceptmap_row_from_friendly_result_uses_match_depth():
+    """ConceptMapRow.from_friendly_result passes match_depth so depth>0
+    friendly results are correctly labeled 'source-is-narrower-than-target'.
+
+    Regression for QC-074/QC-094 (CRITICAL): pre-fix, a snomed_fallback
+    FriendlyNameResult at depth=4 produced relationship='equivalent'.
+    Post-fix, it produces 'source-is-narrower-than-target'.
+    """
+    from medterm4ds import ConceptMapRow
+
+    # depth>0 snomed_fallback result — must NOT be 'equivalent'.
+    result_depth4 = FriendlyNameResult(
+        code=CodeRef("ICD10CM", "C83.81"),
+        name="Blood Disorders",
+        friendly_source="MEDLINEPLUS",
+        match_type="snomed_fallback",
+        match_depth=4,
+        technical_name="Other non-follicular lymphoma",
+    )
+    row = ConceptMapRow.from_friendly_result(result_depth4)
+    assert row.relationship == "source-is-narrower-than-target", (
+        f"snomed_fallback at depth=4 should be 'source-is-narrower-than-target', "
+        f"got {row.relationship!r}"
+    )
+
+    # depth==0 exact result — equivalent.
+    result_depth0 = FriendlyNameResult(
+        code=CodeRef("ICD10CM", "E11.9"),
+        name="Type 2 Diabetes",
+        friendly_source="MEDLINEPLUS",
+        match_type="exact",
+        match_depth=0,
+    )
+    row0 = ConceptMapRow.from_friendly_result(result_depth0)
+    assert row0.relationship == "equivalent"

@@ -36,13 +36,31 @@ Non-goal: round-tripping arbitrary FHIR XML. The serializer is a one-way
 
 from __future__ import annotations
 
+import re
 from typing import Any
 from xml.sax.saxutils import escape
 
+# XML 1.0 illegal characters (https://www.w3.org/TR/REC-xml/#NT-Char):
+# 0x00-0x08, 0x0B, 0x0C, 0x0E-0x1F. These cannot appear in XML documents
+# in ANY encoding — not even as character references. xml.sax.saxutils.escape
+# only handles & < > " '; without stripping, a client-supplied code like
+# "a\x01b" echoed into a value attribute produces not-well-formed XML with
+# HTTP 200 + application/fhir+xml. Mirrors the control-char sanitizer
+# apps/fhir_api.py:_fhir_error applies to diagnostics. Found by QC-300
+# (EC-13 EDGE_CASE, HIGH).
+_ILLEGAL_XML_CHARS_RE = re.compile(r"[\x00-\x08\x0B\x0C\x0E-\x1F]")
+
 
 def _xml_escape(value: Any) -> str:
-    """Escape a scalar value for safe inclusion as XML element text."""
-    return escape(str(value), {'"': "&quot;", "'": "&apos;"})
+    """Escape a scalar value for safe inclusion as XML element text.
+
+    Strips XML-1.0-illegal control characters BEFORE entity escaping so
+    the output is always well-formed XML 1.0 (QC-300).
+    """
+    return escape(
+        _ILLEGAL_XML_CHARS_RE.sub("", str(value)),
+        {'"': "&quot;", "'": "&apos;"},
+    )
 
 
 def _scalar_to_xml_attr(v: Any) -> str:
@@ -67,42 +85,48 @@ def _is_list_of_dicts(value: Any) -> bool:
 
 
 def _render_dict_as_element(tag: str, payload: dict[str, Any]) -> str:
-    """Render a dict as <tag>...</tag> with FHIR extension/url convention.
+    """Render a dict as <tag>...</tag> — the ONE element renderer.
 
-    FHIR R4 XML convention (https://hl7.org/fhir/R4/extensibility.html):
-    when a dict has a ``url`` key, it is rendered as an XML **attribute**
-    on the parent element, not as a child element. This applies primarily
-    to ``<extension>`` elements:
+    Consolidated in EC-13 remediation (QC-302/303/304): the dict branch
+    previously inlined its own scalar rendering, which drifted from
+    ``_render_value`` (Python None leaked as the literal string "None").
+    All value rendering now delegates to ``_render_value``. Rules:
 
-        {"url": "http://x", "valueString": "v"}
-        → <extension url="http://x"><valueString value="v"/></extension>
-
-    Other primitive values are also rendered as attributes per FHIR's
-    "XML representation" rules: scalars attached to value-typed keys
-    (``value*``, ``url`` without siblings, etc.) become attributes.
-
-    For simplicity and conformance with the resources this serializer
-    supports, we apply two rules:
-    1. ``url`` key → XML attribute on the parent.
-    2. Other scalar values → child element with the scalar as a
-       ``value="..."`` attribute (FHIR primitive element representation).
+    1. QC-302: the ``url`` → attribute hoist applies ONLY when the element
+       tag is ``extension`` (FHIR R4 https://hl7.org/fhir/R4/extensibility.html).
+       Everywhere else ``url`` is a primitive child element
+       (``<url value="..."/>``) — the prior unconditional hoist produced
+       spec-invalid ``<implementation url="...">`` in CapabilityStatement
+       and ``<resource url="...">`` for batch-embedded ValueSets.
+    2. QC-303: a dict carrying ``resourceType`` is a contained FHIR resource
+       (e.g. Bundle.entry.resource) — its content renders inside an element
+       NAMED by the resourceType, and ``resourceType`` is NOT rendered as a
+       child element (FHIR R4 https://hl7.org/fhir/R4/xml.html). The prior
+       code emitted the spec-invalid ``<resourceType value="Parameters"/>``.
+    3. QC-304: scalar values route through ``_render_value``, whose None
+       guard omits the element instead of rendering ``value="None"``.
     """
-    # Separate attribute keys (url only, per FHIR extension convention)
-    # from child element keys.
     attr_parts: list[str] = []
     child_parts: list[str] = []
+    inner_tag: str | None = None
     for k, v in payload.items():
-        if k == "url" and not isinstance(v, (dict, list)):
-            # url is always an attribute on the parent element.
+        if k == "resourceType" and isinstance(v, str) and v:
+            # Contained resource: the element name IS the resource type.
+            inner_tag = v
+            continue
+        if (
+            k == "url"
+            and tag == "extension"
+            and not isinstance(v, (dict, list))
+        ):
+            # url is an attribute on the PARENT element — <extension> only.
             attr_parts.append(f' url="{_xml_escape(v)}"')
-        elif isinstance(v, (dict, list)):
-            child_parts.append(_render_value(tag, k, v))
-        else:
-            # Primitive value → child element with value="..." attribute
-            # (FHIR XML convention for primitive types). Use _scalar_to_xml_attr
-            # so booleans render as lowercase true/false (FHIR R4 §3.4.1).
-            child_parts.append(f'<{k} value="{_scalar_to_xml_attr(v)}"/>')
-    return f"<{tag}{''.join(attr_parts)}>{''.join(child_parts)}</{tag}>"
+            continue
+        child_parts.append(_render_value(tag, k, v))
+    body = "".join(child_parts)
+    if inner_tag is not None:
+        body = f"<{inner_tag}>{body}</{inner_tag}>"
+    return f"<{tag}{''.join(attr_parts)}>{body}</{tag}>"
 
 
 def _render_value(parent_tag: str, key: str, value: Any) -> str:

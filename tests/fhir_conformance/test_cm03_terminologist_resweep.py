@@ -588,12 +588,12 @@ class TestLens2CfSkepticCm03_02ClinicalSafetyOfHierarchyWalkedOutcomes:
             json=_closure_param_name_only(name),
         )
         # Force incomplete_since = True via duckdb.Error injection
-        original = closure_mod.get_ancestors
+        original = closure_mod.get_ancestors_bfs
 
         def _raise(*args, **kwargs):
             raise duckdb.Error("simulated transient DB failure")
 
-        monkeypatch.setattr(closure_mod, "get_ancestors", _raise)
+        monkeypatch.setattr(closure_mod, "get_ancestors_bfs", _raise)
         try:
             fhir_client.post(
                 "/fhir/CodeSystem/$closure",
@@ -602,7 +602,7 @@ class TestLens2CfSkepticCm03_02ClinicalSafetyOfHierarchyWalkedOutcomes:
                 ),
             )
         finally:
-            monkeypatch.setattr(closure_mod, "get_ancestors", original)
+            monkeypatch.setattr(closure_mod, "get_ancestors_bfs", original)
 
         manager = get_closure_manager()
         closure = manager.get(name)
@@ -673,12 +673,12 @@ class TestLens3CfHistorianCm03_02ClinicalSafetyOfIncompleteClosure:
             "/fhir/CodeSystem/$closure",
             json=_closure_param_name_only(name),
         )
-        original = closure_mod.get_ancestors
+        original = closure_mod.get_ancestors_bfs
 
         def _raise(*args, **kwargs):
             raise duckdb.Error("simulated transient DB failure")
 
-        monkeypatch.setattr(closure_mod, "get_ancestors", _raise)
+        monkeypatch.setattr(closure_mod, "get_ancestors_bfs", _raise)
         try:
             fhir_client.post(
                 "/fhir/CodeSystem/$closure",
@@ -687,7 +687,7 @@ class TestLens3CfHistorianCm03_02ClinicalSafetyOfIncompleteClosure:
                 ),
             )
         finally:
-            monkeypatch.setattr(closure_mod, "get_ancestors", original)
+            monkeypatch.setattr(closure_mod, "get_ancestors_bfs", original)
 
         manager = get_closure_manager()
         closure = manager.get(name)
@@ -714,12 +714,12 @@ class TestLens3CfHistorianCm03_02ClinicalSafetyOfIncompleteClosure:
             "/fhir/CodeSystem/$closure",
             json=_closure_param_name_only(name),
         )
-        original = closure_mod.get_ancestors
+        original = closure_mod.get_ancestors_bfs
 
         def _raise_type_error(*args, **kwargs):
             raise TypeError("simulated programming bug")
 
-        monkeypatch.setattr(closure_mod, "get_ancestors", _raise_type_error)
+        monkeypatch.setattr(closure_mod, "get_ancestors_bfs", _raise_type_error)
         try:
             with pytest.raises(TypeError):
                 # Direct call on the closure object — the $closure HTTP
@@ -732,7 +732,7 @@ class TestLens3CfHistorianCm03_02ClinicalSafetyOfIncompleteClosure:
                     engine=None,
                 )
         finally:
-            monkeypatch.setattr(closure_mod, "get_ancestors", original)
+            monkeypatch.setattr(closure_mod, "get_ancestors_bfs", original)
 
         manager = get_closure_manager()
         closure = manager.get(name)
@@ -787,12 +787,12 @@ class TestLens3CfHistorianCm03_02ClinicalSafetyOfIncompleteClosure:
             "/fhir/CodeSystem/$closure",
             json=_closure_param_name_only(name),
         )
-        original = closure_mod.get_ancestors
+        original = closure_mod.get_ancestors_bfs
 
         def _raise(*args, **kwargs):
             raise duckdb.Error("simulated transient DB failure")
 
-        monkeypatch.setattr(closure_mod, "get_ancestors", _raise)
+        monkeypatch.setattr(closure_mod, "get_ancestors_bfs", _raise)
         try:
             resp = fhir_client.post(
                 "/fhir/CodeSystem/$closure",
@@ -801,14 +801,17 @@ class TestLens3CfHistorianCm03_02ClinicalSafetyOfIncompleteClosure:
                 ),
             )
         finally:
-            monkeypatch.setattr(closure_mod, "get_ancestors", original)
+            monkeypatch.setattr(closure_mod, "get_ancestors_bfs", original)
 
         body = resp.json()
-        # CURRENT behavior: no extension, no warning, no flag of any kind.
+        # EC-11 QC-267 (MEDIUM) CLOSED CF-HISTORIAN-CM03-02: the response
+        # now surfaces the degraded state as an ``incomplete``
+        # valueBoolean Out parameter.
         assert "extension" not in body
-        # The Parameters resource carries ONLY return + concept.
-        param_names = {p.get("name") for p in body.get("parameter", [])}
-        assert param_names <= {"return", "concept"}
+        flags = [p for p in body.get("parameter", []) if p.get("name") == "incomplete"]
+        assert flags == [{"name": "incomplete", "valueBoolean": True}], (
+            f"QC-267: degraded closure must surface incomplete=True; got {flags}"
+        )
 
     def test_t35_incomplete_since_clinical_documentation_in_agents_md(self):
         """TERMINOLOGIST clinical finding: the ``incomplete_since`` gap
@@ -887,10 +890,14 @@ class TestLens4NonIdempotentSemanticClinicalWorkflow:
             ),
         )
         hash2 = _return_hash(resp2.json())
-        # NON-IDEMPOTENT: hashes differ (state-change signal advances).
-        assert hash1 != hash2, (
-            "Closure $closure MUST be non-idempotent per R4 spec — "
-            "calling with same concept twice MUST produce different hashes."
+        # EC-11 QC-270/QC-278 revised the contract: the hash is
+        # CONTENT-addressed. The R4 "not idempotent" semantic refers to
+        # the operation's state effects (it initializes/updates server
+        # state), not to token churn — QC-278 explicitly requires
+        # content-identical re-adds to keep the same hash so delta-
+        # protocol clients can skip work. A redundant re-add is a no-op.
+        assert hash1 == hash2, (
+            "QC-278: content-identical re-add MUST keep the same hash"
         )
 
     def test_t41_non_idempotent_concept_set_unchanged_across_redundant_adds(
@@ -971,13 +978,11 @@ class TestLens4NonIdempotentSemanticClinicalWorkflow:
         refactoring ``add_concepts`` MUST preserve the _version
         increment."""
         src = CLOSURE_PATH.read_text()
-        # The _version increment is in both add_concept and add_concepts.
+        # EC-11: the _version increment lives in _record_walk (shared by
+        # add_concept and add_concepts); it counts registered concepts.
         assert "self._version += 1" in src
-        # Source-read the add_concepts method specifically.
-        add_concepts_src = inspect.getsource(
-            ClosureTable.add_concepts
-        )
-        assert "self._version += 1" in add_concepts_src
+        record_src = inspect.getsource(ClosureTable._record_walk)
+        assert "self._version += 1" in record_src
 
     def test_t44_non_idempotent_clinical_workflow_state_change_detection(
         self, fhir_client
@@ -1015,7 +1020,7 @@ class TestLens4NonIdempotentSemanticClinicalWorkflow:
             ),
         )
         hashes.append(_return_hash(resp.json()))
-        # Add DM again (redundant)
+        # Add DM again (redundant) — QC-278: content no-op, hash unchanged.
         resp = fhir_client.post(
             "/fhir/CodeSystem/$closure",
             json=_closure_param_with_concepts(
@@ -1023,9 +1028,10 @@ class TestLens4NonIdempotentSemanticClinicalWorkflow:
             ),
         )
         hashes.append(_return_hash(resp.json()))
-        # Every hash is distinct — non-idempotent semantic preserved.
-        assert len(set(hashes)) == 4, (
-            f"Expected 4 distinct hashes for 4 $closure calls, got "
+        # Hash changes on every CONTENT change; redundant re-add is stable.
+        assert len(set(hashes)) == 3, (
+            f"Expected 3 distinct hashes for 3 distinct states (the 4th "
+            f"call is a content no-op per QC-278); got "
             f"{len(set(hashes))}: {hashes}"
         )
 
@@ -1430,10 +1436,9 @@ class TestLens7VersionHashClinicalStateChangeSignal:
         (modulo the in-memory non-persistence caveat)."""
         c1 = ClosureTable("t72_inst_a")
         c2 = ClosureTable("t72_inst_b")
-        # Same state
-        c1.concepts["X"] = {"system": "S", "display": "X"}
-        c2.concepts["X"] = {"system": "S", "display": "X"}
-        # Same _version (default 0)
+        # Same state (EC-11 QC-266: (source, code) keys)
+        c1.concepts[("S", "X")] = {"system": "S", "display": "X"}
+        c2.concepts[("S", "X")] = {"system": "S", "display": "X"}
         assert c1.version_hash() == c2.version_hash()
 
     def test_t73_hash_excludes_display_values(self, fhir_client):
@@ -1442,13 +1447,15 @@ class TestLens7VersionHashClinicalStateChangeSignal:
         the SAME hash (modulo _version). This is the documented behavior
         — display changes are not state changes at the closure-table level.
         """
-        # Manually populate two closures with same codes, different displays.
+        # EC-11 QC-282/QC-283 revised the contract: displays are part of the
+        # content hash (and are always the engine canonical preferred
+        # term, so a display change means the terminology release
+        # changed — a real state change clients must observe).
         c1 = ClosureTable("t73_disp_a")
         c2 = ClosureTable("t73_disp_b")
-        c1.concepts["X"] = {"system": "S", "display": "Display One"}
-        c2.concepts["X"] = {"system": "S", "display": "Display Two"}
-        # Both have _version=0; same concept keys.
-        assert c1.version_hash() == c2.version_hash()
+        c1.concepts[("S", "X")] = {"system": "S", "display": "Display One"}
+        c2.concepts[("S", "X")] = {"system": "S", "display": "Display Two"}
+        assert c1.version_hash() != c2.version_hash()
 
     def test_t74_hash_format_md5_hex_12(self, fhir_client):
         """CLINICAL UTILITY: the hash format is 12-char MD5 hex. Clients
@@ -1500,7 +1507,12 @@ class TestLens8CheckMethodClinicalCorrectnessRegressionPin:
         """CLINICAL CORRECTNESS: ``check(A, B)`` where (A, B) is in the
         map with True returns "subsumes"."""
         closure = ClosureTable("t81_map_hit")
-        closure._subsumes[("A", "B")] = True
+        # EC-11 QC-266: pair keys; concepts registered so the 2-arg
+        # check() can resolve the shared system.
+        a, b = ("S", "A"), ("S", "B")
+        closure.concepts[a] = {"system": "S", "display": "A"}
+        closure.concepts[b] = {"system": "S", "display": "B"}
+        closure._subsumes[(a, b)] = True
         assert closure.check("A", "B") == "subsumes"
 
     def test_t82_check_map_reversed_hit_returns_subsumed_by(self):
@@ -1508,7 +1520,10 @@ class TestLens8CheckMethodClinicalCorrectnessRegressionPin:
         map with True returns "subsumed-by" (B subsumes A, so A is
         subsumed-by B)."""
         closure = ClosureTable("t82_reversed_hit")
-        closure._subsumes[("B", "A")] = True
+        a, b = ("S", "A"), ("S", "B")
+        closure.concepts[a] = {"system": "S", "display": "A"}
+        closure.concepts[b] = {"system": "S", "display": "B"}
+        closure._subsumes[(b, a)] = True
         assert closure.check("A", "B") == "subsumed-by"
 
     def test_t83_check_map_miss_returns_not_subsumed(self):
@@ -1622,11 +1637,15 @@ class TestLens9SourceReadClinicalInvariantContracts:
         """SOURCE-READ CONTRACT: ``add_concepts`` batches hierarchy
         walks per source (2 walks per source, not 2 per concept). This
         is the E1 efficiency fix — load-bearing for large closures."""
+        # EC-11 BFS migration (QC-261/275/276/281): per-concept layer-
+        # by-layer BFS walks (O(nodes), visited-set) replaced the
+        # per-source batched recursive-CTE walks (O(paths) — the 32 GB
+        # RSS / OOM explosion).
         src = inspect.getsource(ClosureTable.add_concepts)
-        assert "by_source" in src
-        assert "for source, codes in by_source.items()" in src
-        assert "get_ancestors" in src
-        assert "get_descendants" in src
+        record_src = inspect.getsource(ClosureTable._record_walk)
+        assert "_record_walk" in src
+        assert "get_ancestors_bfs" in record_src
+        assert "get_descendants_bfs" in record_src
 
     def test_t94_add_concepts_catches_duckdb_error_not_exception(self):
         """SOURCE-READ CONTRACT: ``add_concepts`` catches the NARROW
@@ -1636,7 +1655,9 @@ class TestLens9SourceReadClinicalInvariantContracts:
         A future refactor that broadens the catch to ``Exception`` would
         silently swallow programming bugs as "incomplete closure" —
         clinical-safety violation."""
-        src = inspect.getsource(ClosureTable.add_concepts)
+        # EC-11: the walk moved into _record_walk (shared by both add
+        # entry points) — the narrow-catch contract applies there.
+        src = inspect.getsource(ClosureTable._record_walk)
         assert "except duckdb.Error" in src
         # Broad except MUST be absent.
         assert "except Exception" not in src
@@ -1646,7 +1667,7 @@ class TestLens9SourceReadClinicalInvariantContracts:
         ``self.incomplete_since = True`` inside the duckdb.Error catch
         block. This is the B6 fix — load-bearing for Python-API callers.
         """
-        src = inspect.getsource(ClosureTable.add_concepts)
+        src = inspect.getsource(ClosureTable._record_walk)
         assert "self.incomplete_since = True" in src
 
     def test_t96_build_closure_response_return_first(self):
@@ -1690,12 +1711,13 @@ class TestLens9SourceReadClinicalInvariantContracts:
         values are EXCLUDED. A future refactor that includes display
         would change the hash contract (silent-stale-cache for clients).
         """
+        # EC-11 QC-270/QC-283 revised the payload: the FULL state —
+        # (source, code, display) concept tuples AND the TRUE relation
+        # pairs — is hashed; the internal call counter is excluded so
+        # identical content yields identical hashes.
         src = inspect.getsource(ClosureTable.version_hash)
-        assert "sorted(self.concepts.keys())" in src
-        # FORBIDDEN shapes — would change the hash payload composition.
-        assert "sorted(self.concepts.items())" not in src
-        assert "sorted(self.concepts.values())" not in src
-        assert "self._subsumes" not in src  # relationships excluded too
+        assert "self._subsumes" in src  # relations included (QC-283)
+        assert "self._version" not in src  # call counter excluded (QC-270)
 
 
 # ===========================================================================

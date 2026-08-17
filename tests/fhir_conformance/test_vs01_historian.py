@@ -418,24 +418,22 @@ class TestLens2CarryForwardSourceAudit:
         # This source-reading probe documents the audit was performed.
 
     def test_h22_cf03_exclude_ignores_system_source_audit(self):
-        """CF-SKEPTIC-VS01-03: exclude ignores system when matching codes.
+        """CF-SKEPTIC-VS01-03 RESOLVED (QC-244, EC-10): exclude is now
+        scoped by (canonical system, code).
 
-        The exclude path matches on `c["code"] not in exc_codes` (string
-        comparison on code alone). Per §4.9.10.2: "uniqueness is based on
-        system/version/code"; an exclude should logically scope by the
-        same key. Verified via AST source reading.
+        The prior exclude path matched on `c["code"] not in exc_codes`
+        (string comparison on code alone) — per §4.9.10.2 "uniqueness is
+        based on system/version/code". EC-10 remediation replaced the
+        global code set with (canonical exclude-system, code) pair keys.
+        Verified via source reading.
         """
         text = _source_text()
-        # The exclude comparison is `c["code"] not in exc_codes`.
-        # Grep the source for the pattern.
-        # (AST-level walk is brittle; substring search is precise here.)
-        assert 'c["code"] not in exc_codes' in text or (
-            "c.get(\"code\") not in exc_codes" in text
-            or "c['code'] not in exc_codes" in text
-        ), (
-            "Expected exclude comparison `c[\"code\"] not in exc_codes` "
-            "(string comparison, ignoring system). If this changed, "
-            "CF-SKEPTIC-VS01-03 MUST be updated in lockstep."
+        # QC-244 fix shape: exclusion keys are (system, code) tuples and
+        # the removal compares the pair, not the bare code string.
+        assert '(c.get("system", ""), c.get("code", "")) not in excluded' in text, (
+            "Expected the QC-244 pair-scoped exclude comparison. If this "
+            "changed, update this probe in lockstep (CF-SKEPTIC-VS01-03 "
+            "was RESOLVED by QC-244)."
         )
 
     def test_h23_cf04_compose_metadata_ignored_source_audit(self):
@@ -544,11 +542,9 @@ class TestLens3CarryForwardBehavioral:
         status, body = _post_expand(fhir_client, vs)
         assert status == 200
         codes = _contains_codes(body)
-        # CURRENT behavior: exclude.filter ignored → both codes remain.
-        # Fix shape: when exclude.filter is honored, both codes are removed
-        # (because the is-a filter on the exclude removes the subtree).
-        assert (SNOMED_URI, SNOMED_DIABETES_MELLITUS) in codes
-        assert (SNOMED_URI, SNOMED_T2DM) in codes
+        # QC-242 (EC-10, HIGH) RESOLVED: exclude.filter is honored — the
+        # is-a exclusion removes the whole subtree (root + descendant).
+        assert codes == []
 
     def test_h33_cf03_exclude_ignores_system_when_matching(self, fhir_client):
         """CF-SKEPTIC-VS01-03 behavioral: exclude matches on code alone,
@@ -560,11 +556,11 @@ class TestLens3CarryForwardBehavioral:
                 "include": [
                     {"system": SNOMED_URI, "concept": [{"code": SNOMED_T2DM}]}
                 ],
-                # Exclude by code SNOMED_T2DM but in a DIFFERENT system.
-                # Per spec, this exclude SHOULD NOT match the SNOMED code
-                # because the systems differ.
+                # Exclude by code SNOMED_T2DM but in a DIFFERENT (real,
+                # resolvable) system. Per spec, this exclude SHOULD NOT
+                # match the SNOMED code because the systems differ.
                 "exclude": [
-                    {"system": "http://example.org/different", "concept": [
+                    {"system": ICD10CM_URI, "concept": [
                         {"code": SNOMED_T2DM}
                     ]}
                 ],
@@ -573,13 +569,11 @@ class TestLens3CarryForwardBehavioral:
         status, body = _post_expand(fhir_client, vs)
         assert status == 200
         codes = _contains_codes(body)
-        # CURRENT behavior: exclude matches on code alone → SNOMED_T2DM
-        # is REMOVED even though the exclude references a different system.
-        # Fix shape: when exclude is scoped by (system, code), the code
-        # REMAINS in the expansion.
-        assert (SNOMED_URI, SNOMED_T2DM) not in codes, (
-            "If exclude is now scoped by (system, code), the code "
-            "SHOULD remain — update this probe to assert presence."
+        # QC-244 (EC-10, MEDIUM) RESOLVED: exclude is scoped by
+        # (canonical system, code) → the SNOMED code REMAINS despite the
+        # ICD-10-CM exclude block listing the same digit string.
+        assert (SNOMED_URI, SNOMED_T2DM) in codes, (
+            "exclude must be scoped to the exclude block's system (QC-244)"
         )
 
     def test_h34_cf04_locked_date_silently_ignored(self, fhir_client):

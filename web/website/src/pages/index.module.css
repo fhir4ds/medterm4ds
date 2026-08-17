@@ -44,7 +44,7 @@
   margin: 1.5rem auto 1rem;
   max-width: 900px;
   color: #f4f9ff;
-  font-size: clamp(2.8rem, 7vw, 5.4rem);
+  font-size: clamp(2.4rem, 5.5vw, 4.2rem);
   font-weight: 900;
   line-height: 0.98;
 }
@@ -93,42 +93,6 @@
   color: #ffffff;
   text-decoration: none;
   border-color: rgba(84, 198, 255, 0.65);
-}
-
-.stats {
-  background: #0b1525;
-  border-bottom: 1px solid rgba(84, 198, 255, 0.12);
-  padding: 2.25rem 0;
-}
-
-.statsRow {
-  display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 1rem;
-}
-
-.stat {
-  padding: 1.4rem;
-  border: 1px solid rgba(84, 198, 255, 0.14);
-  border-radius: 10px;
-  background: rgba(17, 29, 45, 0.72);
-}
-
-.statValue {
-  display: block;
-  color: #54c6ff;
-  font-size: 2rem;
-  font-weight: 900;
-  line-height: 1;
-}
-
-.statLabel {
-  display: block;
-  margin-top: 0.55rem;
-  color: #94a8bd;
-  font-size: 0.82rem;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
 }
 
 .section {
@@ -213,27 +177,8 @@
   white-space: pre-wrap;
 }
 
-.pipeline {
-  display: grid;
-  grid-template-columns: repeat(5, minmax(0, 1fr));
-  gap: 0.85rem;
-  margin-top: 2.25rem;
-}
-
-.step {
-  padding: 1rem;
-  border: 1px solid rgba(142, 230, 193, 0.2);
-  border-radius: 8px;
-  color: #dff8ef;
-  background: rgba(142, 230, 193, 0.08);
-  font-weight: 800;
-  text-align: center;
-}
-
 @media screen and (max-width: 996px) {
-  .statsRow,
-  .featureGrid,
-  .pipeline {
+  .featureGrid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
@@ -243,9 +188,7 @@
     padding: 4.5rem 1rem 3.5rem;
   }
 
-  .statsRow,
-  .featureGrid,
-  .pipeline {
+  .featureGrid {
     grid-template-columns: 1fr;
   }
 }

@@ -401,17 +401,15 @@ def test_s32_post_closure_add_concept_unknown_system_accepted(fhir_client):
             [{"system": UNKNOWN_SYSTEM_URI, "code": "X1", "display": "Unknown"}],
         ),
     )
-    # The implementation accepts unknown systems — no validation gate.
-    assert r.status_code == 200, (
-        f"adding unknown-system concept — expected 200 (no validation gate); "
+    # QC-271 (HIGH): the ``fhir_uri_to_system(x) or x`` fallback was
+    # removed — unresolvable system URIs are rejected at 400 exactly like
+    # $lookup/$subsumes, instead of silently creating dead closure entries
+    # whose walks produce zero relations.
+    assert r.status_code == 400, (
+        f"QC-271: unknown-system concept must be rejected; "
         f"got {r.status_code}: {r.text}"
     )
-    body = r.json()
-    # The concept IS added to the closure (with the raw URI as system).
-    concepts = _find_params(body, "concept")
-    assert len(concepts) >= 1, (
-        f"unknown-system concept should still appear in closure response"
-    )
+    assert r.json()["resourceType"] == "OperationOutcome"
 
 
 def test_s33_post_closure_add_concept_oid_alias_system_translated(fhir_client):
@@ -758,12 +756,14 @@ def test_s71_closure_incomplete_since_set_on_duckdb_error():
     class _NullEngine:
         pass
 
-    original_anc = closure_mod.get_ancestors
-    original_desc = closure_mod.get_descendants
-    closure_mod.get_ancestors = lambda *a, **k: (_ for _ in ()).throw(
+    # EC-11 BFS migration: closure imports get_ancestors_bfs /
+    # get_descendants_bfs instead of the recursive-CTE walks.
+    original_anc = closure_mod.get_ancestors_bfs
+    original_desc = closure_mod.get_descendants_bfs
+    closure_mod.get_ancestors_bfs = lambda *a, **k: (_ for _ in ()).throw(
         _duckdb.Error("synthetic ancestor failure")
     )
-    closure_mod.get_descendants = lambda *a, **k: (_ for _ in ()).throw(
+    closure_mod.get_descendants_bfs = lambda *a, **k: (_ for _ in ()).throw(
         _duckdb.Error("synthetic descendant failure")
     )
     try:
@@ -773,8 +773,8 @@ def test_s71_closure_incomplete_since_set_on_duckdb_error():
             "incomplete_since should be True after duckdb.Error in ancestor walk"
         )
     finally:
-        closure_mod.get_ancestors = original_anc
-        closure_mod.get_descendants = original_desc
+        closure_mod.get_ancestors_bfs = original_anc
+        closure_mod.get_descendants_bfs = original_desc
 
 
 def test_s72_closure_add_concepts_incomplete_since_set_on_duckdb_error():
@@ -788,12 +788,12 @@ def test_s72_closure_add_concepts_incomplete_since_set_on_duckdb_error():
     class _BoomEngine:
         pass
 
-    original_anc = closure_mod.get_ancestors
-    original_desc = closure_mod.get_descendants
-    closure_mod.get_ancestors = lambda *a, **k: (_ for _ in ()).throw(
+    original_anc = closure_mod.get_ancestors_bfs
+    original_desc = closure_mod.get_descendants_bfs
+    closure_mod.get_ancestors_bfs = lambda *a, **k: (_ for _ in ()).throw(
         _duckdb.Error("synthetic ancestor batch failure")
     )
-    closure_mod.get_descendants = lambda *a, **k: (_ for _ in ()).throw(
+    closure_mod.get_descendants_bfs = lambda *a, **k: (_ for _ in ()).throw(
         _duckdb.Error("synthetic descendant batch failure")
     )
     try:
@@ -806,8 +806,8 @@ def test_s72_closure_add_concepts_incomplete_since_set_on_duckdb_error():
             "incomplete_since should be True after batched duckdb.Error"
         )
     finally:
-        closure_mod.get_ancestors = original_anc
-        closure_mod.get_descendants = original_desc
+        closure_mod.get_ancestors_bfs = original_anc
+        closure_mod.get_descendants_bfs = original_desc
 
 
 # ===========================================================================
@@ -1110,8 +1110,11 @@ def test_s120_build_closure_response_includes_return_and_concepts():
     resource with ``return`` first, then ``concept`` entries.
     """
     t = ClosureTable("test-bcr-120")
-    t.concepts["73211009"] = {"system": "SNOMEDCT_US", "display": "DM"}
-    t.concepts["44054006"] = {"system": "SNOMEDCT_US", "display": "T2DM"}
+    # EC-11 QC-266: concepts keyed by (source, code).
+    t.concepts[("SNOMEDCT_US", "73211009")] = {
+        "system": "SNOMEDCT_US", "display": "DM"}
+    t.concepts[("SNOMEDCT_US", "44054006")] = {
+        "system": "SNOMEDCT_US", "display": "T2DM"}
     params = build_closure_response(t)
     assert params["resourceType"] == "Parameters"
     names = [p["name"] for p in params["parameter"]]
@@ -1132,14 +1135,16 @@ def test_s120_build_closure_response_includes_return_and_concepts():
 
 def test_s121_build_closure_response_empty_closure_has_only_return():
     """SKEPTIC: ``build_closure_response`` on an empty closure produces
-    a Parameters resource with ONLY the ``return`` parameter.
+    a Parameters resource with ONLY the ``return`` and ``incomplete``
+    parameters (the latter added by the QC-267 fix to surface the
+    incomplete_since degradation flag).
     """
     t = ClosureTable("test-bcr-121")
     params = build_closure_response(t)
     assert params["resourceType"] == "Parameters"
     names = [p["name"] for p in params["parameter"]]
-    assert names == ["return"], (
-        f"empty closure should have only 'return'; got {names!r}"
+    assert names == ["return", "incomplete"], (
+        f"empty closure should have only 'return' + 'incomplete'; got {names!r}"
     )
 
 

@@ -14,6 +14,8 @@ import logging
 from collections import defaultdict
 from collections.abc import Sequence
 
+import duckdb
+
 from medterm4ds.core.models import (
     CodeRef,
     FriendlyNameResult,
@@ -210,7 +212,9 @@ def _resolve_hierarchy_sources(
         f"({_sql_literal(c.code)}, {_sql_literal(source)}, {i})" for i, c in enumerate(codes)
     )
 
-    closure_table = _walk_closure_table(con, walk_depth)
+    # CR-031: per-source closure coverage gate — fall back to the walk_edges
+    # recursive CTE when the closure table has no rows for this source.
+    closure_table = _walk_closure_table(con, walk_depth, source)
     if closure_table:
         native_walk_cte = f"""
     native_walk(input_order, source, code, aui, cui, tty, depth) AS (
@@ -438,7 +442,14 @@ def _snomed_fallback(
         f"({_sql_literal(cr.code)}, {_sql_literal(cr.source)}, {idx})" for idx, cr in items
     )
 
-    closure_table = _walk_closure_table(con, walk_depth)
+    # CR-031: the native_walk leg joins the closure table per input source and
+    # the snomed_walk leg joins it on SNOMEDCT_US, so BOTH must be covered or
+    # the whole query falls back to the walk_edges recursive CTEs.
+    closure_table = _walk_closure_table(
+        con,
+        walk_depth,
+        {cr.source for cr in needs_fallback.values()} | {"SNOMEDCT_US"},
+    )
     if closure_table:
         native_walk_cte = f"""
     native_walk(input_order, source, source_code, source_depth, aui, cui, tty, depth) AS (
@@ -567,8 +578,22 @@ def _snomed_fallback(
 
     try:
         rows = con.execute(query).fetchall()
-    except Exception:
-        logger.exception("SNOMED fallback query failed")
+    except duckdb.Error:
+        # QC-089/QC-090/QC-098 (HIGH): pre-fix, a broad ``except Exception:``
+        # here silently swallowed ``OutOfMemoryException`` and returned ``{}``,
+        # causing the caller to silently downgrade ~30% of batch codes from
+        # ``snomed_fallback`` to ``original`` (losing the MEDLINEPLUS patient-
+        # friendly name) with no signal. Per GLOBAL_RULES "Silent Fallbacks"
+        # we narrow to ``duckdb.Error`` (the legitimate operational-error
+        # class for DuckDB) and log at WARNING so the operator sees the
+        # degraded run. Programming bugs (TypeError / AttributeError / etc.)
+        # propagate. Returning ``{}`` preserves the degradation behavior for
+        # genuine OOM / I/O errors, but the WARNING makes it visible.
+        logger.warning(
+            "SNOMED fallback query failed (degraded run: codes will fall "
+            "back to 'original' without patient-friendly names)",
+            exc_info=True,
+        )
         return {}
 
     fallback_map: dict[int, FriendlyNameResult] = {}
@@ -584,7 +609,14 @@ def _snomed_fallback(
         match_depth = int(row[6] or 0)
         code_ref = needs_fallback[idx]
         _, tech_name = base_info.get(idx, (code_ref.code, code_ref.code))
-        if friendly_src == "CHV" and is_combo_name_mismatch(tech_name, friendly_name):
+        # QC-096 (HIGH): pre-fix, the combo-name mismatch guard fired only
+        # for ``friendly_src == 'CHV'``. MEDLINEPLUS-friendly hits bypassed
+        # the check entirely, so SNOMED combination codes with mismatched
+        # MEDLINEPLUS atoms were silently accepted. Apply the guard uniformly
+        # to both CHV and MEDLINEPLUS candidates.
+        if friendly_src in {"CHV", "MEDLINEPLUS"} and is_combo_name_mismatch(
+            tech_name, friendly_name
+        ):
             continue
 
         fallback_map[idx] = FriendlyNameResult(
@@ -867,7 +899,8 @@ def _resolve_snomed(
     ]
     target_case_sql = "CASE target_source " + " ".join(target_case_parts) + " END"
     crosswalk_table, crosswalk_filter = _same_cui_crosswalk_sql(con)
-    closure_table = _walk_closure_table(con, walk_depth)
+    # CR-031: SNOMED-only walk — gate on SNOMEDCT_US closure coverage.
+    closure_table = _walk_closure_table(con, walk_depth, "SNOMEDCT_US")
     if closure_table:
         snomed_walk_cte = f"""
     snomed_walk(input_order, code, technical_name, walk_code, aui, depth) AS (
@@ -1209,7 +1242,8 @@ def _guarded_snomed_walk(
         f"({_sql_literal(cr.code)}, {idx})" for idx, cr in indices.items()
     )
 
-    closure_table = _walk_closure_table(con, walk_depth)
+    # CR-031: SNOMED-only guarded walk — gate on SNOMEDCT_US closure coverage.
+    closure_table = _walk_closure_table(con, walk_depth, "SNOMEDCT_US")
     if closure_table:
         snomed_walk_cte = f"""
     snomed_walk(input_order, code, walk_code, aui, cui, depth) AS (
@@ -1274,8 +1308,13 @@ def _guarded_snomed_walk(
 
     try:
         rows = con.execute(query).fetchall()
-    except Exception:
-        logger.exception("Guarded SNOMED walk query failed")
+    except duckdb.Error:
+        # QC-089 sibling: narrow ``except Exception:`` to ``duckdb.Error`` so
+        # OOM / I/O failures log at WARNING (degraded run signal) while
+        # programming bugs propagate. Per GLOBAL_RULES "Silent Fallbacks".
+        logger.warning(
+            "Guarded SNOMED walk query failed (degraded run)", exc_info=True
+        )
         return
 
     for row in rows:
@@ -1287,7 +1326,14 @@ def _guarded_snomed_walk(
         match_depth = int(row[3] or 0)
         code_ref = codes[idx]
         _, tech_name = base_info.get(idx, (code_ref.code, code_ref.code))
-        if friendly_src == "CHV" and is_combo_name_mismatch(tech_name, friendly_name):
+        # QC-096 (HIGH): pre-fix, the combo-name mismatch guard fired only
+        # for ``friendly_src == 'CHV'``. MEDLINEPLUS-friendly hits bypassed
+        # the check entirely, so SNOMED combination codes with mismatched
+        # MEDLINEPLUS atoms were silently accepted. Apply the guard uniformly
+        # to both CHV and MEDLINEPLUS candidates.
+        if friendly_src in {"CHV", "MEDLINEPLUS"} and is_combo_name_mismatch(
+            tech_name, friendly_name
+        ):
             continue
 
         results[idx] = FriendlyNameResult(

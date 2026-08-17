@@ -300,7 +300,7 @@ class TestIntegrationWorkflow:
         from medterm4ds.engines.fhir.closure import get_closure_manager
         closure = get_closure_manager().get("workflow-test")
         assert closure is not None
-        assert closure.check("73211009", "44054006") == "subsumes"
+        assert closure.check("73211009", "44054006", "SNOMEDCT_US") == "subsumes"
 
     def test_error_handling_workflow(self, client):
         """Exercise error paths: invalid system, missing params, unknown codes."""

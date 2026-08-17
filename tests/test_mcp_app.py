@@ -284,3 +284,172 @@ def test_code_refs_accepts_one_source_for_many_codes():
 def test_code_refs_validates_lengths():
     with pytest.raises(ValueError, match="sources must contain"):
         build_code_refs(["E11.9", "208"], ["ICD10CM", "CVX", "RXNORM"])
+
+
+def test_code_refs_rejects_none_codes():
+    """QC-050 (MEDIUM): codes=None must raise TypeError, not leak
+    'object of type NoneType has no len()' raw TypeError."""
+    with pytest.raises(TypeError):
+        build_code_refs(codes=None, sources=["ICD10CM"])  # type: ignore[arg-type]
+
+
+def test_code_refs_rejects_empty_codes_symmetric_with_empty_sources():
+    """QC-060 (MEDIUM): empty codes must raise ValueError, symmetric with
+    the existing empty-sources ValueError. Pre-fix empty-codes silently
+    returned [] while empty-sources raised."""
+    with pytest.raises(ValueError, match="codes must not be empty"):
+        build_code_refs(codes=[], sources=["ICD10CM"])
+    with pytest.raises(ValueError, match="sources must not be empty"):
+        build_code_refs(codes=["E11.9"], sources=[])
+
+
+def test_code_refs_rejects_none_entry_in_codes():
+    """QC-052 (MEDIUM): a single None entry in codes must surface a clear
+    TypeError pointing at the bad entry, not leak CodeRef's internal
+    'CodeRef.code must be a string, got None' error that fails the batch."""
+    with pytest.raises(TypeError, match="each code must be a string"):
+        build_code_refs(codes=["44054006", None], sources=["SNOMEDCT_US"])  # type: ignore[list-item]
+
+
+# =============================================================================
+# Regression: single-code MCP tools validate code/source before CodeRef.
+# Found by QC-078 (MEDIUM) + QC-086 (MEDIUM): patient_friendly_name /
+# cross_reference / optimize / guidelines_for_code construct CodeRef
+# directly, bypassing build_code_refs validation. Pre-fix, CodeRef's raw
+# TypeError 'CodeRef.code must be a string, got NoneType' leaked.
+# =============================================================================
+
+
+def test_mcp_single_code_tools_reject_none_inputs(tmp_path):
+    """QC-078/QC-086 (MEDIUM): single-code MCP tools raise clean TypeError
+    with a clear message ('code must be a string') rather than the raw
+    CodeRef.__post_init__ error."""
+    from medterm4ds.apps.mcp import _validate_single_code_inputs
+
+    with pytest.raises(TypeError, match="code must be a string"):
+        _validate_single_code_inputs(code=None, source="ICD10CM")
+    with pytest.raises(TypeError, match="source must be a string"):
+        _validate_single_code_inputs(code="E11.9", source=None)
+    with pytest.raises(TypeError, match="code must be a string"):
+        _validate_single_code_inputs(code=42, source="ICD10CM")
+    # Valid inputs pass without raising.
+    _validate_single_code_inputs(code="E11.9", source="ICD10CM")
+
+
+
+# =============================================================================
+# Filter-then-limit regression (same bug class the CLI had): result_types
+# must be forwarded to the SERVICE so `count` caps the filtered set — the
+# former tool post-filtered after truncation and silently discarded slots.
+# =============================================================================
+
+
+def _fake_search_results():
+    from types import SimpleNamespace
+
+    def make(code, display, category, result_type, score):
+        return SimpleNamespace(
+            to_dict=lambda _c=code, _d=display, _cat=category, _rt=result_type, _s=score: {
+                "code": _c, "display": _d, "category": _cat,
+                "result_type": _rt, "score": _s,
+            },
+            category=category,
+            result_type=result_type,
+        )
+
+    # Medication ranks first; a client-side post-filter with count=1 would
+    # drop it and return zero labs.
+    return [
+        make("6809", "metformin", "medication", "medication", 0.99),
+        make("LP15098-4", "Potassium", "lab", "lab", 0.98),
+    ]
+
+
+def test_mcp_search_result_types_forwarded_not_postfiltered(tmp_path, monkeypatch):
+    """`search(result_types=['lab'], count=1)` must return the one lab result
+    AND the service must receive result_types (service-side filtering)."""
+    import asyncio
+
+    db_path = tmp_path / "umls.duckdb"
+    _make_duckdb(db_path)
+    runtime = McpRuntime(_settings(db_path, prepare_cache=False))
+    runtime.open()
+    captured: dict = {}
+
+    def fake_service(query, *, mode=None, sources=None, count=None,
+                     result_types=None, engine=None):
+        captured.update(
+            mode=mode, count=count, result_types=result_types,
+        )
+        if result_types:
+            return [r for r in _fake_search_results()
+                    if r.category in result_types or r.result_type in result_types]
+        return _fake_search_results()
+
+    monkeypatch.setattr("medterm4ds.services.search.search", fake_service)
+
+    from medterm4ds.apps.mcp import create_mcp_server
+    from fastmcp import Client
+
+    async def run():
+        server = create_mcp_server(runtime=runtime)
+        async with Client(server) as client:
+            res = await client.call_tool(
+                "search",
+                {"query": "potassium", "mode": "lexical", "count": 1,
+                 "result_types": ["lab"]},
+            )
+            return res
+
+    try:
+        result = asyncio.run(run())
+    finally:
+        runtime.close()
+
+    payload = result.data if hasattr(result, "data") else result
+    rows = payload["results"]
+    assert len(rows) == 1, rows
+    assert rows[0]["code"] == "LP15098-4"
+    # The service, not the tool, applied the filter.
+    assert captured["result_types"] == ["lab"]
+    assert captured["count"] == 1
+
+
+def test_mcp_search_unknown_result_types_skip_service(tmp_path, monkeypatch):
+    """Every requested type outside the mode's vocabulary → empty result
+    without calling the (expensive) service; a warning is surfaced."""
+    import asyncio
+
+    db_path = tmp_path / "umls.duckdb"
+    _make_duckdb(db_path)
+    runtime = McpRuntime(_settings(db_path, prepare_cache=False))
+    runtime.open()
+    called = {"n": 0}
+
+    def fake_service(*args, **kwargs):
+        called["n"] += 1
+        return _fake_search_results()
+
+    monkeypatch.setattr("medterm4ds.services.search.search", fake_service)
+
+    from medterm4ds.apps.mcp import create_mcp_server
+    from fastmcp import Client
+
+    async def run():
+        server = create_mcp_server(runtime=runtime)
+        async with Client(server) as client:
+            return await client.call_tool(
+                "search",
+                {"query": "x", "mode": "lexical", "count": 5,
+                 "result_types": ["bogus_type"]},
+            )
+
+    try:
+        result = asyncio.run(run())
+    finally:
+        runtime.close()
+
+    payload = result.data if hasattr(result, "data") else result
+    assert payload["results"] == []
+    assert called["n"] == 0
+    assert any("bogus_type" in w for w in payload.get("warnings", []))

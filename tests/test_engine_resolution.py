@@ -24,6 +24,20 @@ def _make_resolution_db(path: Path) -> None:
         [
             ("E11", "PT", "Type 2 diabetes", "AUI_E11", "N", "ICD10CM", "C0011860"),
             ("OLD_CODE", "PT", "Deprecated term", "AUI_OLD", "O", "ICD10CM", "C_OLD"),
+            # QC-406 fixture: the active replacement for OLD_CODE.
+            ("NEW_CODE", "PT", "Replacement term", "AUI_NEW", "N", "ICD10CM", "C_NEW"),
+            # QC-401 fixture: the RXNORM drug the NDC attribute points at.
+            ("860975", "SCD", "24 HR metformin 500 MG Oral Tablet", "AUI_860975", "N", "RXNORM", "C0978484"),
+        ],
+    )
+    con.execute("""CREATE TABLE mrrel (
+        AUI1 VARCHAR, AUI2 VARCHAR, RELA VARCHAR, REL VARCHAR
+    )""")
+    con.executemany(
+        "INSERT INTO mrrel VALUES (?, ?, ?, ?)",
+        [
+            # QC-406 fixture: obsolete -> active replacement edge.
+            ("AUI_OLD", "AUI_NEW", "same_as", "RO"),
         ],
     )
     con.execute("""CREATE TABLE mrsat (
@@ -63,3 +77,104 @@ class TestCodeResolution:
     def test_empty_input(self, engine):
         results = engine.resolve_codes([])
         assert results == []
+
+    def test_resolve_obsolete_code_finds_replacement(self, engine):
+        """QC-398 baseline: the live-MRREL fallback resolves OLD_CODE to
+        NEW_CODE when no prepared code_replacements table exists."""
+        results = engine.resolve_codes([CodeRef("ICD10CM", "OLD_CODE")])
+        assert results[0].status == "replaced"
+        assert results[0].resolved.code == "NEW_CODE"
+        assert results[0].resolved_display == "Replacement term"
+
+    def test_prepare_cache_preserves_replacement_resolution_qc406(self, tmp_path):
+        """QC-406 (HIGH): prepare_cache's active-only TEMP mrconso/mrrel shadow
+        must not change obsolete-code resolution. The shadow hides the
+        SUPPRESS='O' atoms (so code_auis found none) and drops the
+        obsolete-to-active mrrel edges — pre-fix, the prepared engine
+        degraded status='replaced' to 'historical' with resolved=None."""
+        db = tmp_path / "resolution_qc406.duckdb"
+        _make_resolution_db(db)
+        con = duckdb.connect(str(db))
+        try:
+            prepared = LocalDuckDBEngine(con)
+            prepared.prepare_cache(create_indexes=False)
+            results = prepared.resolve_codes([CodeRef("ICD10CM", "OLD_CODE")])
+        finally:
+            con.close()
+        assert results[0].status == "replaced", results[0].status
+        assert results[0].resolved.code == "NEW_CODE"
+        assert results[0].resolved_display == "Replacement term"
+
+    def test_prepared_single_successor_not_ambiguous_multi_atom_target(self, tmp_path):
+        """Post-rebuild regression: when the prepared code_replacements table
+        has ONE replacement row but the target code has MULTIPLE active atoms
+        in best_atoms, the candidate join must not fan out to N identical
+        candidates (misclassifying 'replaced' as 'ambiguous'). One distinct
+        target -> one candidate, best atom by rank."""
+        db = tmp_path / "resolution_fanout.duckdb"
+        _make_resolution_db(db)
+        con = duckdb.connect(str(db))
+        try:
+            con.execute("CREATE SCHEMA mt4ds")
+            con.execute("""CREATE TABLE mt4ds.prepare_manifest (
+                key VARCHAR, value VARCHAR
+            )""")
+            con.executemany(
+                "INSERT INTO mt4ds.prepare_manifest VALUES (?, ?)",
+                [("prepared_schema_version", "0.9")],
+            )
+            con.execute("""CREATE TABLE mt4ds.code_replacements (
+                source VARCHAR, old_code VARCHAR, new_code VARCHAR, rela VARCHAR
+            )""")
+            con.execute(
+                "INSERT INTO mt4ds.code_replacements VALUES "
+                "('ICD10CM', 'OLD_CODE', 'NEW_CODE', 'same_as')"
+            )
+            con.execute("""CREATE TABLE mt4ds.best_atoms (
+                source VARCHAR, code VARCHAR, aui VARCHAR, cui VARCHAR,
+                tty VARCHAR, name VARCHAR, suppress VARCHAR,
+                is_active BOOLEAN, rank INTEGER
+            )""")
+            # Target with 4 active atoms: rank-1 PT plus FN/SY siblings.
+            con.executemany(
+                "INSERT INTO mt4ds.best_atoms VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                [
+                    ("ICD10CM", "NEW_CODE", "AUI_NEW", "C_NEW", "PT",
+                     "Replacement term", "N", True, 1),
+                    ("ICD10CM", "NEW_CODE", "AUI_NEW_FN", "C_NEW", "FN",
+                     "Replacement term (finding)", "N", True, 2),
+                    ("ICD10CM", "NEW_CODE", "AUI_NEW_SY1", "C_NEW", "SY",
+                     "Replacement synonym", "N", True, 3),
+                    ("ICD10CM", "NEW_CODE", "AUI_NEW_SY2", "C_NEW", "SY",
+                     "Replacement synonym two", "N", True, 4),
+                ],
+            )
+            engine = LocalDuckDBEngine(con)
+            results = engine.resolve_codes([CodeRef("ICD10CM", "OLD_CODE")])
+        finally:
+            con.close()
+        assert results[0].status == "replaced", results[0].status
+        assert results[0].resolved.code == "NEW_CODE"
+        assert results[0].candidates == (CodeRef("ICD10CM", "NEW_CODE"),)
+
+    def test_ndc_lookup_default_mode_returns_resolved_drug_qc401(self, tmp_path):
+        """QC-401 (HIGH): active_only lookup of an NDC code must return the
+        resolved RXNORM drug record. The historical fallthrough previously
+        echoed the raw NDC string as the display while cui/aui/tty/suppress
+        came from the resolved atom."""
+        from medterm4ds.services.lookup import get_code_info
+
+        db = tmp_path / "resolution_qc401.duckdb"
+        _make_resolution_db(db)
+        con = duckdb.connect(str(db))
+        try:
+            engine = LocalDuckDBEngine(con)
+            info = get_code_info(
+                ("NDC", "12345678901"), engine=engine, resolve_mode="active_only"
+            )
+        finally:
+            con.close()
+        assert info is not None
+        assert (info.code.source, info.code.code) == ("RXNORM", "860975")
+        assert info.name == "24 HR metformin 500 MG Oral Tablet"
+        assert info.name != "12345678901"

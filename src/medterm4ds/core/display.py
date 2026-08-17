@@ -141,3 +141,24 @@ def _looks_like_systematic_chemical_name(name: str) -> bool:
         return False
     morpheme_hits = sum(1 for morpheme in _CHEMICAL_MORPHEMES if morpheme in lower)
     return morpheme_hits >= 2
+
+
+def join_limited(values, limit: int = 10, *, repr_values: bool = False) -> str:
+    """Join values into a bounded diagnostic enumeration (QC-396/QC-399).
+
+    Pre-fix, error paths embedded EVERY offending value verbatim — a
+    10K-entry --sources filter produced a single 109KB one-line stderr
+    error, and a 10K-entry relationship_types list a ~120KB ValueError.
+    Sibling of the QC-217/QC-218/QC-235 length-cap family: cap the
+    enumeration at *limit* entries and summarize the remainder.
+
+    ``repr_values=True`` renders each entry with ``repr()`` (used where the
+    values are identifiers whose empty/whitespace form matters to the
+    diagnostic).
+    """
+    rendered = [repr(v) if repr_values else str(v) for v in values[:limit]]
+    text = ", ".join(rendered)
+    remainder = len(values) - limit
+    if remainder > 0:
+        text += f", and {remainder} more"
+    return text

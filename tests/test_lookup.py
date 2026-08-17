@@ -200,3 +200,79 @@ def test_discovery_uses_prepared_atoms_and_best_atoms():
         CodeRef("CVX", "208"),
         CodeRef("ICD10CM", "E11.9"),
     ]
+
+
+def test_best_atom_order_cpt_prefers_pt_over_etcf():
+    """Regression for QC-016 (DATA_INTEGRITY HIGH): CPT prepared-table priority.
+
+    Pre-fix, ``_best_atom_order_sql()`` ranked CPT TTY as ETCF=0 > ETCLIN=1 >
+    PT=2 > SY=3, returning the CMS clinical-equivalent atom as the canonical
+    display for ~90% of CPT codes instead of the AMA-published PT. The fix
+    reorders to PT=0 > ETCF=1 > ETCLIN=2 > SY=3, matching the legacy mrconso
+    path's PT-first priority and the AMA's canonical display convention.
+    """
+    from medterm4ds.engines.duckdb.prepared import _best_atom_order_sql
+
+    sql = _best_atom_order_sql()
+    # Build a 1-row synthetic test: same code, multiple CPT TTYs; verify PT wins.
+    con = duckdb.connect(database=":memory:")
+    try:
+        con.execute(
+            """
+            CREATE TABLE atoms (
+                source VARCHAR, code VARCHAR, aui VARCHAR, cui VARCHAR,
+                tty VARCHAR, name VARCHAR, suppress VARCHAR, is_active BOOLEAN
+            )
+            """
+        )
+        con.executemany(
+            "INSERT INTO atoms VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            [
+                ("CPT", "99213", "A_ETCF", "C_ETCF", "ETCF", "ETCF name", "N", True),
+                ("CPT", "99213", "A_ETCLIN", "C_ETCLIN", "ETCLIN", "ETCLIN name", "N", True),
+                ("CPT", "99213", "A_PT", "C_PT", "PT", "PT name (AMA canonical)", "N", True),
+                ("CPT", "99213", "A_SY", "C_SY", "SY", "SY name", "N", True),
+            ],
+        )
+        rows = con.execute(
+            f"""
+            SELECT tty, name, ROW_NUMBER() OVER (
+                PARTITION BY source, code
+                ORDER BY CASE WHEN suppress = 'N' THEN 0 ELSE 1 END, {sql}
+            ) AS rank
+            FROM atoms
+            ORDER BY rank
+            """
+        ).fetchall()
+    finally:
+        con.close()
+
+    # rank=1 row must be the PT atom — AMA canonical preferred term.
+    assert rows[0][0] == "PT", f"Expected PT at rank=1, got tty={rows[0][0]!r}"
+    assert "AMA canonical" in rows[0][1]
+    # ETCF/ETCLIN/SY are secondary — exact order is ETCF < ETCLIN < SY per the fix.
+    rank_by_tty = {row[0]: row[2] for row in rows}
+    assert rank_by_tty["PT"] < rank_by_tty["ETCF"] < rank_by_tty["ETCLIN"] < rank_by_tty["SY"]
+
+
+def test_cli_code_source_pairs_rejects_uri_form_source():
+    """Regression for QC-011 (CROSS_SURFACE MEDIUM): CLI silently accepted URI sources.
+
+    Pre-fix, ``--source http://snomed.info/sct`` was uppercased to
+    'HTTP://SNOMED.INFO/SCT' and silently returned a null-valued row. The
+    CLI uses UMLS SAB strings (e.g. SNOMEDCT_US), not FHIR URIs. The fix
+    detects URI/OID-form inputs and rejects them early with a clear message.
+    """
+    import pytest
+    from medterm4ds.apps.cli import _code_source_pairs
+
+    # Valid SAB still works
+    pairs = _code_source_pairs(["44054006"], ["SNOMEDCT_US"])
+    assert pairs == [("SNOMEDCT_US", "44054006")]
+
+    # URI form rejected
+    with pytest.raises(SystemExit, match="UMLS SAB string"):
+        _code_source_pairs(["44054006"], ["http://snomed.info/sct"])
+    # OID form rejected
+    with pytest.raises(SystemExit, match="UMLS SAB string"):
+        _code_source_pairs(["44054006"], ["urn:oid:2.16.840.1.113883.6.96"])

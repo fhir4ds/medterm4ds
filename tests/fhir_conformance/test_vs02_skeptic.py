@@ -610,12 +610,11 @@ class TestItem5PagingSemantics:
         Per FHIR R4 §4.7.5: "Paging arguments — a server SHOULD return a
         flat list of concepts ... offset is the 0-based starting index."
 
-        NOTE: the current implementation declares offset as a Query param
-        but does NOT use it to slice results (line 1887 description:
-        "Passed through; not yet used to slice results"). This probe
-        documents the gap: offset is accepted but ignored — the response
-        contains ALL matches regardless of offset value. Carry-forward
-        CF-SKEPTIC-VS02-02.
+        QC-241 (EC-10 EDGE_CASE, HIGH) RESOLVED: offset is now honored —
+        the mode handlers fetch an ``offset + count`` window and the page
+        is sliced from the built payload. CF-SKEPTIC-VS02-02 is CLOSED.
+        This probe (previously a carry-forward asserting offset was
+        IGNORED) now asserts the corrected paging semantics.
         """
         # Use a filter that yields multiple matches (we can't easily get >1
         # match in the fixture, but the probe establishes the contract).
@@ -629,15 +628,13 @@ class TestItem5PagingSemantics:
         )
         assert status_no_offset == 200
         assert status_offset_5 == 200
-        # When offset is honored, body_offset_5 should have fewer contains.
-        # When offset is IGNORED, both should have the same length.
-        # The probe documents the CURRENT (ignored) behavior.
-        # If the implementation starts honoring offset, this probe will fail —
-        # update it to assert len(body_offset_5.contains) < len(body_no.contains).
-        assert len(body_offset_5["expansion"]["contains"]) == len(
+        # Offset is honored: offset=5 past the fixture's match count pages
+        # to fewer (empty) contains[] while total still reports the size.
+        assert len(body_offset_5["expansion"]["contains"]) < len(
             body_no["expansion"]["contains"]
         ), (
-            "offset appears to be honored — update CF-SKEPTIC-VS02-02 status"
+            "offset appears to be ignored — CF-SKEPTIC-VS02-02 regression "
+            "(QC-241 fix must hold)"
         )
 
     def test_s52_offset_beyond_total_returns_empty_contains(self, fhir_client):
@@ -647,24 +644,15 @@ class TestItem5PagingSemantics:
         Per FHIR R4 §4.7.5: paging — offset beyond total returns empty
         page. The total SHOULD still reflect the full count.
 
-        NOTE: tied to CF-SKEPTIC-VS02-02 — if offset is ignored, this probe
-        will return the SAME contains[] as offset=0. The probe documents
-        the current behavior.
+        QC-241 (EC-10) RESOLVED — offset is honored (CF-SKEPTIC-VS02-02
+        CLOSED); the skip-guard for the old ignored behavior is removed.
         """
         vs = _make_extensional_snomed()  # 2 concepts
         status, body = _post_expand(fhir_client, vs, params={"offset": 100})
         assert status == 200, f"expected 200, got {status}: {body}"
-        # When offset is honored: contains should be empty.
-        # When offset is ignored: contains has all entries.
-        # The probe documents the current behavior (ignored).
-        if body["expansion"]["contains"]:
-            # offset is ignored — contains is non-empty.
-            pytest.skip(
-                "offset currently ignored (CF-SKEPTIC-VS02-02); "
-                "contains[] is non-empty even with offset=100"
-            )
-        else:
-            assert body["expansion"]["total"] == 2
+        # Offset is honored: contains is empty, total still the full count.
+        assert body["expansion"]["contains"] == []
+        assert body["expansion"]["total"] == 2
 
     def test_s53_count_default_is_20(self, fhir_client):
         """Default count is 20 (per FHIR R4 §4.7.5)."""

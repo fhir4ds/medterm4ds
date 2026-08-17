@@ -1032,9 +1032,12 @@ class TestSourceReadFallbackChain:
     def test_s90_concept_list_has_3_tier_fallback_chain(self):
         """Source-read: the concept-list path MUST have the 3-tier
         fallback chain (engine canonical → code string → never empty).
+
+        Core logic moved from the nested ``_expand_intensional`` wrapper
+        to the module-level ``expand_intensional_value_set``.
         """
-        src = _get_func_source(_FHIR_API_PATH, "create_fhir_app", "_expand_intensional")
-        assert src, "could not read _expand_intensional source"
+        src = _get_func_source(_FHIR_API_PATH, "expand_intensional_value_set")
+        assert src, "could not read expand_intensional_value_set source"
         # The chain: concept.get("display") or "" → if not display →
         # get_code_infos → if infos → infos[0].name or code_str → else
         # code_str.
@@ -1049,8 +1052,11 @@ class TestSourceReadFallbackChain:
 
     def test_s91_is_a_root_has_2_tier_fallback_chain(self):
         """Source-read: the is-a root path has a 2-tier fallback chain
-        (engine canonical → root_code)."""
-        src = _get_func_source(_FHIR_API_PATH, "create_fhir_app", "_expand_intensional")
+        (engine canonical → root_code).
+
+        Core logic moved to module-level ``expand_intensional_value_set``.
+        """
+        src = _get_func_source(_FHIR_API_PATH, "expand_intensional_value_set")
         assert src
         # Per apps/fhir_api.py:2651 the root chain is:
         #   display=root_infos[0].name or root_code
@@ -1060,8 +1066,11 @@ class TestSourceReadFallbackChain:
 
     def test_s92_descendant_loop_has_2_tier_fallback_chain(self):
         """Source-read: the descendant loop has a 2-tier fallback chain
-        (target_display → target.code)."""
-        src = _get_func_source(_FHIR_API_PATH, "create_fhir_app", "_expand_intensional")
+        (target_display → target.code).
+
+        Core logic moved to module-level ``expand_intensional_value_set``.
+        """
+        src = _get_func_source(_FHIR_API_PATH, "expand_intensional_value_set")
         assert src
         # Per apps/fhir_api.py:2670 the descendant chain is:
         #   display=d.target_display or d.target.code
@@ -1070,20 +1079,28 @@ class TestSourceReadFallbackChain:
         )
 
     def test_s93_filter_mode_uses_engine_display(self):
-        """Source-read: filter mode uses r.name (engine canonical) for
-        display, NOT the raw code or empty string."""
+        """Source-read: filter mode display comes from the batched
+        get_code_infos preferred atom (engine canonical), falling back to
+        the matched synonym r.name — QC-258 (EC-10, HIGH). Pre-QC-258 the
+        raw matched synonym r.name WAS the display, diverging from
+        $lookup for 1048 codes; the canonical display is now resolved
+        explicitly and r.name is only the no-preferred-atom fallback."""
         src = _get_func_source(_FHIR_API_PATH, "create_fhir_app", "_do_expand")
         assert src
-        # Per apps/fhir_api.py:2470: "display": r.name
-        assert '"display": r.name' in src or '"display":r.name' in src or "\"display\":r.name" in src, (
-            "filter mode does not use r.name for display"
+        assert "page_infos = get_code_infos(" in src, (
+            "filter mode must batch-resolve canonical displays via get_code_infos (QC-258)"
+        )
+        assert '(info.name if info else None) or r.name' in src, (
+            "display must prefer the canonical preferred term over the matched synonym (QC-258)"
         )
 
     def test_s94_compose_isinstance_guard_present(self):
         """Source-read: the compose isinstance guard (VS-01 SKEPTIC resweep
         QA-001 5th sibling) is present at the parent data-access boundary.
+
+        Core logic moved to module-level ``expand_intensional_value_set``.
         """
-        src = _get_func_source(_FHIR_API_PATH, "create_fhir_app", "_expand_intensional")
+        src = _get_func_source(_FHIR_API_PATH, "expand_intensional_value_set")
         assert src
         assert "isinstance(compose, dict)" in src, (
             "isinstance(compose, dict) guard missing — VS-01 SKEPTIC resweep fix may have regressed"
@@ -1091,9 +1108,11 @@ class TestSourceReadFallbackChain:
 
     def test_s95_include_isinstance_guards_present(self):
         """Source-read: all 5 sibling isinstance guards (CS-04 HISTORIAN
-        QA-001 PROMOTED 10th pattern) are present in _expand_intensional.
+        QA-001 PROMOTED 10th pattern) are present in
+        ``expand_intensional_value_set`` (core logic moved from the nested
+        ``_expand_intensional`` wrapper to the module-level function).
         """
-        src = _get_func_source(_FHIR_API_PATH, "create_fhir_app", "_expand_intensional")
+        src = _get_func_source(_FHIR_API_PATH, "expand_intensional_value_set")
         assert src
         # Each iterator: include, concept, filter, exclude, exclude.concept
         # The exclude.concept inner loop is the 5th (CF-SKEPTIC-VS01-resweep
@@ -1126,13 +1145,15 @@ class TestSourceReadFallbackChain:
         )
 
     def test_s98_canonical_system_uri_helper_called_in_intensional(self):
-        """Source-read: _expand_intensional calls canonical_system_uri on
-        inc_system per CR-013 fix (9th instance of client-input-as-
-        canonical drift)."""
-        src = _get_func_source(_FHIR_API_PATH, "create_fhir_app", "_expand_intensional")
+        """Source-read: expand_intensional_value_set calls canonical_system_uri
+        on inc_system per CR-013 fix (9th instance of client-input-as-
+        canonical drift). Core logic moved from the nested
+        ``_expand_intensional`` wrapper to the module-level function.
+        """
+        src = _get_func_source(_FHIR_API_PATH, "expand_intensional_value_set")
         assert src
         assert "canonical_system_uri(" in src, (
-            "canonical_system_uri not called in _expand_intensional — CR-013 fix may have regressed"
+            "canonical_system_uri not called in expand_intensional_value_set — CR-013 fix may have regressed"
         )
 
     def test_s99_count_default_query_min_length_check(self):

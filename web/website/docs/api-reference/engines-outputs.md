@@ -42,7 +42,7 @@ naming.
 ```python
 engine = mt.RemoteApiEngine(
     "http://localhost:8000",
-    timeout=30.0,
+    timeout=300.0,
     headers={"Authorization": "Bearer ..."},
 )
 ```

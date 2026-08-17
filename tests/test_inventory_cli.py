@@ -5,11 +5,13 @@ import json
 from pathlib import Path
 
 import duckdb
+import pytest
 
 from medterm4ds.apps.cli import main
 from medterm4ds.core.config import local_duckdb_config
 from medterm4ds.core.models import CodeRef
 from medterm4ds.services.inventory import count_source_codes, iter_source_codes, normalize_sources
+from medterm4ds.services.search import SearchResult
 
 
 def _make_duckdb(path: Path) -> None:
@@ -505,6 +507,64 @@ def test_cli_hierarchy_writes_csv(tmp_path):
     assert rows[0]["relationship"] == "child"
 
 
+def test_cli_hierarchy_max_depth_zero_exits_clean_not_traceback(tmp_path, capsys):
+    """Regression for QC-049/QC-059 (MEDIUM): CLI hierarchy --max-depth 0
+    must exit cleanly via SystemExit with a clear message, NOT leak a raw
+    Python traceback. Sibling of EC-02 FIX-008 (run_mapping wrapper)."""
+    db_path = tmp_path / "umls.duckdb"
+    _make_hierarchy_duckdb(db_path)
+
+    with pytest.raises(SystemExit) as exc_info:
+        main(
+            [
+                "hierarchy",
+                "ancestors",
+                "--db",
+                str(db_path),
+                "--source",
+                "ICD10-CM",
+                "--code",
+                "E11.9",
+                "--max-depth",
+                "0",
+                "--memory-profile",
+                "low",
+            ]
+        )
+    # SystemExit with a clear error message (not a traceback).
+    assert "max_depth" in str(exc_info.value).lower()
+
+
+def test_cli_hierarchy_children_max_depth_warns_when_overridden(tmp_path, capsys):
+    """Regression for QC-058 (HIGH): CLI hierarchy children --max-depth 3
+    must surface a warning that the value is ignored (parents/children are
+    always direct). Pre-fix the knob was silently overridden."""
+    db_path = tmp_path / "umls.duckdb"
+    _make_hierarchy_duckdb(db_path)
+
+    status = main(
+        [
+            "hierarchy",
+            "children",
+            "--db",
+            str(db_path),
+            "--source",
+            "ICD10-CM",
+            "--code",
+            "E11",
+            "--max-depth",
+            "3",
+            "--memory-profile",
+            "low",
+        ]
+    )
+    assert status == 0
+    stderr = capsys.readouterr().err
+    assert "--max-depth 3 is ignored" in stderr, (
+        f"expected override warning on stderr, got: {stderr!r}"
+    )
+
+
 def test_cli_map_prints_json(tmp_path, capsys):
     db_path = tmp_path / "umls.duckdb"
     _make_duckdb(db_path)
@@ -919,3 +979,285 @@ def test_cli_resumes_csv_without_rewriting_header(tmp_path):
         ("ICD10CM", "E11.9"),
         ("CVX", "208"),
     ]
+
+
+# Mixed-category canned results ordered so the FIRST rows are non-matching:
+# a client that truncates to --limit BEFORE filtering would return zero
+# medication rows for --result-types medication --limit 1.
+_FAKE_MIXED_RESULTS = [
+    SearchResult(
+        code="L313", source="LNC", display="Lisinopril [Mass/volume] in Serum",
+        score=0.90, match_grade="certain", category="lab",
+    ),
+    SearchResult(
+        code="38911000", source="SNOMEDCT_US", display="Hypertensive disorder",
+        score=0.80, match_grade="probable", category="condition",
+    ),
+    SearchResult(
+        code="85676001", source="RXNORM", display="Lisinopril 10 MG Oral Tablet",
+        score=0.72, match_grade="possible", category="medication",
+    ),
+]
+
+
+class _FakeSearchService:
+    """Stand-in for services.search.search that honors the service contract.
+
+    Mirrors the post-fix semantics: ``result_types`` filters the result set
+    BEFORE ``count`` truncation (the real service restricts the category
+    indexes it searches / the canonical prefixes it accepts), so a filtered
+    call with a small ``--limit`` still returns matching rows. Records every
+    call's kwargs so tests can assert the CLI forwards the filter
+    service-side instead of post-filtering truncated output.
+    """
+
+    def __init__(self) -> None:
+        self.calls: list[dict] = []
+
+    def __call__(
+        self,
+        query,
+        *,
+        mode="lexical",
+        sources=None,
+        count=20,
+        engine=None,
+        result_types=None,
+    ):
+        self.calls.append(
+            {
+                "query": query,
+                "mode": mode,
+                "sources": sources,
+                "count": count,
+                "result_types": result_types,
+            }
+        )
+        results = _FAKE_MIXED_RESULTS
+        if result_types:
+            wanted = set(result_types)
+            results = [r for r in results if r.category in wanted]
+        return results[:count]
+
+
+def _patch_search(monkeypatch) -> _FakeSearchService:
+    fake = _FakeSearchService()
+    monkeypatch.setattr("medterm4ds.services.search.search", fake)
+    return fake
+
+
+def test_cli_search_result_types_small_limit_returns_matching_result(monkeypatch, capsys):
+    """Regression: filter-then-limit, not limit-then-filter.
+
+    Pre-fix, ``search --result-types medication --limit 1`` called the
+    service with count=1 and NO result_types, then client-side filtered the
+    single (non-matching) truncated row to zero results. The service must
+    receive the filter so ``count`` caps the filtered set.
+    """
+    fake = _patch_search(monkeypatch)
+    status = main(
+        [
+            "search",
+            "Lisinopril",
+            "--result-types",
+            "medication",
+            "--mode",
+            "semantic",
+            "--limit",
+            "1",
+        ]
+    )
+    assert status == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert [row["category"] for row in payload["results"]] == ["medication"]
+    assert [row["code"] for row in payload["results"]] == ["85676001"]
+    # The filter was requested service-side, not applied client-side.
+    assert fake.calls == [
+        {
+            "query": "Lisinopril",
+            "mode": "semantic",
+            "sources": None,
+            "count": 1,
+            "result_types": ["medication"],
+        }
+    ]
+
+
+def test_cli_search_without_result_types_preserves_all_results(monkeypatch, capsys):
+    fake = _patch_search(monkeypatch)
+    status = main(["search", "Lisinopril", "--mode", "semantic", "--limit", "5"])
+    assert status == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert [row["category"] for row in payload["results"]] == ["lab", "condition", "medication"]
+    # No filter requested -> forwarded as None, no behavioral change.
+    assert fake.calls[0]["result_types"] is None
+    assert fake.calls[0]["count"] == 5
+
+
+@pytest.mark.parametrize("mode", ["lexical", "semantic", "hybrid", "canonical"])
+def test_cli_search_result_types_forwarded_for_every_mode(mode, monkeypatch, capsys):
+    """Every mode must forward --result-types in the service-call kwargs."""
+    fake = _patch_search(monkeypatch)
+    status = main(
+        [
+            "search",
+            "Potassium",
+            "--result-types",
+            "lab",
+            "--mode",
+            mode,
+            "--limit",
+            "2",
+        ]
+    )
+    assert status == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert [row["category"] for row in payload["results"]] == ["lab"]
+    assert fake.calls == [
+        {
+            "query": "Potassium",
+            "mode": mode,
+            "sources": None,
+            "count": 2,
+            "result_types": ["lab"],
+        }
+    ]
+
+
+def test_cli_search_result_types_unknown_category_returns_zero_results(monkeypatch, capsys):
+    """Unknown legacy categories can never match: empty result, no crash.
+
+    The CLI skips the (expensive) service call entirely when no requested
+    type is a search category — the outcome is deterministic.
+    """
+    fake = _patch_search(monkeypatch)
+    status = main(
+        [
+            "search",
+            "Lisinopril",
+            "--result-types",
+            "bogus",
+            "--mode",
+            "semantic",
+            "--limit",
+            "5",
+        ]
+    )
+    assert status == 0
+    captured = capsys.readouterr()
+    payload = json.loads(captured.out)
+    assert payload["results"] == []
+    assert "not search categories" in captured.err
+    assert fake.calls == []
+
+
+def test_cli_search_result_types_canonical_unknown_type_returns_zero_results(monkeypatch, capsys):
+    """Canonical mode: unknown types match nothing — empty, exit 0, no crash.
+
+    Pre-canonical-forwarding this was a silent client-side filter to [];
+    it must stay an empty result (not a raised error) now that the value
+    would reach ``canonical(result_types=...)`` for valid types.
+    """
+    fake = _patch_search(monkeypatch)
+    status = main(
+        [
+            "search",
+            "Lisinopril",
+            "--result-types",
+            "bogus",
+            "--mode",
+            "canonical",
+            "--limit",
+            "5",
+        ]
+    )
+    assert status == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["results"] == []
+    assert fake.calls == []
+
+
+def test_cli_search_result_types_mixed_valid_and_invalid_forwards_valid_subset(monkeypatch, capsys):
+    """Mixed requests forward only the matchable values and warn on the rest."""
+    fake = _patch_search(monkeypatch)
+    status = main(
+        [
+            "search",
+            "Lisinopril",
+            "--result-types",
+            "medication",
+            "bogus",
+            "--mode",
+            "lexical",
+            "--limit",
+            "5",
+        ]
+    )
+    assert status == 0
+    captured = capsys.readouterr()
+    payload = json.loads(captured.out)
+    assert [row["category"] for row in payload["results"]] == ["medication"]
+    assert "bogus" in captured.err
+    assert fake.calls[0]["result_types"] == ["medication"]
+
+
+# =============================================================================
+# Regression: CLI conceptmap subcommands validate --max-depth cleanly.
+# Found by QC-079/QC-083/QC-084/QC-085 (MEDIUM): pre-fix, ``conceptmap
+# mapping --max-depth -5`` raised a raw Python traceback (ValueError from
+# services/mapping.py:36), while ``conceptmap patient-friendly --max-depth
+# -5`` silently clamped via max(0, int(max_depth)). Sibling of EC-03
+# FIX-005 (run_hierarchy wrapper).
+# =============================================================================
+
+
+def test_cli_validate_max_depth_rejects_negative():
+    """_validate_cli_max_depth surfaces a clean SystemExit for negative values."""
+    import argparse
+
+    from medterm4ds.apps.cli import _validate_cli_max_depth
+
+    args = argparse.Namespace(max_depth=-5)
+    with pytest.raises(SystemExit) as exc_info:
+        _validate_cli_max_depth(args, warn_on_zero=True)
+    assert "non-negative" in str(exc_info.value)
+
+
+def test_cli_validate_max_depth_rejects_non_int():
+    """_validate_cli_max_depth surfaces a clean SystemExit for non-int values."""
+    import argparse
+
+    from medterm4ds.apps.cli import _validate_cli_max_depth
+
+    args = argparse.Namespace(max_depth="5")  # type: ignore[arg-type]
+    with pytest.raises(SystemExit) as exc_info:
+        _validate_cli_max_depth(args, warn_on_zero=True)
+    assert "integer" in str(exc_info.value).lower()
+
+
+def test_cli_validate_max_depth_zero_warns_for_patient_friendly(capsys):
+    """QC-079/QC-083: max_depth=0 is accepted (valid use case) but a warning
+    is surfaced so operators know the broader walk is skipped."""
+    import argparse
+
+    from medterm4ds.apps.cli import _validate_cli_max_depth
+
+    args = argparse.Namespace(max_depth=0)
+    # Should NOT raise — max_depth=0 is valid.
+    _validate_cli_max_depth(args, warn_on_zero=True)
+    captured = capsys.readouterr()
+    assert "broader walk" in captured.err.lower() or "broader walk" in captured.out.lower()
+
+
+def test_cli_validate_max_depth_zero_no_warn_for_mapping(capsys):
+    """For the mapping surface, max_depth=0 is the canonical default (no
+    ancestor walk); no warning is emitted."""
+    import argparse
+
+    from medterm4ds.apps.cli import _validate_cli_max_depth
+
+    args = argparse.Namespace(max_depth=0)
+    # Should NOT raise.
+    _validate_cli_max_depth(args, warn_on_zero=False)
+    captured = capsys.readouterr()
+    assert captured.err == "" and captured.out == ""

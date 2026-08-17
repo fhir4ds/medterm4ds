@@ -439,41 +439,40 @@ class TestSkepticTip1ContentNotPresentHardcoded:
             )
 
     def test_h51_content_not_present_uniform_across_all_systems(self, fhir_client):
-        """Source-read investigation: confirm every codeSystem entry emits
-        the same ``content: "not-present"`` value. This is INTENDED per the
-        NOT A BUG registry: medterm4ds exposes operations on codes (not
-        CodeSystem resources). The value accurately reflects that no
-        CodeSystem resource definitions are exposed."""
+        """Source-read investigation — superseded by EC-15 QC-333 (verified
+        against https://hl7.org/fhir/R4/terminologycapabilities-definitions.html):
+        ``content`` is NOT an R4 TerminologyCapabilities.codeSystem child
+        (it is R5-only on this backbone). The NOT A BUG blessing applied
+        CodeSystem-resource semantics to the wrong element. R4-correct
+        shape: uri (+ optional subsumption) only, no content anywhere."""
         r = fhir_client.get("/fhir/metadata", params={"mode": "terminology"})
         payload = r.json()
         contents = {entry.get("content") for entry in payload.get("codeSystem", [])}
-        # Document the current behavior: all entries emit "not-present".
-        assert contents == {"not-present"}, (
-            f"codeSystem[].content is NOT uniformly 'not-present': {contents}. "
-            f"Per NOT A BUG registry line 145, the uniform 'not-present' is "
-            f"INTENDED (medterm4ds exposes operations on codes, not CodeSystem "
-            f"resources). A non-uniform value would require per-source content "
-            f"tracking in the engine."
+        # EC-15 QC-333: no entry may carry the R5-only element.
+        assert contents == {None}, (
+            f"codeSystem[].content leaked back onto the R4 TC surface: "
+            f"{contents}. Per EC-15 QC-333 the R4 codeSystem children are "
+            f"uri, version, and subsumption only."
         )
 
     def test_h52_source_audit_responses_dot_py_content_hardcoded(self):
-        """Source-read audit of responses.py:546 — confirm the value is
-        hardcoded as a single literal (no per-source dispatch). This pins
-        the structural shape so a future "fix" that adds per-source dispatch
-        without a design decision would fail this probe."""
+        """Source-read audit — updated by EC-15 QC-333/QC-339: pin that
+        build_terminology_capabilities does NOT emit the R5-only content
+        literal and derives subsumption from the strategy registry (single
+        source of truth) rather than a duplicated source list."""
         from medterm4ds.engines.fhir import responses as responses_mod
 
         src = open(responses_mod.__file__).read()
-        # Locate build_terminology_capabilities body.
         start = src.index("def build_terminology_capabilities(")
-        # End at the next top-level def.
         end = src.index("\ndef ", start + 1)
         body = src[start:end]
-        # The hardcoded literal MUST be present.
-        assert '"content": "not-present"' in body, (
-            f"build_terminology_capabilities no longer hardcodes "
-            f'`content: "not-present"`. If this was a deliberate per-source '
-            f"content-mode enhancement, update NOT A BUG registry line 145."
+        assert '"content"' not in body, (
+            f"build_terminology_capabilities still emits a 'content' "
+            f"element — R5-only on the TC backbone per EC-15 QC-333."
+        )
+        assert "_subsumption_capable" in body, (
+            f"build_terminology_capabilities must derive subsumption via "
+            f"_subsumption_capable (strategy registry) per EC-15 QC-339."
         )
 
     def test_h53_not_present_value_clinically_correct_for_medterm4ds(self):

@@ -7,8 +7,315 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-_No unreleased changes yet. v0.0.1 shipped on 2026-07-14; subsequent work tracks
+_No unreleased changes yet. v0.0.2 shipped on 2026-08-16; subsequent work tracks
 here until the next tag._
+
+## [0.0.2] - 2026-08-16
+
+Systematic QC sweep across 22 domains: 497 defects found, ~340 fixed
+(331 during the sweep plus 6 in the final review pass), including 7 CRITICAL
+and 83 HIGH-severity fixes. **This release requires a one-time rebuild of
+derived tables on existing databases** — see Upgrade notes.
+
+### Breaking changes
+
+- **`mt.connect()` no longer creates a database at a nonexistent path** (default
+  `read_only=True` unchanged). A typo'd path previously materialized a silent
+  12 KB junk DuckDB file; now `connect()` raises `RuntimeError` with build
+  guidance. Paths containing `?` (DuckDB 1.5 URI suffixes, e.g. `…?mode=ro`)
+  are also rejected. Build with `medterm4ds data build-duckdb` or omit
+  `db_path` to auto-provision. [QC-468]
+- **`mt.connect(cache_indexes=...)` default changed `True → False`**, now
+  matching the documented server default (`MEDTERM4DS_CACHE_INDEXES=false`).
+  Index creation adds ~28 s and ~0.8 GB to a production prepare for little
+  gain on read-mostly workloads; pass `cache_indexes=True` explicitly if you
+  need temp indexes. [QC-470]
+- **`/optimize` response envelope key renamed `result` → `results`**, aligning
+  it with the other 12 data endpoints. The v0.0.2 `RemoteApiEngine` still
+  accepts the legacy `result` key, but a v0.0.1 engine against a v0.0.2 server
+  fails with `RuntimeError` — upgrade engine and server together. [QC-490]
+- **Stricter input validation — previously "successful" garbage now errors.**
+  Empty/whitespace sources and codes, URI/OID-form sources (`http://…`,
+  `urn:oid:…`), and empty `target_sources` now raise `ValueError` from the
+  Python service layer (mapping to HTTP 422/400 on the servers, which
+  previously returned 500 for an empty source string). An unknown-but-well-formed
+  source remains valid (resolves to not-found); a source absent from the
+  database returns HTTP 400 instead of empty data. [QC-422, QC-489]
+- **`mt.connect()` now honors the documented engine environment variables**
+  (`MEDTERM4DS_MEMORY_PROFILE`, `…_MEMORY_LIMIT`, `…_TEMP_DIR`, `…_THREADS`,
+  `…_QUERY_CHUNK_SIZE`) as fallback defaults, matching the three servers.
+  Explicit arguments always win. [QC-464]
+- **`connect(prepare_cache=True)` now prepares ATC too** (9-source
+  `DEFAULT_INVENTORY_SOURCES`), so a prepared Python engine answers ATC
+  lookups the same way CLI/MCP/API/FHIR do. [QC-469]
+
+### Added
+
+- **`include_retired` opt-out from the active-only hierarchy walks** (the
+  QC-238 query-time retired-concept pruning). `get_code_relations` /
+  `get_descendants_bfs` / `get_ancestors_bfs` and the
+  `parents`/`children`/`ancestors`/`descendants`/`hierarchy` facade methods
+  accept `include_retired=True` to include retired/editorial-suppressed
+  concepts as walk targets on both the prepared and raw-mrrel engine paths;
+  wired through the REST `/hierarchy` request, MCP
+  (`get_parents`/`get_children`/`get_ancestors`/`get_descendants`/
+  `code_relations`/`discover`), and `domains.terminology.discover`.
+  Defaults are unchanged everywhere — active-only.
+- **FHIR `$expand` `activeOnly` is honored** (was silently ignored, QC-315).
+  `activeOnly=true` matches the server default; `activeOnly=false` includes
+  retired concepts for the isa/fhir_vs, implicit-value-set, and intensional
+  compose expansions (GET, POST Parameters `valueBoolean`, and `$batch`).
+  **Documented divergence from R4**: the spec default for the parameter is
+  `false`; this server's default when `activeOnly` is OMITTED narrows to
+  active-only, matching the engine-wide QC-238 contract. Filter-based (text
+  search) expansions reject `activeOnly=false` with 400 — the search index
+  is active-only and cannot cheaply express concept activity.
+- **Pinned GLiNER NER model revision** (`knowledgator/gliner-bi-small-v2.0` @
+  `3d74c1bf459b8b1c0be1ecbddd679416ce005418`) so Hugging Face weight drift
+  can't silently change extraction recall (drift observed 2026-08-14).
+  Env overrides preserved: `MEDTERM4DS_NER_MODEL` and
+  `MEDTERM4DS_NER_MODEL_REVISION` (empty value unpins).
+
+### Changed
+
+- **Default remote timeout raised 30 s → 300 s.** `connect_remote()` /
+  `RemoteApiEngine` now default to `DEFAULT_REMOTE_TIMEOUT = 300.0` — the old
+  default was below the server's own measured workload domain (`optimize`/`map`
+  over SNOMED 55–82 s; a 10,000-code batch ~415 s cold). The timeout counts
+  time queued behind other requests on the single-worker DB executor; pass
+  `timeout=600` for bulk batches at the 10,000-code cap. Constructor arguments
+  are validated up front (`base_url` must be http(s), `timeout` positive).
+  [QC-485]
+- **Request caps enforced for real**: 10,000 codes / 256 chars per code /
+  64 chars per source / ≤1,000 list items / 10 MB body on the API, and a
+  50 MiB client-side response cap on `RemoteApiEngine` (bind wide hierarchy
+  walks with `descendants(..., limit=)` — now available on the facade).
+  [QC-474, QC-494]
+- **Empty-input DataFrame parity**: all `*_df()` methods return a
+  correctly-columned 0-row DataFrame on empty or all-missing input instead of
+  a 0-column frame. [QC-045, QC-072, QC-073, QC-080, QC-105, QC-106]
+- **API robustness**: `/health` no longer leaks the DB filesystem path; error
+  bodies echoed into `RuntimeError` messages truncate at 2,048 chars (was
+  430,291 chars on a 10,001-code batch error); body-size cap actually enforced
+  on list length. [QC-477]
+- **CLI**: `--limit`/`--threads`/`--memory-limit` garbage values fail with a
+  clean one-line error, no raw tracebacks; `--max-depth` no longer silently
+  overridden to 1 for `parents`/`children`. [QC-058, QC-380, CR-043]
+
+### Fixed
+
+Of ~340 fixes in this release; the most user-visible:
+
+- **Extraction actually runs on clean installs (dependency pin).** The
+  previous resolution shipped gliner 0.2.27 with transformers 5.x, which
+  silently killed `find_terms` on every lock-based install — callers got
+  empty results with no error. Pins are now `gliner>=0.2.28` +
+  `transformers>=4.30.0,<5`, and uv.lock resolves gliner 0.2.28.
+  [287f00e, CR-049]
+- **Extraction lab-vs-med disambiguation now arbitrates with three signals
+  in priority order.** Two higher-precision signals run before the ConText
+  tie-breaker: head-noun analysis of the noun phrase containing the span
+  (en_core_web_sm dependency parse — "vancomycin level was 8" → lab,
+  "vancomycin dose adjusted" → medication) and unit-type detection on the
+  number following the span (concentration "5.2 mEq/L" → lab, dose
+  "40 mEq" → medication; a bare copula+number pattern — "potassium is
+  5.2", no unit, no other cue — is also treated as a MEASUREMENT cue so
+  bare lab values arbitrate to lab [cf8920d]). ConText
+  MEASUREMENT/ADMINISTRATION cues remain
+  the Signal 3 fallback; no signal fired keeps the GLiNER label mapping.
+  Evaluation on the 212-item v2 corpus (docs/.ai_loop/qc_comp/
+  three_signal_results.md): signals 1-2 fired 62/62 correct, overall
+  in-scope accuracy 78.3% → 84.4%, TDM group E 65% → 94%. Requires the new
+  `en-core-web-sm` dependency in the `extraction` extra (absent model
+  degrades gracefully to ConText-only arbitration).
+- **Extraction lab-vs-med disambiguation now uses medspaCy ConText as a
+  tie-breaker.** The old analyte heuristic (a 24-name hand list plus an
+  administration-verb regex and a TDM "level" adjacency rule) is replaced
+  by two custom ConText categories — MEASUREMENT and ADMINISTRATION cue
+  lexicons read from sentence context — evaluated at 100% accuracy on
+  decided items over a 60-item corpus (the biggest NER wrong-type pattern:
+  1,046 lab analytes typed "therapeutic agent"). A measurement-only
+  context overrides the GLiNER label to search `lab` anchors
+  ("carbamazepine level was 8"), administration-only to `medication`
+  ("potassium chloride 20 mEq IV given"), both fire search both and let
+  anchor ranking decide, and no decision conservatively keeps the label
+  mapping. Also fixes `medspacy.load(disable=...)` → `medspacy_disable=`
+  — the old kwarg was silently swallowed, so the unused target matcher
+  ran in the pipeline anyway.
+- **`search --result-types` with a small `--limit` returned zero results.**
+  The CLI applied the category filter client-side AFTER the service had
+  truncated to `--limit`, discarding truncated slots instead of backfilling
+  (`search "Potassium" --result-types lab --limit 1` → 0 results; `--limit 8`
+  → the LOINC potassium anchor at 0.999). The filter now forwards
+  service-side for every mode: canonical filters by canonical_id prefix
+  (with the existing filter-aware over-fetch), and lexical/semantic/hybrid
+  restrict the category indexes searched before retrieval, so `--limit`
+  caps the filtered set. Unknown `--result-types` values still return an
+  empty result (with the QC-129 warning on legacy modes), never a crash.
+- **Prepared-table correctness** — CPT prepared priority ranked ETCF above PT,
+  returning the wrong CUI/display/TTY for ~90% of CPT codes; the RxNorm
+  hierarchy was entirely absent from `mt4ds.walk_edges` (0 of 238,329 isa
+  edges); LOINC ignored the official multiaxial hierarchy (284,774 `class_of`
+  edges); an AUI mismatch silently lost 34,471 PT-child relationships.
+  [QC-016, QC-349, QC-350, QC-070 — needs the rebuild below]
+- **`resolve_mode` actually works now.** `historical` and `resolve_current`
+  produced byte-identical output; CLI `--resolve-mode` was a silent no-op on
+  production databases; an NDC-lookup regression in the default mode; SUPPRESS
+  'E' (editorial) no longer conflated with 'O' (obsolete); replacement
+  candidates are deduped to one row per distinct target (resolution /
+  `code_replacements` previously emitted one row per replacement EDGE, so a
+  code with two historical names mapping to the same target yielded
+  duplicates). [QC-017, QC-398, QC-401, QC-406, QC-119, QC-120, a5dc3a9]
+- **ConceptMap `equivalence` mislabeling.** `snomed_fallback`, TTY-traversal
+  `group` matches, and 6+ other depth>0 match types were emitted as
+  `equivalent`; in a production-scale sample 3,970/3,970 RxNorm rows at
+  `match_depth>0` were mislabeled; CVX product→family edges now `narrower`.
+  [QC-074, QC-081, QC-094, QC-088, QC-095 — CRITICAL/HIGH]
+- **`$closure` no longer OOMs.** ~100 concepts exhausted 32 GB RSS and ran
+  >17 min, wedging every other FHIR DB operation; ordinary 3–4 concept payloads
+  returned wrong subsumption states on the balanced profile. [QC-261, QC-281]
+- **`$expand` correctness**: `offset` no longer silently ignored;
+  `compose.exclude` with a `filter` no longer silently ignored;
+  `valueset-toocostly` no longer fires on terminal empty pages; filter mode
+  returns the preferred term, not the matched synonym; the spec-canonical
+  `?fhir_vs=isa/<sctid>` URL form accepted. [QC-241, QC-242, QC-316, QC-258,
+  QC-411]
+- **`$extract` correctness**: family history now detected (`is_family` was
+  ignored); a negated mention can no longer REPLACE the affirmed mention of
+  the same condition; the default-mode matrix no longer silently drops
+  affirmed concepts; `format=annotated` returns 200 on GET and POST (CLI and
+  MCP too). [QC-152, QC-183, QC-165, QC-151, QC-164]
+- **Valueset optimizer**: dead exclude branch restored;
+  `original_count`/`optimized_count`/`reduction` computed on the same basis
+  (previously reported up to 98.85% "reduction" on valuesets whose expansion
+  *grew*); the lexical tie-break no longer prefers hierarchy ancestors over
+  the user's own input code; deep-subtree leaves no longer dropped silently.
+  [QC-192, QC-194, QC-215, QC-212, QC-214]
+- **Search**: empty/whitespace queries no longer return "results" in
+  semantic/hybrid/canonical modes; unknown `resultTypes` returns a clean 400
+  (was plaintext 500); `result_types` filter works on every path;
+  `total_member_count` no longer 0 on every result; accented queries
+  (Guillain-Barré, Chédiak) no longer silently return 0 hits. [QC-122,
+  QC-123, QC-153, QC-143, QC-148, QC-329]
+- **`$subsumes` correctness** (`codeA=parent, codeB=child` returned
+  `not-subsumed`; `valueBoolean:true` coerced to the string `'True'` across
+  all 5 FHIR POST handlers). [QC-071, QC-056]
+- **FHIR XML/batch hardening**: control characters in client codes produced
+  not-well-formed XML with HTTP 200; a batch entry with a non-string
+  `request.method` crashed before the per-entry isolation boundary.
+  [QC-300, QC-284]
+- **CSV formula-injection sanitizer no longer permanently mutates data** (the
+  leading `'` was baked into cells, so non-Excel consumers re-parsed a
+  different value). [QC-373]
+- **Schema-skew detection loud**: a version mismatch between the DB manifest
+  and the package no longer silently disables the prepared patient-friendly
+  path (LNC raises `NotImplementedError` / HTTP 501 with remediation text);
+  `umls.*` views no longer bake the build-time catalog filename into their DDL
+  (a copy/rename of a built DB broke them). [QC-435, QC-459]
+- **Remote/local parity**: `patient_friendly` no longer silently forces
+  `resolve_current` on the remote leg regardless of the caller's mode.
+  [QC-495]
+- **NER wrong-type resolution** (external QC report: 10,433 wrong-type
+  extractions). `resolve_spans` now constrains each span's canonical search
+  to its GLiNER label's anchor categories first (disorder → condition/symptom,
+  therapeutic agent → medication/drug_class, lab test → lab, …) and retries
+  unfiltered only when nothing clears the grade floor, so a constraint can
+  never reduce recall. This stops diseases resolving to lab anchors
+  (diabetes → LOINC LP128793-9) and drugs resolving to their drug-level
+  LOINC (carbamazepine → LP16061-1). Ambiguous analytes (creatinine,
+  potassium, glucose, …) labeled as drugs prefer lab anchors unless an
+  administration context (give/administered/infusion/supplement/…) is
+  present; a drug span adjacent to "level(s)/concentration" prefers lab
+  (TDM), while plain drug mentions stay drugs. Population terms (adults,
+  women, men, children, infants, elderly, neonates, males, females) are
+  added to the NER false-positive blocklist (previously extracted as
+  disorders). Explicit caller `result_types` remains a hard filter.
+- **CR-031 (HIGH) — closure-accelerated walks returned `[]` for
+  RXNORM/ATC/MSH.** `walk_closure_table()` dispatched to
+  `mt4ds.walk_closure_limited` whenever the table existed and depth ≤ 5,
+  with no per-source coverage probe — for a source with zero closure rows
+  every ancestor walk silently returned `[]` (hierarchy-assisted mappings,
+  prepared `walk` paths, and the SNOMED patient-friendly fallback) while
+  `mt4ds.walk_edges` had the edges. The dispatch now probes per source
+  (memoized `LIMIT 1`, warning on the miss) and falls back to the
+  `walk_edges` BFS path, so answers are correct on ANY prepared DB
+  regardless of build vintage. The build-side seed whitelist is also derived
+  from `SOURCE_STRATEGIES` (was a hardcoded 6-source list excluding
+  RXNORM/ATC/MSH), so the closure table gains those sources on the NEXT
+  rebuild — a 0.9 rebuild that predates this change serves those sources via
+  the BFS fallback (correct, unaccelerated); `PREPARED_SCHEMA_VERSION`
+  intentionally stays 0.9 so an in-flight rebuild's output is not gated
+  stale for this.
+- **CR-032 (HIGH) — `$extract` POST now expresses the four `include*`
+  booleans.** A POSTed `{name: "includeNegated", valueBoolean: true}` was
+  silently dropped and defaulted to `false` with no 400 (POST was the only
+  dead surface; GET and the CLI worked). The booleans are extracted through
+  a parallel `valueBoolean` channel, and a wrong-typed scalar for them
+  (`valueInteger`, `valueString`, …) now 400s naming `valueBoolean`
+  (inverse of the QC-127 scalar contract; `valueBoolean: null` still means
+  absent per QC-245).
+- **CR-035 — `_EngineState` broad excepts narrowed.** The three remaining
+  `except Exception: logger.debug` blocks (prepare-cache index DDL, SNOMED
+  parent-link cache table/index) are now `except duckdb.Error` +
+  `logger.warning`, so programming bugs propagate and degraded paths are
+  operator-visible (EC-20 treatment).
+
+### Known issues
+
+- **Pre-existing environment failure**: `tests/test_fhir_conformance.py` —
+  4 tests fail with pydantic `rest.0.url Extra inputs are not permitted`
+  (`fhir.resources` library-version drift, not a code regression). Fix by
+  pinning the `fhir.resources` version.
+- **GLiNER model drift**: the default NER model
+  (`knowledgator/gliner-bi-small-v2.0`) had its HF weights re-downloaded
+  after the test baseline was captured, causing 3 environmental failures in
+  `tests/test_extraction.py::TestFindTerms`. **Recommendation**: pin the model
+  revision via `MEDTERM4DS_NER_MODEL` post-release.
+- **Deferred (mitigated)**: executor fairness / head-of-line blocking on the
+  single DB executor (QC-492/QC-410) — the 300 s default and `timeout=600`
+  guidance mitigate the reported starvation timeline; architectural fix
+  queued post-release.
+
+### Upgrade notes
+
+**REQUIRED — rebuild derived tables on every existing database** (prepared
+schema 0.8 → 0.9). Without it you keep running on stale prepared tables with
+known data defects (CPT wrong-display, missing RxNorm/MSH hierarchy, partial
+ATC, retired SNOMED concepts in crosswalks), and LNC patient-friendly raises
+`NotImplementedError` (HTTP 501 on the servers) on the version gate — loud by
+design:
+
+```bash
+medterm4ds data prepare-derived --db data/umls_current.duckdb
+# (= mt.prepare_umls_duckdb(db, replace=True); stamps manifest
+#  prepared_schema_version=0.9)
+medterm4ds data verify --db data/umls_current.duckdb   # no version mismatch
+```
+
+Expected effects: `mt4ds.walk_edges` gains RXNORM (~238 K isa edges), MSH
+(~15 K), ATC → ~6,982, LNC +~284 K `class_of`; CPT 87143 lookup displays the
+PT; `map('ICD10CM','E11.9')→SNOMED` returns no retired concepts; prepared
+patient-friendly is re-enabled (restoring the ~0.8 s prepared path vs the
+~6.5 s legacy fallback measured on the pre-rebuild database).
+
+Also on upgrade: pair engine and server versions (the `/optimize` envelope
+change breaks v0.0.1 engines against a v0.0.2 server); pass
+`cache_indexes=True` to `mt.connect()` if you relied on temp indexes; fix any
+code that passed URI-form sources or empty strings expecting success-shaped
+nulls.
+
+uv.lock was regenerated (gliner 0.2.28, transformers 4.57.6) and excludes
+`en-core-web-sm` — the spaCy model is not on PyPI and cannot be locked
+(`pyproject.toml` documents the separate install). `medterm4ds[extraction]`
+users who want the Signal-1 head-noun arbiter must also run:
+
+```bash
+uv pip install "en-core-web-sm>=3.7,<4" \
+  --find-links https://github.com/explosion/spacy-models/releases
+```
+
+(the pipeline degrades gracefully to ConText-only arbitration without it;
+[3b5323f, CR-049/050]).
 
 ## [0.0.1] - 2026-07-14
 
@@ -66,7 +373,9 @@ here until the next tag._
 - **`scripts/rebuild_fhir_docker.sh`** — one-command rebuild + restart.
 - **`LocalDuckDBEngine` mixin composition** — 2173-line god class → 9 focused mixins.
 - **`get_descendants_bfs()` / `is_descendant()`** — O(nodes) BFS for hierarchy walks.
-- **GLiNER NER model** (`E3-JSI/gliner-multi-med-ner-synthetic-v1`) replaces d4data.
+- **GLiNER NER model** (`knowledgator/gliner-bi-small-v2.0`, which superseded
+  the earlier `E3-JSI/gliner-multi-med-ner-synthetic-v1` default later in the
+  0.0.1 cycle) replaces d4data.
 - **`.github/workflows/publish.yml`** — PyPI publish on tag push via trusted publishing.
 - **Systemic `duckdb.Error` exception handler** — every per-operation `_do_*`
   handler now has a 503-OperationOutcome boundary for transient DB failures.
@@ -149,7 +458,7 @@ here until the next tag._
 - MCP `extract` tool bypassing the single-worker executor.
 - FHIR startup banner not appearing in `docker logs`.
 
-### Earlier in 0.0.2 (Tier A/B/C refactor)
+### Earlier in 0.0.1 (Tier A/B/C refactor, continued)
 
 ### Architecture refactor (Tier C)
 - Split `engines/duckdb/engine.py` from 5,362 lines into 6 focused modules: `hierarchy.py`, `mappings.py`, `resolution.py`, `patient_friendly.py`, `indications.py`, plus a leaner `engine.py` (2,127 lines, -60%). No behavioral change; verified via full regression suite and chain-of-custody diff against pre-refactor output.

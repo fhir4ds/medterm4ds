@@ -209,7 +209,10 @@ def _walk_transitive(
     max_depth: int,
     upward: bool,
 ) -> list[CodeRelation]:
-    closure_table = walk_closure_table(con, max_depth)
+    # CR-031: gate the closure table on per-source coverage — a source with
+    # zero closure rows (e.g. RXNORM on a stale prepared DB) must fall back
+    # to the walk_edges BFS below instead of returning [].
+    closure_table = walk_closure_table(con, max_depth, source)
     if closure_table:
         return _walk_transitive_closure(
             source=source,

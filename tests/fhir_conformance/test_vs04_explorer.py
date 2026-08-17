@@ -357,20 +357,21 @@ class TestExplorerIntensionalUrlCombinations:
         assert SNOMED_DIABETES_MELLITUS in codes, codes
 
     def test_e42_intensional_url_with_offset_param_accepted(self, fhir_client):
-        """intensional URL + offset → offset is accepted but per the
-        implementation ``offset`` is declared on the GET handler with
-        description "Passed through; not yet used to slice results" (CF-SKEPTIC-
-        VS02-02, DEFERRED). The intensional expansion ignores offset today.
+        """intensional URL + offset → offset pages the expansion (QC-241).
 
-        Verify the request is accepted (200) and the response shape is
-        conformant. NOT acceptable: 500 with traceback, or non-FHIR body.
+        Pre-QC-241 the GET handler declared ``offset`` but never applied
+        it ("Passed through; not yet used to slice results" — CF-SKEPTIC-
+        VS02-02, DEFERRED). EC-10 remediation wires offset through every
+        $expand mode: the response is still 200 + conformant shape, and
+        offset=1 pages PAST the root (the root sits at index 0).
+        NOT acceptable: 500 with traceback, or non-FHIR body.
         """
         resp = _expand_get(fhir_client, self.INTENSIONAL_URL, offset=1)
         assert resp.status_code == 200, resp.text
         body = resp.json()
         codes = _contains_codes(body)
-        # Root MUST still be present (offset is ignored today).
-        assert SNOMED_DIABETES_MELLITUS in codes
+        # Offset 1 skips index 0 — the root MUST NOT be on page 2.
+        assert SNOMED_DIABETES_MELLITUS not in codes, codes
 
 
 # =============================================================================
@@ -823,8 +824,10 @@ class TestExplorerBodyShapeAudit:
             (f"http://snomed.info/sct/{SNOMED_DIABETES_MELLITUS}?fhir_vs=refset", 400),
             # Case-variant ISA
             (f"http://snomed.info/sct/{SNOMED_DIABETES_MELLITUS}?fhir_vs=ISA", 200),
-            # Unknown code
-            ("http://snomed.info/sct/00000000?fhir_vs=isa", 200),
+            # Unknown code — 400 OperationOutcome since QC-247 (EC-10):
+            # a typo'd/retired isa root must not read as a by-design
+            # empty value set.
+            ("http://snomed.info/sct/00000000?fhir_vs=isa", 400),
             # Non-SNOMED
             ("http://loinc.org/12345?fhir_vs=isa", 400),
         ],

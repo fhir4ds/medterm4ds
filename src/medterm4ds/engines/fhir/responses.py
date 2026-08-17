@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from datetime import date, datetime, timezone
 from typing import Any
 
@@ -19,8 +20,17 @@ from medterm4ds.engines.fhir import (
 from medterm4ds.engines.fhir.equivalence import (
     INTERNAL_REL_TO_FHIR_EQUIVALENCE as _INTERNAL_REL_TO_FHIR_EQUIVALENCE,
 )
+# QC-339 (EC-15): TerminologyCapabilities.codeSystem.subsumption is derived
+# from the strategy registry (single source of truth), not a duplicated list.
+from medterm4ds.sources import SOURCE_STRATEGIES as _SOURCE_STRATEGIES
 
 MATCH_GRADE_EXTENSION_URL = "http://fhir4ds.org/fhir/StructureDefinition/match-grade"
+# Canonical-mode $search extensions (QC-133): preserve the canonical value-set
+# identity on the wire so FHIR clients can tell canonical results apart from
+# lexical/semantic results (which share the same {system, code, display} shape).
+CANONICAL_ID_EXTENSION_URL = "http://medterm4ds.org/fhir/StructureDefinition/canonical-id"
+CANONICAL_RESULT_TYPE_EXTENSION_URL = "http://medterm4ds.org/fhir/StructureDefinition/canonical-result-type"
+CANONICAL_COMBINATION_MEMBERS_EXTENSION_URL = "http://medterm4ds.org/fhir/StructureDefinition/canonical-combination-members"
 
 
 def _param(name: str, value: Any, type_name: str = "valueString") -> dict[str, Any]:
@@ -172,12 +182,14 @@ def build_parameters_translate(
     (milestone-2 review) fixed the map to emit R4 spec-correct values.
     """
     matches: list[dict[str, Any]] = []
+    translated_count = 0
     for m in mappings:
+        equivalence = _fhir_equivalence_from_relationship(m.relationship)
         target_uri = system_to_fhir_uri(m.target.source) or m.target.source
         match_entry: dict[str, Any] = {
             "name": "match",
             "part": [
-                {"name": "equivalence", "valueCode": _fhir_equivalence_from_relationship(m.relationship)},
+                {"name": "equivalence", "valueCode": equivalence},
                 {"name": "concept", "valueCoding": {
                     "system": target_uri,
                     "code": m.target.code,
@@ -189,14 +201,19 @@ def build_parameters_translate(
                 }},
             ],
         }
+        # QC-365 (MEDIUM): per R4 $translate, result is "True if the concept
+        # could be translated" — an unmatched/not-translated entry is not a
+        # translation, so it must not count toward result or the match total.
+        if equivalence != "unmatched":
+            translated_count += 1
         matches.append(match_entry)
 
-    result_val = len(matches) > 0
+    result_val = translated_count > 0
     return {
         "resourceType": "Parameters",
         "parameter": [
             {"name": "result", "valueBoolean": result_val},
-            {"name": "message", "valueString": f"{len(matches)} matches found"},
+            {"name": "message", "valueString": f"{translated_count} matches found"},
             *matches,
         ],
     }
@@ -211,17 +228,40 @@ def build_bundle_search(
     """Build a FHIR Bundle for the custom $search operation.
 
     Each result dict has: code, system, display, score, match_grade, [category].
+    Canonical-mode results additionally carry canonical_id, result_type, and
+    combination_members — preserved as resource extensions (QC-133) so FHIR
+    clients can identify which canonical value set matched instead of seeing
+    only the bare anchor code indistinguishable from lexical/semantic results.
     Modeled after Patient $match — entries have search.score + match-grade extension.
     """
     entries: list[dict[str, Any]] = []
     for r in results:
+        resource: dict[str, Any] = {
+            "system": r["system"],
+            "code": r["code"],
+            "display": r["display"],
+        }
+        if "canonical_id" in r:
+            canonical_ext: list[dict[str, Any]] = [
+                {
+                    "url": CANONICAL_ID_EXTENSION_URL,
+                    "valueString": r["canonical_id"],
+                },
+            ]
+            if r.get("result_type"):
+                canonical_ext.append({
+                    "url": CANONICAL_RESULT_TYPE_EXTENSION_URL,
+                    "valueCode": r["result_type"],
+                })
+            if r.get("combination_members"):
+                canonical_ext.append({
+                    "url": CANONICAL_COMBINATION_MEMBERS_EXTENSION_URL,
+                    "valueString": json.dumps(r["combination_members"]),
+                })
+            resource["extension"] = canonical_ext
         entry: dict[str, Any] = {
             "fullUrl": f"CodeSystem/{r['system']}-{r['code']}",
-            "resource": {
-                "system": r["system"],
-                "code": r["code"],
-                "display": r["display"],
-            },
+            "resource": resource,
             "search": {
                 "mode": "match",
                 "score": r["score"],
@@ -235,12 +275,18 @@ def build_bundle_search(
         }
         entries.append(entry)
 
-    return {
+    bundle: dict[str, Any] = {
         "resourceType": "Bundle",
         "type": "searchset",
         "total": len(entries),
-        "entry": entries,
     }
+    # QC-330 (LOW): FHIR JSON convention — properties with no value are
+    # OMITTED, never emitted as empty arrays. Emitting ``"entry": []`` made
+    # client-visible key presence differ between JSON and XML renderings of
+    # the same Bundle (the XML serializer drops empty elements).
+    if entries:
+        bundle["entry"] = entries
+    return bundle
 
 
 def build_operation_outcome(
@@ -311,9 +357,13 @@ def build_valueset_expand(
             # literal reported a stale date on every response.
             "timestamp": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
             "total": len(contains) if total is None else total,
-            "contains": contains,
         },
     }
+    # QC-330 (LOW): omit ``contains`` when empty per FHIR JSON convention
+    # (properties with no value are omitted, never empty arrays) — keeps the
+    # JSON and XML renderings shape-equivalent.
+    if contains:
+        vs["expansion"]["contains"] = contains
     if url:
         vs["url"] = url
     if extensions:
@@ -335,7 +385,11 @@ CAPABILITY_STATEMENT_VERSION = _package_version()
 # VR-002 (v0.0.1 code review): per FHIR R4 §3.2.1.0.5, CapabilityStatement.date
 # is "The date this was last changed". Stale literal reported a date 9+ days in
 # the past at v0.0.1 ship time; dynamic date tracks the actual response time.
-CAPABILITY_STATEMENT_DATE = date.today().isoformat()
+# QC-331 (EC-15 MEDIUM): a second module-level literal assignment silently
+# overrode this dynamic value; the date is now computed at response-build time
+# (not import time) so long-running servers do not go stale either.
+def _conformance_date() -> str:
+    return date.today().isoformat()
 CAPABILITY_STATEMENT_NAME = "Medterm4dsTerminologyServer"
 CAPABILITY_STATEMENT_TITLE = "medterm4ds FHIR Terminology Server"
 CAPABILITY_STATEMENT_DESCRIPTION = (
@@ -343,7 +397,6 @@ CAPABILITY_STATEMENT_DESCRIPTION = (
     "$validate-code, $translate, $subsumes, $expand, $closure, and the "
     "custom $search / $extract operations over UMLS data loaded into DuckDB."
 )
-CAPABILITY_STATEMENT_DATE = "2026-07-05"
 
 # FHIR R4 extension URL for advertising the list of code-system URIs supported
 # by a terminology server. Per https://hl7.org/fhir/R4/extension-
@@ -362,11 +415,17 @@ def _supported_system_extensions() -> list[dict[str, Any]]:
     One extension entry per supported external code system URI, sourced from
     `SYSTEM_TO_FHIR_URI` (the single source of truth — do NOT hardcode URIs
     here; that would re-introduce the literal-vs-canonical-registry drift
-    pattern, count=3 as of TS-02 TERMINOLOGIST QA-030).
+    pattern, count=3 as of TS-02 TERMINOLOGIST QA-030). Internal
+    pseudo-sources (e.g. PATIENT_FRIENDLY — an output namespace, not a
+    lookupable code system) are excluded per QC-367: advertising a system
+    the client cannot $lookup would be a conformance defect of its own.
     """
+    from medterm4ds.engines.fhir import PSEUDO_SYSTEM_SOURCES
+
     return [
         {"url": SUPPORTED_SYSTEM_EXTENSION_URL, "valueUri": uri}
-        for _, uri in sorted(SYSTEM_TO_FHIR_URI.items())
+        for source, uri in sorted(SYSTEM_TO_FHIR_URI.items())
+        if source not in PSEUDO_SYSTEM_SOURCES
     ]
 
 
@@ -414,7 +473,7 @@ def build_capability_statement(base_url: str = "http://127.0.0.1:8001") -> dict[
         "name": CAPABILITY_STATEMENT_NAME,
         "title": CAPABILITY_STATEMENT_TITLE,
         "status": "active",
-        "date": CAPABILITY_STATEMENT_DATE,
+        "date": _conformance_date(),
         "description": CAPABILITY_STATEMENT_DESCRIPTION,
         "publisher": "medterm4ds",
         "kind": "instance",
@@ -437,6 +496,10 @@ def build_capability_statement(base_url: str = "http://127.0.0.1:8001") -> dict[
         "rest": [
             {
                 "mode": "server",
+                # QC-348 (EC-15 LOW): the docstring and the QA-037 fix narrative
+                # claim the deployment URL is surfaced as rest[].url per
+                # CapabilityStatement.rest.url (0..1, §3.2.1.0.5) — emit it.
+                "url": base_url,
                 # DA-6 (v0.0.1 docs audit): per FHIR R4 §3.2.1.0.4, a server
                 # that supports batch/transaction processing SHOULD advertise
                 # it via rest[].interaction. Without this, clients introspecting
@@ -535,27 +598,55 @@ def build_capability_statement(base_url: str = "http://127.0.0.1:8001") -> dict[
 def build_terminology_capabilities(base_url: str = "http://127.0.0.1:8001") -> dict[str, Any]:
     """Build a FHIR TerminologyCapabilities resource.
 
-    Conforms to FHIR R4 terminology-service §4.7.1.1 item 5: includes the
-    required elements url, name, title, status, date, kind=instance, and a
-    codeSystem block per supported code system with uri, version, and content.
+    Conforms to FHIR R4 terminology-service §4.7.1.1 item 5 and the R4
+    TerminologyCapabilities invariants tcp-2/tcp-3: includes the required
+    elements url, name, title, status, date, kind=instance, an
+    ``implementation`` block (tcp-3: kind=instance requires implementation;
+    tcp-2: at least one of description/software/implementation), and a
+    codeSystem block per supported code system with uri and subsumption
+    (the R4 codeSystem children are uri, version, and subsumption —
+    ``content`` is an R5-only element, removed by QC-333/QC-339, EC-15).
     """
     code_systems: list[dict[str, Any]] = []
     for source, uri in sorted(SYSTEM_TO_FHIR_URI.items()):
-        code_systems.append({
-            "uri": uri,
-            "content": "not-present",
-        })
+        entry: dict[str, Any] = {"uri": uri}
+        # QC-339 (EC-15 MEDIUM): declare subsumption=true where the source
+        # has a real subsumption hierarchy so the TerminologyCapabilities no
+        # longer contradicts the CapabilityStatement's $subsumes operation.
+        if _subsumption_capable(source):
+            entry["subsumption"] = True
+        code_systems.append(entry)
     return {
         "resourceType": "TerminologyCapabilities",
         "url": f"{base_url}/TerminologyCapabilities/terminology",
         "name": CAPABILITY_STATEMENT_NAME,
         "title": CAPABILITY_STATEMENT_TITLE,
         "status": "active",
-        "date": CAPABILITY_STATEMENT_DATE,
+        "date": _conformance_date(),
         "kind": "instance",
         "fhirVersion": "4.0.1",
+        # QC-332 (EC-15 HIGH): tcp-3 requires implementation for kind=instance;
+        # tcp-2 requires at least one of description/software/implementation.
+        # Mirror the CapabilityStatement's implementation block.
+        "implementation": {
+            "url": base_url,
+            "description": "medterm4ds FHIR terminology server deployment.",
+        },
         "codeSystem": code_systems,
     }
+
+
+def _subsumption_capable(source: str) -> bool:
+    """True if the source's strategy declares subsumption hierarchy edges.
+
+    Derived from the strategy registry (single source of truth in
+    medterm4ds.sources) rather than a duplicated list: a source is
+    subsumption-capable when its strategy defines hierarchy_edge_sql().
+    CVX is flat (no hierarchy strategy SQL) and therefore omits the
+    TerminologyCapabilities.codeSystem.subsumption element.
+    """
+    strategy = _SOURCE_STRATEGIES.get(source)
+    return strategy is not None and strategy.hierarchy_edge_sql() is not None
 
 
 _SYSTEM_DISPLAY_NAMES = {
@@ -567,6 +658,10 @@ _SYSTEM_DISPLAY_NAMES = {
     "http://www.ama-assn.org/go/cpt": "Current Procedural Terminology (CPT)",
     "http://www.cms.gov/Medicare/Coding/HCPCSReleaseCodeSets": "Healthcare Common Procedure Coding System (HCPCS Level II)",
     "http://hl7.org/fhir/sid/cvx": "Vaccine Administered Code Set (CVX)",
+    # QC-338 (EC-15 MEDIUM): ATC was added to SYSTEM_TO_FHIR_URI (QC-006)
+    # without extending this sibling display-name registry, so $lookup Out
+    # `name` emitted the raw URI for ATC.
+    "http://www.whocc.no/atc": "Anatomical Therapeutic Chemical (ATC) Classification System",
 }
 
 

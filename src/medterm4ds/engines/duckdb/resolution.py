@@ -148,7 +148,20 @@ def _resolve_code(engine, ref: CodeRef) -> CodeResolution:
             ),
         )
 
-    status = "historical" if historical.suppress in {"O", "E"} else "suppressed"
+    # Distinguish truly obsolete (SUPPRESS='O') from editorially suppressed
+    # (SUPPRESS='E'). Per UMLS Metathesaurus semantics, 'E' means the atom is
+    # hidden from default release views (often editorial/legal) but is NOT
+    # obsolete — it has no replacement. Found by QC-120 (DATA_INTEGRITY HIGH):
+    # pre-fix, both were folded into status='historical', misleading downstream
+    # consumers who expect status='historical' to signal "this code has a
+    # replacement candidate". 'suppressed_editorial' is a distinct status for
+    # E-atoms so callers can route them differently from obsolete codes.
+    if historical.suppress == "O":
+        status = "historical"
+    elif historical.suppress == "E":
+        status = "suppressed_editorial"
+    else:
+        status = "suppressed"
     return CodeResolution(
         input=ref,
         resolved=ref,
@@ -373,10 +386,15 @@ def _lookup_any_code(engine, ref: CodeRef) -> CodeInfo | None:
                 suppress=suppress,
             )
 
+    # QC-406 (HIGH): qualified reference BYPASSES the prepare_cache TEMP
+    # mrconso shadow, which is active-only (SUPPRESS='N') — this lookup
+    # exists precisely to find the SUPPRESSED (obsolete) atom, so the shadow
+    # made every prepared surface return not_found for an obsolete code.
+    mrconso_ref = _raw_mrconso_ref(engine)
     rows = engine.con.execute(
-        """
+        f"""
         SELECT CODE, STR, CUI, AUI, TTY, SUPPRESS
-        FROM mrconso
+        FROM {mrconso_ref}
         WHERE SAB = ?
           AND CODE = ?
         ORDER BY
@@ -409,26 +427,85 @@ def _lookup_any_code(engine, ref: CodeRef) -> CodeInfo | None:
         suppress=suppress,
     )
 
+def _raw_mrconso_ref(engine) -> str:
+    """QC-406 (HIGH): qualified ``mrconso`` ref that BYPASSES the temp shadow.
+
+    ``prepare_cache`` (``_EngineState``) creates ``TEMP TABLE mrconso`` /
+    ``mrrel`` filtered to active atoms of the inventory sources so "the rest
+    of the engine can keep using the same SQL", with the original tables
+    remaining "accessible through their fully-qualified catalog name" (its
+    docstring). Resolution is the exception that MUST take that escape hatch:
+    obsolete-code replacement needs the SUPPRESSED atoms of the input code and
+    the mrrel edges hanging off them — the active-only shadow hides both,
+    silently degrading status='replaced' to 'historical' (resolved=None) on
+    every prepared surface (MCP, FHIR server, REST api, CLI bulk).
+    Mirrors prepare_cache's own qualification pattern.
+    """
+    return f'"{engine._base_catalog_name()}".main.mrconso'
+
+
+def _raw_mrrel_ref(engine) -> str:
+    """QC-406: qualified ``mrrel`` ref that bypasses the temp shadow. See
+    ``_raw_mrconso_ref`` — the temp ``mrrel`` additionally drops every edge
+    whose AUI1 or AUI2 is not in the active set, which includes the
+    obsolete→active replacement edges themselves."""
+    return f'"{engine._base_catalog_name()}".main.mrrel'
+
+
+def _code_replacements_ready(engine) -> bool:
+    """QC-398 (HIGH): gate the prepared replacement path on row presence.
+
+    Production databases can carry a 0-row ``mt4ds.code_replacements``
+    (the builder created the empty table when mrrel was unavailable or
+    truncated at prepare time). Gating on table EXISTENCE alone let that
+    empty table shadow the live-MRREL fallback below, so every
+    ``--resolve-mode`` silently degraded to returning the obsolete input
+    code as "resolved" with no candidates. An empty prepared table must
+    defer to the live-MRREL query. ``LIMIT 1`` keeps the probe bounded.
+    """
+    if not (
+        engine._table_exists("code_replacements") and engine._table_exists("best_atoms")
+    ):
+        return False
+    probe = engine.con.execute(
+        "SELECT 1 FROM mt4ds.code_replacements LIMIT 1"
+    ).fetchone()
+    return probe is not None
+
+
 def _replacement_candidates(engine, historical: CodeInfo) -> list[_ReplacementCandidate]:
     from medterm4ds.engines.duckdb.engine import _REPLACEMENT_RELAS
-    if engine._table_exists("code_replacements") and engine._table_exists("best_atoms"):
+    if _code_replacements_ready(engine):
+        # One candidate per distinct new_code: best_atoms carries every active
+        # atom (rank 1..N), so an unqualified join fans one replacement row out
+        # to N identical-target candidates and misclassifies single-successor
+        # codes as 'ambiguous'. Pick each target's best (lowest-rank) atom.
         rows = engine.con.execute(
             """
-            SELECT b.code, b.name, b.cui, b.aui, b.tty, b.suppress, r.rela
-            FROM mt4ds.code_replacements r
-            JOIN mt4ds.best_atoms b
-              ON b.source = r.source
-             AND b.code = r.new_code
-            WHERE r.source = ?
-              AND r.old_code = ?
-              AND b.is_active
+            SELECT code, name, cui, aui, tty, suppress, rela
+            FROM (
+                SELECT
+                    b.code, b.name, b.cui, b.aui, b.tty, b.suppress, r.rela,
+                    ROW_NUMBER() OVER (
+                        PARTITION BY r.new_code
+                        ORDER BY b.rank, b.aui
+                    ) AS atom_rank
+                FROM mt4ds.code_replacements r
+                JOIN mt4ds.best_atoms b
+                  ON b.source = r.source
+                 AND b.code = r.new_code
+                WHERE r.source = ?
+                  AND r.old_code = ?
+                  AND b.is_active
+            )
+            WHERE atom_rank = 1
             ORDER BY
-                CASE r.rela
+                CASE rela
                     WHEN 'same_as' THEN 0
                     WHEN 'replaced_by' THEN 1
                     ELSE 2
                 END,
-                b.code
+                code
             LIMIT 25
             """,
             [historical.code.source, historical.code.code],
@@ -449,29 +526,51 @@ def _replacement_candidates(engine, historical: CodeInfo) -> list[_ReplacementCa
     if not historical.aui:
         return []
     rela_placeholders = ",".join(["?"] * len(_REPLACEMENT_RELAS))
+    # QC-406 (HIGH): qualified refs bypass the prepare_cache TEMP mrconso/
+    # mrrel shadow. The shadow's code_auis subquery found ZERO AUIs for an
+    # obsolete code (all its atoms are SUPPRESS='O', excluded from the temp
+    # table) and the shadow mrrel dropped the obsolete→active edges
+    # themselves — so this fallback silently died on every PREPARED surface
+    # (status 'replaced' → 'historical', resolved=None) while the unprepared
+    # half of the surface matrix answered correctly.
+    mrconso_ref = _raw_mrconso_ref(engine)
+    mrrel_ref = _raw_mrrel_ref(engine)
+    # QC-398 (HIGH): match replacement edges from ANY atom of the historical
+    # CODE, not only the single atom _lookup_any_code happened to pick. An
+    # obsolete code commonly has several suppressed atoms, and the
+    # same_as/replaced_by MRREL edge may sit on a sibling atom — the prepared
+    # mt4ds.code_replacements builder is code-keyed for exactly this reason,
+    # so the live-MRREL fallback must use the same semantics to be an
+    # equivalent stand-in when the prepared table is absent or empty.
     params: list[object] = [
-        historical.aui,
+        historical.code.source,
+        historical.code.code,
         historical.code.source,
         *_REPLACEMENT_RELAS,
-        historical.aui,
         historical.code.source,
         *_REPLACEMENT_RELAS,
     ]
     rows = engine.con.execute(
         f"""
-        WITH candidates AS (
+        WITH code_auis AS (
+            SELECT AUI
+            FROM {mrconso_ref}
+            WHERE SAB = ?
+              AND CODE = ?
+        ),
+        candidates AS (
             SELECT c.CODE, c.STR, c.CUI, c.AUI, c.TTY, c.SUPPRESS, r.RELA
-            FROM mrrel r
-            JOIN mrconso c ON c.AUI = r.AUI2
-            WHERE r.AUI1 = ?
+            FROM {mrrel_ref} r
+            JOIN {mrconso_ref} c ON c.AUI = r.AUI2
+            WHERE r.AUI1 IN (SELECT AUI FROM code_auis)
               AND c.SAB = ?
               AND c.SUPPRESS = 'N'
               AND r.RELA IN ({rela_placeholders})
             UNION ALL
             SELECT c.CODE, c.STR, c.CUI, c.AUI, c.TTY, c.SUPPRESS, r.RELA
-            FROM mrrel r
-            JOIN mrconso c ON c.AUI = r.AUI1
-            WHERE r.AUI2 = ?
+            FROM {mrrel_ref} r
+            JOIN {mrconso_ref} c ON c.AUI = r.AUI1
+            WHERE r.AUI2 IN (SELECT AUI FROM code_auis)
               AND c.SAB = ?
               AND c.SUPPRESS = 'N'
               AND r.RELA IN ({rela_placeholders})

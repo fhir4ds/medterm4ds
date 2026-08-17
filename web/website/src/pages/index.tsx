@@ -4,13 +4,6 @@ import Layout from '@theme/Layout';
 import Heading from '@theme/Heading';
 import styles from './index.module.css';
 
-const stats = [
-  {value: '8', label: 'Code systems'},
-  {value: '1.1M', label: 'Codes indexed'},
-  {value: '2.8M', label: 'Associations'},
-  {value: '429', label: 'Tests passing'},
-];
-
 const snippets = [
   {
     title: 'Lookup',
@@ -21,26 +14,65 @@ info = terms.lookup("SNOMEDCT_US", "44054006")
 print(info.name)
 # → "Type 2 diabetes mellitus"
 
-friendly = terms.patient_friendly("SNOMEDCT_US", "44054006")
-print(friendly.name)
-# → "Diabetes Type 2"`,
-    desc: 'Look up any code and get its display name, properties, and patient-friendly name.',
+# Any code system, same API
+info = terms.lookup("RXNORM", "860975")
+print(info.name)
+# → "Metformin Oral Product"`,
+    desc: 'Look up any code and get its display name, properties, and metadata.',
+  },
+  {
+    title: 'Hierarchy',
+    code: `import medterm4ds as mt
+
+terms = mt.connect("/path/to/umls.duckdb")
+
+# Walk up: find all ancestors of T2DM
+ancestors = terms.ancestors("SNOMEDCT_US", "44054006")
+# → Diabetes mellitus, Endocrine disorder, ...
+
+# Walk down: find all descendants
+descendants = terms.descendants("SNOMEDCT_US", "73211009", max_depth=3)
+# → T2DM, T1DM, secondary diabetes, ...
+
+# Test subsumption
+terms.subsumes("SNOMEDCT_US", "73211009", "44054006")
+# → True (DM subsumes T2DM)`,
+    desc: 'Traverse SNOMED CT, ICD-10, ATC, and LOINC hierarchies. Find ancestors, descendants, and subsumption relationships.',
+  },
+  {
+    title: 'Crosswalk',
+    code: `import medterm4ds as mt
+
+terms = mt.connect("/path/to/umls.duckdb")
+
+# Map SNOMED to ICD-10
+mappings = terms.map("SNOMEDCT_US", "44054006",
+                     target_sources=["ICD10CM"])
+# → E11 (Type 2 diabetes mellitus, equivalent)
+
+# Map RxNorm to ATC
+mappings = terms.map("RXNORM", "860975",
+                     target_sources=["ATC"])
+# → A10BA02 (metformin, equivalent)
+
+# Any-to-any via shared UMLS concepts`,
+    desc: 'Translate between code systems. SNOMED to ICD-10, RxNorm to ATC, any-to-any.',
   },
   {
     title: 'Search',
     code: `import medterm4ds as mt
 
-# Lexical: BM25 token matching (~1ms)
+# Fast keyword search
 results = mt.search("diabetes", mode="lexical")
 
-# Semantic: catches novel phrasings (~100ms)
+# Semantic: catches novel phrasings
 results = mt.search("high blood sugar", mode="semantic")
-# → Hyperglycemia (0.80, probable)
+# → Hyperglycemia (probable)
 
-# Hybrid: best accuracy (~110ms)
+# Best accuracy: combined approach
 results = mt.search("metformin pill", mode="hybrid")
-# → Metformin Pill (1.00, certain)`,
-    desc: 'Search for medical codes by natural language. BM25 for known terms, SapBERT embeddings for novel phrasings.',
+# → Metformin Pill (certain)`,
+    desc: 'Search for medical codes by natural language. Fast keyword matching, semantic understanding for novel phrasings, or both.',
   },
   {
     title: 'Extract',
@@ -55,55 +87,57 @@ for c in concepts:
     print(f"  {c.code} {c.display} matched='{c.matched_text}'")
 # → 44054006  Type 2 diabetes  matched='T2DM'
 # → 860975    Metformin        matched='metformin'
-# CKD excluded — negated by ConText`,
-    desc: 'Extract coded concepts from clinical notes. NER + ConText negation filtering + code resolution.',
+# CKD excluded — negated by clinical context`,
+    desc: 'Extract coded concepts from clinical text. Identifies conditions, medications, labs, and procedures — with negation and context awareness.',
   },
   {
-    title: 'FHIR Server',
-    code: `pip install medterm4ds[fhir]
-python -m medterm4ds.apps.fhir_api
+    title: 'Patient-Friendly',
+    code: `import medterm4ds as mt
 
-# 7 FHIR R4 operations + 2 custom:
-# $lookup, $validate-code, $translate,
-# $subsumes, $expand, $closure
-# + $search (text→code), $extract (NER)
+terms = mt.connect("/path/to/umls.duckdb")
 
-curl "http://127.0.0.1:8001/fhir/CodeSystem/\\$lookup?\\
-system=http://snomed.info/sct&code=44054006"`,
-    desc: 'Full FHIR R4 terminology server with 7 standard operations plus custom $search and $extract.',
+# Get consumer-comprehensible names
+friendly = terms.patient_friendly("SNOMEDCT_US", "44054006")
+# → "Diabetes Type 2"
+
+friendly = terms.patient_friendly("ICD10CM", "E11.9")
+# → "Diabetes Type 2"
+
+# 1M+ codes resolved to plain language`,
+    desc: 'Translate clinical terminology into plain language for patients and consumers.',
   },
 ];
 
 const features = [
   {
-    icon: '\u{1F4D6}',
-    title: 'Built from UMLS',
-    body: '8 clinical code systems (SNOMED CT, ICD-10, RxNorm, LOINC, CPT, HCPCS, CVX, ICD-10-PCS). Hierarchy, mappings, and patient-friendly names for 1.1M codes.',
+    icon: '🔌',
+    title: 'One Engine, Four Surfaces',
+    body: 'Python library, CLI, MCP server (38 tools), and FHIR R4 terminology server. Same API, same data — use whichever surface fits your workflow.',
   },
   {
-    icon: '\u{1F50D}',
+    icon: '🌲',
+    title: 'Walk Any Hierarchy',
+    body: 'Traverse SNOMED CT, ICD-10-CM, ATC, LOINC, and more. Find ancestors, descendants, test subsumption, navigate multi-level taxonomies.',
+  },
+  {
+    icon: '🔀',
+    title: 'Crosswalk Between Systems',
+    body: 'Map SNOMED to ICD-10, RxNorm to ATC, LOINC to SNOMED — any-to-any translation via shared UMLS concepts with equivalence values.',
+  },
+  {
+    icon: '🔍',
     title: 'Intelligent Search',
-    body: 'Text-to-code inference with BM25 (lexical, ~1ms) and fine-tuned SapBERT embeddings (semantic, ~100ms). Catches "high blood sugar" → Hyperglycemia.',
+    body: 'Find medical codes by natural language. Four modes: fast keyword, semantic understanding, combined, and canonical anchor resolution.',
   },
   {
-    icon: '\u{1F4DD}',
-    title: 'Text Extraction',
-    body: 'Extract coded medical concepts from clinical notes. NER + medspaCy ConText (negation filtering) + code resolution. ~250ms/note on CPU.',
+    icon: '📝',
+    title: 'Clinical Text Extraction',
+    body: 'Extract coded concepts from clinical notes. Handles negation ("no evidence of..."), historical context, family history, and lab-vs-medication disambiguation.',
   },
   {
-    icon: '\u{1F5C4}\u{FE0F}',
-    title: 'Four Interfaces',
-    body: 'Python library, CLI, MCP server (37+ tools), and FHIR R4 terminology server. All backed by the same engine.',
-  },
-  {
-    icon: '\u{1F476}',
-    title: 'Patient-Friendly',
-    body: '1.1M codes resolved to consumer-comprehensible display names. MEDLINEPLUS and CHV preferred, with hierarchy fallback.',
-  },
-  {
-    icon: '✅',
-    title: 'FHIR R4 Conformant',
-    body: '7 standard terminology operations ($lookup, $validate-code, $translate, $subsumes, $expand, $closure) plus custom $search and $extract. 35 declarative conformance tests covering all operations + error paths.',
+    icon: '👶',
+    title: 'Patient-Friendly Names',
+    body: '1M+ clinical codes resolved to consumer-comprehensible display names. "E11.9" becomes "Diabetes Type 2" for patient-facing interfaces.',
   },
 ];
 
@@ -116,11 +150,12 @@ function InteractiveSnippet() {
       <div className="container">
         <div className="row">
           <div className="col col--5">
-            <Heading as="h2">Five capabilities, one engine</Heading>
+            <Heading as="h2">Six capabilities, one engine</Heading>
             <p className={styles.sectionLead}>
               medterm4ds handles the full terminology workflow: look up codes,
-              walk hierarchies, map between systems, search by natural language,
-              and extract concepts from clinical text. No external API calls needed.
+              walk hierarchies, crosswalk between systems, search by natural
+              language, get patient-friendly names, and extract concepts from
+              clinical text. No external API calls needed.
             </p>
             <div className={styles.snippetNav || ''} style={{display: 'flex', gap: '0.5rem', flexWrap: 'wrap', marginBottom: '1rem'}}>
               {snippets.map((s, i) => (
@@ -180,13 +215,13 @@ export default function Home() {
       <header className={styles.hero}>
         <div className={styles.grid} />
         <div className={`container ${styles.heroInner}`}>
-          <span className={styles.badge}>medterm4ds v0.0.1 · UMLS 2026AA</span>
+          <span className={styles.badge}>medterm4ds v0.0.2 · UMLS 2026AA</span>
           <Heading as="h1" className={styles.title}>
             Medical Terminology<br />for Data Science
           </Heading>
           <p className={styles.lead}>
-            UMLS-powered terminology lookup, intelligent text search, and clinical
-            text extraction. Built from the ground up for Python, CLI, MCP, and FHIR R4.
+            Walk hierarchies. Crosswalk between systems. Search by natural
+            language. Extract from clinical notes. One engine, four surfaces.
           </p>
           <div className={styles.actions}>
             <Link className={styles.primaryAction} to="/docs/getting-started/quickstart">
@@ -199,20 +234,6 @@ export default function Home() {
         </div>
       </header>
 
-      {/* Stats */}
-      <section className={styles.stats}>
-        <div className="container">
-          <div className={styles.statsRow}>
-            {stats.map((s) => (
-              <div key={s.label} className={styles.stat}>
-                <span className={styles.statValue}>{s.value}</span>
-                <span className={styles.statLabel}>{s.label}</span>
-              </div>
-            ))}
-          </div>
-        </div>
-      </section>
-
       {/* Interactive snippets */}
       <InteractiveSnippet />
 
@@ -224,24 +245,6 @@ export default function Home() {
             {features.map((f) => (
               <FeatureCard key={f.title} {...f} />
             ))}
-          </div>
-        </div>
-      </section>
-
-      {/* Architecture pipeline */}
-      <section className={styles.section}>
-        <div className="container">
-          <Heading as="h2">How it works</Heading>
-          <p className={styles.sectionLead}>
-            UMLS Metathesaurus data is loaded into a DuckDB engine.
-            Service functions provide the API. Four surfaces wrap the same services.
-          </p>
-          <div className={styles.pipeline}>
-            <div className={styles.step}>UMLS Data</div>
-            <div className={styles.step}>DuckDB Engine</div>
-            <div className={styles.step}>Services</div>
-            <div className={styles.step}>Interfaces</div>
-            <div className={styles.step}>Your App</div>
           </div>
         </div>
       </section>

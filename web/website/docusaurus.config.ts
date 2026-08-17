@@ -83,9 +83,10 @@ const config: Config = {
       },
       items: [
         {to: '/docs/getting-started/quickstart', label: 'Getting Started', position: 'left'},
-        {to: '/docs/user-guide/interfaces/python', label: 'User Guide', position: 'left'},
+        {to: '/docs/capabilities/code-lookup', label: 'Capabilities', position: 'left'},
+        {to: '/docs/interfaces/python', label: 'Interfaces', position: 'left'},
         {to: '/docs/terminology/supported-sources', label: 'Terminology', position: 'left'},
-        {to: '/docs/workflows/valuesets', label: 'Workflows', position: 'left'},
+        {to: '/docs/examples/notebooks/overview', label: 'Examples', position: 'left'},
         {to: '/docs/api-reference/medterm4ds', label: 'API', position: 'left'},
         {
           href: 'https://github.com/medterm4ds/medterm4ds',
@@ -104,7 +105,7 @@ const config: Config = {
             {label: 'Quickstart', to: '/docs/getting-started/quickstart'},
             {label: 'First Notebook', to: '/docs/getting-started/first-notebook'},
             {label: 'Data Setup', to: '/docs/getting-started/data-setup'},
-            {label: 'Python', to: '/docs/user-guide/interfaces/python'},
+            {label: 'Python', to: '/docs/interfaces/python'},
           ],
         },
         {
@@ -116,11 +117,11 @@ const config: Config = {
           ],
         },
         {
-          title: 'Workflows',
+          title: 'Production Recipes',
           items: [
-            {label: 'ValueSets', to: '/docs/workflows/valuesets'},
-            {label: 'ConceptMaps', to: '/docs/workflows/conceptmaps'},
-            {label: 'Quality Review', to: '/docs/workflows/quality-review'},
+            {label: 'ValueSets', to: '/docs/examples/recipes/valuesets'},
+            {label: 'ConceptMaps', to: '/docs/examples/recipes/conceptmaps'},
+            {label: 'Quality Review', to: '/docs/examples/recipes/quality-review'},
           ],
         },
         {

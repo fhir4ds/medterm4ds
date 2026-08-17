@@ -359,7 +359,14 @@ class TestLens1AstContractOnComparisonPromotedPattern:
         left = cmp.left
         assert isinstance(left, ast.Call) and left.func.id == "len"
         right = cmp.comparators[0]
-        assert isinstance(right, ast.Name) and right.id == "count"
+        # QC-241 (EC-10): the RIGHT operand is ``probe_budget`` — the
+        # paging window budget ``min(offset + count, MAX_LIMIT - 1)``.
+        # Still a budget-style Name (the 2-axis contract holds); when
+        # offset=0 it equals ``count`` exactly.
+        assert isinstance(right, ast.Name) and right.id in ("count", "probe_budget"), (
+            "count_limited RIGHT operand MUST be a budget-style Name "
+            "(count or probe_budget per QC-241 paging windows)"
+        )
         left_var = left.args[0]
         assert isinstance(left_var, ast.Name) and left_var.id != right.id
 

@@ -20,5 +20,15 @@ async def run_db(executor: ThreadPoolExecutor, func, *args, **kwargs):
     app.state.db_executor) so multiple servers in one process get
     independent workers and clean teardown.
     """
+    if executor is None:
+        # QC-420 (LOW): run_in_executor(None, ...) silently falls back to the
+        # loop's DEFAULT executor — post-close straggler tools then ran on a
+        # second thread pool against a torn-down runtime (some succeeding,
+        # some raising 'engine not ready'). Keep the documented contract:
+        # handlers run between open() and close(); a missing executor is a
+        # shutdown race, so fail fast.
+        raise RuntimeError(
+            "db executor is not available (server not opened or already closed)"
+        )
     loop = asyncio.get_running_loop()
     return await loop.run_in_executor(executor, partial(func, *args, **kwargs))

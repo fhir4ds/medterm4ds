@@ -660,51 +660,49 @@ class TestL4ContentFieldClinicalCorrectness:
             )
 
     def test_t41_all_advertised_systems_use_clinically_honest_content(self, fhir_client):
-        """L4 — every advertised code system's content value MUST be in
-        the FHIR R4 CodeSystemContentMode enum AND must be clinically
-        honest. For medterm4ds (non-persisting server), ``not-present``
-        is the clinically honest choice — the server does NOT claim to
-        expose the full code system via a persisted CodeSystem resource.
+        """L4 — superseded by EC-15 QC-333: ``content`` is NOT a FHIR R4
+        TerminologyCapabilities.codeSystem child (R4 children: uri, version,
+        subsumption; verified against the R4 definitions page — ``content``
+        on this backbone is R5-only). The prior probe pinned an R5 element
+        onto the R4 surface. The R4-correct advertisement is
+        ``subsumption: true`` for hierarchical systems (QC-339).
         """
         r = fhir_client.get("/fhir/metadata", params={"mode": "terminology"})
         assert r.status_code == 200
         term_caps = r.json()
         advertised = {cs["uri"]: cs.get("content") for cs in term_caps.get("codeSystem", [])}
-        # Every advertised content value is in the R4 enum.
-        for uri, content in advertised.items():
-            assert content in FHIR_R4_CONTENT_MODES, (
-                f"{uri}: content={content!r} is NOT in FHIR R4 "
-                f"CodeSystemContentMode enum (5 values: "
-                f"{sorted(FHIR_R4_CONTENT_MODES)})."
-            )
-        # For medterm4ds: every real external system uses 'not-present'.
-        # (This is the clinically honest value per AGENTS.md NOT A BUG
-        # Registry — medterm4ds does NOT persist CodeSystem resources.)
-        for uri, content in advertised.items():
-            assert content == "not-present", (
-                f"{uri}: content={content!r} — for a non-persisting "
-                f"terminology server, 'not-present' is the clinically "
-                f"honest value. Other values (complete/fragment/supplement) "
-                f"would claim a code-system-curation scope medterm4ds "
-                f"does not provide; 'example' would mislead clients."
-            )
+        # EC-15 QC-333: the R5-only 'content' element MUST NOT appear on the
+        # R4 TerminologyCapabilities backbone.
+        leaking = {uri: content for uri, content in advertised.items() if content is not None}
+        assert not leaking, (
+            f"R5-only 'content' element leaked onto the R4 TC surface for "
+            f"{leaking}. Per EC-15 QC-333 the R4 codeSystem children are "
+            f"uri, version, and subsumption only."
+        )
 
     def test_t42_no_advertised_system_missing_content_field(self, fhir_client):
-        """L4 — FHIR R4 CodeSystem.content is 1..1 (required). Every
-        advertised code system in TerminologyCapabilities.codeSystem[]
-        MUST include the content field. Missing content is a structural
-        conformance violation (clients cannot determine the curation
-        scope without it).
+        """L4 — superseded by EC-15 QC-333/QC-339: the R4 TC codeSystem child
+        that carries capability information is ``subsumption`` (0..1
+        boolean), not CodeSystem.content (which does not exist on this
+        backbone in R4). Every hierarchical system MUST declare
+        subsumption=true so the TC does not contradict the CS's $subsumes
+        operation.
         """
+        from medterm4ds.engines.fhir.responses import _subsumption_capable
+        from medterm4ds.engines.fhir import FHIR_URI_TO_SYSTEM
+
         r = fhir_client.get("/fhir/metadata", params={"mode": "terminology"})
         assert r.status_code == 200
         term_caps = r.json()
         for cs in term_caps.get("codeSystem", []):
             uri = cs.get("uri", "<missing uri>")
-            assert "content" in cs, (
+            source = FHIR_URI_TO_SYSTEM.get(uri)
+            if source is None or not _subsumption_capable(source):
+                continue
+            assert cs.get("subsumption") is True, (
                 f"TerminologyCapabilities codeSystem entry for {uri!r} "
-                f"lacks the required 'content' field per FHIR R4 "
-                f"CodeSystem.content (1..1)."
+                f"lacks subsumption=true — the CapabilityStatement "
+                f"advertises $subsumes and this source has a hierarchy."
             )
 
     def test_t43_capstmt_extension_uris_match_termcaps_uris(self, fhir_client):
