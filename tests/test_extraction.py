@@ -348,7 +348,7 @@ def _context_decide(nlp, text, target, label="therapeutic agent"):
 # None (no decision — the GLiNER label mapping stands; conservative
 # failure mode).
 _ARBITER_CORPUS = [
-        ('A01', 'Creatinine was 2.1 this morning', 'Creatinine', None),
+        ('A01', 'Creatinine was 2.1 this morning', 'Creatinine', ['lab']),
         ('A02', 'check potassium level', 'potassium', ['lab']),
         ('A03', 'sodium of 135', 'sodium', None),
         ('A04', 'glucose 180 on admission', 'glucose', None),
