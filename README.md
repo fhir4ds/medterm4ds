@@ -4,6 +4,8 @@
 Science: UMLS-backed terminology lookup, mapping, patient-friendly names,
 value set optimization, and interoperability workflows.
 
+Documentation: <https://terminology.fhir4ds.com/>
+
 The current slice focuses on exact code lookup, source inventory/search,
 same-CUI plus bounded hierarchy source mapping, hierarchy traversal, and
 patient-friendly names:

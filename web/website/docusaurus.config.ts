@@ -55,7 +55,7 @@ const config: Config = {
       {
         docs: {
           sidebarPath: './sidebars.ts',
-          editUrl: 'https://github.com/medterm4ds/medterm4ds/edit/main/web/website/',
+          editUrl: 'https://github.com/fhir4ds/medterm4ds/edit/main/web/website/',
         },
         blog: false,
         theme: {
@@ -103,7 +103,7 @@ const config: Config = {
         {to: '/docs/api-reference/medterm4ds', label: 'API', position: 'left'},
         {to: '/docs/examples/notebooks/overview', label: 'Examples', position: 'left'},
         {
-          href: 'https://github.com/medterm4ds/medterm4ds',
+          href: 'https://github.com/fhir4ds/medterm4ds',
           position: 'right',
           className: 'navbar-github-link',
           'aria-label': 'GitHub repository',
