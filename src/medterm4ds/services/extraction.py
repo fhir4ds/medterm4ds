@@ -363,16 +363,26 @@ def _arbitrate_lab_vs_med(span, parser_doc, context_ent) -> list[str] | None:
 def _span_search_categories(span: "FilteredSpan") -> str | list[str] | None:
     """Effective canonical search categories for a span (constrain step).
 
-    ConText arbitration first: when the MEASUREMENT/ADMINISTRATION cues
-    around the span produced a decision (captured on
-    FilteredSpan.context_categories at find_terms time), it takes precedence
-    over the GLiNER label mapping — ConText decided 45/45 contested
-    lab-vs-med items correctly where the label is exactly what's wrong.
-    No decision (None) falls through to the label mapping as before.
+    ConText arbitration first — but ONLY for spans GLiNER typed as a
+    contested lab-vs-med label (CR-050). Without the gate, the arbiter
+    overrides every label: "diabetes screening" fires MEASUREMENT on a
+    disorder span and forces it to lab, "pain increased" fires
+    ADMINISTRATION on a symptom span and forces it to medication. The
+    arbiter exists to resolve lab-vs-med ambiguity, not to re-type
+    disorders and symptoms.
+
+    Contested labels: any label EXCEPT disorders, symptoms, procedures,
+    and body structures — those are clearly not lab or medication and
+    should never be re-typed by ConText.
     """
-    if span.context_categories:
+    _NON_LAB_MED_LABELS = frozenset({
+        "disorder", "disease", "symptom", "sign", "procedure",
+        "medical intervention", "body structure",
+    })
+    label_lower = span.entity_type.lower()
+    if span.context_categories and label_lower not in _NON_LAB_MED_LABELS:
         return span.context_categories
-    return _LABEL_TO_SEARCH_CATEGORIES.get(span.entity_type.lower())
+    return _LABEL_TO_SEARCH_CATEGORIES.get(label_lower)
 
 
 def _categories_to_prefixes(
