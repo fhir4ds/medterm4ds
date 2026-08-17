@@ -1,0 +1,24 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" role="img" aria-label="medterm4ds option 3: network mesh">
+  <rect width="128" height="128" rx="26" fill="#08111f"/>
+  <!-- Network mesh: interconnected code systems -->
+  <circle cx="64" cy="64" r="8" fill="#8ee6c1"/>
+  <circle cx="34" cy="38" r="6" fill="#54c6ff"/>
+  <circle cx="94" cy="38" r="6" fill="#54c6ff"/>
+  <circle cx="34" cy="90" r="6" fill="#54c6ff"/>
+  <circle cx="94" cy="90" r="6" fill="#54c6ff"/>
+  <circle cx="24" cy="64" r="4" fill="#f4f9ff" opacity="0.6"/>
+  <circle cx="104" cy="64" r="4" fill="#f4f9ff" opacity="0.6"/>
+  <circle cx="64" cy="22" r="4" fill="#f4f9ff" opacity="0.6"/>
+  <circle cx="64" cy="106" r="4" fill="#f4f9ff" opacity="0.6"/>
+  <!-- Connections -->
+  <line x1="64" y1="64" x2="34" y2="38" stroke="#8ee6c1" stroke-width="2" opacity="0.6"/>
+  <line x1="64" y1="64" x2="94" y2="38" stroke="#8ee6c1" stroke-width="2" opacity="0.6"/>
+  <line x1="64" y1="64" x2="34" y2="90" stroke="#8ee6c1" stroke-width="2" opacity="0.6"/>
+  <line x1="64" y1="64" x2="94" y2="90" stroke="#8ee6c1" stroke-width="2" opacity="0.6"/>
+  <line x1="64" y1="64" x2="24" y2="64" stroke="#54c6ff" stroke-width="1.5" opacity="0.4"/>
+  <line x1="64" y1="64" x2="104" y2="64" stroke="#54c6ff" stroke-width="1.5" opacity="0.4"/>
+  <line x1="64" y1="64" x2="64" y2="22" stroke="#54c6ff" stroke-width="1.5" opacity="0.4"/>
+  <line x1="64" y1="64" x2="64" y2="106" stroke="#54c6ff" stroke-width="1.5" opacity="0.4"/>
+  <line x1="34" y1="38" x2="94" y2="38" stroke="#54c6ff" stroke-width="1" opacity="0.3"/>
+  <line x1="34" y1="90" x2="94" y2="90" stroke="#54c6ff" stroke-width="1" opacity="0.3"/>
+</svg>

@@ -11,6 +11,16 @@ const sidebars: SidebarsConfig = {
         'getting-started/installation',
         'getting-started/first-notebook',
         'getting-started/architecture',
+        {
+          type: 'category',
+          label: 'Data Sources',
+          items: [
+            'getting-started/data-setup',
+            'getting-started/supported-sources',
+            'getting-started/umls-release-info',
+            'getting-started/source-inventory',
+          ],
+        },
         'getting-started/engine-configuration',
         'getting-started/remote-engine',
         'getting-started/licensing',
@@ -41,18 +51,6 @@ const sidebars: SidebarsConfig = {
         'interfaces/mcp-server',
         'interfaces/fhir-server',
         'interfaces/docker-deployment',
-      ],
-    },
-    {
-      type: 'category',
-      label: 'Terminology',
-      link: {type: 'doc', id: 'terminology/supported-sources'},
-      items: [
-        'terminology/supported-sources',
-        'terminology/umls-release-info',
-        'terminology/source-inventory',
-        'terminology/ndc-rxnorm',
-        'terminology/obsolete-codes',
       ],
     },
     {

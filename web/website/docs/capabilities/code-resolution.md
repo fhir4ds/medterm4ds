@@ -40,10 +40,31 @@ print(result.replacements)  # [CodeRef(...)]
 
 ## NDC resolution
 
-NDC (National Drug Code) inputs are automatically resolved to RxNorm codes. The resolver:
+NDC (National Drug Code) inputs are automatically resolved to RxNorm codes through RxNorm attributes in `MRSAT.RRF`. The resolver:
 1. Normalizes the NDC format (11-digit, hyphenated, etc.)
 2. Looks up in `mrsat` (UMLS attributes)
 3. Returns the corresponding RxNorm code
+
+Resolution output identifies the original NDC, the normalized NDC11, the RxNorm
+target code, the status, and the resolution route.
+
+NDC handling matters for historical medication data. Some NDCs are obsolete,
+package-specific, or reused across source releases, so downstream drug analysis
+should preserve both the resolved RxCUI and the original NDC.
+
+## Working with obsolete codes
+
+Historical data often contains obsolete or suppressed codes. Resolution can
+return active exact matches, historical exact matches, replacement targets,
+ambiguous replacements, missing codes, and NDC-to-RxCUI resolutions.
+
+```python
+row = terms.resolve("RXNORM", "1190798")
+row.to_dict()
+```
+
+Preserve the original code in downstream outputs. Replacement targets are
+useful, but they are not always clinically equivalent.
 
 ## Provenance
 

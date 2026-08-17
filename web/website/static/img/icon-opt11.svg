@@ -1,0 +1,37 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="medterm4ds: open book with rising network">
+  <rect width="512" height="512" rx="104" fill="#08111f"/>
+
+  <!-- Open book (prominent, bottom third) -->
+  <path d="M80 360 Q150 330 256 350 Q362 330 432 360 L432 430 Q362 400 256 420 Q150 400 80 430 Z"
+        fill="none" stroke="#5fed83" stroke-width="18" stroke-linejoin="round" stroke-linecap="round"/>
+  <!-- Spine -->
+  <line x1="256" y1="350" x2="256" y2="420" stroke="#5fed83" stroke-width="14" stroke-linecap="round"/>
+  <!-- Page lines -->
+  <line x1="110" y1="380" x2="220" y2="370" stroke="#5fed83" stroke-width="4" stroke-linecap="round" opacity="0.4"/>
+  <line x1="110" y1="395" x2="220" y2="385" stroke="#5fed83" stroke-width="4" stroke-linecap="round" opacity="0.3"/>
+  <line x1="292" y1="370" x2="402" y2="380" stroke="#5fed83" stroke-width="4" stroke-linecap="round" opacity="0.4"/>
+  <line x1="292" y1="385" x2="402" y2="395" stroke="#5fed83" stroke-width="4" stroke-linecap="round" opacity="0.3"/>
+
+  <!-- Rising network from the spine -->
+  <!-- Central stem -->
+  <path d="M256 350 L256 200" stroke="#54c6ff" stroke-width="12" stroke-linecap="round"/>
+
+  <!-- Flame element at top of stem (echoing fhir4ds) -->
+  <path d="M256 200 Q235 165 242 130 Q248 105 256 80 Q264 105 270 130 Q277 165 256 200Z"
+        fill="#5fed83"/>
+
+  <!-- Network branches from mid-stem -->
+  <path d="M256 280 Q200 260 165 230" fill="none" stroke="#54c6ff" stroke-width="8" stroke-linecap="round"/>
+  <path d="M256 280 Q312 260 347 230" fill="none" stroke="#54c6ff" stroke-width="8" stroke-linecap="round"/>
+  <path d="M256 240 Q220 225 195 205" fill="none" stroke="#54c6ff" stroke-width="6" stroke-linecap="round" opacity="0.7"/>
+  <path d="M256 240 Q292 225 317 205" fill="none" stroke="#54c6ff" stroke-width="6" stroke-linecap="round" opacity="0.7"/>
+
+  <!-- Network nodes -->
+  <circle cx="160" cy="224" r="10" fill="#f4f9ff" opacity="0.8"/>
+  <circle cx="352" cy="224" r="10" fill="#f4f9ff" opacity="0.8"/>
+  <circle cx="190" cy="200" r="7" fill="#54c6ff" opacity="0.6"/>
+  <circle cx="322" cy="200" r="7" fill="#54c6ff" opacity="0.6"/>
+
+  <!-- Crosswalk arcs -->
+  <path d="M170 215 Q256 155 342 215" fill="none" stroke="#54c6ff" stroke-width="4" stroke-linecap="round" opacity="0.25"/>
+</svg>

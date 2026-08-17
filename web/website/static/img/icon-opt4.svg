@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" role="img" aria-label="medterm4ds option 4: code brackets with cross">
+  <rect width="128" height="128" rx="26" fill="#08111f"/>
+  <!-- Code brackets with a subtle medical cross inside -->
+  <path d="M44 36 L20 64 L44 92" fill="none" stroke="#8ee6c1" stroke-width="6" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M84 36 L108 64 L84 92" fill="none" stroke="#8ee6c1" stroke-width="6" stroke-linecap="round" stroke-linejoin="round"/>
+  <!-- Medical cross (subtle) -->
+  <rect x="58" y="52" width="12" height="24" rx="3" fill="#54c6ff"/>
+  <rect x="52" y="58" width="24" height="12" rx="3" fill="#54c6ff"/>
+  <!-- Code dots -->
+  <circle cx="64" cy="98" r="2.5" fill="#f4f9ff" opacity="0.5"/>
+  <circle cx="72" cy="98" r="2.5" fill="#f4f9ff" opacity="0.3"/>
+  <circle cx="80" cy="98" r="2.5" fill="#f4f9ff" opacity="0.15"/>
+</svg>

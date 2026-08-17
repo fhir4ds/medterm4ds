@@ -96,7 +96,7 @@ python3 scripts/download_umls_release.py \
   --output-dir data/umls \
   --extract \
   --build \
-  --db-role medterm4ds_2025ab_fixture \
-  --output-db data/umls_2025ab.duckdb \
+  --db-role medterm4ds_2026aa_fixture \
+  --output-db data/umls_2026aa.duckdb \
   --replace
 ```

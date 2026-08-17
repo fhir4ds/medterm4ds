@@ -105,4 +105,4 @@ Known 0.0.1 parity decisions:
 - SNOMED original display uses the preferred term and keeps the fully specified name as `technical_name`.
 - Legacy RxNav approximate drug spelling/class workflows are represented by UMLS-backed compatibility wrappers; richer RxClass/RxNav behavior is deferred.
 
-UMLS data release details live in [Terminology > UMLS Release Info](../terminology/umls-release-info.md).
+UMLS data release details live in [UMLS Release Info](./umls-release-info.md).

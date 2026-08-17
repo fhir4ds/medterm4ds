@@ -34,6 +34,21 @@ const config: Config = {
 
   themes: ['@docusaurus/theme-mermaid'],
 
+  plugins: [
+    [
+      '@docusaurus/plugin-client-redirects',
+      {
+        redirects: [
+          {from: '/docs/terminology/supported-sources', to: '/docs/getting-started/supported-sources'},
+          {from: '/docs/terminology/umls-release-info', to: '/docs/getting-started/umls-release-info'},
+          {from: '/docs/terminology/source-inventory', to: '/docs/getting-started/source-inventory'},
+          {from: '/docs/terminology/ndc-rxnorm', to: '/docs/capabilities/code-resolution'},
+          {from: '/docs/terminology/obsolete-codes', to: '/docs/capabilities/code-resolution'},
+        ],
+      },
+    ],
+  ],
+
   presets: [
     [
       'classic',
@@ -75,19 +90,18 @@ const config: Config = {
       },
     },
     navbar: {
-      title: 'Medical Terminology for Data Science',
+      title: 'MEDTERM4DS',
       logo: {
         alt: 'medterm4ds logo',
-        src: 'img/icon.svg',
-        srcDark: 'img/icon.svg',
+        src: 'img/icon-dark.svg',
+        srcDark: 'img/icon-dark.svg',
       },
       items: [
         {to: '/docs/getting-started/quickstart', label: 'Getting Started', position: 'left'},
         {to: '/docs/capabilities/code-lookup', label: 'Capabilities', position: 'left'},
         {to: '/docs/interfaces/python', label: 'Interfaces', position: 'left'},
-        {to: '/docs/terminology/supported-sources', label: 'Terminology', position: 'left'},
-        {to: '/docs/examples/notebooks/overview', label: 'Examples', position: 'left'},
         {to: '/docs/api-reference/medterm4ds', label: 'API', position: 'left'},
+        {to: '/docs/examples/notebooks/overview', label: 'Examples', position: 'left'},
         {
           href: 'https://github.com/medterm4ds/medterm4ds',
           position: 'right',
@@ -109,11 +123,11 @@ const config: Config = {
           ],
         },
         {
-          title: 'Terminology',
+          title: 'Data Sources',
           items: [
-            {label: 'Supported Sources', to: '/docs/terminology/supported-sources'},
-            {label: 'UMLS Release Info', to: '/docs/terminology/umls-release-info'},
-            {label: 'NDC to RxNorm', to: '/docs/terminology/ndc-rxnorm'},
+            {label: 'Supported Sources', to: '/docs/getting-started/supported-sources'},
+            {label: 'UMLS Release Info', to: '/docs/getting-started/umls-release-info'},
+            {label: 'Source Inventory', to: '/docs/getting-started/source-inventory'},
           ],
         },
         {

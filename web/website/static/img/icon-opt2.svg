@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" role="img" aria-label="medterm4ds option 2: crosswalk bridge">
+  <rect width="128" height="128" rx="26" fill="#08111f"/>
+  <!-- Crosswalk: two code systems connected by a bridge -->
+  <rect x="16" y="36" width="36" height="36" rx="8" fill="none" stroke="#8ee6c1" stroke-width="3"/>
+  <text x="34" y="60" text-anchor="middle" fill="#8ee6c1" font-family="monospace" font-size="14" font-weight="bold">S</text>
+  <rect x="76" y="36" width="36" height="36" rx="8" fill="none" stroke="#54c6ff" stroke-width="3"/>
+  <text x="94" y="60" text-anchor="middle" fill="#54c6ff" font-family="monospace" font-size="14" font-weight="bold">I</text>
+  <!-- Bridge arrows -->
+  <line x1="56" y1="48" x2="72" y2="48" stroke="#f4f9ff" stroke-width="2.5" stroke-linecap="round"/>
+  <polygon points="72,44 78,48 72,52" fill="#f4f9ff"/>
+  <line x1="72" y1="60" x2="56" y2="60" stroke="#f4f9ff" stroke-width="2.5" stroke-linecap="round" opacity="0.5"/>
+  <polygon points="56,56 50,60 56,64" fill="#f4f9ff" opacity="0.5"/>
+  <!-- Base: code terminal -->
+  <line x1="20" y1="92" x2="108" y2="92" stroke="#f4f9ff" stroke-width="2" opacity="0.3" stroke-linecap="round"/>
+  <line x1="20" y1="100" x2="88" y2="100" stroke="#f4f9ff" stroke-width="2" opacity="0.2" stroke-linecap="round"/>
+  <rect x="20" y="84" width="4" height="20" fill="#8ee6c1" rx="2"/>
+</svg>
