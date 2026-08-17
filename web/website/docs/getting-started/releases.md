@@ -25,7 +25,7 @@ New capabilities:
 
 Extraction pipeline:
 
-- Dependency pin fix: gliner ≥0.2.28 + transformers <5 (extraction was silently dead on lock installs due to a library-level ModernBERT break)
+- Dependency pin fix: gliner 0.2.28+ and transformers capped below 5.0 (extraction was silently dead on lock installs due to a library-level ModernBERT break)
 - Three-signal lab-vs-medication disambiguation: head-noun analysis, unit-type detection, and ConText cue matching — 100% precision on head noun and unit signals
 - Label-constrained canonical search with fallback (fixes diseases-resolving-to-lab-anchors and drugs-resolving-to-TDM-levels)
 - Population blocklist (adults, women, etc. no longer extracted as clinical entities)
