@@ -106,6 +106,19 @@ derived tables on existing databases** — see Upgrade notes.
 
 Of ~340 fixes in this release; the most user-visible:
 
+- **Extraction lab-vs-med disambiguation now arbitrates with three signals
+  in priority order.** Two higher-precision signals run before the ConText
+  tie-breaker: head-noun analysis of the noun phrase containing the span
+  (en_core_web_sm dependency parse — "vancomycin level was 8" → lab,
+  "vancomycin dose adjusted" → medication) and unit-type detection on the
+  number following the span (concentration "5.2 mEq/L" → lab, dose
+  "40 mEq" → medication). ConText MEASUREMENT/ADMINISTRATION cues remain
+  the Signal 3 fallback; no signal fired keeps the GLiNER label mapping.
+  Evaluation on the 212-item v2 corpus (docs/.ai_loop/qc_comp/
+  three_signal_results.md): signals 1-2 fired 62/62 correct, overall
+  in-scope accuracy 78.3% → 84.4%, TDM group E 65% → 94%. Requires the new
+  `en-core-web-sm` dependency in the `extraction` extra (absent model
+  degrades gracefully to ConText-only arbitration).
 - **Extraction lab-vs-med disambiguation now uses medspaCy ConText as a
   tie-breaker.** The old analyte heuristic (a 24-name hand list plus an
   administration-verb regex and a TDM "level" adjacency rule) is replaced

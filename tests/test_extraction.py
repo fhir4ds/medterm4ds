@@ -448,6 +448,111 @@ class TestConTextArbitration:
         ) == ["lab"]
 
 
+@pytest.fixture(scope="module")
+def three_signal():
+    """Parser (en_core_web_sm) + medspaCy ConText pipeline with the
+    production arbiter rules — mirrors NlpPipeline.process for the
+    three-signal lab-vs-med disambiguation, minus GLiNER."""
+    spacy = pytest.importorskip("spacy")
+    medspacy = pytest.importorskip("medspacy")
+    from medterm4ds.services.extraction import _register_context_arbiter
+    nlp = medspacy.load(medspacy_disable=["medspacy_target_matcher"])
+    assert _register_context_arbiter(nlp)
+    parser = spacy.load("en_core_web_sm", disable=["ner"])
+    return parser, nlp
+
+
+def _three_signal_decide(three_signal, text, target):
+    """Run one (text, target) through the full three-signal arbiter —
+    mirrors NlpPipeline.process: parser doc for Signals 1-2, ConText doc
+    for Signal 3."""
+    from medterm4ds.services.extraction import _arbitrate_lab_vs_med
+    parser, nlp = three_signal
+    doc = nlp(text)
+    parser_doc = parser(text)
+    t0 = text.find(target)
+    assert t0 >= 0, f"target {target!r} not found in {text!r}"
+    sp = doc.char_span(t0, t0 + len(target), label="therapeutic agent",
+                       alignment_mode="expand")
+    assert sp is not None, f"span {target!r} failed to align"
+    doc.set_ents([sp])
+    nlp.get_pipe("medspacy_context")(doc)
+    parser_span = parser_doc.char_span(t0, t0 + len(target),
+                                       alignment_mode="expand")
+    return _arbitrate_lab_vs_med(parser_span, parser_doc, doc.ents[0])
+
+
+class TestThreeSignalArbitration:
+    """Head noun (Signal 1) and unit type (Signal 2) pre-empt the ConText
+    arbiter (Signal 3). Eval: docs/.ai_loop/qc_comp/three_signal_results.md
+    (signals 1-2 100% precision, overall 78.3% -> 84.4%, group E 65% -> 94%)."""
+
+    def test_signal1_lab_head_noun(self, three_signal):
+        assert _three_signal_decide(three_signal, "vancomycin level was 8", "vancomycin") == ["lab"]
+
+    def test_signal1_med_head_noun(self, three_signal):
+        assert _three_signal_decide(three_signal, "vancomycin dose adjusted", "vancomycin") == ["medication"]
+
+    def test_signal1_head_noun_with_modifiers(self, three_signal):
+        assert _three_signal_decide(
+            three_signal, "the slightly elevated vancomycin level", "vancomycin",
+        ) == ["lab"]
+
+    def test_signal1_mistagged_adjective_root(self, three_signal):
+        """en_core_web_sm roots 'phenytoin level subtherapeutic' at the
+        adjective 'subtherapeutic' — the rightmost-noun fallback must
+        still find 'level'."""
+        assert _three_signal_decide(
+            three_signal, "phenytoin level subtherapeutic", "phenytoin",
+        ) == ["lab"]
+
+    def test_signal2_concentration_unit_is_lab(self, three_signal):
+        assert _three_signal_decide(three_signal, "potassium 5.2 mEq/L", "potassium") == ["lab"]
+
+    def test_signal2_dose_unit_is_medication(self, three_signal):
+        assert _three_signal_decide(three_signal, "potassium 40 mEq", "potassium") == ["medication"]
+
+    def test_signal2_slashed_concentration_unit_is_lab(self, three_signal):
+        assert _three_signal_decide(three_signal, "calcium 8.9 mg/dL", "calcium") == ["lab"]
+
+    def test_signal2_dose_unit_after_brand_is_medication(self, three_signal):
+        assert _three_signal_decide(three_signal, "calcium carbonate 500 mg", "calcium carbonate") == ["medication"]
+
+    def test_signal2_numerator_token_does_not_flip_slashed_unit(self, three_signal):
+        """'mEq' alone is a dose unit, but in '5.2 mEq/L' it is the
+        numerator of a concentration — the combined-token check must run
+        before the single-token dose match."""
+        assert _three_signal_decide(three_signal, "potassium 5.2 mEq/L", "potassium") == ["lab"]
+
+    def test_signal3_context_fallback_fires_lab(self, three_signal):
+        """No head noun, no unit after the span — the MEASUREMENT cue
+        ('low') decides via the existing ConText arbiter."""
+        assert _three_signal_decide(three_signal, "sodium remained low", "sodium") == ["lab"]
+
+    def test_signal3_context_fallback_administration_cue(self, three_signal):
+        """ConText-only decision ('increased' ADMINISTRATION cue; the
+        analyte-rising gold is a known Signal 3 misfire, kept as-is —
+        ConText implementation is unchanged by the three-signal wiring)."""
+        assert _three_signal_decide(three_signal, "creatinine increased to 1.8", "creatinine") == ["medication"]
+
+    def test_signal1_preempts_signal2(self, three_signal):
+        """'vancomycin level 500 mg': Signal 1 ('level' → lab) wins over
+        the Signal 2 dose unit ('mg' → medication)."""
+        assert _three_signal_decide(three_signal, "vancomycin level 500 mg", "vancomycin") == ["lab"]
+
+    def test_signal2_preempts_signal3(self, three_signal):
+        """'potassium 5.2 mEq/L held': Signal 2 (concentration → lab)
+        wins over the Signal 3 ADMINISTRATION cue ('held')."""
+        assert _three_signal_decide(three_signal, "potassium 5.2 mEq/L held", "potassium") == ["lab"]
+
+    def test_no_signal_falls_through_to_label(self, three_signal):
+        """Sentence-bounded cue scope: the 'levels' of another sentence
+        must not reach the drug span; no signal fires → None."""
+        assert _three_signal_decide(
+            three_signal, "Continue metformin. Glucose levels stable.", "metformin",
+        ) is None
+
+
 class TestConTextOverrideResolution:
     """resolve_spans wiring: the ConText arbitration captured on
     FilteredSpan.context_categories takes precedence over the GLiNER label

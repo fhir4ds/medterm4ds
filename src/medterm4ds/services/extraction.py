@@ -222,6 +222,138 @@ def _context_arbitrate_categories(ent) -> list[str] | None:
     return None
 
 
+# --- Three-signal lab-vs-med disambiguation -------------------------------
+# Signals 1 (head noun) and 2 (unit type) run BEFORE the ConText arbiter
+# (Signal 3). Evaluation on the 212-item v2 corpus (docs/.ai_loop/qc_comp/
+# three_signal_results.md): signals 1-2 fired 62/62 correct (100% each);
+# wiring them ahead of ConText raises overall in-scope accuracy 78.3% ->
+# 84.4% (TDM group E: 65% -> 94%). The parser is en_core_web_sm (medspaCy
+# ships no dependency parser) — loaded lazily by NlpPipeline, absent here.
+
+# Signal 1 lexicons: head noun of the noun phrase containing the span.
+_LAB_HEAD_NOUNS = frozenset({
+    "level", "trough", "peak", "concentration", "result", "value",
+    "range", "clearance", "panel", "ratio", "index", "count",
+    "fraction", "rate", "score", "measurement", "reading",
+})
+
+_MED_HEAD_NOUNS = frozenset({
+    "dose", "dosage", "regimen", "replacement", "supplementation",
+    "infusion", "injection", "tablet", "capsule", "cream",
+    "patch", "solution", "suspension", "syrup", "elixir",
+})
+
+# Signal 2 regexes: number+unit immediately after the span.
+# Concentration units (mass or amount per volume) → lab result values.
+# The separator accepts "/" and the word "per" (with optional spaces —
+# the parser tokenizer splits "mg/dL" into mg / dL and "mg per dL" into
+# three tokens; combined matching is done by the caller).
+_CONCENTRATION_UNIT_RE = re.compile(
+    r'^(?:\d+\.?\d*\s*)?'
+    r'(mg|mcg|µg|ug|g|mmol|µmol|umol|meq|iu|u|ng)'
+    r'\s*(?:/|\s*per\s*|\s*per)'
+    r'\s*(dl|l|ml)\s*$',
+    re.IGNORECASE,
+)
+# Bare dose units (no denominator) → administered amounts.
+_DOSE_UNIT_RE = re.compile(
+    r'^(?:\d+\.?\d*\s*)?'
+    r'(?:mg|mcg|g|meq|units?|tablets?|tabs?|capsules?|caps?|'
+    r'pills?|drops?|puffs?|ml|cc)\s*$',
+    re.IGNORECASE,
+)
+
+
+def _head_noun_signal(span, parser_doc) -> list[str] | None:
+    """Signal 1: the head noun of the noun chunk containing the span.
+
+    - chunk root lemma in a lexicon → that side decides
+    - root uninformative (e.g. "phenytoin level subtherapeutic" roots at
+      the mistagged adjective "subtherapeutic") → fall back to the
+      rightmost noun/propn token in the chunk whose lemma is in a lexicon
+    - span in no chunk → fall back to the syntactic head of the span's
+      last token (fixes e.g. "metformin ... held" style attachments where
+      the chunker fails); only noun/propn heads decide (a verb head like
+      the misparsed "trough" in "Gentamicin trough 2.1" stays undecided)
+    """
+    for chunk in parser_doc.noun_chunks:
+        if chunk.start <= span.start and span.end <= chunk.end:
+            root = chunk.root
+            lemma = root.lemma_.lower()
+            if lemma in _LAB_HEAD_NOUNS:
+                return ["lab"]
+            if lemma in _MED_HEAD_NOUNS:
+                return ["medication"]
+            # Adjective/mistagged root: scan the chunk right-to-left for a
+            # real noun carrying a lexicon lemma.
+            for token in reversed(chunk):
+                lemma = token.lemma_.lower()
+                if token.pos_ in ("NOUN", "PROPN"):
+                    if lemma in _LAB_HEAD_NOUNS:
+                        return ["lab"]
+                    if lemma in _MED_HEAD_NOUNS:
+                        return ["medication"]
+                    return None
+            return None
+    # No containing chunk: syntactic head of the span's last token.
+    head = span[-1].head
+    if head not in span and head.pos_ in ("NOUN", "PROPN"):
+        lemma = head.lemma_.lower()
+        if lemma in _LAB_HEAD_NOUNS:
+            return ["lab"]
+        if lemma in _MED_HEAD_NOUNS:
+            return ["medication"]
+    return None
+
+
+def _unit_type_signal(span, parser_doc) -> list[str] | None:
+    """Signal 2: a number+unit immediately after the span.
+
+    Concentration units (mg/dL, mmol/L, ...) → lab; bare dose units
+    (mg, mEq, tablets, ...) → medication. Checks the 3-token window
+    ("mg" "/" "dL" → "mg/dL") BEFORE the single-token dose match so
+    "potassium 5.2 mEq/L" is not flipped to medication by its "mEq"
+    numerator token.
+    """
+    for i in range(span.end, min(span.end + 4, len(parser_doc))):
+        token = parser_doc[i]
+        text = token.text.lower()
+        # Combined tokens first: "mg" "/" "dL" or "mg" "per" "dL".
+        if i + 2 < len(parser_doc):
+            combined = (parser_doc[i].text + parser_doc[i + 1].text
+                        + parser_doc[i + 2].text).lower().replace(" ", "")
+            if _CONCENTRATION_UNIT_RE.match(combined):
+                return ["lab"]
+        if _CONCENTRATION_UNIT_RE.match(text):
+            return ["lab"]
+        if _DOSE_UNIT_RE.match(text):
+            return ["medication"]
+        if token.like_num or token.text in {".", ",", "/"}:
+            continue
+        break  # first non-numeric, non-unit token → stop
+    return None
+
+
+def _arbitrate_lab_vs_med(span, parser_doc, context_ent) -> list[str] | None:
+    """Three-signal lab-vs-med disambiguation, in priority order.
+
+    Signal 1: head noun of the noun phrase (100% precision in eval)
+    Signal 2: unit type on the number after the span (100% precision)
+    Signal 3: ConText MEASUREMENT/ADMINISTRATION cues (existing arbiter)
+
+    No signal fired → None (GLiNER's label mapping stands). Higher-priority
+    signals win by construction — later signals are only consulted on None.
+    """
+    if parser_doc is not None and span is not None:
+        result = _head_noun_signal(span, parser_doc)
+        if result is not None:
+            return result
+        result = _unit_type_signal(span, parser_doc)
+        if result is not None:
+            return result
+    return _context_arbitrate_categories(context_ent)
+
+
 def _span_search_categories(span: "FilteredSpan") -> str | list[str] | None:
     """Effective canonical search categories for a span (constrain step).
 
@@ -585,6 +717,12 @@ class NlpPipeline:
         self._threshold = threshold
         self._nlp = None
         self._ner_model = None
+        # en_core_web_sm for dependency parsing (Signals 1-2 of the
+        # three-signal lab-vs-med arbiter). Loaded lazily alongside the
+        # rest of the pipeline; None when the model is not installed
+        # (ConText-only arbitration still works).
+        self._parser_nlp = None
+        self._parser_loaded = False
 
     def _ensure_loaded(self):
         if self._nlp is not None:
@@ -621,7 +759,33 @@ class NlpPipeline:
         self._nlp = medspacy.load(medspacy_disable=["medspacy_target_matcher"])
         _register_context_arbiter(self._nlp)
 
+        # Parser for the three-signal arbiter (Signals 1-2: head noun,
+        # unit type). Separate en_core_web_sm model, not a component of
+        # the medspaCy pipeline: adding a parser pipe to it would require
+        # re-running the full pipeline per doc, and the medspaCy doc is
+        # tokenized by PyRuSH-resolved components we don't want to
+        # disturb. Both run on the same text; alignment is by char_span.
+        self._ensure_parser_loaded()
+
         logger.info("NLP pipeline loaded (GLiNER %s + medspaCy ConText)", self._ner_model_name)
+
+    def _ensure_parser_loaded(self):
+        """Lazily load en_core_web_sm (disable NER — we only need the
+        tagger+parser for noun chunks and dependency heads). Missing
+        model degrades to ConText-only arbitration with a warning."""
+        if self._parser_loaded:
+            return
+        self._parser_loaded = True
+        try:
+            import spacy
+            self._parser_nlp = spacy.load("en_core_web_sm", disable=["ner"])
+        except (ImportError, OSError) as exc:
+            self._parser_nlp = None
+            logger.warning(
+                "en_core_web_sm unavailable (%s) — three-signal arbiter "
+                "Signals 1-2 disabled, falling back to ConText-only. "
+                "Install with: pip install en-core-web-sm", exc,
+            )
 
     def process(self, text: str, labels: list[str] | None = None) -> list[FilteredSpan]:
         """Process text and return filtered entity spans using sentence-level NER attention.
@@ -636,6 +800,11 @@ class NlpPipeline:
 
         # Step 1: Run text through medspaCy sentencizer (PyRuSH)
         doc = self._nlp(text)
+
+        # Parser pass (same text, separate model) for the three-signal
+        # arbiter's Signals 1-2 (head noun, unit type). Aligned to spans
+        # by character offsets below.
+        parser_doc = self._parser_nlp(text) if self._parser_nlp is not None else None
 
         # Step 2: Execute GLiNER zero-shot NER per sentence/clause
         raw_entities = []
@@ -714,7 +883,12 @@ class NlpPipeline:
             for spacy_ent in doc.ents:
                 if (spacy_ent.start_char <= start < spacy_ent.end_char or
                         start <= spacy_ent.start_char < end):
-                    context_categories = _context_arbitrate_categories(spacy_ent)
+                    context_categories = _arbitrate_lab_vs_med(
+                        parser_doc.char_span(start, end, alignment_mode="expand")
+                        if parser_doc is not None else None,
+                        parser_doc,
+                        spacy_ent,
+                    )
                     negated = getattr(spacy_ent._, "is_negated", False)
                     uncertain = getattr(spacy_ent._, "is_uncertain", False)
                     historical = getattr(spacy_ent._, "is_historical", False)
