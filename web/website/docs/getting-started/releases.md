@@ -4,6 +4,71 @@ title: Releases
 
 This page tracks Medical Terminology for Data Science package releases.
 
+## 0.0.2
+
+Quality-hardening release: 613 bugs found and fixed across a 22-domain
+adversarial QC sweep, extraction pipeline overhaul, FHIR conformance
+improvements, and new capabilities.
+
+Compatibility:
+
+- Python 3.10 and newer
+- UMLS DuckDB builds from flat RRF, compressed RRF, or `.nlm` archives
+- **Requires prepared-schema 0.9 rebuild** (`medterm4ds data prepare-derived --db <path>`) — see Upgrade notes below
+
+New capabilities:
+
+- `include_retired` parameter on hierarchy walks (Python, CLI, MCP, discover)
+- FHIR `$expand activeOnly` parameter (GET, POST, batch)
+- `--result-types` filter on CLI and MCP `search` (service-side, no truncation)
+- `$extract` POST now accepts `includeNegated`/`includeUncertain`/`includeHistorical`/`includeFamily`
+
+Extraction pipeline:
+
+- Dependency pin fix: gliner ≥0.2.28 + transformers <5 (extraction was silently dead on lock installs due to a library-level ModernBERT break)
+- Three-signal lab-vs-medication disambiguation: head-noun analysis, unit-type detection, and ConText cue matching — 100% precision on head noun and unit signals
+- Label-constrained canonical search with fallback (fixes diseases-resolving-to-lab-anchors and drugs-resolving-to-TDM-levels)
+- Population blocklist (adults, women, etc. no longer extracted as clinical entities)
+- GLiNER model revision pinned to prevent HF weight drift
+
+FHIR server:
+
+- `$closure` migrated from path-enumerating CTE to bounded BFS (32GB OOM → bounded)
+- `$expand` offset paging, exclude-with-filter, spec-canonical `?fhir_vs=isa/<code>` URLs, deterministic ordering
+- XML serializer consolidation (control-char sanitization, url-attribute convention, resourceType rendering)
+- Batch dispatch parity (method guards, ValueSet bodies, error outcomes, transaction-response type)
+- Single db_executor (fixes dual-executor race that produced silent "Code not found" under load)
+- Content negotiation conformance (+decode, 405/406, Accept exact-match)
+
+Data pipeline:
+
+- Prepared schema 0.8 → 0.9 (detects stale tables, enables RXNORM/ATC/MSH hierarchy, LOINC multiaxial, CPT preferred-term)
+- Atomic builds (validate-before-replace, temp+rename, no junk DBs on failures)
+- Connection-string path rejection (`?mode=ro` etc.)
+- Catalog-qualified relocatable views (DB copies work)
+- Verify verdict + golden-count drift detection
+
+Cross-surface consistency:
+
+- Strict input validation everywhere (empty strings, URI-form sources, unknown-source errors)
+- CLI error envelopes (no raw tracebacks)
+- `cache_indexes` default harmonized to `False` across all surfaces
+- Engine env-var contract (`MEDTERM4DS_MEMORY_PROFILE` etc.) honored by all 5 surfaces
+
+Upgrade notes:
+
+- Run `medterm4ds data prepare-derived --db <path>` to rebuild the prepared schema from 0.8 to 0.9. Until rebuilt, hierarchy is partial for RXNORM/ATC/LOINC, CPT displays use ETCF instead of PT, and patient-friendly uses the slower legacy resolver.
+- Install the spaCy parser model separately (not on PyPI): `uv pip install "en-core-web-sm>=3.7,<4" --find-links https://github.com/explosion/spacy-models/releases`
+- `/optimize` envelope key changed from `result` to `results` (legacy key accepted as fallback)
+- `connect()` now rejects nonexistent DB paths instead of silently creating empty files
+- Remote engine default timeout raised from 30s to 300s
+
+Known issues:
+
+- Closure-accelerated ancestor walks at depth ≤5 may return empty for RXNORM/ATC/MSH on stale closure tables (workaround: `max_depth >= 6`; fixed by the next prepared-schema rebuild)
+- 4 pre-existing FHIR conformance test failures (environmental `fhir.resources`/`annotated_types` library drift, not product bugs)
+- Deferred executor fairness: one slow query can delay queued FHIR operations (mitigated by health-check bypass and bounded descendants)
+
 ## 0.0.1
 
 Initial release candidate for the refactored medterm4ds package.
