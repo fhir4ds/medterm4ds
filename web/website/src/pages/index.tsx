@@ -4,13 +4,6 @@ import Layout from '@theme/Layout';
 import Heading from '@theme/Heading';
 import styles from './index.module.css';
 
-const stats = [
-  {value: '9', label: 'Code systems'},
-  {value: '15.5M', label: 'Codes indexed'},
-  {value: '4.4M', label: 'Hierarchy associations'},
-  {value: '719', label: 'Tests passing'},
-];
-
 const snippets = [
   {
     title: 'Lookup',
@@ -241,20 +234,6 @@ export default function Home() {
         </div>
       </header>
 
-      {/* Stats */}
-      <section className={styles.stats}>
-        <div className="container">
-          <div className={styles.statsRow}>
-            {stats.map((s) => (
-              <div key={s.label} className={styles.stat}>
-                <span className={styles.statValue}>{s.value}</span>
-                <span className={styles.statLabel}>{s.label}</span>
-              </div>
-            ))}
-          </div>
-        </div>
-      </section>
-
       {/* Interactive snippets */}
       <InteractiveSnippet />
 
@@ -266,24 +245,6 @@ export default function Home() {
             {features.map((f) => (
               <FeatureCard key={f.title} {...f} />
             ))}
-          </div>
-        </div>
-      </section>
-
-      {/* Architecture pipeline */}
-      <section className={styles.section}>
-        <div className="container">
-          <Heading as="h2">How it works</Heading>
-          <p className={styles.sectionLead}>
-            UMLS Metathesaurus data is loaded into a DuckDB engine.
-            Service functions provide the API. Four surfaces wrap the same services.
-          </p>
-          <div className={styles.pipeline}>
-            <div className={styles.step}>UMLS Data</div>
-            <div className={styles.step}>DuckDB Engine</div>
-            <div className={styles.step}>Services</div>
-            <div className={styles.step}>Interfaces</div>
-            <div className={styles.step}>Your App</div>
           </div>
         </div>
       </section>

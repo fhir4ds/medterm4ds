@@ -86,7 +86,7 @@ const config: Config = {
         {to: '/docs/capabilities/code-lookup', label: 'Capabilities', position: 'left'},
         {to: '/docs/interfaces/python', label: 'Interfaces', position: 'left'},
         {to: '/docs/terminology/supported-sources', label: 'Terminology', position: 'left'},
-        {to: '/docs/examples/recipes/patient-friendly-names', label: 'Recipes', position: 'left'},
+        {to: '/docs/examples/notebooks/overview', label: 'Examples', position: 'left'},
         {to: '/docs/api-reference/medterm4ds', label: 'API', position: 'left'},
         {
           href: 'https://github.com/medterm4ds/medterm4ds',
