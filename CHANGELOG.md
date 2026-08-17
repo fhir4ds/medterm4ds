@@ -106,13 +106,22 @@ derived tables on existing databases** — see Upgrade notes.
 
 Of ~340 fixes in this release; the most user-visible:
 
+- **Extraction actually runs on clean installs (dependency pin).** The
+  previous resolution shipped gliner 0.2.27 with transformers 5.x, which
+  silently killed `find_terms` on every lock-based install — callers got
+  empty results with no error. Pins are now `gliner>=0.2.28` +
+  `transformers>=4.30.0,<5`, and uv.lock resolves gliner 0.2.28.
+  [287f00e, CR-049]
 - **Extraction lab-vs-med disambiguation now arbitrates with three signals
   in priority order.** Two higher-precision signals run before the ConText
   tie-breaker: head-noun analysis of the noun phrase containing the span
   (en_core_web_sm dependency parse — "vancomycin level was 8" → lab,
   "vancomycin dose adjusted" → medication) and unit-type detection on the
   number following the span (concentration "5.2 mEq/L" → lab, dose
-  "40 mEq" → medication). ConText MEASUREMENT/ADMINISTRATION cues remain
+  "40 mEq" → medication; a bare copula+number pattern — "potassium is
+  5.2", no unit, no other cue — is also treated as a MEASUREMENT cue so
+  bare lab values arbitrate to lab [cf8920d]). ConText
+  MEASUREMENT/ADMINISTRATION cues remain
   the Signal 3 fallback; no signal fired keeps the GLiNER label mapping.
   Evaluation on the 212-item v2 corpus (docs/.ai_loop/qc_comp/
   three_signal_results.md): signals 1-2 fired 62/62 correct, overall
@@ -152,8 +161,11 @@ Of ~340 fixes in this release; the most user-visible:
 - **`resolve_mode` actually works now.** `historical` and `resolve_current`
   produced byte-identical output; CLI `--resolve-mode` was a silent no-op on
   production databases; an NDC-lookup regression in the default mode; SUPPRESS
-  'E' (editorial) no longer conflated with 'O' (obsolete). [QC-017, QC-398,
-  QC-401, QC-406, QC-119, QC-120]
+  'E' (editorial) no longer conflated with 'O' (obsolete); replacement
+  candidates are deduped to one row per distinct target (resolution /
+  `code_replacements` previously emitted one row per replacement EDGE, so a
+  code with two historical names mapping to the same target yielded
+  duplicates). [QC-017, QC-398, QC-401, QC-406, QC-119, QC-120, a5dc3a9]
 - **ConceptMap `equivalence` mislabeling.** `snomed_fallback`, TTY-traversal
   `group` matches, and 6+ other depth>0 match types were emitted as
   `equivalent`; in a production-scale sample 3,970/3,970 RxNorm rows at
@@ -291,6 +303,19 @@ change breaks v0.0.1 engines against a v0.0.2 server); pass
 `cache_indexes=True` to `mt.connect()` if you relied on temp indexes; fix any
 code that passed URI-form sources or empty strings expecting success-shaped
 nulls.
+
+uv.lock was regenerated (gliner 0.2.28, transformers 4.57.6) and excludes
+`en-core-web-sm` — the spaCy model is not on PyPI and cannot be locked
+(`pyproject.toml` documents the separate install). `medterm4ds[extraction]`
+users who want the Signal-1 head-noun arbiter must also run:
+
+```bash
+uv pip install "en-core-web-sm>=3.7,<4" \
+  --find-links https://github.com/explosion/spacy-models/releases
+```
+
+(the pipeline degrades gracefully to ConText-only arbitration without it;
+[3b5323f, CR-049/050]).
 
 ## [0.0.1] - 2026-07-14
 

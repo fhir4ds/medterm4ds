@@ -1,5 +1,5 @@
 ---
-title: Local DuckDB Engine
+title: Engine Configuration
 ---
 
 The local DuckDB engine is the default for workstation, notebook, and bulk terminology workflows.

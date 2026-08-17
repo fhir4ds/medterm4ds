@@ -44,7 +44,7 @@
   margin: 1.5rem auto 1rem;
   max-width: 900px;
   color: #f4f9ff;
-  font-size: clamp(2.8rem, 7vw, 5.4rem);
+  font-size: clamp(2.4rem, 5.5vw, 4.2rem);
   font-weight: 900;
   line-height: 0.98;
 }

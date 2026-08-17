@@ -26,7 +26,7 @@ mt.connect(
     read_only=True,
     prepare_cache=False,
     cache_sources=None,
-    cache_indexes=True,
+    cache_indexes=False,
 ) -> Terminology
 ```
 

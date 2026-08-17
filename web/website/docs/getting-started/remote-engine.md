@@ -1,5 +1,5 @@
 ---
-title: Remote API Engine
+title: Remote Engine
 ---
 
 The remote API engine lets Python clients call the same terminology services through a server.

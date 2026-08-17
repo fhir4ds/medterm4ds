@@ -169,6 +169,15 @@ docker run -p 7860:7860 \
 
 Results include a match-grade (`certain` / `probable` / `possible`), modeled after FHIR Patient `$match`.
 
+### `$expand` `activeOnly`
+
+`$expand` honors `activeOnly` (GET, POST Parameters, and `$batch`). When the
+parameter is **omitted**, the server narrows to active-only concepts — a
+documented divergence from the R4 default (`false`) that matches the
+engine-wide contract; pass `activeOnly=false` to include retired concepts.
+Filter-based (text-search) expansions reject `activeOnly=false` with 400
+because the search index is active-only.
+
 ### Conformance testing
 
 ```bash
@@ -280,7 +289,10 @@ result = terms.optimize("ICD10CM", ["E11.40", "E11.41"])
 
 The hierarchy vertical slice is `get_code_relations(...)`. It returns flat
 `CodeRelation` rows for same-source parent, child, ancestor, or descendant
-relationships.
+relationships. Walks are active-only by default (retired/editorial-suppressed
+concepts are pruned); pass `include_retired=True` to any of
+`parents`/`children`/`ancestors`/`descendants`/`hierarchy` (also supported on
+the REST `/hierarchy` endpoint and the six MCP walk tools) to include them.
 
 ```python
 import medterm4ds as mt
@@ -488,6 +500,56 @@ medterm4ds search-names \
   --tty PT \
   --limit 25
 ```
+
+For text-to-code search across canonical anchors:
+
+```bash
+medterm4ds search "Potassium" \
+  --mode hybrid \
+  --result-types lab \
+  --limit 5
+```
+
+`--mode` is one of `lexical`, `semantic`, `hybrid`, or `canonical`.
+`--result-types` (space-separated for `search`) restricts results to
+category anchors such as `condition`, `medication`, `lab`, or `procedure`;
+the filter is applied service-side in every mode, so `--limit` caps the
+*filtered* set (`search "Potassium" --result-types lab --limit 1` returns
+the LOINC potassium anchor).
+
+For clinical concept extraction from free text:
+
+```bash
+medterm4ds extract \
+  "Patient with type 2 diabetes on metformin; potassium is 5.2 mEq/L" \
+  --result-types condition,medication,lab \
+  --format annotated
+```
+
+`extract` runs GLiNER NER followed by label-constrained canonical
+resolution; `--result-types` (comma-separated) and `--ner-labels` are
+single comma-separated strings. Requires the `extraction` extra and the
+separately-installed `en-core-web-sm` spaCy model (see the extraction
+architecture note below).
+
+**Extraction architecture.** Extracted spans are disambiguated
+lab-vs-medication by three signals in priority order: (1) head-noun
+analysis of the noun phrase via an `en_core_web_sm` dependency parse
+("vancomycin level was 8" → lab, "vancomycin dose adjusted" → medication),
+(2) unit type on the following number ("5.2 mEq/L" → lab, "40 mEq" →
+medication; a bare copula+number — "potassium is 5.2" — also cues lab),
+and (3) medspaCy ConText MEASUREMENT/ADMINISTRATION cue lexicons as the
+fallback. Each span's canonical search is constrained to its label's
+anchor categories, so disorders resolve to conditions and drugs to
+medications, not to LOINC lab anchors. `en-core-web-sm` is not on PyPI
+and must be installed separately for Signal 1:
+
+```bash
+uv pip install "en-core-web-sm>=3.7,<4" \
+  --find-links https://github.com/explosion/spacy-models/releases
+```
+
+Without it, the pipeline degrades gracefully to ConText-only arbitration.
 
 For hierarchy traversal:
 
@@ -846,6 +908,8 @@ Registered tools:
 - `sample_codes`
 - `code_ttys`
 - `search_names`
+- `search`
+- `extract`
 - `resolve_codes`
 - `discover`
 - `cross_reference`
@@ -875,6 +939,7 @@ Registered tools:
 - `patient_friendly_names`
 - `patient_friendly_concept_map`
 
+38 tools are registered in total.
 The MCP tools return structured dictionaries/lists rather than ASCII trees, so
 callers can use fields such as `relationship`, `depth`, `match_type`,
 `match_depth`, source/target atom metadata, and `matched_via` directly.
