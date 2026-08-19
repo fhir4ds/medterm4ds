@@ -725,3 +725,80 @@ class TestThreadSafety:
         assert all(r == results[0] for r in results), (
             "concurrent find_terms returned divergent results"
         )
+
+
+class TestAnnotatedFields:
+    """annotation_fields configuration for format="annotated"."""
+
+    TEXT = "Patient started on metformin. HbA1c was elevated."
+
+    def test_default_marker_unchanged(self, service):
+        out = service.extract(self.TEXT, format="annotated")
+        # Historical two-field marker: [entity|label]
+        for marker in [p + "]" for p in out["annotated_text"].split("[")[1:]]:
+            fields = marker[1:-1].split("|")
+            assert len(fields) == 2, f"default marker must have 2 fields: {marker}"
+
+    def test_source_code_in_marker(self, service):
+        out = service.extract(
+            self.TEXT, format="annotated",
+            annotation_fields=["text", "type", "source_code"],
+        )
+        assert any(
+            "RXNORM:" in m
+            for m in out["annotated_text"].split("[")[1:]
+        ), out["annotated_text"]
+
+    def test_canonical_id_in_marker(self, service):
+        out = service.extract(
+            self.TEXT, format="annotated", annotation_fields=["canonical_id"],
+        )
+        assert "VAL-MED-RXNORM" in out["annotated_text"]
+
+    def test_comma_string_accepted(self, service):
+        out = service.extract(
+            self.TEXT, format="annotated", annotation_fields="text,type",
+        )
+        metformin = [m for m in out["annotated_text"].split("[")[1:] if "metformin" in m]
+        assert metformin and len(metformin[0][:-1].split("|")) == 2
+
+    def test_marker_order_follows_argument_order(self, service):
+        a = service.extract(
+            self.TEXT, format="annotated",
+            annotation_fields=["text", "source_code"],
+        )["annotated_text"]
+        b = service.extract(
+            self.TEXT, format="annotated",
+            annotation_fields=["source_code", "text"],
+        )["annotated_text"]
+        a_met = [m for m in a.split("[")[1:] if "metformin" in m][0][:-1]
+        b_met = [m for m in b.split("[")[1:] if "metformin" in m][0][:-1]
+        assert a_met.startswith("metformin|RXNORM:"), a_met
+        assert b_met.startswith("RXNORM:"), b_met
+
+    def test_unresolved_span_gets_unknown(self, service):
+        from medterm4ds.services.extraction import (
+            _annotation_marker_values,
+            _normalize_annotation_fields,
+        )
+        span = FilteredSpan(
+            text="500 mg", entity_type="vital sign", span_start=0, span_end=6,
+        )
+        values = _annotation_marker_values(
+            _normalize_annotation_fields(["text", "type", "source_code", "name"]),
+            entity_text="500 mg", label="vital sign", span=span, concept=None,
+        )
+        assert values == ["500 mg", "vital sign", "UNKNOWN", "UNKNOWN"]
+
+    def test_invalid_field_raises(self, service):
+        with pytest.raises(ValueError, match="annotation_fields"):
+            service.extract(
+                self.TEXT, format="annotated", annotation_fields=["text", "bogus"],
+            )
+
+    def test_span_metadata_carries_source_code(self, service):
+        out = service.extract(self.TEXT, format="annotated")
+        med = [s for s in out["spans"] if "metformin" in s["text"].lower()]
+        assert med, out["spans"]
+        assert med[0]["source"] == "RXNORM"
+        assert med[0]["code"] == "6809"

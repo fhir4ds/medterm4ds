@@ -964,6 +964,76 @@ class NlpPipeline:
         return spans
 
 
+# Inline-marker field vocabulary for format="annotated". source_code is the
+# raw vocabulary id (RXNORM:6809); canonical_id is the internal anchor id.
+_ANNOTATION_FIELDS = (
+    "text", "name", "type", "source_code", "canonical_id", "status",
+)
+_DEFAULT_ANNOTATION_FIELDS = ("text", "type")
+# Placeholder for unavailable fields so marker positions stay stable (a bare
+# "?" would collide with clinical uncertainty shorthand in notes).
+_ANNOTATION_UNKNOWN = "UNKNOWN"
+
+
+def _normalize_annotation_fields(value: str | list[str] | None) -> list[str]:
+    """Normalize the annotation_fields argument to a validated list.
+
+    Accepts a list or a comma-separated string (house style, matching
+    result_types). None/blank -> the default [text, type]; unknown field
+    names raise a ValueError naming the valid set.
+    """
+    if value is None:
+        return list(_DEFAULT_ANNOTATION_FIELDS)
+    if isinstance(value, str):
+        value = [v.strip() for v in value.split(",") if v.strip()]
+    if not value:
+        return list(_DEFAULT_ANNOTATION_FIELDS)
+    unknown = [f for f in value if f not in _ANNOTATION_FIELDS]
+    if unknown:
+        raise ValueError(
+            f"Unknown annotation_fields: {unknown}. "
+            f"Valid fields: {list(_ANNOTATION_FIELDS)}."
+        )
+    return list(value)
+
+
+def _annotation_marker_values(
+    fields: list[str],
+    *,
+    entity_text: str,
+    label: str,
+    span: "FilteredSpan",
+    concept: "ExtractedConcept | None",
+) -> list[str]:
+    """Render the configured marker fields for one span.
+
+    Resolution-dependent fields (name, source_code, canonical_id) fall back
+    to UNKNOWN when the span did not resolve to a code, keeping field
+    positions stable across all markers in the same output.
+    """
+    values: list[str] = []
+    for f in fields:
+        if f == "text":
+            values.append(entity_text)
+        elif f == "type":
+            values.append(label)
+        elif f == "status":
+            values.append(span.status)
+        elif f == "name":
+            values.append(concept.display if concept and concept.display else _ANNOTATION_UNKNOWN)
+        elif f == "source_code":
+            if concept and concept.code:
+                values.append(f"{concept.source}:{concept.code}")
+            else:
+                values.append(_ANNOTATION_UNKNOWN)
+        elif f == "canonical_id":
+            values.append(
+                concept.canonical_id if concept and concept.canonical_id
+                else _ANNOTATION_UNKNOWN
+            )
+    return values
+
+
 class ExtractionService:
     """Unified text extraction service."""
 
@@ -1395,6 +1465,7 @@ class ExtractionService:
         include_uncertain: bool = False,
         include_historical: bool = False,
         include_family: bool = False,
+        annotation_fields: str | list[str] | None = None,
     ) -> list[FilteredSpan] | list[ExtractedConcept] | dict[str, Any]:
         """Extract medical concepts from free text.
 
@@ -1410,6 +1481,24 @@ class ExtractionService:
               ``annotated_text``, and ``spans``. Includes ALL spans regardless
               of ConText status (negated, uncertain, historical) for maximum
               flexibility — callers filter by ``status`` as needed.
+        annotation_fields : str | list[str] | None
+            Fields rendered in each ``annotated`` inline marker (``format``
+            must be ``"annotated"``; ignored otherwise). A comma-separated
+            string or a list. One of:
+
+            - ``"text"``: matched span text (always available)
+            - ``"name"``: resolved preferred display name
+            - ``"type"``: corrected entity label (from result_type; raw NER
+              label when unresolved)
+            - ``"source_code"``: vocabulary code as ``SOURCE:code`` (e.g.
+              ``RXNORM:6809``)
+            - ``"canonical_id"``: internal canonical anchor id
+            - ``"status"``: ConText status (affirmed, negated, ...)
+
+            Unavailable fields (e.g. codes for unresolved spans) render as
+            ``UNKNOWN`` so field positions stay stable across markers.
+            Default ``["text", "type"]`` reproduces the historical
+            ``[entity|label]`` marker exactly.
         """
         if format == "annotated":
             return self._extract_annotated(
@@ -1418,6 +1507,7 @@ class ExtractionService:
                 result_types=result_types,
                 mode=mode,
                 min_grade=min_grade,
+                annotation_fields=annotation_fields,
             )
 
         spans = self.find_terms(
@@ -1444,18 +1534,22 @@ class ExtractionService:
         result_types: str | list[str] | None = None,
         mode: str | None = None,
         min_grade: str | None = None,
+        annotation_fields: str | list[str] | None = None,
     ) -> dict[str, Any]:
         """Extract concepts + return inline entity annotations.
 
         Returns a dict with:
         - ``concepts``: list[ExtractedConcept] (resolved codes)
-        - ``annotated_text``: str with inline ``[entity|label]`` markers
+        - ``annotated_text``: str with inline markers built from
+          ``annotation_fields`` (default ``[text|type]``)
         - ``spans``: list of span metadata dicts
 
         All spans are included regardless of ConText status (negated,
         uncertain, historical). Each span's ``status`` field lets callers
         filter downstream.
-        """        # Get ALL spans (don't filter by status — include everything)
+        """
+        fields = _normalize_annotation_fields(annotation_fields)
+        # Get ALL spans (don't filter by status — include everything)
         all_spans = self.find_terms(
             text,
             ner_labels=ner_labels,
@@ -1513,7 +1607,12 @@ class ExtractionService:
             else:
                 label = span.entity_type
 
-            result_parts.append(f"[{entity_text}|{label}]")
+            result_parts.append("[" + "|".join(
+                _annotation_marker_values(
+                    fields, entity_text=entity_text, label=label,
+                    span=span, concept=concept,
+                )
+            ) + "]")
             last_pos = span.span_end
 
             span_metadata.append({
@@ -1527,6 +1626,8 @@ class ExtractionService:
                 "canonical_id": concept.canonical_id if concept else "",
                 "result_type": concept.result_type if concept else "",
                 "display": concept.display if concept else "",
+                "source": concept.source if concept else "",
+                "code": concept.code if concept else "",
             })
 
         # Trailing text after last entity
