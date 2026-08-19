@@ -723,6 +723,7 @@ class NlpPipeline:
         ner_revision: str | None = DEFAULT_NER_MODEL_REVISION,
         labels: list[str] | None = None,
         threshold: float = DEFAULT_THRESHOLD,
+        device: str | None = None,
     ):
         self._ner_model_name = ner_model
         # Pinned HF revision so weight drift can't silently change recall
@@ -731,6 +732,7 @@ class NlpPipeline:
         self._ner_model_revision = ner_revision
         self._labels = labels or DEFAULT_LABELS
         self._threshold = threshold
+        self._device_param = device
         self._nlp = None
         self._ner_model = None
         # en_core_web_sm for dependency parsing (Signals 1-2 of the
@@ -766,6 +768,13 @@ class NlpPipeline:
         self._ner_model = GLiNER.from_pretrained(
             self._ner_model_name, revision=self._ner_model_revision,
         )
+        # GPU/MPS placement (MEDTERM4DS_DEVICE, default auto-detect). GLiNER
+        # inference is the bulk of extract() cost; everything else in this
+        # pipeline (medspaCy, PyRuSH, en_core_web_sm parser) is CPU-native.
+        from medterm4ds.core.env import resolve_device
+        self._device = resolve_device(self._device_param)
+        if self._device != "cpu":
+            self._ner_model = self._ner_model.to(self._device)
 
         # Load medspaCy for ConText (disable target_matcher — we use GLiNER
         # instead). medspacy_disable is the medspaCy 1.3.x kwarg; the plain
@@ -783,7 +792,8 @@ class NlpPipeline:
         # disturb. Both run on the same text; alignment is by char_span.
         self._ensure_parser_loaded()
 
-        logger.info("NLP pipeline loaded (GLiNER %s + medspaCy ConText)", self._ner_model_name)
+        logger.info("NLP pipeline loaded (GLiNER %s + medspaCy ConText, device=%s)",
+                    self._ner_model_name, self._device)
 
     def _ensure_parser_loaded(self):
         """Lazily load en_core_web_sm (disable NER — we only need the
@@ -965,11 +975,13 @@ class ExtractionService:
         search_mode: str = DEFAULT_SEARCH_MODE,
         min_grade: str = DEFAULT_MIN_GRADE,
         section_allowlist: tuple[str, ...] = DEFAULT_SECTIONS,
+        device: str | None = None,
     ):
         self._nlp = NlpPipeline(
             ner_model=ner_model,
             labels=labels or DEFAULT_LABELS,
             threshold=threshold,
+            device=device,
         )
         self._search_mode = search_mode
         self._min_grade = min_grade

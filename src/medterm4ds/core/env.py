@@ -70,4 +70,59 @@ def env_str(name: str, default: str | None = None) -> str | None:
     return value
 
 
-__all__ = ["env_bool", "env_int", "env_str"]
+def resolve_device(explicit: str | None = None) -> str:
+    """Resolve the torch device for model inference (GLiNER, SapBERT).
+
+    Priority: explicit argument > ``MEDTERM4DS_DEVICE`` env var > ``"auto"``.
+    ``"auto"`` picks cuda when available, then mps, then cpu. An explicit
+    cuda/mps request that is unavailable raises instead of silently falling
+    back — an operator who asked for a GPU should hear about it, not get
+    quiet CPU performance.
+
+    torch is imported lazily so this module stays importable without it
+    (core env parsing must not require the heavy ML stack).
+    """
+    value = explicit if explicit is not None else env_str("MEDTERM4DS_DEVICE", "auto")
+    value = value.strip().lower()
+    if not value:
+        value = "auto"
+
+    import torch
+
+    if value == "auto":
+        if torch.cuda.is_available():
+            return "cuda"
+        try:
+            if torch.backends.mps.is_available():
+                return "mps"
+        except AttributeError:
+            pass
+        return "cpu"
+
+    try:
+        dev = torch.device(value)
+    except (RuntimeError, ValueError):
+        raise ValueError(
+            "MEDTERM4DS_DEVICE must be one of auto, cpu, cuda, cuda:<n>, or mps "
+            f"(got {value!r})"
+        ) from None
+    if dev.type == "cuda" and not torch.cuda.is_available():
+        raise RuntimeError(
+            "MEDTERM4DS_DEVICE requests CUDA but torch.cuda.is_available() is "
+            "False — install a CUDA-enabled torch build or set "
+            "MEDTERM4DS_DEVICE=cpu"
+        )
+    if dev.type == "mps":
+        try:
+            mps_ok = torch.backends.mps.is_available()
+        except AttributeError:
+            mps_ok = False
+        if not mps_ok:
+            raise RuntimeError(
+                "MEDTERM4DS_DEVICE requests MPS but the backend is unavailable "
+                "on this platform — set MEDTERM4DS_DEVICE=cpu"
+            )
+    return value
+
+
+__all__ = ["env_bool", "env_int", "env_str", "resolve_device"]

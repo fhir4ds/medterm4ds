@@ -7,6 +7,10 @@ from pathlib import Path
 import pytest
 
 os.environ.setdefault("MEDTERM4DS_DISABLE_CVX_GROUPS", "1")
+# Deterministic extraction results: GPU float noise can flip spans sitting
+# exactly on the NER threshold, so the suite always runs on CPU regardless
+# of the host's hardware.
+os.environ.setdefault("MEDTERM4DS_DEVICE", "cpu")
 
 DEFAULT_REGRESSION_DB = "/mnt/d/medterm4ds/data/umls_current.duckdb"
 DEFAULT_FHIR4PX_BASELINE = "/mnt/d/medterm4ds/reports/fhir4px"

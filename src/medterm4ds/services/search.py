@@ -883,6 +883,7 @@ class SearchService:
             inputs = engine._tokenizer(
                 batch, return_tensors="pt", truncation=True, max_length=512, padding=True,
             )
+            inputs = inputs.to(engine._model.device)
             with torch.no_grad():
                 outputs = engine._model(**inputs)
                 emb = outputs.last_hidden_state.mean(dim=1)

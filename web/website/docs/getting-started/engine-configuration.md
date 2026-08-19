@@ -35,3 +35,29 @@ medterm4ds lookup \
 ```
 
 The implementation class is `LocalDuckDBEngine`. The old `LocalLiteEngine` name remains as a compatibility alias for early adopters.
+
+## GPU acceleration (extraction and semantic search)
+
+Text extraction (GLiNER) and semantic search (SapBERT) run their transformer
+inference on a GPU when one is available. Device selection is controlled by
+`MEDTERM4DS_DEVICE`:
+
+| Value | Meaning |
+|---|---|
+| `auto` (default) | CUDA when available, else MPS, else CPU |
+| `cpu` | Force CPU |
+| `cuda`, `cuda:1`, ... | Force a specific GPU. Raises at model load if unavailable — an explicit GPU request never silently falls back to CPU |
+| `mps` | Apple Silicon GPU. Raises if unavailable |
+
+Auto-detection means fresh installs get the speedup with zero configuration.
+FAISS index search stays on CPU — single-query ANN against these index sizes
+is sub-millisecond, so the heavyweight GPU FAISS build brings no gain.
+
+Two operational notes:
+
+- Deterministic pipelines (tests, golden comparisons) should pin
+  `MEDTERM4DS_DEVICE=cpu`: GPU float noise can flip spans sitting exactly on
+  the extraction threshold.
+- CUDA contexts cannot survive `fork()`. Worker-pool consumers of
+  `extract()` should load the model lazily inside each worker, not in the
+  parent process before forking.
