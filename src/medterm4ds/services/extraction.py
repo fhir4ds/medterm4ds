@@ -24,6 +24,7 @@ from __future__ import annotations
 import logging
 import os
 import re
+import threading
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -986,6 +987,13 @@ class ExtractionService:
         self._search_mode = search_mode
         self._min_grade = min_grade
         self._section_allowlist = section_allowlist
+        # medspaCy pipelines and spaCy models are not thread-safe, and the
+        # DuckDB-backed resolution shares one engine connection. Public
+        # methods serialize on this lock so direct multi-threaded use of
+        # mt.extract()/find_terms() is safe (single-lane, mirroring the
+        # FHIR server's dedicated NER executor). RLock because extract()
+        # calls find_terms()/resolve_spans() internally.
+        self._lock = threading.RLock()
 
     def find_terms(
         self,
@@ -1001,6 +1009,7 @@ class ExtractionService:
 
         Returns FilteredSpan objects. No code resolution.
         Does NOT require SapBERT/BM25 indexes.
+        Thread-safe: serializes on the service lock (see __init__).
 
         Parameters
         ----------
@@ -1015,6 +1024,26 @@ class ExtractionService:
             call; QC-175: each rebuild reloaded GLiNER+medspaCy, ~2.1s CPU
             and ~0.7GB transient RSS per flip).
         """
+        with self._lock:
+            return self._find_terms_locked(
+                text,
+                ner_labels=ner_labels,
+                include_negated=include_negated,
+                include_uncertain=include_uncertain,
+                include_historical=include_historical,
+                include_family=include_family,
+            )
+
+    def _find_terms_locked(
+        self,
+        text: str,
+        *,
+        ner_labels: list[str] | None = None,
+        include_negated: bool = False,
+        include_uncertain: bool = False,
+        include_historical: bool = False,
+        include_family: bool = False,
+    ) -> list[FilteredSpan]:
         spans = self._nlp.process(text, labels=ner_labels)
 
         # Filter by ConText status
@@ -1039,6 +1068,25 @@ class ExtractionService:
         return sorted(spans, key=lambda s: s.span_start)
 
     def resolve_spans(
+        self,
+        spans: list[FilteredSpan],
+        *,
+        mode: str | None = None,
+        result_types: str | list[str] | None = None,
+        min_grade: str | None = None,
+    ) -> list[ExtractedConcept]:
+        """Resolve filtered spans to coded concepts via search.
+
+        Thread-safe: serializes on the service lock (see __init__).
+
+        See ``_resolve_spans_locked`` for parameters.
+        """
+        with self._lock:
+            return self._resolve_spans_locked(
+                spans, mode=mode, result_types=result_types, min_grade=min_grade
+            )
+
+    def _resolve_spans_locked(
         self,
         spans: list[FilteredSpan],
         *,

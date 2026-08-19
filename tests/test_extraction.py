@@ -691,3 +691,37 @@ class TestPopulationBlocklist:
     ])
     def test_population_terms_are_false_positives(self, term):
         assert _is_false_positive(term), f"{term!r} must be blocklisted"
+
+
+class TestThreadSafety:
+    """Direct multi-threaded use must be safe (service-level lock)."""
+
+    def test_concurrent_find_terms(self, service):
+        import threading
+
+        text = "Patient has diabetes and takes metformin. Creatinine 1.8."
+        results = []
+        errors = []
+
+        def worker():
+            try:
+                results.append(tuple(
+                    (s.text, s.span_start, s.span_end, s.status)
+                    for s in service.find_terms(text)
+                ))
+            except Exception as exc:  # noqa: BLE001 — captured for assertion
+                errors.append(exc)
+
+        threads = [threading.Thread(target=worker) for _ in range(4)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        assert not errors, f"concurrent find_terms raised: {errors}"
+        assert len(results) == 4
+        # Same input on the same (CPU-pinned) pipeline must give identical
+        # output in every thread.
+        assert all(r == results[0] for r in results), (
+            "concurrent find_terms returned divergent results"
+        )
