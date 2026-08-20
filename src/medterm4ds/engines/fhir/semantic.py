@@ -34,8 +34,10 @@ class SemanticSearchEngine:
     Thread-safe: model loading is guarded by a lock.
     """
 
-    def __init__(self, model_dir: str = DEFAULT_MODEL_DIR):
+    def __init__(self, model_dir: str = DEFAULT_MODEL_DIR, device: str | None = None):
         self._model_dir = Path(model_dir)
+        self._device_param = device
+        self._device = "cpu"
         self._lock = threading.Lock()
         self._model = None
         self._tokenizer = None
@@ -71,7 +73,13 @@ class SemanticSearchEngine:
             self._tokenizer = AutoTokenizer.from_pretrained(str(self._model_dir))
             self._model = AutoModel.from_pretrained(str(self._model_dir))
             self._model.eval()
-            logger.info("SapBERT model loaded (768-dim embeddings)")
+            # GPU/MPS placement (MEDTERM4DS_DEVICE, default auto-detect).
+            from medterm4ds.core.env import resolve_device
+            self._device = resolve_device(self._device_param)
+            if self._device != "cpu":
+                self._model = self._model.to(self._device)
+            logger.info("SapBERT model loaded (768-dim embeddings, device=%s)",
+                        self._device)
 
             # Load FAISS indexes + metadata per category
             import faiss
@@ -96,6 +104,7 @@ class SemanticSearchEngine:
         inputs = self._tokenizer(
             text, return_tensors="pt", truncation=True, max_length=512, padding=True
         )
+        inputs = inputs.to(self._model.device)
         with torch.no_grad():
             outputs = self._model(**inputs)
         # Mean pooling over token embeddings

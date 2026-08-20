@@ -67,6 +67,9 @@ Optional (operational):
 | Variable | Default | Description |
 |---|---|---|
 | `MEDTERM4DS_MEMORY_PROFILE` | `low` (in Docker) | DuckDB memory profile (`low`, `balanced`, `high`). |
+| `MEDTERM4DS_DEVICE` | `auto` | torch device for GLiNER/SapBERT inference (`auto`, `cpu`, `cuda`, `cuda:<n>`, `mps`). GPU use in Docker requires the nvidia container runtime; with it, `auto` picks the GPU automatically. |
+| `MEDTERM4DS_EXTRACT_BATCH_SIZE` | `32` | GLiNER inference batch size (sentences per forward pass) when `extract()` is called with a list of texts. |
+| `MEDTERM4DS_EMBED_BATCH_SIZE` | `64` | SapBERT queries per forward pass in canonical search/resolve batches. Raise on large-GPU hosts. |
 | `MEDTERM4DS_DISABLE_CVX_GROUPS` | unset | If set, disables the runtime CDC CVX-group fetch. |
 | `MEDTERM4DS_CVX_GROUP_URL` | (CDC default) | Override URL for CVX group data. **Must be https + cdc.gov** — anything else is rejected as an SSRF guard. |
 

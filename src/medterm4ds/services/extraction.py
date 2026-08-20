@@ -24,9 +24,11 @@ from __future__ import annotations
 import logging
 import os
 import re
+import threading
 from dataclasses import dataclass, field
 from typing import Any
 
+from medterm4ds.core.env import env_int
 from medterm4ds.core.models import CodeRef
 from medterm4ds.core.normalize import source_label
 
@@ -270,7 +272,7 @@ _DOSE_UNIT_RE = re.compile(
 )
 
 
-def _head_noun_signal(span, parser_doc) -> list[str] | None:
+def _head_noun_signal(span, parser_doc, parser_chunks=None) -> list[str] | None:
     """Signal 1: the head noun of the noun chunk containing the span.
 
     - chunk root lemma in a lexicon → that side decides
@@ -281,8 +283,16 @@ def _head_noun_signal(span, parser_doc) -> list[str] | None:
       last token (fixes e.g. "metformin ... held" style attachments where
       the chunker fails); only noun/propn heads decide (a verb head like
       the misparsed "trough" in "Gentamicin trough 2.1" stays undecided)
+
+    ``parser_chunks`` is a materialized ``list(parser_doc.noun_chunks)``
+    computed once per doc by the caller. ``doc.noun_chunks`` is a property
+    that regenerates the syntax iterator on EVERY access — iterating it
+    per span made long docs O(spans x chunks) (measured 50% of batch
+    runtime on drug-label workloads). None falls back to the property for
+    single-call callers.
     """
-    for chunk in parser_doc.noun_chunks:
+    chunks = parser_chunks if parser_chunks is not None else parser_doc.noun_chunks
+    for chunk in chunks:
         if chunk.start <= span.start and span.end <= chunk.end:
             root = chunk.root
             lemma = root.lemma_.lower()
@@ -340,7 +350,7 @@ def _unit_type_signal(span, parser_doc) -> list[str] | None:
     return None
 
 
-def _arbitrate_lab_vs_med(span, parser_doc, context_ent) -> list[str] | None:
+def _arbitrate_lab_vs_med(span, parser_doc, context_ent, parser_chunks=None) -> list[str] | None:
     """Three-signal lab-vs-med disambiguation, in priority order.
 
     Signal 1: head noun of the noun phrase (100% precision in eval)
@@ -349,9 +359,12 @@ def _arbitrate_lab_vs_med(span, parser_doc, context_ent) -> list[str] | None:
 
     No signal fired → None (GLiNER's label mapping stands). Higher-priority
     signals win by construction — later signals are only consulted on None.
+
+    ``parser_chunks``: precomputed list(parser_doc.noun_chunks) shared
+    across every span of the doc (see _head_noun_signal).
     """
     if parser_doc is not None and span is not None:
-        result = _head_noun_signal(span, parser_doc)
+        result = _head_noun_signal(span, parser_doc, parser_chunks)
         if result is not None:
             return result
         result = _unit_type_signal(span, parser_doc)
@@ -723,6 +736,7 @@ class NlpPipeline:
         ner_revision: str | None = DEFAULT_NER_MODEL_REVISION,
         labels: list[str] | None = None,
         threshold: float = DEFAULT_THRESHOLD,
+        device: str | None = None,
     ):
         self._ner_model_name = ner_model
         # Pinned HF revision so weight drift can't silently change recall
@@ -731,6 +745,7 @@ class NlpPipeline:
         self._ner_model_revision = ner_revision
         self._labels = labels or DEFAULT_LABELS
         self._threshold = threshold
+        self._device_param = device
         self._nlp = None
         self._ner_model = None
         # en_core_web_sm for dependency parsing (Signals 1-2 of the
@@ -766,6 +781,13 @@ class NlpPipeline:
         self._ner_model = GLiNER.from_pretrained(
             self._ner_model_name, revision=self._ner_model_revision,
         )
+        # GPU/MPS placement (MEDTERM4DS_DEVICE, default auto-detect). GLiNER
+        # inference is the bulk of extract() cost; everything else in this
+        # pipeline (medspaCy, PyRuSH, en_core_web_sm parser) is CPU-native.
+        from medterm4ds.core.env import resolve_device
+        self._device = resolve_device(self._device_param)
+        if self._device != "cpu":
+            self._ner_model = self._ner_model.to(self._device)
 
         # Load medspaCy for ConText (disable target_matcher — we use GLiNER
         # instead). medspacy_disable is the medspaCy 1.3.x kwarg; the plain
@@ -783,7 +805,8 @@ class NlpPipeline:
         # disturb. Both run on the same text; alignment is by char_span.
         self._ensure_parser_loaded()
 
-        logger.info("NLP pipeline loaded (GLiNER %s + medspaCy ConText)", self._ner_model_name)
+        logger.info("NLP pipeline loaded (GLiNER %s + medspaCy ConText, device=%s)",
+                    self._ner_model_name, self._device)
 
     def _ensure_parser_loaded(self):
         """Lazily load en_core_web_sm (disable NER — we only need the
@@ -845,6 +868,88 @@ class NlpPipeline:
         if not raw_entities:
             return []
 
+        return self._finalize_doc(text, doc, parser_doc, raw_entities)
+
+    def process_batch(
+        self,
+        texts: list[str],
+        labels: list[str] | None = None,
+    ) -> list[list[FilteredSpan]]:
+        """Batched counterpart of ``process`` for many texts at once.
+
+        Sentences from every input are pooled into single GLiNER inference
+        calls (``inference(batch_size=MEDTERM4DS_EXTRACT_BATCH_SIZE)``,
+        default 32), so N texts cost roughly 1/N the forward passes of
+        looping ``process``. medspaCy and the parser run through
+        ``nlp.pipe`` (same per-doc components, doc order preserved).
+        Per-text output has the same shape and semantics as ``process`` —
+        the batch-parity tests pin this.
+
+        GLiNER also supports token-budget packing via
+        ``InferencePackingConfig`` (gliner/infer_packing.py); sentence
+        pooling with count-based batches is the default because its
+        numerical parity with the single-text path is test-enforced.
+        """
+        self._ensure_loaded()
+        labels = labels if labels is not None else self._labels
+
+        if not texts:
+            return []
+
+        docs = list(self._nlp.pipe(texts, batch_size=8))
+        parser_docs = (
+            list(self._parser_nlp.pipe(texts, batch_size=16))
+            if self._parser_nlp is not None
+            else [None] * len(texts)
+        )
+
+        # Pool sentences across all texts, remembering (doc index, sentence
+        # start offset) so batched results scatter back exactly like
+        # process() maps its per-sentence predictions.
+        owners: list[tuple[int, int]] = []
+        sent_texts: list[str] = []
+        for doc_idx, doc in enumerate(docs):
+            for sent in doc.sents:
+                sent_text = sent.text.strip()
+                if sent_text:
+                    owners.append((doc_idx, sent.start_char))
+                    sent_texts.append(sent_text)
+
+        raw_per_doc: list[list[dict]] = [[] for _ in texts]
+        if sent_texts:
+            batch_size = env_int("MEDTERM4DS_EXTRACT_BATCH_SIZE", minimum=1) or 32
+            batched = self._ner_model.inference(
+                sent_texts, labels,
+                flat_ner=True, threshold=self._threshold, multi_label=False,
+                batch_size=batch_size,
+            )
+            for (doc_idx, sent_offset), sent_ents in zip(owners, batched):
+                for ent in sent_ents:
+                    raw_per_doc[doc_idx].append({
+                        "start": sent_offset + ent["start"],
+                        "end": sent_offset + ent["end"],
+                        "label": ent["label"],
+                        "score": ent["score"],
+                        "text": ent["text"],
+                    })
+
+        return [
+            self._finalize_doc(texts[i], docs[i], parser_docs[i], raw_per_doc[i])
+            for i in range(len(texts))
+        ]
+
+    def _finalize_doc(
+        self,
+        text: str,
+        doc: Any,
+        parser_doc: Any,
+        raw_entities: list[dict],
+    ) -> list[FilteredSpan]:
+        """Register GLiNER entities on the spaCy doc, re-run ConText, and
+        build FilteredSpans. Shared tail of process() and process_batch()."""
+        if not raw_entities:
+            return []
+
         # Step 3: Add GLiNER entities as spaCy spans so ConText can annotate them
         from spacy.tokens import Span
 
@@ -876,7 +981,12 @@ class NlpPipeline:
                 context = self._nlp.get_pipe("medspacy_context")
                 context(doc)
 
-        # Step 4: Build FilteredSpan results with ConText annotations
+        # Step 4: Build FilteredSpan results with ConText annotations.
+        # Materialize noun chunks ONCE per doc: doc.noun_chunks regenerates
+        # the syntax iterator on every access, so per-span iteration made
+        # long docs O(spans x chunks) — measured 50% of batch runtime on
+        # drug-label workloads (structured-team instrumented profile).
+        parser_chunks = list(parser_doc.noun_chunks) if parser_doc is not None else None
         spans: list[FilteredSpan] = []
         for ent in raw_entities:
             start = ent["start"]
@@ -904,6 +1014,7 @@ class NlpPipeline:
                         if parser_doc is not None else None,
                         parser_doc,
                         spacy_ent,
+                        parser_chunks,
                     )
                     negated = getattr(spacy_ent._, "is_negated", False)
                     uncertain = getattr(spacy_ent._, "is_uncertain", False)
@@ -953,6 +1064,198 @@ class NlpPipeline:
         return spans
 
 
+# Inline-marker field vocabulary for format="annotated". source_code is the
+# raw vocabulary id (RXNORM:6809); canonical_id is the internal anchor id.
+_ANNOTATION_FIELDS = (
+    "text", "name", "type", "source_code", "canonical_id", "status",
+)
+_DEFAULT_ANNOTATION_FIELDS = ("text", "type")
+# Placeholder for unavailable fields so marker positions stay stable (a bare
+# "?" would collide with clinical uncertainty shorthand in notes).
+_ANNOTATION_UNKNOWN = "UNKNOWN"
+
+
+def _normalize_annotation_fields(value: str | list[str] | None) -> list[str]:
+    """Normalize the annotation_fields argument to a validated list.
+
+    Accepts a list or a comma-separated string (house style, matching
+    result_types). None/blank -> the default [text, type]; unknown field
+    names raise a ValueError naming the valid set.
+    """
+    if value is None:
+        return list(_DEFAULT_ANNOTATION_FIELDS)
+    if isinstance(value, str):
+        value = [v.strip() for v in value.split(",") if v.strip()]
+    if not value:
+        return list(_DEFAULT_ANNOTATION_FIELDS)
+    unknown = [f for f in value if f not in _ANNOTATION_FIELDS]
+    if unknown:
+        raise ValueError(
+            f"Unknown annotation_fields: {unknown}. "
+            f"Valid fields: {list(_ANNOTATION_FIELDS)}."
+        )
+    return list(value)
+
+
+def _annotation_marker_values(
+    fields: list[str],
+    *,
+    entity_text: str,
+    label: str,
+    span: "FilteredSpan",
+    concept: "ExtractedConcept | None",
+) -> list[str]:
+    """Render the configured marker fields for one span.
+
+    Resolution-dependent fields (name, source_code, canonical_id) fall back
+    to UNKNOWN when the span did not resolve to a code, keeping field
+    positions stable across all markers in the same output.
+    """
+    values: list[str] = []
+    for f in fields:
+        if f == "text":
+            values.append(entity_text)
+        elif f == "type":
+            values.append(label)
+        elif f == "status":
+            values.append(span.status)
+        elif f == "name":
+            values.append(concept.display if concept and concept.display else _ANNOTATION_UNKNOWN)
+        elif f == "source_code":
+            if concept and concept.code:
+                values.append(f"{concept.source}:{concept.code}")
+            else:
+                values.append(_ANNOTATION_UNKNOWN)
+        elif f == "canonical_id":
+            values.append(
+                concept.canonical_id if concept and concept.canonical_id
+                else _ANNOTATION_UNKNOWN
+            )
+    return values
+
+
+def _first_matching_concept(
+    span: "FilteredSpan",
+    results: list,
+    ss: tuple[str, ...] | None,
+    *,
+    result_type_prefixes: set[str] | None,
+    grade_threshold: str,
+) -> "ExtractedConcept | None":
+    """First search result passing the span's source/category/grade filters.
+
+    Constrain-then-fallback (QC-182 follow-up): try the label's categories
+    first; if no result clears the floor, retry unfiltered so the
+    constraint never reduces recall. An explicit caller result_types stays
+    a hard filter (QC-153) and disables the label constraint entirely.
+    Shared by the single-text and pooled-batch canonical paths.
+    """
+    source_set = None
+    if ss:
+        source_set = set()
+        for s in ss:
+            su = s.upper()
+            source_set.add(su)
+            if su == "LNC":
+                source_set.add("LOINC")
+            elif su == "LOINC":
+                source_set.add("LNC")
+            elif su == "RXNORM":
+                source_set.add("ATC")
+            elif su == "ATC":
+                source_set.add("RXNORM")
+
+    label_prefixes = (
+        None if result_type_prefixes
+        else _categories_to_prefixes(_span_search_categories(span))
+    )
+    prefix_attempts: list[set[str] | None] = (
+        [label_prefixes, None] if label_prefixes else [None]
+    )
+    for label_pf in prefix_attempts:
+        for r in results:
+            # Source filter
+            if source_set and r.anchor_system not in source_set:
+                continue
+            # Result-type filter (QC-153: previously the batch path
+            # ignored result_types entirely — FHIR resultTypes=condition
+            # still returned medications)
+            if result_type_prefixes and not any(
+                r.canonical_id.startswith(p) for p in result_type_prefixes
+            ):
+                continue
+            # Label-derived category constraint (constrain pass;
+            # the fallback pass re-runs with label_pf=None)
+            if label_pf and not any(
+                r.canonical_id.startswith(p) for p in label_pf
+            ):
+                continue
+            # Grade filter
+            if _GRADE_ORDER.get(r.match_grade, 2) > _GRADE_ORDER.get(grade_threshold, 0):
+                continue
+            canonical_id = getattr(r, "canonical_id", "") or ""
+            combination_members = getattr(r, "combination_members", None) or []
+            return ExtractedConcept(
+                code=r.code, source=r.source, display=r.display,
+                matched_text=span.text, status=span.status,
+                section=span.section, confidence=r.score,
+                match_grade=r.match_grade, ner_label=span.entity_type,
+                span_start=span.span_start, span_end=span.span_end,
+                canonical_id=canonical_id,
+                combination_members=combination_members,
+            )
+    return None
+
+
+def _dedup_concepts(concepts: list["ExtractedConcept"]) -> list["ExtractedConcept"]:
+    """Deduplicate by canonical_id (preferred) or source:code (legacy).
+
+    QC-183: the key includes status — without it a negated mention could
+    REPLACE the affirmed mention of the same condition (the patient's
+    active condition silently disappearing from output when a "no evidence
+    of X" sentence scores higher).
+    """
+    seen: dict[tuple[str, str], ExtractedConcept] = {}
+    for c in concepts:
+        key = (c.canonical_id or f"{c.source}:{c.code}", c.status)
+        if key not in seen or c.confidence > seen[key].confidence:
+            seen[key] = c
+    return sorted(seen.values(), key=lambda c: c.confidence, reverse=True)
+
+
+def _filter_spans_by_status(
+    spans: list[FilteredSpan],
+    *,
+    include_negated: bool = False,
+    include_uncertain: bool = False,
+    include_historical: bool = False,
+    include_family: bool = False,
+) -> list[FilteredSpan]:
+    """Filter spans by ConText status, preserving position order.
+
+    Don't deduplicate by text — return ALL spans (including repeats at
+    different positions). Dedup happens at the concept level in
+    resolve_spans (by canonical_id). For annotation mode, every mention
+    should appear at its own position.
+    """
+    allowed_statuses = {"affirmed"}
+    if include_negated:
+        allowed_statuses.add("negated")
+    if include_uncertain:
+        allowed_statuses.add("uncertain")
+    if include_historical:
+        allowed_statuses.add("historical")
+    # QC-152: family-history mentions default to excluded (a relative's
+    # condition is not the patient's). Opt-in like the other statuses.
+    if include_family:
+        allowed_statuses.add("family")
+
+    return sorted(
+        (s for s in spans if s.status in allowed_statuses),
+        key=lambda s: s.span_start,
+    )
+
+
 class ExtractionService:
     """Unified text extraction service."""
 
@@ -965,15 +1268,24 @@ class ExtractionService:
         search_mode: str = DEFAULT_SEARCH_MODE,
         min_grade: str = DEFAULT_MIN_GRADE,
         section_allowlist: tuple[str, ...] = DEFAULT_SECTIONS,
+        device: str | None = None,
     ):
         self._nlp = NlpPipeline(
             ner_model=ner_model,
             labels=labels or DEFAULT_LABELS,
             threshold=threshold,
+            device=device,
         )
         self._search_mode = search_mode
         self._min_grade = min_grade
         self._section_allowlist = section_allowlist
+        # medspaCy pipelines and spaCy models are not thread-safe, and the
+        # DuckDB-backed resolution shares one engine connection. Public
+        # methods serialize on this lock so direct multi-threaded use of
+        # mt.extract()/find_terms() is safe (single-lane, mirroring the
+        # FHIR server's dedicated NER executor). RLock because extract()
+        # calls find_terms()/resolve_spans() internally.
+        self._lock = threading.RLock()
 
     def find_terms(
         self,
@@ -989,6 +1301,7 @@ class ExtractionService:
 
         Returns FilteredSpan objects. No code resolution.
         Does NOT require SapBERT/BM25 indexes.
+        Thread-safe: serializes on the service lock (see __init__).
 
         Parameters
         ----------
@@ -1003,30 +1316,55 @@ class ExtractionService:
             call; QC-175: each rebuild reloaded GLiNER+medspaCy, ~2.1s CPU
             and ~0.7GB transient RSS per flip).
         """
+        with self._lock:
+            return self._find_terms_locked(
+                text,
+                ner_labels=ner_labels,
+                include_negated=include_negated,
+                include_uncertain=include_uncertain,
+                include_historical=include_historical,
+                include_family=include_family,
+            )
+
+    def _find_terms_locked(
+        self,
+        text: str,
+        *,
+        ner_labels: list[str] | None = None,
+        include_negated: bool = False,
+        include_uncertain: bool = False,
+        include_historical: bool = False,
+        include_family: bool = False,
+    ) -> list[FilteredSpan]:
         spans = self._nlp.process(text, labels=ner_labels)
-
-        # Filter by ConText status
-        allowed_statuses = {"affirmed"}
-        if include_negated:
-            allowed_statuses.add("negated")
-        if include_uncertain:
-            allowed_statuses.add("uncertain")
-        if include_historical:
-            allowed_statuses.add("historical")
-        # QC-152: family-history mentions default to excluded (a relative's
-        # condition is not the patient's). Opt-in like the other statuses.
-        if include_family:
-            allowed_statuses.add("family")
-
-        spans = [s for s in spans if s.status in allowed_statuses]
-
-        # Don't deduplicate by text — return ALL spans (including repeats at
-        # different positions). Dedup happens at the concept level in
-        # resolve_spans (by canonical_id). For annotation mode, every mention
-        # should appear at its own position.
-        return sorted(spans, key=lambda s: s.span_start)
+        return _filter_spans_by_status(
+            spans,
+            include_negated=include_negated,
+            include_uncertain=include_uncertain,
+            include_historical=include_historical,
+            include_family=include_family,
+        )
 
     def resolve_spans(
+        self,
+        spans: list[FilteredSpan],
+        *,
+        mode: str | None = None,
+        result_types: str | list[str] | None = None,
+        min_grade: str | None = None,
+    ) -> list[ExtractedConcept]:
+        """Resolve filtered spans to coded concepts via search.
+
+        Thread-safe: serializes on the service lock (see __init__).
+
+        See ``_resolve_spans_locked`` for parameters.
+        """
+        with self._lock:
+            return self._resolve_spans_locked(
+                spans, mode=mode, result_types=result_types, min_grade=min_grade
+            )
+
+    def _resolve_spans_locked(
         self,
         spans: list[FilteredSpan],
         *,
@@ -1086,128 +1424,66 @@ class ExtractionService:
             batch_results = search.canonical_batch(search_texts, count=10)
 
             concepts: list[ExtractedConcept] = []
-            for span, results in zip(spans, batch_results):
-                # Apply per-span source filter (post-filter the batch results)
-                ss = _LABEL_TO_SOURCES.get(span.entity_type.lower())
-                source_set = None
-                if ss:
-                    source_set = set()
-                    for s in ss:
-                        su = s.upper()
-                        source_set.add(su)
-                        if su == "LNC":
-                            source_set.add("LOINC")
-                        elif su == "LOINC":
-                            source_set.add("LNC")
-                        elif su == "RXNORM":
-                            source_set.add("ATC")
-                        elif su == "ATC":
-                            source_set.add("RXNORM")
+            part_cache: dict[tuple, list] = {}
 
-                resolved = False
-                # Constrain-then-fallback (QC-182 follow-up): try the label's
-                # categories first; if no result clears the floor, retry
-                # unfiltered so the constraint never reduces recall. An
-                # explicit caller result_types stays a hard filter (QC-153)
-                # and disables the label constraint entirely.
-                label_prefixes = (
-                    None if result_type_prefixes
-                    else _categories_to_prefixes(_span_search_categories(span))
+            def _cached_part_search(part, part_rt, ss):
+                rt_key = (
+                    part_rt if isinstance(part_rt, str) or part_rt is None
+                    else tuple(part_rt)
                 )
-                prefix_attempts: list[set[str] | None] = (
-                    [label_prefixes, None] if label_prefixes else [None]
+                key = (part, rt_key, ss)
+                if key not in part_cache:
+                    part_cache[key] = search.canonical(
+                        part, result_types=part_rt, sources=ss, count=5,
+                    )
+                return part_cache[key]
+
+            for span, results in zip(spans, batch_results):
+                ss = _LABEL_TO_SOURCES.get(span.entity_type.lower())
+                matched = _first_matching_concept(
+                    span, results, ss,
+                    result_type_prefixes=result_type_prefixes,
+                    grade_threshold=grade_threshold,
                 )
-                for label_pf in prefix_attempts:
-                    for r in results:
-                        # Source filter
-                        if source_set and r.anchor_system not in source_set:
-                            continue
-                        # Result-type filter (QC-153: previously the batch path
-                        # ignored result_types entirely — FHIR resultTypes=condition
-                        # still returned medications)
-                        if result_type_prefixes and not any(
-                            r.canonical_id.startswith(p) for p in result_type_prefixes
-                        ):
-                            continue
-                        # Label-derived category constraint (constrain pass;
-                        # the fallback pass re-runs with label_pf=None)
-                        if label_pf and not any(
-                            r.canonical_id.startswith(p) for p in label_pf
-                        ):
-                            continue
-                        # Grade filter
-                        if _GRADE_ORDER.get(r.match_grade, 2) > _GRADE_ORDER.get(grade_threshold, 0):
-                            continue
-                        canonical_id = getattr(r, "canonical_id", "") or ""
-                        combination_members = getattr(r, "combination_members", None) or []
-                        concepts.append(ExtractedConcept(
-                            code=r.code,
-                            source=r.source,
-                            display=r.display,
-                            matched_text=span.text,
-                            status=span.status,
-                            section=span.section,
-                            confidence=r.score,
-                            match_grade=r.match_grade,
-                            ner_label=span.entity_type,
-                            span_start=span.span_start,
-                            span_end=span.span_end,
-                            canonical_id=canonical_id,
-                            combination_members=combination_members,
-                        ))
-                        resolved = True
-                        break
-                    if resolved:
-                        break
+                if matched is not None:
+                    concepts.append(matched)
+                    continue
 
                 # Conjunction split on failure (individual search for split parts)
-                if not resolved:
-                    search_text = _strip_trailing_values(span.text)
-                    parts = _split_on_conjunction(search_text)
-                    if parts:
-                        # Same constrain-then-fallback per split part.
-                        rt_attempts: list[str | list[str] | None]
-                        if result_types is not None:
-                            rt_attempts = [result_types]
-                        else:
-                            rt = _span_search_categories(span)
-                            rt_attempts = [rt, None] if rt is not None else [None]
-                        for part in parts:
-                            part_resolved = False
-                            for part_rt in rt_attempts:
-                                part_results = search.canonical(
-                                    part, result_types=part_rt, sources=ss, count=5,
-                                )
-                                for r in part_results:
-                                    if _GRADE_ORDER.get(r.match_grade, 2) > _GRADE_ORDER.get(grade_threshold, 0):
-                                        continue
-                                    canonical_id = getattr(r, "canonical_id", "") or ""
-                                    combination_members = getattr(r, "combination_members", None) or []
-                                    concepts.append(ExtractedConcept(
-                                        code=r.code, source=r.source, display=r.display,
-                                        matched_text=part, status=span.status,
-                                        section=span.section, confidence=r.score,
-                                        match_grade=r.match_grade, ner_label=span.entity_type,
-                                        span_start=span.span_start, span_end=span.span_end,
-                                        canonical_id=canonical_id,
-                                        combination_members=combination_members,
-                                    ))
-                                    part_resolved = True
-                                    break
-                                if part_resolved:
-                                    break
+                search_text = _strip_trailing_values(span.text)
+                parts = _split_on_conjunction(search_text)
+                if parts:
+                    # Same constrain-then-fallback per split part.
+                    rt_attempts: list[str | list[str] | None]
+                    if result_types is not None:
+                        rt_attempts = [result_types]
+                    else:
+                        rt = _span_search_categories(span)
+                        rt_attempts = [rt, None] if rt is not None else [None]
+                    for part in parts:
+                        part_resolved = False
+                        for part_rt in rt_attempts:
+                            part_results = _cached_part_search(part, part_rt, ss)
+                            for r in part_results:
+                                if _GRADE_ORDER.get(r.match_grade, 2) > _GRADE_ORDER.get(grade_threshold, 0):
+                                    continue
+                                canonical_id = getattr(r, "canonical_id", "") or ""
+                                combination_members = getattr(r, "combination_members", None) or []
+                                concepts.append(ExtractedConcept(
+                                    code=r.code, source=r.source, display=r.display,
+                                    matched_text=part, status=span.status,
+                                    section=span.section, confidence=r.score,
+                                    match_grade=r.match_grade, ner_label=span.entity_type,
+                                    span_start=span.span_start, span_end=span.span_end,
+                                    canonical_id=canonical_id,
+                                    combination_members=combination_members,
+                                ))
+                                part_resolved = True
+                                break
+                            if part_resolved:
+                                break
 
-            # Deduplicate by canonical_id (preferred) or source:code (legacy).
-            # QC-183: the key includes status — without it a negated mention
-            # could REPLACE the affirmed mention of the same condition (the
-            # patient's active condition silently disappearing from output
-            # when a "no evidence of X" sentence scores higher).
-            seen: dict[tuple[str, str], ExtractedConcept] = {}
-            for c in concepts:
-                key = (c.canonical_id or f"{c.source}:{c.code}", c.status)
-                if key not in seen or c.confidence > seen[key].confidence:
-                    seen[key] = c
-            return sorted(seen.values(), key=lambda c: c.confidence, reverse=True)
+            return _dedup_concepts(concepts)
 
         # --- Legacy path: per-span search (single span or non-canonical mode) ---
         # QC-153: result_types must filter here too. Canonical mode forwards
@@ -1322,9 +1598,133 @@ class ExtractionService:
                 seen[key] = c
         return sorted(seen.values(), key=lambda c: c.confidence, reverse=True)
 
+    def _resolve_spans_batch_locked(
+        self,
+        spans_lists: list[list[FilteredSpan]],
+        *,
+        mode: str | None = None,
+        result_types: str | list[str] | None = None,
+        min_grade: str | None = None,
+    ) -> list[list[ExtractedConcept]]:
+        """Pooled canonical resolution for batch extract().
+
+        Deduplicates search texts across EVERY input before embedding —
+        drug-label corpora repeat entity texts heavily, so the corpus-wide
+        unique set is far smaller than the total span count — then runs
+        one canonical_batch and applies the same per-span post-filtering
+        (including the conjunction fallback) as _resolve_spans_locked.
+        Per-text output is identical. Non-canonical modes fall back to
+        per-text resolution.
+        """
+        search_mode = mode or self._search_mode
+        if search_mode != "canonical":
+            return [
+                self._resolve_spans_locked(
+                    s, mode=mode, result_types=result_types, min_grade=min_grade,
+                )
+                for s in spans_lists
+            ]
+
+        from medterm4ds.services.search import (
+            _result_types_to_prefixes,
+            get_search_service,
+        )
+        search = get_search_service()
+        grade_threshold = min_grade or "probable"
+        result_type_prefixes = _result_types_to_prefixes(result_types)
+        if grade_threshold not in _GRADE_ORDER:
+            valid = ", ".join(sorted(_GRADE_ORDER))
+            raise ValueError(
+                f"Unknown min_grade: {grade_threshold!r}. Valid: {valid}."
+            )
+
+        # Global dedup: each unique entity text is embedded exactly once
+        # for the whole batch.
+        unique_texts: dict[str, int] = {}
+        per_span_texts: list[list[str]] = []
+        for spans in spans_lists:
+            per_span_texts.append([])
+            for span in spans:
+                t = _strip_trailing_values(span.text)
+                per_span_texts[-1].append(t)
+                if t not in unique_texts:
+                    unique_texts[t] = len(unique_texts)
+
+        results_by_text: dict[str, list] = {}
+        if unique_texts:
+            batch = search.canonical_batch(list(unique_texts), count=10)
+            for t, i in unique_texts.items():
+                results_by_text[t] = batch[i]
+
+        # Conjunction-part searches memoized across the WHOLE batch: failed
+        # parts repeat heavily across drug labels (combo products share
+        # ingredients), and each uncached search.canonical call pays a full
+        # embed + FAISS + possible ancestor-fallback hierarchy walk. Exact
+        # same per-part semantics — first occurrence computes, repeats hit
+        # the cache.
+        part_cache: dict[tuple, list] = {}
+
+        def _cached_part_search(part, part_rt, ss):
+            rt_key = (
+                part_rt if isinstance(part_rt, str) or part_rt is None
+                else tuple(part_rt)
+            )
+            key = (part, rt_key, ss)
+            if key not in part_cache:
+                part_cache[key] = search.canonical(
+                    part, result_types=part_rt, sources=ss, count=5,
+                )
+            return part_cache[key]
+
+        out: list[list[ExtractedConcept]] = []
+        for spans, texts in zip(spans_lists, per_span_texts):
+            concepts: list[ExtractedConcept] = []
+            for span, t in zip(spans, texts):
+                ss = _LABEL_TO_SOURCES.get(span.entity_type.lower())
+                matched = _first_matching_concept(
+                    span, results_by_text.get(t, []), ss,
+                    result_type_prefixes=result_type_prefixes,
+                    grade_threshold=grade_threshold,
+                )
+                if matched is not None:
+                    concepts.append(matched)
+                    continue
+                parts = _split_on_conjunction(t)
+                if parts:
+                    rt_attempts: list[str | list[str] | None]
+                    if result_types is not None:
+                        rt_attempts = [result_types]
+                    else:
+                        rt = _span_search_categories(span)
+                        rt_attempts = [rt, None] if rt is not None else [None]
+                    for part in parts:
+                        part_resolved = False
+                        for part_rt in rt_attempts:
+                            part_results = _cached_part_search(part, part_rt, ss)
+                            for r in part_results:
+                                if _GRADE_ORDER.get(r.match_grade, 2) > _GRADE_ORDER.get(grade_threshold, 0):
+                                    continue
+                                canonical_id = getattr(r, "canonical_id", "") or ""
+                                combination_members = getattr(r, "combination_members", None) or []
+                                concepts.append(ExtractedConcept(
+                                    code=r.code, source=r.source, display=r.display,
+                                    matched_text=part, status=span.status,
+                                    section=span.section, confidence=r.score,
+                                    match_grade=r.match_grade, ner_label=span.entity_type,
+                                    span_start=span.span_start, span_end=span.span_end,
+                                    canonical_id=canonical_id,
+                                    combination_members=combination_members,
+                                ))
+                                part_resolved = True
+                                break
+                            if part_resolved:
+                                break
+            out.append(_dedup_concepts(concepts))
+        return out
+
     def extract(
         self,
-        text: str,
+        text: str | list[str],
         *,
         format: str = "codes",
         ner_labels: list[str] | None = None,
@@ -1335,11 +1735,19 @@ class ExtractionService:
         include_uncertain: bool = False,
         include_historical: bool = False,
         include_family: bool = False,
-    ) -> list[FilteredSpan] | list[ExtractedConcept] | dict[str, Any]:
+        annotation_fields: str | list[str] | None = None,
+    ) -> list[FilteredSpan] | list[ExtractedConcept] | dict[str, Any] | list[Any]:
         """Extract medical concepts from free text.
 
         Parameters
         ----------
+        text : str | list[str]
+            A single text, or a list of texts. A list returns one result
+            per text, in input order — each element has exactly the shape
+            a single-text call returns for the chosen ``format``. Batch
+            inputs are processed under a single lock acquisition (no
+            per-text interleaving with other threads); an empty list
+            returns ``[]``.
         format : str
             - ``"codes"`` (default): resolve to canonical anchors.
               Returns ``list[ExtractedConcept]``.
@@ -1350,7 +1758,79 @@ class ExtractionService:
               ``annotated_text``, and ``spans``. Includes ALL spans regardless
               of ConText status (negated, uncertain, historical) for maximum
               flexibility — callers filter by ``status`` as needed.
+        annotation_fields : str | list[str] | None
+            Fields rendered in each ``annotated`` inline marker (``format``
+            must be ``"annotated"``; ignored otherwise). A comma-separated
+            string or a list. One of:
+
+            - ``"text"``: matched span text (always available)
+            - ``"name"``: resolved preferred display name
+            - ``"type"``: corrected entity label (from result_type; raw NER
+              label when unresolved)
+            - ``"source_code"``: vocabulary code as ``SOURCE:code`` (e.g.
+              ``RXNORM:6809``)
+            - ``"canonical_id"``: internal canonical anchor id
+            - ``"status"``: ConText status (affirmed, negated, ...)
+
+            Unavailable fields (e.g. codes for unresolved spans) render as
+            ``UNKNOWN`` so field positions stay stable across markers.
+            Default ``["text", "type"]`` reproduces the historical
+            ``[entity|label]`` marker exactly.
         """
+        if isinstance(text, (list, tuple)):
+            texts = list(text)
+            for i, t in enumerate(texts):
+                if not isinstance(t, str):
+                    raise ValueError(
+                        f"extract() list inputs must contain only strings "
+                        f"(index {i} is {type(t).__name__})"
+                    )
+            # One lock acquisition for the whole batch: batch inputs stay
+            # on one lane instead of interleaving with other threads per
+            # text. Both heavy stages are pooled cross-text: NLP (one GLiNER
+            # inference over all sentences) and canonical resolution (one
+            # canonical_batch over deduped entity texts from every text).
+            with self._lock:
+                all_spans = self._nlp.process_batch(texts, ner_labels)
+                if format == "terms":
+                    return [
+                        _filter_spans_by_status(
+                            all_spans[i],
+                            include_negated=include_negated,
+                            include_uncertain=include_uncertain,
+                            include_historical=include_historical,
+                            include_family=include_family,
+                        )
+                        for i in range(len(texts))
+                    ]
+                if format == "annotated":
+                    concepts_lists = self._resolve_spans_batch_locked(
+                        all_spans, mode=mode,
+                        result_types=result_types, min_grade=min_grade,
+                    )
+                    return [
+                        self._build_annotated(
+                            texts[i], all_spans[i], concepts_lists[i],
+                            annotation_fields,
+                        )
+                        for i in range(len(texts))
+                    ]
+                # codes: filter statuses, then pooled resolution
+                filtered_lists = [
+                    _filter_spans_by_status(
+                        all_spans[i],
+                        include_negated=include_negated,
+                        include_uncertain=include_uncertain,
+                        include_historical=include_historical,
+                        include_family=include_family,
+                    )
+                    for i in range(len(texts))
+                ]
+                return self._resolve_spans_batch_locked(
+                    filtered_lists, mode=mode,
+                    result_types=result_types, min_grade=min_grade,
+                )
+
         if format == "annotated":
             return self._extract_annotated(
                 text,
@@ -1358,6 +1838,7 @@ class ExtractionService:
                 result_types=result_types,
                 mode=mode,
                 min_grade=min_grade,
+                annotation_fields=annotation_fields,
             )
 
         spans = self.find_terms(
@@ -1384,19 +1865,22 @@ class ExtractionService:
         result_types: str | list[str] | None = None,
         mode: str | None = None,
         min_grade: str | None = None,
+        annotation_fields: str | list[str] | None = None,
     ) -> dict[str, Any]:
         """Extract concepts + return inline entity annotations.
 
         Returns a dict with:
         - ``concepts``: list[ExtractedConcept] (resolved codes)
-        - ``annotated_text``: str with inline ``[entity|label]`` markers
+        - ``annotated_text``: str with inline markers built from
+          ``annotation_fields`` (default ``[text|type]``)
         - ``spans``: list of span metadata dicts
 
         All spans are included regardless of ConText status (negated,
         uncertain, historical). Each span's ``status`` field lets callers
         filter downstream.
-        """        # Get ALL spans (don't filter by status — include everything)
-        all_spans = self.find_terms(
+        """
+        # Get ALL spans (don't filter by status — include everything)
+        all_spans = self._find_terms_locked(
             text,
             ner_labels=ner_labels,
             include_negated=True,
@@ -1404,14 +1888,44 @@ class ExtractionService:
             include_historical=True,
             include_family=True,
         )
+        return self._annotated_from_spans(
+            text, all_spans,
+            result_types=result_types, mode=mode, min_grade=min_grade,
+            annotation_fields=annotation_fields,
+        )
 
-        # Resolve ALL spans (including negated/uncertain/historical). With batch
-        # embedding the cost is minimal. Status is preserved on each concept so
-        # callers can filter. This fixes ALT/AST failing resolution when ConText
-        # marks them as "uncertain" in conditional sentences ("if ALT is elevated...").
-        concepts = self.resolve_spans(
+    def _annotated_from_spans(
+        self,
+        text: str,
+        all_spans: list[FilteredSpan],
+        *,
+        result_types: str | list[str] | None = None,
+        mode: str | None = None,
+        min_grade: str | None = None,
+        annotation_fields: str | list[str] | None = None,
+    ) -> dict[str, Any]:
+        """Resolve spans and assemble the annotated-format output (single text).
+
+        Assumes the caller holds the service lock.
+        """
+        concepts = self._resolve_spans_locked(
             all_spans, mode=mode, result_types=result_types, min_grade=min_grade,
         )
+        return self._build_annotated(text, all_spans, concepts, annotation_fields)
+
+    def _build_annotated(
+        self,
+        text: str,
+        all_spans: list[FilteredSpan],
+        concepts: list[ExtractedConcept],
+        annotation_fields: str | list[str] | None = None,
+    ) -> dict[str, Any]:
+        """Assemble annotated output from precomputed spans AND concepts.
+
+        Resolution is done by the caller so the batch path can pool it
+        across texts (see _resolve_spans_batch_locked).
+        """
+        fields = _normalize_annotation_fields(annotation_fields)
 
         # Build a lookup from matched_text → concept for span metadata enrichment
         concept_by_text: dict[str, ExtractedConcept] = {}
@@ -1453,7 +1967,12 @@ class ExtractionService:
             else:
                 label = span.entity_type
 
-            result_parts.append(f"[{entity_text}|{label}]")
+            result_parts.append("[" + "|".join(
+                _annotation_marker_values(
+                    fields, entity_text=entity_text, label=label,
+                    span=span, concept=concept,
+                )
+            ) + "]")
             last_pos = span.span_end
 
             span_metadata.append({
@@ -1467,6 +1986,9 @@ class ExtractionService:
                 "canonical_id": concept.canonical_id if concept else "",
                 "result_type": concept.result_type if concept else "",
                 "display": concept.display if concept else "",
+                "source": concept.source if concept else "",
+                "code": concept.code if concept else "",
+                "match_grade": concept.match_grade if concept else "",
             })
 
         # Trailing text after last entity
@@ -1500,6 +2022,12 @@ def resolve_spans(spans: list[FilteredSpan], **kwargs) -> list[ExtractedConcept]
     return get_extraction_service().resolve_spans(spans, **kwargs)
 
 
-def extract(text: str, *, format: str = "codes", **kwargs) -> list[FilteredSpan] | list[ExtractedConcept]:
-    """Extract medical concepts from free text."""
+def extract(
+    text: str | list[str], *, format: str = "codes", **kwargs
+) -> list[FilteredSpan] | list[ExtractedConcept] | dict[str, Any] | list[Any]:
+    """Extract medical concepts from free text.
+
+    Accepts a single text or a list of texts (one result per text, in
+    input order). See ``ExtractionService.extract`` for parameters.
+    """
     return get_extraction_service().extract(text, format=format, **kwargs)

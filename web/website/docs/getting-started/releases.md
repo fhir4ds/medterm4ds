@@ -4,6 +4,54 @@ title: Releases
 
 This page tracks Medical Terminology for Data Science package releases.
 
+## 0.0.3
+
+Performance and configurability release for extraction. No breaking
+changes; no data rebuild required.
+
+GPU acceleration:
+
+- `MEDTERM4DS_DEVICE` (default `auto`) places GLiNER and SapBERT on CUDA/MPS
+  when available — zero configuration on GPU hosts, CPU hosts unchanged.
+  Explicit GPU requests that are unavailable raise instead of silently
+  falling back. Deterministic pipelines should pin `cpu`.
+
+Batch extraction:
+
+- `extract()` accepts a single text or a list of texts (one result per
+  text, input order)
+- Cross-text batched GLiNER inference (`MEDTERM4DS_EXTRACT_BATCH_SIZE`)
+- Pooled cross-text canonical resolve with corpus-wide entity-text
+  deduplication (`MEDTERM4DS_EMBED_BATCH_SIZE`)
+- Measured on a 50-source drug-label shard (RTX 4090): 7.9 sources/min
+  single-process, up from ~1.0 on CPU per-text calls
+
+Performance fix:
+
+- The head-noun lab-vs-med arbiter no longer re-materializes
+  `doc.noun_chunks` per span — an instrumented consumer profile showed it
+  was 50% of batch runtime. Results unchanged; 2.7x on real workloads.
+
+Extraction configurability:
+
+- `annotation_fields` for `format="annotated"` customizes inline markers
+  (`text`, `name`, `type`, `source_code`, `canonical_id`, `status`)
+- Span metadata carries `match_grade` and `source`/`code`
+- Direct multi-threaded use of the extraction service is safe (service-level
+  lock); multiprocessing still requires lazy per-worker model loads
+
+Other:
+
+- Default Hugging Face artifact revision bumped to `v0.0.2` (corrected
+  canonical indexes)
+
+Known issues:
+
+- 191 FHIR conformance test failures are pre-existing at 0.0.2 (verified
+  against the v0.0.2 tag: 192 there) — environmental library drift in the
+  source-read structural suites, not product regressions. All other suites
+  pass (7,633 tests).
+
 ## 0.0.2
 
 Quality-hardening release: 613 bugs found and fixed across a 22-domain

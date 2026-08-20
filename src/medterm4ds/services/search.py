@@ -27,6 +27,7 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
+from medterm4ds.core.env import env_int
 from medterm4ds.core.models import CodeRef
 from medterm4ds.core.normalize import SOURCE_LABELS
 
@@ -44,9 +45,11 @@ _CACHE_DIR = Path(os.getenv(
 ))
 
 # Hugging Face repo holding prebuilt artifacts. Override via env vars for
-# testing or private forks.
+# testing or private forks. Default revision tracks the artifact-set tag
+# (v0.0.2 = Aug-2026 canonical indexes with CID corrections; v0.0.1 was
+# retargeted to the same commit so existing installs also get them).
 _HF_REPO_ID = os.getenv("MEDTERM4DS_HF_REPO_ID", "fhir4ds/medterm4ds")
-_HF_REVISION = os.getenv("MEDTERM4DS_HF_REVISION", "v0.0.1")
+_HF_REVISION = os.getenv("MEDTERM4DS_HF_REVISION", "v0.0.2")
 
 DEFAULT_SEARCH_INDEX_DIR = str(_CACHE_DIR / "lexical")
 DEFAULT_EMBEDDING_MODEL_DIR = str(_CACHE_DIR / "semantic")
@@ -876,13 +879,14 @@ class SearchService:
         # Batch-embed all queries
         import numpy as np
         import torch
-        BATCH_SIZE = 64
+        BATCH_SIZE = env_int("MEDTERM4DS_EMBED_BATCH_SIZE", minimum=1) or 64
         all_embeddings = []
         for i in range(0, len(queries), BATCH_SIZE):
             batch = queries[i:i + BATCH_SIZE]
             inputs = engine._tokenizer(
                 batch, return_tensors="pt", truncation=True, max_length=512, padding=True,
             )
+            inputs = inputs.to(engine._model.device)
             with torch.no_grad():
                 outputs = engine._model(**inputs)
                 emb = outputs.last_hidden_state.mean(dim=1)
