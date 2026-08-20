@@ -45,9 +45,11 @@ _CACHE_DIR = Path(os.getenv(
 ))
 
 # Hugging Face repo holding prebuilt artifacts. Override via env vars for
-# testing or private forks.
+# testing or private forks. Default revision tracks the artifact-set tag
+# (v0.0.2 = Aug-2026 canonical indexes with CID corrections; v0.0.1 was
+# retargeted to the same commit so existing installs also get them).
 _HF_REPO_ID = os.getenv("MEDTERM4DS_HF_REPO_ID", "fhir4ds/medterm4ds")
-_HF_REVISION = os.getenv("MEDTERM4DS_HF_REVISION", "v0.0.1")
+_HF_REVISION = os.getenv("MEDTERM4DS_HF_REVISION", "v0.0.2")
 
 DEFAULT_SEARCH_INDEX_DIR = str(_CACHE_DIR / "lexical")
 DEFAULT_EMBEDDING_MODEL_DIR = str(_CACHE_DIR / "semantic")
