@@ -7,8 +7,77 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-_No unreleased changes yet. v0.0.2 shipped on 2026-08-16; subsequent work tracks
+_No unreleased changes yet. v0.0.3 shipped on 2026-08-20; subsequent work tracks
 here until the next tag._
+
+## [0.0.3] - 2026-08-20
+
+Performance and configurability release for extraction: GPU acceleration,
+batch API, and a 2.7x batch-throughput fix found via an instrumented
+consumer profile. No breaking changes; no data rebuild required.
+
+### GPU acceleration
+
+- **`MEDTERM4DS_DEVICE`** (default `auto`) places GLiNER and SapBERT on CUDA
+  or Apple MPS when available, CPU otherwise. `auto` requires zero
+  configuration; an explicit `cuda`/`mps` request that is unavailable raises
+  with a clear error instead of silently running CPU. FAISS stays on CPU
+  (query-side ANN is sub-millisecond; `faiss-gpu` brings no gain).
+- Deterministic pipelines should pin `MEDTERM4DS_DEVICE=cpu` — GPU float
+  noise can flip spans sitting exactly on the NER threshold.
+
+### Batch extraction API
+
+- **`extract()` accepts `str | list[str]`** — one result per text, input
+  order, any format, single lock acquisition per batch.
+- **Cross-text batched GLiNER inference**: sentences from every input are
+  pooled into batched forward passes (`MEDTERM4DS_EXTRACT_BATCH_SIZE`,
+  default 32).
+- **Pooled cross-text canonical resolve**: entity texts are deduplicated
+  across the whole batch before SapBERT embedding (`MEDTERM4DS_EMBED_BATCH_SIZE`,
+  default 64 — raise on large GPUs). Conjunction-part searches are memoized
+  per `(part, result_types, sources)`.
+- Batched inference shifts span scores at the last float digits (same drift
+  class as GPU-vs-CPU); campaign runs should pick one mode and stay in it.
+- Measured on a 50-source drug-label shard (RTX 4090): 2.7x from the fixes
+  below alone; combined with batching, single-process throughput went from
+  ~1.0 source/min (CPU, per-text) to 7.9 sources/min.
+
+### Performance fixes
+
+- **Head-noun arbiter no longer re-materializes `doc.noun_chunks` per span**
+  (50% of batch runtime on drug-label workloads in an instrumented profile —
+  `doc.noun_chunks` regenerates the syntax iterator on every property
+  access). The chunk list is computed once per doc and threaded through the
+  three-signal lab-vs-med arbiter; arbitration results are unchanged.
+
+### Extraction configurability
+
+- **`annotation_fields`** for `format="annotated"` selects and orders inline
+  marker fields: `text`, `name`, `type`, `source_code` (`SOURCE:code`),
+  `canonical_id`, `status`. Default `["text", "type"]` preserves the
+  historical marker exactly; unresolved fields render as `UNKNOWN`.
+- **Span metadata now carries `match_grade`** alongside `source`/`code`, so
+  accept-vs-withhold decisions no longer need a second lookup.
+- **Direct multi-threaded use of the extraction service is now safe**:
+  public `find_terms`/`resolve_spans`/`extract` serialize on a service-level
+  `RLock` (single-lane, matching the FHIR server's dedicated NER executor).
+  Worker-pool consumers must still load models lazily per process (CUDA
+  contexts cannot survive `fork()`).
+
+### Other
+
+- Default Hugging Face artifact revision is now `v0.0.2` (Aug-2026 canonical
+  indexes with CID corrections; the `v0.0.1` tag was retargeted to the same
+  commit so cached installs were already covered). Env override unchanged.
+
+### Known issues
+
+- 191 FHIR conformance test failures are pre-existing at 0.0.2 (verified by
+  running the same suites against the v0.0.2 tag: 192 failures there) —
+  environmental `fhir.resources`/library drift in the source-read structural
+  conformance suites, not product regressions. All other suites pass
+  (7,633 tests). The v0.0.2 notes understated this as 4 failures.
 
 ## [0.0.2] - 2026-08-16
 
