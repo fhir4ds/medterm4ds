@@ -802,3 +802,57 @@ class TestAnnotatedFields:
         assert med, out["spans"]
         assert med[0]["source"] == "RXNORM"
         assert med[0]["code"] == "6809"
+
+
+class TestBatchExtract:
+    """extract() accepts a single text or a list of texts."""
+
+    T0 = "Patient started on metformin."
+    T1 = "HbA1c was elevated."
+
+    def test_single_matches_first_batch_element(self, service):
+        single = service.extract(self.T0, format="codes")
+        batch = service.extract([self.T0, self.T1], format="codes")
+        assert isinstance(batch, list) and len(batch) == 2
+        assert [(c.source, c.code) for c in single] == [
+            (c.source, c.code) for c in batch[0]
+        ]
+
+    def test_order_preserved(self, service):
+        batch = service.extract([self.T1, self.T0], format="codes")
+        # T1 is the lab text: its result must contain a LOINC concept
+        assert any(c.source == "LOINC" for c in batch[0])
+        # T0 is the medication text
+        assert any(c.source == "RXNORM" for c in batch[1])
+
+    def test_empty_list(self, service):
+        assert service.extract([], format="codes") == []
+
+    def test_annotated_batch(self, service):
+        batch = service.extract([self.T0], format="annotated")
+        assert isinstance(batch, list) and len(batch) == 1
+        assert set(batch[0].keys()) == {"concepts", "annotated_text", "spans"}
+
+    def test_terms_batch(self, service):
+        batch = service.extract([self.T0, self.T1], format="terms")
+        assert isinstance(batch, list) and len(batch) == 2
+        assert all(isinstance(per_text, list) for per_text in batch)
+
+    def test_invalid_element_raises_with_index(self, service):
+        with pytest.raises(ValueError, match="index 1"):
+            service.extract([self.T0, 42], format="codes")
+
+    def test_module_level_function_batch(self):
+        from medterm4ds.services.extraction import extract as extract_fn
+        from medterm4ds.services.extraction import get_extraction_service
+        out = extract_fn([self.T0], format="terms")
+        assert isinstance(out, list) and len(out) == 1
+        assert get_extraction_service() is not None
+
+    def test_span_metadata_carries_match_grade(self, service):
+        # Structured-data team join: grade in spans drops their second
+        # CLI lookup for accept-vs-withhold decisions.
+        out = service.extract("Patient started on metformin.", format="annotated")
+        med = [s for s in out["spans"] if "metformin" in s["text"].lower()]
+        assert med, out["spans"]
+        assert med[0]["match_grade"] in {"certain", "exact", "probable", "possible", "broader"}

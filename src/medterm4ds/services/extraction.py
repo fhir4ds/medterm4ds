@@ -1454,7 +1454,7 @@ class ExtractionService:
 
     def extract(
         self,
-        text: str,
+        text: str | list[str],
         *,
         format: str = "codes",
         ner_labels: list[str] | None = None,
@@ -1466,11 +1466,18 @@ class ExtractionService:
         include_historical: bool = False,
         include_family: bool = False,
         annotation_fields: str | list[str] | None = None,
-    ) -> list[FilteredSpan] | list[ExtractedConcept] | dict[str, Any]:
+    ) -> list[FilteredSpan] | list[ExtractedConcept] | dict[str, Any] | list[Any]:
         """Extract medical concepts from free text.
 
         Parameters
         ----------
+        text : str | list[str]
+            A single text, or a list of texts. A list returns one result
+            per text, in input order — each element has exactly the shape
+            a single-text call returns for the chosen ``format``. Batch
+            inputs are processed under a single lock acquisition (no
+            per-text interleaving with other threads); an empty list
+            returns ``[]``.
         format : str
             - ``"codes"`` (default): resolve to canonical anchors.
               Returns ``list[ExtractedConcept]``.
@@ -1500,6 +1507,32 @@ class ExtractionService:
             Default ``["text", "type"]`` reproduces the historical
             ``[entity|label]`` marker exactly.
         """
+        if isinstance(text, (list, tuple)):
+            texts = list(text)
+            for i, t in enumerate(texts):
+                if not isinstance(t, str):
+                    raise ValueError(
+                        f"extract() list inputs must contain only strings "
+                        f"(index {i} is {type(t).__name__})"
+                    )
+            kwargs = dict(
+                format=format,
+                ner_labels=ner_labels,
+                result_types=result_types,
+                mode=mode,
+                min_grade=min_grade,
+                include_negated=include_negated,
+                include_uncertain=include_uncertain,
+                include_historical=include_historical,
+                include_family=include_family,
+                annotation_fields=annotation_fields,
+            )
+            # One lock acquisition for the whole batch (RLock re-enters
+            # for each per-text call): batch inputs stay on one lane
+            # instead of interleaving with other threads per text.
+            with self._lock:
+                return [self.extract(t, **kwargs) for t in texts]
+
         if format == "annotated":
             return self._extract_annotated(
                 text,
@@ -1628,6 +1661,7 @@ class ExtractionService:
                 "display": concept.display if concept else "",
                 "source": concept.source if concept else "",
                 "code": concept.code if concept else "",
+                "match_grade": concept.match_grade if concept else "",
             })
 
         # Trailing text after last entity
@@ -1661,6 +1695,12 @@ def resolve_spans(spans: list[FilteredSpan], **kwargs) -> list[ExtractedConcept]
     return get_extraction_service().resolve_spans(spans, **kwargs)
 
 
-def extract(text: str, *, format: str = "codes", **kwargs) -> list[FilteredSpan] | list[ExtractedConcept]:
-    """Extract medical concepts from free text."""
+def extract(
+    text: str | list[str], *, format: str = "codes", **kwargs
+) -> list[FilteredSpan] | list[ExtractedConcept] | dict[str, Any] | list[Any]:
+    """Extract medical concepts from free text.
+
+    Accepts a single text or a list of texts (one result per text, in
+    input order). See ``ExtractionService.extract`` for parameters.
+    """
     return get_extraction_service().extract(text, format=format, **kwargs)
