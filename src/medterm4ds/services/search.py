@@ -27,6 +27,7 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
+from medterm4ds.core.env import env_int
 from medterm4ds.core.models import CodeRef
 from medterm4ds.core.normalize import SOURCE_LABELS
 
@@ -876,7 +877,7 @@ class SearchService:
         # Batch-embed all queries
         import numpy as np
         import torch
-        BATCH_SIZE = 64
+        BATCH_SIZE = env_int("MEDTERM4DS_EMBED_BATCH_SIZE", minimum=1) or 64
         all_embeddings = []
         for i in range(0, len(queries), BATCH_SIZE):
             batch = queries[i:i + BATCH_SIZE]
