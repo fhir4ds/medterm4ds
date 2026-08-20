@@ -272,7 +272,7 @@ _DOSE_UNIT_RE = re.compile(
 )
 
 
-def _head_noun_signal(span, parser_doc) -> list[str] | None:
+def _head_noun_signal(span, parser_doc, parser_chunks=None) -> list[str] | None:
     """Signal 1: the head noun of the noun chunk containing the span.
 
     - chunk root lemma in a lexicon → that side decides
@@ -283,8 +283,16 @@ def _head_noun_signal(span, parser_doc) -> list[str] | None:
       last token (fixes e.g. "metformin ... held" style attachments where
       the chunker fails); only noun/propn heads decide (a verb head like
       the misparsed "trough" in "Gentamicin trough 2.1" stays undecided)
+
+    ``parser_chunks`` is a materialized ``list(parser_doc.noun_chunks)``
+    computed once per doc by the caller. ``doc.noun_chunks`` is a property
+    that regenerates the syntax iterator on EVERY access — iterating it
+    per span made long docs O(spans x chunks) (measured 50% of batch
+    runtime on drug-label workloads). None falls back to the property for
+    single-call callers.
     """
-    for chunk in parser_doc.noun_chunks:
+    chunks = parser_chunks if parser_chunks is not None else parser_doc.noun_chunks
+    for chunk in chunks:
         if chunk.start <= span.start and span.end <= chunk.end:
             root = chunk.root
             lemma = root.lemma_.lower()
@@ -342,7 +350,7 @@ def _unit_type_signal(span, parser_doc) -> list[str] | None:
     return None
 
 
-def _arbitrate_lab_vs_med(span, parser_doc, context_ent) -> list[str] | None:
+def _arbitrate_lab_vs_med(span, parser_doc, context_ent, parser_chunks=None) -> list[str] | None:
     """Three-signal lab-vs-med disambiguation, in priority order.
 
     Signal 1: head noun of the noun phrase (100% precision in eval)
@@ -351,9 +359,12 @@ def _arbitrate_lab_vs_med(span, parser_doc, context_ent) -> list[str] | None:
 
     No signal fired → None (GLiNER's label mapping stands). Higher-priority
     signals win by construction — later signals are only consulted on None.
+
+    ``parser_chunks``: precomputed list(parser_doc.noun_chunks) shared
+    across every span of the doc (see _head_noun_signal).
     """
     if parser_doc is not None and span is not None:
-        result = _head_noun_signal(span, parser_doc)
+        result = _head_noun_signal(span, parser_doc, parser_chunks)
         if result is not None:
             return result
         result = _unit_type_signal(span, parser_doc)
@@ -970,7 +981,12 @@ class NlpPipeline:
                 context = self._nlp.get_pipe("medspacy_context")
                 context(doc)
 
-        # Step 4: Build FilteredSpan results with ConText annotations
+        # Step 4: Build FilteredSpan results with ConText annotations.
+        # Materialize noun chunks ONCE per doc: doc.noun_chunks regenerates
+        # the syntax iterator on every access, so per-span iteration made
+        # long docs O(spans x chunks) — measured 50% of batch runtime on
+        # drug-label workloads (structured-team instrumented profile).
+        parser_chunks = list(parser_doc.noun_chunks) if parser_doc is not None else None
         spans: list[FilteredSpan] = []
         for ent in raw_entities:
             start = ent["start"]
@@ -998,6 +1014,7 @@ class NlpPipeline:
                         if parser_doc is not None else None,
                         parser_doc,
                         spacy_ent,
+                        parser_chunks,
                     )
                     negated = getattr(spacy_ent._, "is_negated", False)
                     uncertain = getattr(spacy_ent._, "is_uncertain", False)
