@@ -1407,6 +1407,20 @@ class ExtractionService:
             batch_results = search.canonical_batch(search_texts, count=10)
 
             concepts: list[ExtractedConcept] = []
+            part_cache: dict[tuple, list] = {}
+
+            def _cached_part_search(part, part_rt, ss):
+                rt_key = (
+                    part_rt if isinstance(part_rt, str) or part_rt is None
+                    else tuple(part_rt)
+                )
+                key = (part, rt_key, ss)
+                if key not in part_cache:
+                    part_cache[key] = search.canonical(
+                        part, result_types=part_rt, sources=ss, count=5,
+                    )
+                return part_cache[key]
+
             for span, results in zip(spans, batch_results):
                 ss = _LABEL_TO_SOURCES.get(span.entity_type.lower())
                 matched = _first_matching_concept(
@@ -1432,9 +1446,7 @@ class ExtractionService:
                     for part in parts:
                         part_resolved = False
                         for part_rt in rt_attempts:
-                            part_results = search.canonical(
-                                part, result_types=part_rt, sources=ss, count=5,
-                            )
+                            part_results = _cached_part_search(part, part_rt, ss)
                             for r in part_results:
                                 if _GRADE_ORDER.get(r.match_grade, 2) > _GRADE_ORDER.get(grade_threshold, 0):
                                     continue
@@ -1627,6 +1639,26 @@ class ExtractionService:
             for t, i in unique_texts.items():
                 results_by_text[t] = batch[i]
 
+        # Conjunction-part searches memoized across the WHOLE batch: failed
+        # parts repeat heavily across drug labels (combo products share
+        # ingredients), and each uncached search.canonical call pays a full
+        # embed + FAISS + possible ancestor-fallback hierarchy walk. Exact
+        # same per-part semantics — first occurrence computes, repeats hit
+        # the cache.
+        part_cache: dict[tuple, list] = {}
+
+        def _cached_part_search(part, part_rt, ss):
+            rt_key = (
+                part_rt if isinstance(part_rt, str) or part_rt is None
+                else tuple(part_rt)
+            )
+            key = (part, rt_key, ss)
+            if key not in part_cache:
+                part_cache[key] = search.canonical(
+                    part, result_types=part_rt, sources=ss, count=5,
+                )
+            return part_cache[key]
+
         out: list[list[ExtractedConcept]] = []
         for spans, texts in zip(spans_lists, per_span_texts):
             concepts: list[ExtractedConcept] = []
@@ -1651,9 +1683,7 @@ class ExtractionService:
                     for part in parts:
                         part_resolved = False
                         for part_rt in rt_attempts:
-                            part_results = search.canonical(
-                                part, result_types=part_rt, sources=ss, count=5,
-                            )
+                            part_results = _cached_part_search(part, part_rt, ss)
                             for r in part_results:
                                 if _GRADE_ORDER.get(r.match_grade, 2) > _GRADE_ORDER.get(grade_threshold, 0):
                                     continue
