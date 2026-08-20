@@ -61,3 +61,13 @@ Two operational notes:
 - CUDA contexts cannot survive `fork()`. Worker-pool consumers of
   `extract()` should load the model lazily inside each worker, not in the
   parent process before forking.
+
+## Batched extraction
+
+Passing a list of texts to `extract()` pools all sentences into batched
+GLiNER inference (`MEDTERM4DS_EXTRACT_BATCH_SIZE`, default 32) — measured
+3.7x faster than per-text calls on GPU for the NLP stage. Batched inference
+changes span scores at the last float digits (padded batches, same class of
+drift as GPU-vs-CPU), so a span exactly on the detection threshold can
+resolve differently between single and batch modes. Campaign runs should
+pick one mode and stay in it.

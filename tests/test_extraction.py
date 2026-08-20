@@ -856,3 +856,29 @@ class TestBatchExtract:
         med = [s for s in out["spans"] if "metformin" in s["text"].lower()]
         assert med, out["spans"]
         assert med[0]["match_grade"] in {"certain", "exact", "probable", "possible", "broader"}
+
+    def test_batch_nlp_strict_parity(self, service):
+        """process_batch spans must match process() spans semantically —
+        same spans, labels, offsets, statuses; scores within float noise.
+        Batched GLiNER inference (padded batches) differs from sequential
+        per-sentence calls at the last float digits, same class of drift
+        as GPU-vs-CPU. Campaign runs should pick ONE mode and stay in it."""
+        texts = [
+            "Patient started on metformin 500 mg twice daily.",
+            "No evidence of diabetes. Creatinine was 1.8 mg/dL.",
+            "Father had colon cancer. Family history of CAD.",
+        ]
+        singles = [service._nlp.process(t) for t in texts]
+        batched = service._nlp.process_batch(texts)
+        assert len(batched) == 3
+        for i, (a, b) in enumerate(zip(singles, batched)):
+            assert len(a) == len(b), f"span count differs for text {i}"
+            for sa, sb in zip(a, b):
+                assert (sa.text, sa.entity_type, sa.status,
+                        sa.span_start, sa.span_end) == (
+                       sb.text, sb.entity_type, sb.status,
+                       sb.span_start, sb.span_end), f"span differs for text {i}"
+                assert abs(sa.ner_confidence - sb.ner_confidence) < 1e-3, (
+                    f"score drift beyond float noise for text {i}: "
+                    f"{sa.ner_confidence} vs {sb.ner_confidence}"
+                )

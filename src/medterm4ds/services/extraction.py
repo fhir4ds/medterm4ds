@@ -28,6 +28,7 @@ import threading
 from dataclasses import dataclass, field
 from typing import Any
 
+from medterm4ds.core.env import env_int
 from medterm4ds.core.models import CodeRef
 from medterm4ds.core.normalize import source_label
 
@@ -856,6 +857,88 @@ class NlpPipeline:
         if not raw_entities:
             return []
 
+        return self._finalize_doc(text, doc, parser_doc, raw_entities)
+
+    def process_batch(
+        self,
+        texts: list[str],
+        labels: list[str] | None = None,
+    ) -> list[list[FilteredSpan]]:
+        """Batched counterpart of ``process`` for many texts at once.
+
+        Sentences from every input are pooled into single GLiNER inference
+        calls (``inference(batch_size=MEDTERM4DS_EXTRACT_BATCH_SIZE)``,
+        default 32), so N texts cost roughly 1/N the forward passes of
+        looping ``process``. medspaCy and the parser run through
+        ``nlp.pipe`` (same per-doc components, doc order preserved).
+        Per-text output has the same shape and semantics as ``process`` —
+        the batch-parity tests pin this.
+
+        GLiNER also supports token-budget packing via
+        ``InferencePackingConfig`` (gliner/infer_packing.py); sentence
+        pooling with count-based batches is the default because its
+        numerical parity with the single-text path is test-enforced.
+        """
+        self._ensure_loaded()
+        labels = labels if labels is not None else self._labels
+
+        if not texts:
+            return []
+
+        docs = list(self._nlp.pipe(texts, batch_size=8))
+        parser_docs = (
+            list(self._parser_nlp.pipe(texts, batch_size=16))
+            if self._parser_nlp is not None
+            else [None] * len(texts)
+        )
+
+        # Pool sentences across all texts, remembering (doc index, sentence
+        # start offset) so batched results scatter back exactly like
+        # process() maps its per-sentence predictions.
+        owners: list[tuple[int, int]] = []
+        sent_texts: list[str] = []
+        for doc_idx, doc in enumerate(docs):
+            for sent in doc.sents:
+                sent_text = sent.text.strip()
+                if sent_text:
+                    owners.append((doc_idx, sent.start_char))
+                    sent_texts.append(sent_text)
+
+        raw_per_doc: list[list[dict]] = [[] for _ in texts]
+        if sent_texts:
+            batch_size = env_int("MEDTERM4DS_EXTRACT_BATCH_SIZE", minimum=1) or 32
+            batched = self._ner_model.inference(
+                sent_texts, labels,
+                flat_ner=True, threshold=self._threshold, multi_label=False,
+                batch_size=batch_size,
+            )
+            for (doc_idx, sent_offset), sent_ents in zip(owners, batched):
+                for ent in sent_ents:
+                    raw_per_doc[doc_idx].append({
+                        "start": sent_offset + ent["start"],
+                        "end": sent_offset + ent["end"],
+                        "label": ent["label"],
+                        "score": ent["score"],
+                        "text": ent["text"],
+                    })
+
+        return [
+            self._finalize_doc(texts[i], docs[i], parser_docs[i], raw_per_doc[i])
+            for i in range(len(texts))
+        ]
+
+    def _finalize_doc(
+        self,
+        text: str,
+        doc: Any,
+        parser_doc: Any,
+        raw_entities: list[dict],
+    ) -> list[FilteredSpan]:
+        """Register GLiNER entities on the spaCy doc, re-run ConText, and
+        build FilteredSpans. Shared tail of process() and process_batch()."""
+        if not raw_entities:
+            return []
+
         # Step 3: Add GLiNER entities as spaCy spans so ConText can annotate them
         from spacy.tokens import Span
 
@@ -1034,6 +1117,39 @@ def _annotation_marker_values(
     return values
 
 
+def _filter_spans_by_status(
+    spans: list[FilteredSpan],
+    *,
+    include_negated: bool = False,
+    include_uncertain: bool = False,
+    include_historical: bool = False,
+    include_family: bool = False,
+) -> list[FilteredSpan]:
+    """Filter spans by ConText status, preserving position order.
+
+    Don't deduplicate by text — return ALL spans (including repeats at
+    different positions). Dedup happens at the concept level in
+    resolve_spans (by canonical_id). For annotation mode, every mention
+    should appear at its own position.
+    """
+    allowed_statuses = {"affirmed"}
+    if include_negated:
+        allowed_statuses.add("negated")
+    if include_uncertain:
+        allowed_statuses.add("uncertain")
+    if include_historical:
+        allowed_statuses.add("historical")
+    # QC-152: family-history mentions default to excluded (a relative's
+    # condition is not the patient's). Opt-in like the other statuses.
+    if include_family:
+        allowed_statuses.add("family")
+
+    return sorted(
+        (s for s in spans if s.status in allowed_statuses),
+        key=lambda s: s.span_start,
+    )
+
+
 class ExtractionService:
     """Unified text extraction service."""
 
@@ -1115,27 +1231,13 @@ class ExtractionService:
         include_family: bool = False,
     ) -> list[FilteredSpan]:
         spans = self._nlp.process(text, labels=ner_labels)
-
-        # Filter by ConText status
-        allowed_statuses = {"affirmed"}
-        if include_negated:
-            allowed_statuses.add("negated")
-        if include_uncertain:
-            allowed_statuses.add("uncertain")
-        if include_historical:
-            allowed_statuses.add("historical")
-        # QC-152: family-history mentions default to excluded (a relative's
-        # condition is not the patient's). Opt-in like the other statuses.
-        if include_family:
-            allowed_statuses.add("family")
-
-        spans = [s for s in spans if s.status in allowed_statuses]
-
-        # Don't deduplicate by text — return ALL spans (including repeats at
-        # different positions). Dedup happens at the concept level in
-        # resolve_spans (by canonical_id). For annotation mode, every mention
-        # should appear at its own position.
-        return sorted(spans, key=lambda s: s.span_start)
+        return _filter_spans_by_status(
+            spans,
+            include_negated=include_negated,
+            include_uncertain=include_uncertain,
+            include_historical=include_historical,
+            include_family=include_family,
+        )
 
     def resolve_spans(
         self,
@@ -1527,11 +1629,39 @@ class ExtractionService:
                 include_family=include_family,
                 annotation_fields=annotation_fields,
             )
-            # One lock acquisition for the whole batch (RLock re-enters
-            # for each per-text call): batch inputs stay on one lane
-            # instead of interleaving with other threads per text.
+            # One lock acquisition for the whole batch: batch inputs stay
+            # on one lane instead of interleaving with other threads per
+            # text. The NLP stage runs cross-text batched (one pooled GLiNER
+            # inference over all sentences); resolution stays per-text.
             with self._lock:
-                return [self.extract(t, **kwargs) for t in texts]
+                all_spans = self._nlp.process_batch(texts, ner_labels)
+                out: list[Any] = []
+                for i, t in enumerate(texts):
+                    if format == "annotated":
+                        out.append(self._annotated_from_spans(
+                            t,
+                            all_spans[i],
+                            result_types=result_types,
+                            mode=mode,
+                            min_grade=min_grade,
+                            annotation_fields=annotation_fields,
+                        ))
+                        continue
+                    filtered = _filter_spans_by_status(
+                        all_spans[i],
+                        include_negated=include_negated,
+                        include_uncertain=include_uncertain,
+                        include_historical=include_historical,
+                        include_family=include_family,
+                    )
+                    if format == "terms":
+                        out.append(filtered)
+                    else:
+                        out.append(self._resolve_spans_locked(
+                            filtered, mode=mode,
+                            result_types=result_types, min_grade=min_grade,
+                        ))
+                return out
 
         if format == "annotated":
             return self._extract_annotated(
@@ -1581,9 +1711,8 @@ class ExtractionService:
         uncertain, historical). Each span's ``status`` field lets callers
         filter downstream.
         """
-        fields = _normalize_annotation_fields(annotation_fields)
         # Get ALL spans (don't filter by status — include everything)
-        all_spans = self.find_terms(
+        all_spans = self._find_terms_locked(
             text,
             ner_labels=ner_labels,
             include_negated=True,
@@ -1591,12 +1720,35 @@ class ExtractionService:
             include_historical=True,
             include_family=True,
         )
+        return self._annotated_from_spans(
+            text, all_spans,
+            result_types=result_types, mode=mode, min_grade=min_grade,
+            annotation_fields=annotation_fields,
+        )
+
+    def _annotated_from_spans(
+        self,
+        text: str,
+        all_spans: list[FilteredSpan],
+        *,
+        result_types: str | list[str] | None = None,
+        mode: str | None = None,
+        min_grade: str | None = None,
+        annotation_fields: str | list[str] | None = None,
+    ) -> dict[str, Any]:
+        """Assemble the annotated-format output from precomputed spans.
+
+        Used by _extract_annotated (single text) and the batch extract()
+        path (spans from NlpPipeline.process_batch). Assumes the caller
+        holds the service lock.
+        """
+        fields = _normalize_annotation_fields(annotation_fields)
 
         # Resolve ALL spans (including negated/uncertain/historical). With batch
         # embedding the cost is minimal. Status is preserved on each concept so
         # callers can filter. This fixes ALT/AST failing resolution when ConText
         # marks them as "uncertain" in conditional sentences ("if ALT is elevated...").
-        concepts = self.resolve_spans(
+        concepts = self._resolve_spans_locked(
             all_spans, mode=mode, result_types=result_types, min_grade=min_grade,
         )
 
