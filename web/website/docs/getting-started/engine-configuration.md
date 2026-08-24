@@ -36,6 +36,31 @@ medterm4ds lookup \
 
 The implementation class is `LocalDuckDBEngine`. The old `LocalLiteEngine` name remains as a compatibility alias for early adopters.
 
+## Artifact cache and staying current
+
+Search artifacts (canonical anchors, SapBERT + FAISS indexes, lexical
+indexes) are downloaded lazily from the Hugging Face repo
+(`fhir4ds/medterm4ds`) on first use and cached per revision:
+
+```
+~/.cache/medterm4ds/<revision>/{canonical,semantic,lexical}/...
+```
+
+- The default revision is a **tag** pinned per package release — two runs
+  on different days use the same data. `MEDTERM4DS_HF_REVISION` switches
+  the channel (e.g. `v0.0.4-canonical` preview branch); switching
+  automatically downloads into that revision's own cache subtree, and
+  switching back is instant.
+- Setting `MEDTERM4DS_CACHE_DIR` switches to an operator-managed layout:
+  the directory is used as-is (the `deploy.sh`/data-dir contract), no
+  revision keying, no downloads.
+- Commands: `medterm4ds data cache-info` (what is cached, with
+  provenance), `cache-refresh [--revision R]` (force re-download), and
+  `cache-list` (tags/branches available in the repo).
+
+Background downloads are never automatic: campaigns stay reproducible
+unless an operator or env var explicitly moves the revision.
+
 ## GPU acceleration (extraction and semantic search)
 
 Text extraction (GLiNER) and semantic search (SapBERT) run their transformer

@@ -37,19 +37,48 @@ logger = logging.getLogger(__name__)
 
 # --- Cache directory and HF repo configuration ---
 
-# All medterm4ds artifacts (canonical, semantic, lexical) live under this dir.
-# Override via MEDTERM4DS_CACHE_DIR env var. Defaults to platform cache dir.
-_CACHE_DIR = Path(os.getenv(
-    "MEDTERM4DS_CACHE_DIR",
-    str(Path.home() / ".cache" / "medterm4ds"),
-))
-
 # Hugging Face repo holding prebuilt artifacts. Override via env vars for
 # testing or private forks. Default revision tracks the artifact-set tag
 # (v0.0.2 = Aug-2026 canonical indexes with CID corrections; v0.0.1 was
 # retargeted to the same commit so existing installs also get them).
 _HF_REPO_ID = os.getenv("MEDTERM4DS_HF_REPO_ID", "fhir4ds/medterm4ds")
 _HF_REVISION = os.getenv("MEDTERM4DS_HF_REVISION", "v0.0.2")
+
+# Artifact cache layout. Two modes:
+#
+# DEFAULT (no MEDTERM4DS_CACHE_DIR): revision-keyed —
+#   ~/.cache/medterm4ds/<revision>/{canonical,semantic,lexical}/...
+# Each revision gets its own subtree, so switching MEDTERM4DS_HF_REVISION
+# (or bumping the default at release) triggers the download automatically
+# and rollback is instant. A provenance marker records what was pulled.
+#
+# OPERATOR-MANAGED (MEDTERM4DS_CACHE_DIR set): the directory is used
+# as-is, without revision keying — the deploy.sh/data-dir contract where
+# artifacts are placed by an external pipeline. Files must exist; nothing
+# is re-checked or re-keyed.
+_cache_root_env = os.getenv("MEDTERM4DS_CACHE_DIR")
+if _cache_root_env:
+    _CACHE_DIR = Path(_cache_root_env)
+    _CACHE_REVISION_KEYED = False
+else:
+    _CACHE_DIR = (Path.home() / ".cache" / "medterm4ds") / _HF_REVISION
+    _CACHE_REVISION_KEYED = True
+    # Pre-revision cache detection (root-level family dirs): it cannot be
+    # attributed to a revision, so it is never silently adopted. Tell the
+    # operator instead of re-downloading behind their back.
+    _legacy_root = Path.home() / ".cache" / "medterm4ds"
+    if _CACHE_DIR != _legacy_root and any(
+        (_legacy_root / fam).is_dir()
+        for fam in ("canonical", "semantic", "lexical")
+    ) and not (_CACHE_DIR / "canonical").is_dir():
+        logger.warning(
+            "Pre-revision artifact cache detected at %s (canonical/semantic/"
+            "lexical at the cache root). It will NOT be used because cached "
+            "artifacts cannot be attributed to revision %s. Run "
+            "`medterm4ds data cache-refresh` to fetch this revision, then "
+            "delete the root-level copies.",
+            _legacy_root, _HF_REVISION,
+        )
 
 DEFAULT_SEARCH_INDEX_DIR = str(_CACHE_DIR / "lexical")
 DEFAULT_EMBEDDING_MODEL_DIR = str(_CACHE_DIR / "semantic")
@@ -125,6 +154,17 @@ def _hf_download(allow_patterns: list[str]) -> None:
         allow_patterns=allow_patterns,
         token=os.getenv("HF_TOKEN"),
     )
+    # Provenance marker so cache-info/refresh can report WHAT the cache
+    # holds without trusting mtimes or file contents.
+    try:
+        import datetime
+        (_CACHE_DIR / "artifact_provenance.json").write_text(json.dumps({
+            "repo_id": _HF_REPO_ID,
+            "revision": _HF_REVISION,
+            "downloaded_at": datetime.datetime.now().isoformat(timespec="seconds"),
+        }, indent=2))
+    except OSError:
+        pass
     logger.info("Download complete → %s", _CACHE_DIR)
 
 _SOURCE_TO_CATEGORIES = {

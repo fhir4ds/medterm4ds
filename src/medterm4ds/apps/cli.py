@@ -307,6 +307,19 @@ def build_parser() -> argparse.ArgumentParser:
     data_verify = data_subparsers.add_parser("verify", help="Verify a local DuckDB database.")
     _add_data_verify_args(data_verify)
     data_verify.set_defaults(func=run_data_verify)
+    data_cache_info = data_subparsers.add_parser(
+        "cache-info", help="Show search-artifact cache layout, contents, and provenance.")
+    data_cache_info.set_defaults(func=run_data_cache_info)
+    data_cache_refresh = data_subparsers.add_parser(
+        "cache-refresh",
+        help="Force-download search artifacts for a revision (HF-managed cache only).")
+    data_cache_refresh.add_argument(
+        "--revision", default=None,
+        help="Revision to fetch (default: the active MEDTERM4DS_HF_REVISION).")
+    data_cache_refresh.set_defaults(func=run_data_cache_refresh)
+    data_cache_list = data_subparsers.add_parser(
+        "cache-list", help="List artifact-repo tags and branches (network call).")
+    data_cache_list.set_defaults(func=run_data_cache_list)
 
     return parser
 
@@ -1896,6 +1909,28 @@ def run_data_verify(args: argparse.Namespace) -> int:
     # was a no-op gate even for a DB missing required tables or with zero
     # codes in every requested source.
     return 0 if report.get("ok") else 1
+
+
+def run_data_cache_info(args: argparse.Namespace) -> int:
+    from medterm4ds.core.artifact_cache import cache_info
+
+    sys.stdout.write(_json_dumps(cache_info()))
+    return 0
+
+
+def run_data_cache_refresh(args: argparse.Namespace) -> int:
+    from medterm4ds.core.artifact_cache import cache_refresh
+
+    report = cache_refresh(revision=args.revision)
+    sys.stdout.write(_json_dumps(report))
+    return 0
+
+
+def run_data_cache_list(args: argparse.Namespace) -> int:
+    from medterm4ds.core.artifact_cache import cache_list_remote
+
+    sys.stdout.write(_json_dumps(cache_list_remote()))
+    return 0
 
 
 def _run_bulk_record_export(
