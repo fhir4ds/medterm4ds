@@ -231,7 +231,7 @@ class CanonicalSearchResult:
         return _prefix_to_result_type(self.canonical_id)
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        d = {
             "canonical_id": self.canonical_id,
             "domain": self.domain,
             "result_type": self.result_type,
@@ -525,10 +525,16 @@ class SearchService:
                 lst = members_by_group.setdefault(gid, [])
                 if cid not in lst:
                     lst.append(cid)
-                term = (g.get("term") or "").strip().lower()
+                # Same normalization as the query side (lowercase +
+                # whitespace collapse) so term/query normalization can
+                # never diverge.
+                term = " ".join((g.get("term") or "").lower().split())
                 if term:
                     terms.setdefault(term, gid)
-        # parent anchor per group (code == gid suffix) + its name/synonyms as terms
+        # parent anchor per group (code == gid suffix) + its name/synonyms as terms.
+        # Keyed by bare code — group families (LOINC panels, CVX combos,
+        # RxNorm INs) do not collide across systems; revisit if a
+        # mixed-system group family ever appears.
         parent_by_group: dict[str, str] = {}
         code_to_cid = {(code): cid for (system, code), cid in self._canonical_by_anchor.items()}
         for gid in members_by_group:
@@ -539,7 +545,7 @@ class SearchService:
                 pa = self._canonical_by_id.get(pcid, {})
                 for t in [pa.get("patient_friendly_name")] + list(pa.get("consumer_synonyms") or []):
                     if t and str(t).strip():
-                        terms.setdefault(str(t).strip().lower(), gid)
+                        terms.setdefault(" ".join(str(t).lower().split()), gid)
         self._group_terms = {
             t: {"group_id": gid,
                 "parent_cid": parent_by_group.get(gid),
@@ -575,9 +581,22 @@ class SearchService:
         result_type_prefixes = _result_types_to_prefixes(result_types)
         source_set = set(sources or []) or None
         if source_set:
-            source_set = {s.upper() for s in source_set}
-            for extra in ("LNC", "LOINC", "SNOMED", "SNOMEDCT_US", "RXNORM", "ATC"):
-                source_set.add(extra)
+            # Pairwise system aliasing only (same pairs the extraction-side
+            # source filter uses) — NOT an admit-all widening. The previous
+            # form added every major system whenever ANY filter was set,
+            # so canonical("lipid panel", sources=["CVX"]) returned LOINC
+            # rows: the caller's filter became a no-op (caught by
+            # test_source_filter_excludes_foreign_rows).
+            upper = {s.upper() for s in source_set}
+            aliases = {
+                "LNC": {"LOINC"}, "LOINC": {"LNC"},
+                "RXNORM": {"ATC"}, "ATC": {"RXNORM"},
+                "SNOMED": {"SNOMEDCT_US"}, "SNOMEDCT_US": {"SNOMED"},
+            }
+            widened = set(upper)
+            for s in upper:
+                widened |= aliases.get(s, set())
+            source_set = widened
 
         rows: list[CanonicalSearchResult] = []
         for cid in row_cids:
