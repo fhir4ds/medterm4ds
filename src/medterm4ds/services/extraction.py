@@ -1879,20 +1879,26 @@ class ExtractionService:
         uncertain, historical). Each span's ``status`` field lets callers
         filter downstream.
         """
-        # Get ALL spans (don't filter by status — include everything)
-        all_spans = self._find_terms_locked(
-            text,
-            ner_labels=ner_labels,
-            include_negated=True,
-            include_uncertain=True,
-            include_historical=True,
-            include_family=True,
-        )
-        return self._annotated_from_spans(
-            text, all_spans,
-            result_types=result_types, mode=mode, min_grade=min_grade,
-            annotation_fields=annotation_fields,
-        )
+        # CR-062: every public entry point must serialize on the service
+        # lock. The single-text annotated path used to reach the _locked
+        # helpers without holding it (v0.0.2 called the public find_terms/
+        # resolve_spans here, which lock) — unsynchronized medspaCy/GLiNER
+        # access under direct multi-threaded use. RLock: no re-entrancy
+        # concern with the _locked calls below.
+        with self._lock:
+            all_spans = self._find_terms_locked(
+                text,
+                ner_labels=ner_labels,
+                include_negated=True,
+                include_uncertain=True,
+                include_historical=True,
+                include_family=True,
+            )
+            return self._annotated_from_spans(
+                text, all_spans,
+                result_types=result_types, mode=mode, min_grade=min_grade,
+                annotation_fields=annotation_fields,
+            )
 
     def _annotated_from_spans(
         self,

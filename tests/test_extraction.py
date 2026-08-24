@@ -726,6 +726,62 @@ class TestThreadSafety:
             "concurrent find_terms returned divergent results"
         )
 
+    def test_annotated_single_text_holds_service_lock(self, service):
+        """CR-062: extract(str, format="annotated") must serialize on the
+        service lock like every other public entry point.
+
+        Deterministic probe: instrument _find_terms_locked to record
+        concurrent entries; without the lock, two barrier-synchronized
+        threads overlap inside the (non-thread-safe) NLP pipeline; with it,
+        the second thread blocks before entering.
+        """
+        import threading
+        import time as _time
+
+        inner = service._find_terms_locked
+        active: list[int] = []
+        max_active = 0
+
+        def probe(*args, **kwargs):
+            nonlocal max_active
+            active.append(1)
+            max_active = max(max_active, len(active))
+            _time.sleep(0.05)
+            try:
+                return inner(*args, **kwargs)
+            finally:
+                active.pop()
+
+        service._find_terms_locked = probe
+        try:
+            texts = [
+                "Patient takes metformin 500 mg daily for type 2 diabetes.",
+                "HbA1c was 7.2 percent.",
+            ]
+            errors: list[Exception] = []
+            barrier = threading.Barrier(2)
+
+            def run(text):
+                try:
+                    barrier.wait()
+                    service.extract(text, format="annotated")
+                except Exception as exc:  # noqa: BLE001 — captured for assertion
+                    errors.append(exc)
+
+            threads = [threading.Thread(target=run, args=(t,)) for t in texts]
+            for th in threads:
+                th.start()
+            for th in threads:
+                th.join()
+        finally:
+            service._find_terms_locked = inner
+
+        assert not errors, f"annotated extract raised: {errors}"
+        assert max_active == 1, (
+            "concurrent entry into the NLP pipeline on the annotated path — "
+            "the service lock is not held (CR-062 regression)"
+        )
+
 
 class TestAnnotatedFields:
     """annotation_fields configuration for format="annotated"."""
