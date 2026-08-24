@@ -7,10 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-_No unreleased changes yet. v0.0.3 shipped on 2026-08-20; subsequent work tracks
-here until the next tag._
+_No unreleased changes yet. v0.0.3 was cut 2026-08-24 (re-cut from the 2026-08-20 tag
+to include the CR-062 annotated-path lock fix; no artifact was published from the
+earlier cut); subsequent work tracks here until the next tag._
 
-## [0.0.3] - 2026-08-20
+## [0.0.3] - 2026-08-24
 
 Performance and configurability release for extraction: GPU acceleration,
 batch API, and a 2.7x batch-throughput fix found via an instrumented
