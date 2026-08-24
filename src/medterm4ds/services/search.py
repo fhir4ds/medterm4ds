@@ -194,6 +194,14 @@ class CanonicalSearchResult:
     total_member_count: int
     members: list[dict[str, Any]] = field(default_factory=list)
     combination_members: list[dict[str, Any]] = field(default_factory=list)
+    # Composite-group fan-out (dictionary pass). Populated on every row of a
+    # group result: group_id identifies the group; group_cids lists the parent
+    # CID first (when the composite is anchored) then component CIDs.
+    # Pre-migration consumers take top-1 (the parent) and get today's
+    # behavior; group-aware consumers emit one item per component (skip the
+    # parent entry) per DECOMPOSITION_ARCHITECTURE.md 5.
+    group_id: str | None = None
+    group_cids: list[str] = field(default_factory=list)
 
     @property
     def code(self) -> str:
@@ -238,6 +246,10 @@ class CanonicalSearchResult:
             "members": self.members,
             "combination_members": self.combination_members,
         }
+        if self.group_id:
+            d["group_id"] = self.group_id
+            d["group_cids"] = self.group_cids
+        return d
 
 
 def _score_to_grade(score: float) -> str:
@@ -426,6 +438,7 @@ class SearchService:
         self._bm25_loaded = False
         self._canonical_loaded = False
         self._canonical_by_id: dict[str, dict] = {}
+        self._group_terms: dict[str, dict] = {}
         self._canonical_by_anchor: dict[tuple[str, str], str] = {}
         self._code_to_canonical_id: dict[tuple[str, str], str] = {}
         self._concepts_faiss = None
@@ -486,8 +499,115 @@ class SearchService:
             self._code_to_canonical_id[(anchor_system, anchor_code)] = cid
             for m in v.get("members", []):
                 self._code_to_canonical_id[(m["system"], m["code"])] = cid
+        self._build_group_dictionary(vsets)
         self._canonical_loaded = True
-        logger.info("Loaded %d Master Canonical Value Sets (%d code pairs)", len(vsets), len(self._code_to_canonical_id))
+        logger.info("Loaded %d Master Canonical Value Sets (%d code pairs, %d group terms)",
+                    len(vsets), len(self._code_to_canonical_id), len(self._group_terms))
+
+    def _build_group_dictionary(self, vsets: list[dict]) -> None:
+        """Inverted index for the composite-group dictionary pass.
+
+        Terms map to {group_id, parent_cid, member_cids}: the materialized
+        composite_groups term (panel display name), plus the parent anchor's
+        name and consumer synonyms when the composite is itself anchored.
+        Group membership = anchors carrying the group_id; the parent is the
+        anchor whose code equals the group_id suffix (join contract:
+        group_id == f'GP-{anchor code}').
+        """
+        members_by_group: dict[str, list[str]] = {}
+        terms: dict[str, str] = {}
+        for v in vsets:
+            cid = v["canonical_id"]
+            for g in v.get("composite_groups") or []:
+                gid = g.get("group_id")
+                if not gid:
+                    continue
+                lst = members_by_group.setdefault(gid, [])
+                if cid not in lst:
+                    lst.append(cid)
+                term = (g.get("term") or "").strip().lower()
+                if term:
+                    terms.setdefault(term, gid)
+        # parent anchor per group (code == gid suffix) + its name/synonyms as terms
+        parent_by_group: dict[str, str] = {}
+        code_to_cid = {(code): cid for (system, code), cid in self._canonical_by_anchor.items()}
+        for gid in members_by_group:
+            suffix = gid[3:] if gid.startswith("GP-") else gid
+            pcid = code_to_cid.get(suffix)
+            if pcid:
+                parent_by_group[gid] = pcid
+                pa = self._canonical_by_id.get(pcid, {})
+                for t in [pa.get("patient_friendly_name")] + list(pa.get("consumer_synonyms") or []):
+                    if t and str(t).strip():
+                        terms.setdefault(str(t).strip().lower(), gid)
+        self._group_terms = {
+            t: {"group_id": gid,
+                "parent_cid": parent_by_group.get(gid),
+                "member_cids": sorted(members_by_group[gid])}
+            for t, gid in terms.items()
+        }
+
+    def _group_dictionary_search(
+        self,
+        query: str,
+        *,
+        result_types: str | list[str] | None,
+        sources: list[str] | None,
+        count: int,
+    ) -> list[CanonicalSearchResult]:
+        """Exact-match dictionary pass over composite-group terms.
+
+        Runs BEFORE embedding search (DECOMPOSITION_ARCHITECTURE.md 5): a
+        query that exactly names a composite returns the group fan-out —
+        parent CID first (naive consumers keep today's behavior), then
+        components — each row tagged with group_id/group_cids. Group-ID
+        identity is the trigger, never score ties.
+        """
+        hit = self._group_terms.get(" ".join(query.lower().split()))
+        if hit is None:
+            return []
+        gid = hit["group_id"]
+        row_cids: list[str] = []
+        if hit["parent_cid"]:
+            row_cids.append(hit["parent_cid"])
+        row_cids += [c for c in hit["member_cids"] if c != hit["parent_cid"]]
+
+        result_type_prefixes = _result_types_to_prefixes(result_types)
+        source_set = set(sources or []) or None
+        if source_set:
+            source_set = {s.upper() for s in source_set}
+            for extra in ("LNC", "LOINC", "SNOMED", "SNOMEDCT_US", "RXNORM", "ATC"):
+                source_set.add(extra)
+
+        rows: list[CanonicalSearchResult] = []
+        for cid in row_cids:
+            v = self._canonical_by_id.get(cid)
+            if v is None:
+                continue
+            anchor_system = v.get("anchor_system") or v.get("system")
+            if source_set and anchor_system.upper() not in source_set:
+                continue
+            if result_type_prefixes and not any(cid.startswith(p) for p in result_type_prefixes):
+                continue
+            rows.append(CanonicalSearchResult(
+                canonical_id=cid,
+                domain=v.get("domain", []),
+                anchor_system=anchor_system,
+                anchor_code=v.get("anchor_code") or v.get("code"),
+                patient_friendly_name=v.get("patient_friendly_name", ""),
+                score=1.0,
+                match_grade="exact",
+                matched_via_code=f"group:{gid}",
+                matched_via_display=query,
+                total_member_count=self._total_member_count(v),
+                members=v.get("members", []),
+                combination_members=v.get("combination_members", []),
+                group_id=gid,
+                group_cids=row_cids,
+            ))
+            if len(rows) >= count:
+                break
+        return rows
 
     def _resolve_categories(self, sources: list[str] | None) -> list[str]:
         if sources is None:
@@ -966,6 +1086,14 @@ class SearchService:
         _validate_count(count)
         self._ensure_canonical()
         self._ensure_concepts()
+
+        # Composite-group dictionary pass BEFORE embedding search: an exact
+        # group-term match fans out to the group (parent first). Falls
+        # through to the concept-index path on any miss.
+        group_results = self._group_dictionary_search(
+            query, result_types=result_types, sources=sources, count=count)
+        if group_results:
+            return group_results
 
         # Option C-B: concept index is the primary path when available.
         # If it returns empty (all results below 0.70 threshold), that's
