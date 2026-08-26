@@ -12,6 +12,12 @@ real-data quality gate.
 - Confirm `src/medterm4ds/__init__.py` `__version__` matches (servers and the
   FHIR CapabilityStatement are single-sourced from it).
 - Confirm `hatch version` prints the same version.
+- Regenerate `uv.lock` (`uv lock`) and commit it with the bump — the lock's
+  own `medterm4ds` entry goes stale otherwise and `uv lock --check` fails on
+  fresh clones (QA-006).
+- Grep the repo for leftover old-version literals — tests and the website
+  hero badge have both shipped stale this way (QA-002, and the v0.0.3 badge):
+  `grep -rn "<old-version>" src tests web/website/src`.
 - Update `CHANGELOG.md`: `[Unreleased]` → `[x.y.z] - YYYY-MM-DD`, fresh empty
   `[Unreleased]` on top.
 - Confirm package metadata reports `License-Expression: GPL-3.0-only`.
