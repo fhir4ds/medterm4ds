@@ -22,6 +22,35 @@ def _reload_search(monkeypatch, cache_dir=None, revision=None):
     return importlib.reload(search_mod)
 
 
+_ENV_KEYS = ("MEDTERM4DS_CACHE_DIR", "MEDTERM4DS_HF_REVISION")
+
+
+@pytest.fixture(autouse=True)
+def _restore_search_module():
+    """importlib.reload mutates the search module IN PLACE — the test-time
+    _CACHE_DIR (a dead tmp dir, possibly holding empty fixture files) stays
+    live for every later test in the process, and extraction tests then read
+    an empty canonical JSON (JSONDecodeError, 12 failures in full-suite
+    runs while passing alone). monkeypatch cannot undo a reload, so this
+    finalizer restores the real env + Path.home FIRST (its finalizer runs
+    before monkeypatch's LIFO undo) and re-executes the module once more
+    under the operator's actual environment."""
+    import os
+
+    saved_env = {k: os.environ.get(k) for k in _ENV_KEYS}
+    saved_home = Path.home
+    yield
+    for key, value in saved_env.items():
+        if value is None:
+            os.environ.pop(key, None)
+        else:
+            os.environ[key] = value
+    Path.home = saved_home
+    import medterm4ds.services.search as search_mod
+
+    importlib.reload(search_mod)
+
+
 class TestCacheLayout:
     def test_default_cache_is_revision_keyed(self, monkeypatch, tmp_path):
         monkeypatch.setattr(Path, "home", lambda: tmp_path)
