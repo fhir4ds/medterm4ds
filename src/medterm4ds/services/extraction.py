@@ -1593,13 +1593,9 @@ class ExtractionService:
                             if part_resolved:
                                 break
 
-        seen: dict[tuple[str, str], ExtractedConcept] = {}
-        for c in concepts:
-            # QC-183: include status in the dedup key (see batch path above).
-            key = (c.canonical_id or f"{c.source}:{c.code}", c.status)
-            if key not in seen or c.confidence > seen[key].confidence:
-                seen[key] = c
-        return sorted(seen.values(), key=lambda c: c.confidence, reverse=True)
+        # CR-063: shared with the batch path — a local copy here forked
+        # silently if the QC-183 status-inclusive key ever changed.
+        return _dedup_concepts(concepts)
 
     def _resolve_spans_batch_locked(
         self,

@@ -27,7 +27,6 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
-from medterm4ds.core.env import env_int
 from medterm4ds.core.models import CodeRef
 from medterm4ds.core.normalize import SOURCE_LABELS
 
@@ -1053,25 +1052,9 @@ class SearchService:
             return [[] for _ in queries]
 
         engine = self._ensure_semantic()
-        engine._ensure_loaded()
-
-        # Batch-embed all queries
-        import numpy as np
-        import torch
-        BATCH_SIZE = env_int("MEDTERM4DS_EMBED_BATCH_SIZE", minimum=1) or 64
-        all_embeddings = []
-        for i in range(0, len(queries), BATCH_SIZE):
-            batch = queries[i:i + BATCH_SIZE]
-            inputs = engine._tokenizer(
-                batch, return_tensors="pt", truncation=True, max_length=512, padding=True,
-            )
-            inputs = inputs.to(engine._model.device)
-            with torch.no_grad():
-                outputs = engine._model(**inputs)
-                emb = outputs.last_hidden_state.mean(dim=1)
-                emb = torch.nn.functional.normalize(emb, p=2, dim=1)
-                all_embeddings.append(emb.cpu().numpy().astype("float32"))
-        query_embs = np.vstack(all_embeddings) if all_embeddings else np.zeros((0, 768), dtype="float32")
+        # ARCH-001: batch embedding goes through the engine's public API —
+        # the service no longer reaches into _tokenizer/_model internals.
+        query_embs = engine.embed_batch(queries)
 
         # Batch FAISS search (over-fetch to leave room for per-query filtering)
         k = min(self._concepts_faiss.ntotal, max(count * 3, 20))
