@@ -3578,7 +3578,12 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
         current = expansion.get("contains")
         if isinstance(current, list):
             page = current[offset:page_end]
-            expansion["contains"] = page
+            # CR-058: past-the-end pages OMIT contains (FHIR R4: empty
+            # expansions omit the key) instead of emitting contains: [].
+            if page:
+                expansion["contains"] = page
+            else:
+                expansion.pop("contains", None)
             page_size = page_end - offset
             if len(page) < page_size:
                 extensions = expansion.get("extension")
@@ -4311,9 +4316,17 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
             if not isinstance(param, dict):
                 continue
             name = param.get("name", "")
-            has_other_value = any(
-                isinstance(key, str) and key.startswith("value") for key in param
-            )
+            value_keys = [
+                key for key in param
+                if isinstance(key, str) and key.startswith("value")
+            ]
+            has_other_value = bool(value_keys)
+            # CR-053: FHIR R4 Parameters constraint param-1 — at most one
+            # value[x] per parameter. valueBoolean:true + a stray scalar
+            # (or the mirror) passed the wrong-typed checks below and the
+            # extra value was silently ignored.
+            if name in (names | boolean_names) and len(value_keys) > 1:
+                return str(name)
             if name in boolean_names:
                 # Key presence (not value truthiness): a JSON null means the
                 # parameter is absent (QC-245 sibling) — not a type error.

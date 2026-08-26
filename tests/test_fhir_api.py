@@ -1953,6 +1953,30 @@ class TestFhirEndpoints:
         assert resp.status_code == 400
         assert "string/integer" in resp.json()["issue"][0]["diagnostics"]
 
+    def test_extract_dual_value_x_rejected_cr053(self, fhir_app):
+        """CR-053: a parameter carrying BOTH valueBoolean and a scalar
+        value[x] violates FHIR R4 param-1 (at most one value[x]) — the
+        wrong-typed check used to pass it and silently ignore the stray."""
+        from starlette.testclient import TestClient
+        with TestClient(fhir_app) as client:
+            dual_bool = client.post(
+                "/fhir/CodeSystem/$extract",
+                json={"resourceType": "Parameters", "parameter": [
+                    {"name": "text", "valueString": "no evidence of diabetes"},
+                    {"name": "includeNegated", "valueBoolean": True,
+                     "valueString": "yes"},
+                ]},
+            )
+            dual_scalar = client.post(
+                "/fhir/CodeSystem/$extract",
+                json={"resourceType": "Parameters", "parameter": [
+                    {"name": "text", "valueString": "x", "valueCode": "y"},
+                ]},
+            )
+        assert dual_bool.status_code == 400
+        assert dual_scalar.status_code == 400
+
+
     # -- $extract annotationFields (QA-005 cross-surface parity) --
 
     def test_extract_annotation_fields_forwarded_qa005(self, fhir_app, monkeypatch):

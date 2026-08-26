@@ -198,12 +198,17 @@ def _register_context_arbiter(nlp) -> bool:
     rules += [ConTextRule(literal=u, category="MEASUREMENT",
                           pattern=_unit_pattern(u))
               for u in _LAB_RESULT_UNIT_REGEXES]
-    # "was/is/at N" — bare numeric result context ("Creatinine was 2.1",
+    # "was/is N" — bare numeric result context ("Creatinine was 2.1",
     # "potassium is 5.2"). These sentences carry no explicit measurement cue
     # word or unit, so Signals 1-2 miss them; the copula+number pattern is
     # the remaining disambiguator (10 no-signal errors in the v2 corpus).
+    # CR-052: "at" is deliberately excluded — it fired MEASUREMENT
+    # sentence-wide on clock times and whole-number doses ("given at 8",
+    # "was 500 mg"), degrading clean medication decisions to [lab,
+    # medication] on parser-less installs. "was/is" keep both integer and
+    # decimal results ("platelets was 150" stays a lab signal).
     rules += [ConTextRule(literal="copula-result", category="MEASUREMENT",
-                          pattern=r"\b(?:was|is|at)\s+\d+(?:\.\d+)?\b")]
+                          pattern=r"\b(?:was|is)\s+\d+(?:\.\d+)?\b")]
     rules += [ConTextRule(literal=c, category="ADMINISTRATION")
               for c in _ADMINISTRATION_CUES]
     ctx.add(rules)
