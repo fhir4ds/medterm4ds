@@ -624,15 +624,22 @@ class McpRuntime:
         results: list[dict[str, Any]] = []
         truncated = False
         for ref in refs:
+            # CR-055: fetch limit+1 so "exactly at limit" result sets are not
+            # falsely flagged truncated — only a row BEYOND the limit proves
+            # more existed. depth_cap_hit keeps its own signal.
+            fetch_limit = limit + 1 if limit is not None else None
             relations, depth_cap_hit = get_descendants_bfs(
                 ref,
                 engine=self._engine(),
                 max_depth=max_depth,
-                limit=limit,
+                limit=fetch_limit,
                 include_retired=include_retired,
             )
+            if limit is not None and len(relations) > limit:
+                truncated = True
+                relations = relations[:limit]
             results.extend(relation.to_dict() for relation in relations)
-            if depth_cap_hit or (limit is not None and len(relations) >= limit):
+            if depth_cap_hit:
                 truncated = True
         return {"results": results, "truncated": truncated}
 

@@ -61,6 +61,7 @@ def get_code_infos(
     # (what the caller queried); resolve_current uses the resolved replacement.
     infos = engine.get_code_infos(effective)
     out: list[CodeInfo | None] = []
+    tty_fixups: list[tuple[int, CodeRef]] = []
     for ref, info, resolution in zip(normalized, infos, resolutions, strict=True):
         if resolution is None or resolution.status == "not_found":
             out.append(info)
@@ -88,15 +89,10 @@ def get_code_infos(
             cui = resolution.resolved_cui
             aui = resolution.resolved_aui
             suppress = resolution.resolved_suppress
-            # Active replacement should have an active atom — fetch its TTY
-            # via get_code_infos on the resolved ref (best-effort; falls back
-            # to None when the resolved ref's atoms are also suppressed).
-            resolved_info = (
-                engine.get_code_infos([target_ref])[0]
-                if target_ref != ref
-                else info
-            )
-            tty = resolved_info.tty if resolved_info else None
+            # CR-056: the resolved atom's TTY is fetched in ONE batch after
+            # the loop — the per-code engine.get_code_infos([target_ref])
+            # round-trip made resolve paths N+1.
+            tty = info.tty if (info is not None and target_ref == ref) else None
         else:
             # historical (or ambiguous/duplicate fallthrough): show the
             # input atom's display from the resolution record.
@@ -119,6 +115,17 @@ def get_code_infos(
                 suppress=suppress if suppress is not None else (info.suppress if info else None),
             )
         )
+        if use_resolved and target_ref != ref:
+            tty_fixups.append((len(out) - 1, target_ref))
+    if tty_fixups:
+        from dataclasses import replace
+
+        fetched = engine.get_code_infos([ref for _, ref in tty_fixups])
+        for (idx, _ref), f_info in zip(tty_fixups, fetched, strict=True):
+            # Best-effort, matching the old inline fetch: no info or no TTY
+            # on the resolved atom leaves the input atom's fallback in place.
+            if f_info is not None and f_info.tty is not None and out[idx] is not None:
+                out[idx] = replace(out[idx], tty=f_info.tty)
     return out
 
 

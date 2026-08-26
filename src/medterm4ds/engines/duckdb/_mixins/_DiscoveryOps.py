@@ -176,15 +176,27 @@ class _DiscoveryOps:
             # present: candidate lists (domain wrappers, FHIR $expand
             # defaults) legitimately over-include sources a given database
             # may not carry, and those must keep returning the present ones.
-            probe_placeholders = ",".join(["?"] * len(normalized_sources))
-            found_sources = {
-                row[0]
-                for row in self.con.execute(
-                    f"SELECT DISTINCT {source_col} FROM {table_name} "
-                    f"WHERE {source_col} IN ({probe_placeholders})",
-                    list(normalized_sources),
-                ).fetchall()
-            }
+            # CR-059: memoized per engine instance — this probe ran a
+            # SELECT DISTINCT on every search_names call (hot path); a
+            # database's source presence is static for the process lifetime.
+            cache = getattr(self, "_source_presence_cache", None)
+            if cache is None:
+                cache = {}
+                self._source_presence_cache = cache
+            cache_key = (table_name, frozenset(normalized_sources))
+            if cache_key in cache:
+                found_sources = cache[cache_key]
+            else:
+                probe_placeholders = ",".join(["?"] * len(normalized_sources))
+                found_sources = {
+                    row[0]
+                    for row in self.con.execute(
+                        f"SELECT DISTINCT {source_col} FROM {table_name} "
+                        f"WHERE {source_col} IN ({probe_placeholders})",
+                        list(normalized_sources),
+                    ).fetchall()
+                }
+                cache[cache_key] = found_sources
             if not found_sources:
                 raise ValueError(
                     "source(s) not found in this database: "

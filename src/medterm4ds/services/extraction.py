@@ -845,11 +845,6 @@ class NlpPipeline:
         # Step 1: Run text through medspaCy sentencizer (PyRuSH)
         doc = self._nlp(text)
 
-        # Parser pass (same text, separate model) for the three-signal
-        # arbiter's Signals 1-2 (head noun, unit type). Aligned to spans
-        # by character offsets below.
-        parser_doc = self._parser_nlp(text) if self._parser_nlp is not None else None
-
         # Step 2: Execute GLiNER zero-shot NER per sentence/clause
         raw_entities = []
         for sent in doc.sents:
@@ -872,6 +867,11 @@ class NlpPipeline:
 
         if not raw_entities:
             return []
+
+        # CR-054: parser pass runs only when entities exist — notes with
+        # zero medical entities were paying the full tagger+parser cost on
+        # the whole text for nothing.
+        parser_doc = self._parser_nlp(text) if self._parser_nlp is not None else None
 
         return self._finalize_doc(text, doc, parser_doc, raw_entities)
 
@@ -902,11 +902,6 @@ class NlpPipeline:
             return []
 
         docs = list(self._nlp.pipe(texts, batch_size=8))
-        parser_docs = (
-            list(self._parser_nlp.pipe(texts, batch_size=16))
-            if self._parser_nlp is not None
-            else [None] * len(texts)
-        )
 
         # Pool sentences across all texts, remembering (doc index, sentence
         # start offset) so batched results scatter back exactly like
@@ -937,6 +932,19 @@ class NlpPipeline:
                         "score": ent["score"],
                         "text": ent["text"],
                     })
+
+        # CR-054: the en_core_web_sm parse runs only for texts that HAVE
+        # entities — blanket-parsing every input paid tagger+parser cost on
+        # entity-free texts for nothing, batch-wide.
+        parser_docs: list[Any] = [None] * len(texts)
+        if self._parser_nlp is not None:
+            needy = [i for i, raw in enumerate(raw_per_doc) if raw]
+            if needy:
+                parsed = self._parser_nlp.pipe(
+                    (texts[i] for i in needy), batch_size=16
+                )
+                for i, parser_doc in zip(needy, parsed):
+                    parser_docs[i] = parser_doc
 
         return [
             self._finalize_doc(texts[i], docs[i], parser_docs[i], raw_per_doc[i])
