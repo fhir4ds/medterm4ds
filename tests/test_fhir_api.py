@@ -1952,3 +1952,82 @@ class TestFhirEndpoints:
             )
         assert resp.status_code == 400
         assert "string/integer" in resp.json()["issue"][0]["diagnostics"]
+
+    # -- $extract annotationFields (QA-005 cross-surface parity) --
+
+    def test_extract_annotation_fields_forwarded_qa005(self, fhir_app, monkeypatch):
+        """QA-005: annotationFields must reach the service from BOTH routes.
+        Previously FHIR silently ignored the parameter (200 + default
+        markers) while MCP rejected it — the worst of the three postures."""
+        from starlette.testclient import TestClient
+
+        import medterm4ds.services.extraction as extraction_module
+
+        calls: list[dict] = []
+
+        def _fake_annotated(text, *, format="codes", **kwargs):
+            calls.append(kwargs)
+            if format == "annotated":
+                return {"concepts": [], "annotated_text": f"[{text}]", "spans": []}
+            return []
+
+        monkeypatch.setattr(extraction_module, "extract", _fake_annotated)
+        with TestClient(fhir_app) as client:
+            get_resp = client.get(
+                "/fhir/CodeSystem/$extract",
+                params={"text": "takes metformin", "format": "annotated",
+                        "annotationFields": "source_code,text"},
+            )
+            post_resp = client.post(
+                "/fhir/CodeSystem/$extract",
+                json={"resourceType": "Parameters", "parameter": [
+                    {"name": "text", "valueString": "takes metformin"},
+                    {"name": "format", "valueCode": "annotated"},
+                    {"name": "annotationFields", "valueString": "canonical_id"},
+                ]},
+            )
+        assert get_resp.status_code == 200, get_resp.text
+        assert post_resp.status_code == 200, post_resp.text
+        assert calls[0]["annotation_fields"] == ["source_code", "text"]
+        assert calls[1]["annotation_fields"] == ["canonical_id"]
+
+    def test_extract_annotation_fields_bogus_400_pre_ner_qa005(
+        self, fhir_app, monkeypatch,
+    ):
+        """Bogus annotationFields must 400 in milliseconds (QC-163 parity),
+        never reach the NER executor, and valueBoolean is a type error."""
+        from starlette.testclient import TestClient
+
+        import medterm4ds.services.extraction as extraction_module
+
+        calls: list[dict] = []
+        monkeypatch.setattr(
+            extraction_module, "extract",
+            lambda *a, **k: calls.append(k) or [],
+        )
+        with TestClient(fhir_app) as client:
+            get_resp = client.get(
+                "/fhir/CodeSystem/$extract",
+                params={"text": "takes metformin", "format": "annotated",
+                        "annotationFields": "bogus"},
+            )
+            post_resp = client.post(
+                "/fhir/CodeSystem/$extract",
+                json={"resourceType": "Parameters", "parameter": [
+                    {"name": "text", "valueString": "takes metformin"},
+                    {"name": "annotationFields", "valueString": "text,bogus"},
+                ]},
+            )
+            bool_resp = client.post(
+                "/fhir/CodeSystem/$extract",
+                json={"resourceType": "Parameters", "parameter": [
+                    {"name": "text", "valueString": "takes metformin"},
+                    {"name": "annotationFields", "valueBoolean": True},
+                ]},
+            )
+        for resp in (get_resp, post_resp):
+            assert resp.status_code == 400, resp.text
+            assert resp.json()["resourceType"] == "OperationOutcome"
+        assert bool_resp.status_code == 400
+        assert "string/integer" in bool_resp.json()["issue"][0]["diagnostics"]
+        assert calls == [], "service must not run on invalid annotationFields"

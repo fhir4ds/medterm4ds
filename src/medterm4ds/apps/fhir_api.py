@@ -3975,6 +3975,7 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
         resultTypes: str | None = Query(None, description="Comma-separated result types to filter (condition,medication,drug_class,lab,vital,procedure,vaccine,symptom)"),
         mode: str = Query(DEFAULT_EXTRACT_MODE, pattern="^(lexical|semantic|hybrid|canonical)$"),
         minGrade: str = Query(DEFAULT_EXTRACT_MIN_GRADE, pattern="^(certain|exact|probable|possible|broader)$"),
+        annotationFields: str | None = Query(None, description="Comma-separated annotated-marker fields (format=annotated only; ignored otherwise): text, name, type, source_code, canonical_id, status"),
         includeNegated: bool = Query(False),
         includeUncertain: bool = Query(False),
         includeHistorical: bool = Query(False),
@@ -3984,6 +3985,14 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
         not_ready = _check_ready(request)
         if not_ready is not None:
             return not_ready
+        # QA-005: validate annotationFields pre-NER via the canonical
+        # normalizer (ValueError -> 400), so garbage fails in milliseconds
+        # like the other enum params instead of a 500 from the executor.
+        annotation_fields = _validate_annotation_fields_param(
+            request, annotationFields
+        )
+        if isinstance(annotation_fields, Response):
+            return annotation_fields
         # QC-305 (MEDIUM): format=annotated returns a non-FHIR JSON document
         # (concepts/annotated_text/spans — no resourceType), which cannot be
         # rendered as FHIR XML. The prior behavior silently downgraded a
@@ -4003,7 +4012,7 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
         payload = await _run_db(
             _ner_executor(request), _do_extract, text, format, nerLabels,
             resultTypes, mode, minGrade, includeNegated, includeUncertain,
-            includeHistorical, includeFamily,
+            includeHistorical, includeFamily, annotation_fields,
         )
         return _fhir_response(request, payload)
 
@@ -4028,7 +4037,8 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
         }
         wrong_typed = _wrong_typed_parameter(
             body,
-            {"text", "format", "nerLabels", "resultTypes", "mode", "minGrade"},
+            {"text", "format", "nerLabels", "resultTypes", "mode", "minGrade",
+             "annotationFields"},
             boolean_names=include_names,
         )
         if wrong_typed is not None:
@@ -4091,6 +4101,12 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
         # channel (they were previously unexpressible via POST — silently
         # defaulted false). Absent stays false (GET parity).
         bools = _parse_boolean_parameters(body)
+        # QA-005: annotationFields validated pre-NER, same as the GET route.
+        annotation_fields = _validate_annotation_fields_param(
+            request, params.get("annotationFields")
+        )
+        if isinstance(annotation_fields, Response):
+            return annotation_fields
         payload = await _run_db(
             _ner_executor(request), _do_extract, str(text),
             fmt,
@@ -4102,13 +4118,26 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
             bools.get("includeUncertain", False),
             bools.get("includeHistorical", False),
             bools.get("includeFamily", False),
+            annotation_fields,
         )
         return _fhir_response(request, payload)
+
+    def _validate_annotation_fields_param(request, value):
+        """QA-005: normalize+validate annotationFields via the canonical
+        service validator (single source for the valid field set).
+        Returns the field list, None when absent, or a 400 Response."""
+        if value is None:
+            return None
+        from medterm4ds.services.extraction import _normalize_annotation_fields
+        try:
+            return _normalize_annotation_fields(value)
+        except ValueError as exc:
+            return _fhir_error_response(request, 400, str(exc))
 
     def _do_extract(
         text, fmt, ner_labels_str, result_types_str, mode, min_grade,
         include_negated, include_uncertain=False, include_historical=False,
-        include_family=False,
+        include_family=False, annotation_fields=None,
     ):
         from medterm4ds.services.extraction import extract as extract_service
 
@@ -4125,6 +4154,7 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
             include_uncertain=include_uncertain,
             include_historical=include_historical,
             include_family=include_family,
+            annotation_fields=annotation_fields,
         )
 
         # format="annotated" returns a dict, not a list. QC-151: the dict's

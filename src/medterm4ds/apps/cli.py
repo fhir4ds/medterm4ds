@@ -270,6 +270,14 @@ def build_parser() -> argparse.ArgumentParser:
         choices=["certain", "exact", "probable", "possible", "broader"],
         help="Minimum ConText certainty grade to keep (default: certain).",
     )
+    # QA-005: annotation_fields existed only on the Python API — wire
+    # surfaces either ignored it (FHIR, silently) or rejected it (MCP).
+    extract.add_argument(
+        "--annotation-fields",
+        help="Comma-separated annotated-marker fields for --format annotated "
+             "(text, name, type, source_code, canonical_id, status). "
+             "Default: text,type.",
+    )
     extract.add_argument("--include-negated", action="store_true", help="Include negated mentions.")
     # QC-166: these existed only on the Python API — historical mentions
     # ('History of MI in 2019') were unreachable from CLI/FHIR/MCP.
@@ -1722,18 +1730,28 @@ def run_extract(args: argparse.Namespace) -> int:
     # on the parser; the service accepts str | list — pass a list.
     ner_labels = args.ner_labels.split(",") if args.ner_labels else None
     result_types = args.result_types.split(",") if args.result_types else None
-    results = extract_service(
-        args.text,
-        format=args.format,
-        ner_labels=ner_labels,
-        result_types=result_types,
-        mode=args.mode,
-        min_grade=args.min_grade,
-        include_negated=args.include_negated,
-        include_uncertain=args.include_uncertain,
-        include_historical=args.include_historical,
-        include_family=args.include_family,
+    annotation_fields = (
+        args.annotation_fields.split(",") if args.annotation_fields else None
     )
+    try:
+        results = extract_service(
+            args.text,
+            format=args.format,
+            ner_labels=ner_labels,
+            result_types=result_types,
+            mode=args.mode,
+            min_grade=args.min_grade,
+            include_negated=args.include_negated,
+            include_uncertain=args.include_uncertain,
+            include_historical=args.include_historical,
+            include_family=args.include_family,
+            annotation_fields=annotation_fields,
+        )
+    except ValueError as exc:
+        # Comma-list args (annotation_fields, free-form result_types) pass
+        # argparse choices and are validated service-side (eagerly, pre-NER);
+        # surface them as a one-line error like every sibling runner.
+        raise SystemExit(f"Error: {exc}") from exc
     # annotated format returns a dict with annotated_text + spans, not a list of records
     if args.format == "annotated":
         import json as _json

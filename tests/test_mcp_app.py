@@ -453,3 +453,45 @@ def test_mcp_search_unknown_result_types_skip_service(tmp_path, monkeypatch):
     assert payload["results"] == []
     assert called["n"] == 0
     assert any("bogus_type" in w for w in payload.get("warnings", []))
+
+
+def test_mcp_extract_annotation_fields_forwarded_qa005(tmp_path, monkeypatch):
+    """QA-005: extract(annotation_fields=[...]) must reach the service.
+    Previously the tool schema rejected the kwarg entirely while FHIR
+    silently ignored its twin parameter — cross-surface parity fix."""
+    import asyncio
+
+    db_path = tmp_path / "umls.duckdb"
+    _make_duckdb(db_path)
+    runtime = McpRuntime(_settings(db_path, prepare_cache=False))
+    runtime.open()
+    captured: dict = {}
+
+    def fake_extract(text, *, format="codes", **kwargs):
+        captured.update(kwargs)
+        if format == "annotated":
+            return {"concepts": [], "annotated_text": "[x]", "spans": []}
+        return []
+
+    monkeypatch.setattr("medterm4ds.services.extraction.extract", fake_extract)
+
+    from medterm4ds.apps.mcp import create_mcp_server
+    from fastmcp import Client
+
+    async def run():
+        server = create_mcp_server(runtime=runtime)
+        async with Client(server) as client:
+            return await client.call_tool(
+                "extract",
+                {"text": "takes metformin", "format": "annotated",
+                 "annotation_fields": ["source_code", "text"]},
+            )
+
+    try:
+        result = asyncio.run(run())
+    finally:
+        runtime.close()
+
+    payload = result.data if hasattr(result, "data") else result
+    assert payload["annotated_text"] == "[x]"
+    assert captured["annotation_fields"] == ["source_code", "text"]

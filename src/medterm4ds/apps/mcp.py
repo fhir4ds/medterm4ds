@@ -901,6 +901,7 @@ def create_mcp_server(
         result_types: list[str] | None = None,
         mode: str | None = None,
         min_grade: str | None = None,
+        annotation_fields: list[str] | None = None,
         include_negated: bool = False,
         include_uncertain: bool = False,
         include_historical: bool = False,
@@ -918,6 +919,7 @@ def create_mcp_server(
         - result_types: Filter resolved concepts by result type (condition, medication, drug_class, lab, vital, procedure, vaccine, symptom).
         - mode: Search mode for code resolution (lexical, semantic, hybrid, canonical). Default: canonical (env-configurable via MEDTERM4DS_EXTRACTION_MODE).
         - min_grade: Minimum match grade (certain, exact, probable, possible, broader). Default: certain (env-configurable via MEDTERM4DS_EXTRACTION_MIN_GRADE).
+        - annotation_fields: Fields rendered in each annotated inline marker (format='annotated' only): text, name, type, source_code (SOURCE:code), canonical_id, status. Default: text,type; unresolved fields render as UNKNOWN.
         - include_negated: Include negated mentions (default: excluded).
         - include_uncertain: Include uncertain mentions (default: excluded).
         - include_historical: Include historical mentions (default: excluded).
@@ -932,6 +934,7 @@ def create_mcp_server(
             result_types=result_types,
             mode=mode,
             min_grade=min_grade,
+            annotation_fields=annotation_fields,
             include_negated=include_negated,
             include_uncertain=include_uncertain,
             include_historical=include_historical,
