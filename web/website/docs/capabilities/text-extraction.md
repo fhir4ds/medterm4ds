@@ -71,6 +71,7 @@ Calls both steps. The `format` parameter controls depth:
 |---|---|---|---|
 | `"codes"` (default) | `ExtractedConcept` with resolved codes | medspaCy + NER + SapBERT | ~250ms |
 | `"terms"` | `FilteredSpan` with text spans only | medspaCy + NER only | ~180ms |
+| `"annotated"` | dict: `concepts` + `annotated_text` + `spans` | medspaCy + NER + SapBERT | ~250ms |
 
 Same parameter across all surfaces:
 
@@ -78,6 +79,7 @@ Same parameter across all surfaces:
 # CLI
 medterm4ds extract "Patient has diabetes" --format codes
 medterm4ds extract "Patient has diabetes" --format terms
+medterm4ds extract "Patient has diabetes" --format annotated
 
 # MCP
 extract(text="Patient has diabetes", format="codes")
@@ -85,6 +87,53 @@ extract(text="Patient has diabetes", format="codes")
 # FHIR
 POST /fhir/CodeSystem/$extract?text=...&format=codes
 ```
+
+## Batch extraction
+
+`extract()` accepts a single text or a **list of texts** — one result per
+text, input order, any format. Batch inputs are processed under a single
+lock acquisition with both heavy stages pooled cross-text: GLiNER runs one
+batched inference over all sentences (`MEDTERM4DS_EXTRACT_BATCH_SIZE`,
+default 32) and canonical resolution deduplicates entity texts across the
+whole batch before embedding (`MEDTERM4DS_EMBED_BATCH_SIZE`, default 64).
+Measured: ~34x vs per-text calls on repeat-heavy drug-label corpora.
+
+```python
+results = mt.extract([note1, note2, note3], format="codes")
+# results[0] has exactly the shape extract(note1, format="codes") returns
+```
+
+Batched inference shifts span scores at the last float digits (same drift
+class as GPU-vs-CPU) — campaign runs should pick one mode and stay in it.
+See [Engine Configuration](../getting-started/engine-configuration.md) for
+the batch-size knobs.
+
+## Annotated output & marker fields
+
+`format="annotated"` returns the concepts **plus** inline-marked text and
+full span metadata (`match_grade`, `source`, `code`, `canonical_id`,
+`status`, `ner_score`, offsets). The `annotation_fields` option selects
+and orders the inline marker fields — `text`, `name`, `type`,
+`source_code` (`SOURCE:code`), `canonical_id`, `status`. Unresolved
+fields render as `UNKNOWN` so field positions stay stable:
+
+```python
+mt.extract("Patient takes metformin 500 mg daily.", format="annotated",
+           annotation_fields=["source_code", "text"])
+# annotated_text: "Patient takes [RXNORM:6809|metformin] [UNKNOWN|500 mg] daily."
+```
+
+Available on every surface (comma-separated on wire surfaces):
+`annotation_fields=` (Python/MCP), `annotationFields=`
+(FHIR `$extract` GET/POST), `--annotation-fields` (CLI). Default
+`text,type` reproduces the historical `[entity|label]` marker.
+
+## GPU acceleration
+
+Set `MEDTERM4DS_DEVICE` (default `auto`) to place GLiNER and SapBERT on
+CUDA/MPS when available; explicit unavailable requests raise. Deterministic
+pipelines should pin `MEDTERM4DS_DEVICE=cpu`. Details in
+[Engine Configuration](../getting-started/engine-configuration.md).
 
 ## ConText: clinical context filtering
 
@@ -151,4 +200,6 @@ export MEDTERM4DS_MAX_EXTRACT_TEXT_CHARS=200000
 pip install medterm4ds[extraction]  # adds gliner + medspacy + transformers
 ```
 
-No GPU required. ~250ms/note on CPU (medspaCy ~30ms + GLiNER ~120ms + search ~100ms).
+CPU is sufficient — ~250ms/note (medspaCy ~30ms + GLiNER ~120ms + search
+~100ms); optional GPU acceleration via
+[Engine Configuration](../getting-started/engine-configuration.md).

@@ -101,3 +101,6 @@ Batched inference changes span scores at the last float digits (padded
 batches, same class of drift as GPU-vs-CPU), so a span exactly on the
 detection threshold can resolve differently between single and batch
 modes. Campaign runs should pick one mode and stay in it.
+
+See the [Text Extraction capability](../capabilities/text-extraction.md)
+for the full batch API, annotated output, and marker-field options.

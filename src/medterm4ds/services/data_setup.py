@@ -315,11 +315,20 @@ def build_duckdb_from_rrf(
                 )
             finally:
                 con.close()
-            if db_path.exists():
-                if not replace:
-                    raise RuntimeError(f"Output database exists: {db_path}")
-                db_path.unlink()
-            os.replace(tmp_db, db_path)
+            if db_path.exists() and not replace:
+                raise RuntimeError(f"Output database exists: {db_path}")
+            # CR-061: no unlink-before-replace — os.replace over a closed
+            # destination is already atomic on POSIX; the unlink opened a
+            # crash window with NO database at the target path. On Windows,
+            # replacing a file another process holds open raises
+            # PermissionError — surface that as an actionable RuntimeError.
+            try:
+                os.replace(tmp_db, db_path)
+            except PermissionError as exc:
+                raise RuntimeError(
+                    f"Cannot replace {db_path}: the file is open in another "
+                    "process (a running server?). Close it and retry."
+                ) from exc
         finally:
             tmp_db.unlink(missing_ok=True)
             Path(str(tmp_db) + ".wal").unlink(missing_ok=True)

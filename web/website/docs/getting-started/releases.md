@@ -35,7 +35,9 @@ Performance fix:
 Extraction configurability:
 
 - `annotation_fields` for `format="annotated"` customizes inline markers
-  (`text`, `name`, `type`, `source_code`, `canonical_id`, `status`)
+  (`text`, `name`, `type`, `source_code`, `canonical_id`, `status`) —
+  every surface: Python/MCP `annotation_fields`, FHIR `annotationFields`,
+  CLI `--annotation-fields`
 - Span metadata carries `match_grade` and `source`/`code`
 - Direct multi-threaded use of the extraction service is safe (service-level
   lock); multiprocessing still requires lazy per-worker model loads

@@ -136,9 +136,11 @@ def read_csv(path: str | Path) -> list[dict[str, Any]]:
     """Read back a file written by :func:`write_csv`.
 
     Canonical reader for the CSV output surface (QC-373): strips the
-    formula-injection guard prefix and maps empty cells to ``None``, so
-    ``read_csv(write_csv(rows))`` returns the same data values as the
-    JSON/JSONL representations.
+    formula-injection guard prefix and maps empty cells to ``None``.
+    CR-060: unlike the JSON/JSONL round-trips, CSV cells come back as
+    STRINGS — ``csv.DictReader`` has no type information, so numbers and
+    booleans written from typed rows do not round-trip to their original
+    types. Compare string-typed data or re-coerce at the call site.
     """
     output_path = Path(path)
     with output_path.open("r", encoding="utf-8", newline="") as file:
