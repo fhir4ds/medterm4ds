@@ -7,9 +7,61 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-_No unreleased changes yet. v0.0.3 was cut 2026-08-24 (re-cut from the 2026-08-20 tag
-to include the CR-062 annotated-path lock fix; no artifact was published from the
-earlier cut); subsequent work tracks here until the next tag._
+### Added
+
+- **`annotation_fields` on every surface** (QA-005): FHIR `$extract`
+  `annotationFields` (GET + POST, validated pre-NER; wrong-typed and dual
+  `value[x]` forms rejected), MCP `extract` tool parameter, and CLI
+  `--annotation-fields`. Previously Python-API-only; FHIR silently ignored
+  the parameter. Wire semantics now match the Python API.
+- Version test derives its expectation from `pyproject.toml` (QA-002) —
+  the hardcoded literal shipped stale once and can't again.
+
+### Fixed
+
+- `resolve_device` rejects out-of-range `cuda:<n>` indexes with the
+  `MEDTERM4DS_DEVICE`-naming error instead of a torch-internal
+  "invalid device ordinal" at model load (QA-003).
+- `extract()` validates `annotation_fields` / `result_types` / `min_grade`
+  BEFORE any NER work — garbage arguments previously paid the full
+  extraction cost before raising (QA-004).
+- ConText copula pattern no longer includes "at" — clock times and
+  whole-number doses ("given at 8") no longer fire MEASUREMENT
+  sentence-wide (CR-052; integer results like "platelets was 150" keep
+  firing).
+- FHIR `$extract` POST rejects parameters carrying more than one
+  `value[x]` (FHIR R4 param-1) instead of silently dropping the extra
+  value (CR-053).
+- Past-the-end `$expand` pages omit `contains` instead of emitting an
+  empty array (CR-058).
+- MCP `discover` no longer flags exactly-at-limit result sets as
+  truncated (CR-055 — fetch limit+1 pattern).
+- CSV reader docstring no longer claims type-preserving round-trips
+  (CR-060); data setup replaces the output database atomically without
+  the unlink crash window, with an actionable error when the target is
+  held open on Windows (CR-061).
+
+### Changed
+
+- Resolve paths fetch resolved-atom TTYs in one batch instead of per-code
+  engine round-trips (CR-056).
+- Closure-table walks are bounded (10k relations per direction); a cap
+  hit marks the closure incomplete with a WARNING instead of walking
+  unbounded hierarchies (CR-057).
+- `search_names` source-presence probe is memoized per engine instance
+  (CR-059).
+- The en_core_web_sm parse runs only for texts that have entities, in
+  both single and batch paths (CR-054).
+- `SemanticSearchEngine.embed_batch()` is the public batch-embed API;
+  the search service no longer touches engine-private attributes
+  (ARCH-001). Single-path dedup now shares `_dedup_concepts` with the
+  batch path (CR-063).
+- `uv.lock` regenerates with version bumps and the release checklist
+  gains lock + stale-literal-grep steps (QA-006).
+
+_v0.0.3 was cut 2026-08-24 (re-cut from the 2026-08-20 tag to include the
+CR-062 annotated-path lock fix; no artifact was published from the earlier
+cut). Subsequent work tracks here until the next tag._
 
 ## [0.0.3] - 2026-08-24
 
