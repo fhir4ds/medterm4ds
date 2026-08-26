@@ -1097,6 +1097,15 @@ def _normalize_annotation_fields(value: str | list[str] | None) -> list[str]:
     return list(value)
 
 
+def _validate_min_grade(grade: str) -> None:
+    """QC-161/QA-004: garbage min_grade was silently treated as the strictest
+    grade (0) because _GRADE_ORDER.get(grade_threshold, 0) defaults unknown
+    keys to 0. Shared by the eager extract() boundary and both resolve paths."""
+    if grade not in _GRADE_ORDER:
+        valid = ", ".join(sorted(_GRADE_ORDER))
+        raise ValueError(f"Unknown min_grade: {grade!r}. Valid: {valid}.")
+
+
 def _annotation_marker_values(
     fields: list[str],
     *,
@@ -1402,15 +1411,9 @@ class ExtractionService:
         # delegation pattern) and reduce to canonical_id prefixes for the
         # post-filtering below.
         result_type_prefixes = _result_types_to_prefixes(result_types)
-        # QC-161: garbage min_grade was silently treated as the strictest
-        # grade (0) because _GRADE_ORDER.get(grade_threshold, 0) defaults
-        # unknown keys to 0. Validate at the service boundary so wire surfaces
-        # that forward it unconstrained (MCP) get a clean ValueError.
-        if grade_threshold not in _GRADE_ORDER:
-            valid = ", ".join(sorted(_GRADE_ORDER))
-            raise ValueError(
-                f"Unknown min_grade: {grade_threshold!r}. Valid: {valid}."
-            )
+        # QC-161: validate at the service boundary so wire surfaces that
+        # forward min_grade unconstrained (MCP) get a clean ValueError.
+        _validate_min_grade(grade_threshold)
 
         # --- Batch path for canonical mode ---
         # Embed ALL search texts in one SapBERT forward pass, then batch-search
@@ -1632,11 +1635,7 @@ class ExtractionService:
         search = get_search_service()
         grade_threshold = min_grade or "probable"
         result_type_prefixes = _result_types_to_prefixes(result_types)
-        if grade_threshold not in _GRADE_ORDER:
-            valid = ", ".join(sorted(_GRADE_ORDER))
-            raise ValueError(
-                f"Unknown min_grade: {grade_threshold!r}. Valid: {valid}."
-            )
+        _validate_min_grade(grade_threshold)
 
         # Global dedup: each unique entity text is embedded exactly once
         # for the whole batch.
@@ -1777,6 +1776,20 @@ class ExtractionService:
             Default ``["text", "type"]`` reproduces the historical
             ``[entity|label]`` marker exactly.
         """
+        # QA-004 (QC-163 parity): fail on garbage BEFORE the NER/resolve
+        # burn — validation used to happen deep inside the resolve paths,
+        # so a bogus argument paid the full extraction cost (measured 2.3s
+        # on a 2.5K-char text) before raising. Only validates what the
+        # chosen format will actually consume, so ignored-for-this-format
+        # arguments keep their lenient pass-through semantics.
+        if format == "annotated":
+            _normalize_annotation_fields(annotation_fields)
+        if format != "terms":
+            from medterm4ds.services.search import _result_types_to_prefixes
+            _result_types_to_prefixes(result_types)
+            if min_grade is not None:
+                _validate_min_grade(min_grade)
+
         if isinstance(text, (list, tuple)):
             texts = list(text)
             for i, t in enumerate(texts):

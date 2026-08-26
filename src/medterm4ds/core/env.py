@@ -112,6 +112,20 @@ def resolve_device(explicit: str | None = None) -> str:
             "False — install a CUDA-enabled torch build or set "
             "MEDTERM4DS_DEVICE=cpu"
         )
+    # QA-003: an explicit out-of-range index (cuda:99) is an unavailable
+    # device request too — is_available() alone lets it through and the
+    # failure surfaces later at model.to() as a torch-internal
+    # "invalid device ordinal" instead of the env-var-naming message.
+    if (
+        dev.type == "cuda"
+        and dev.index is not None
+        and dev.index >= torch.cuda.device_count()
+    ):
+        raise RuntimeError(
+            f"MEDTERM4DS_DEVICE requests cuda:{dev.index} but only "
+            f"{torch.cuda.device_count()} CUDA device(s) are available — "
+            "use a valid index or set MEDTERM4DS_DEVICE=cuda/cpu"
+        )
     if dev.type == "mps":
         try:
             mps_ok = torch.backends.mps.is_available()
