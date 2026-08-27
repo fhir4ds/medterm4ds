@@ -510,6 +510,53 @@ class TestPreparedTableData:
 
         con.close()
 
+    def test_cvx_metadata_group_cvx_copied_when_present(self):
+        """Review finding (CDC crosswalk): the prepared copy dropped the
+        VG-005 group_cvx column — mt4ds.cvx_metadata carried only the
+        historical 3 columns while the main table had 4."""
+        con = _con()
+        _create_raw_tables(con)
+        con.execute(
+            """
+            CREATE TABLE main.cvx_metadata (
+                code VARCHAR,
+                group_name VARCHAR,
+                short_name VARCHAR,
+                group_cvx VARCHAR
+            )
+            """
+        )
+        con.execute(
+            "INSERT INTO main.cvx_metadata VALUES "
+            "('01', 'DTAP', 'DTP', '107')"
+        )
+
+        prepare_mt4ds_schema(con)
+
+        row = con.execute(
+            """
+            SELECT code, group_name, group_cvx
+            FROM mt4ds.cvx_metadata
+            WHERE code = '01'
+            """
+        ).fetchone()
+        assert row == ("01", "DTAP", "107")
+
+        # Old 3-column main tables (prepared from pre-VG-005 builds) still
+        # copy cleanly without the column.
+        con.execute("DROP TABLE mt4ds.cvx_metadata")
+        con.execute("ALTER TABLE main.cvx_metadata DROP COLUMN group_cvx")
+        prepare_mt4ds_schema(con, replace=True)
+        cols = {
+            r[0]
+            for r in con.execute(
+                "SELECT name FROM pragma_table_info('mt4ds.cvx_metadata')"
+            ).fetchall()
+        }
+        assert cols == {"code", "group_name", "short_name"}
+
+        con.close()
+
     def test_same_cui_edges_includes_non_rank1_multi_source_cui(self):
         """Regression for QC-041/QC-043: rank=1 filter dropped same-CUI mappings.
 

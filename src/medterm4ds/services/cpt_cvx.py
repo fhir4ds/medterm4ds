@@ -1,7 +1,9 @@
 """CDC CPT↔CVX crosswalk (single-best vaccine mapping).
 
 The CDC publishes a small table (``cpt.txt``) mapping each vaccine-related
-CPT administration code to the single best CVX code:
+CPT administration code to its best CVX code(s) — one target for almost
+every CPT; 10 CPTs list two (the CDC file itself carries both, e.g. 90700
+→ CVX 166 and 167):
 ``CPT | CPT description | (empty) | CVX short name | CVX | (empty) | last
 updated | row id``. UMLS links CPT and CVX only sporadically via shared CUIs,
 so this table is the authoritative crosswalk for the vaccine domain.
@@ -65,11 +67,12 @@ def get_cpt_cvx_mappings(
 ) -> list[CodeMapping]:
     """CDC CPT↔CVX mappings for the given codes.
 
-    Forward (CPT→CVX) is the CDC single-best target per code. Reverse
-    (CVX→CPT) is the one-to-many inverse: every CPT whose best CVX is the
-    input code. Only fires when the input source and a requested target
-    source form the {CPT, CVX} pair; any other combination returns [] and
-    the caller falls through to the engine path unchanged.
+    Forward (CPT→CVX) returns the CDC-listed target(s) per code — one for
+    almost all CPTs, two for the 10 codes where the CDC table lists a pair.
+    Reverse (CVX→CPT) is the one-to-many inverse: every CPT whose listed
+    CVX is the input code. Only fires when the input source and a requested
+    target source form the {CPT, CVX} pair; any other combination returns
+    [] and the caller falls through to the engine path unchanged.
     """
     targets = {t.upper() for t in target_sources}
     results: list[CodeMapping] = []

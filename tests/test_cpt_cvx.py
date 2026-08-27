@@ -76,7 +76,6 @@ class TestMappingServiceMerge:
         return get_code_mappings(codes, engine, target_sources=targets)
 
     def test_cdc_row_replaces_conflicting_engine_row(self, monkeypatch):
-        monkeypatch.delenv("MEDTERM4DS_CVX_GROUP_URL", raising=False)
         engine = self._engine_with([
             # Same (source, target) pair as the CDC row — dropped as a
             # duplicate; the CDC row (single-best) represents it.
@@ -124,6 +123,48 @@ class TestMappingServiceMerge:
         assert len(results) == 4
         assert [m.target.code for m in tight] == ["86"]
         assert tight[0].match_type == "cdc_cpt_cvx"
+
+    def test_cdc_rows_respect_budget_themselves(self):
+        """Review finding: 10 CPTs (e.g. 90700 DTaP) list TWO CDC targets
+        (CVX 106 DTaP-5-antigen and 20 DTaP-unspecified) — the merge
+        previously seeded every CDC row unchecked, so a budget of 1 still
+        returned 2 rows."""
+        engine = self._engine_with([])
+        from medterm4ds.services.mapping import get_code_mappings
+
+        results = get_code_mappings(
+            [CodeRef("CPT", "90700")], engine, target_sources=["CVX"],
+        )
+        assert sorted(m.target.code for m in results) == ["106", "20"]
+        tight = get_code_mappings(
+            [CodeRef("CPT", "90700")], engine, target_sources=["CVX"],
+            max_results_per_code=1,
+        )
+        assert [m.target.code for m in tight] == ["106"]
+        assert tight[0].match_type == "cdc_cpt_cvx"
+
+    def test_engine_exception_propagates(self):
+        """A DB error from the engine must propagate — the CDC merge is not
+        a fallback path (consistent erroring beats silently partial data)."""
+        class ExplodingEngine:
+            def get_code_mappings(self, *args, **kwargs):
+                raise RuntimeError("db down")
+
+        from medterm4ds.services.mapping import get_code_mappings
+
+        with pytest.raises(RuntimeError, match="db down"):
+            get_code_mappings(
+                [CodeRef("CPT", "90281")], ExplodingEngine(),
+                target_sources=["CVX"],
+            )
+
+    def test_reverse_display_orientation(self):
+        rows = get_cpt_cvx_mappings(
+            [CodeRef("CVX", "86")], target_sources=["CPT"]
+        )
+        m = rows[0]
+        assert m.source_display == "IG"  # CVX short name on the source side
+        assert m.target_display.startswith("Immune globulin")
 
 
 class TestCvxGroupData:

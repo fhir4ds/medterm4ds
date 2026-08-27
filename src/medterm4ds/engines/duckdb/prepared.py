@@ -1208,16 +1208,38 @@ def _prepare_cvx_metadata(con, *, replace: bool) -> dict[str, object]:
     logger.info("Building %s", qualified)
     con.execute(f"DROP TABLE IF EXISTS {qualified}")
     if _table_exists(con, "main", table):
-        con.execute(
-            f"""
-            CREATE TABLE {qualified} AS
-            SELECT
-              CAST(code AS VARCHAR) AS code,
-              CAST(group_name AS VARCHAR) AS group_name,
-              CAST(short_name AS VARCHAR) AS short_name
-            FROM main.cvx_metadata
-            """
-        )
+        # group_cvx (VG-005) is copied when the main table carries it —
+        # DBs prepared from older builds have the 3-column shape and skip
+        # it (readers never require the column).
+        main_cols = {
+            row[0]
+            for row in con.execute(
+                "SELECT name FROM pragma_table_info('main.cvx_metadata')"
+            ).fetchall()
+        }
+        if "group_cvx" in main_cols:
+            con.execute(
+                f"""
+                CREATE TABLE {qualified} AS
+                SELECT
+                  CAST(code AS VARCHAR) AS code,
+                  CAST(group_name AS VARCHAR) AS group_name,
+                  CAST(short_name AS VARCHAR) AS short_name,
+                  CAST(group_cvx AS VARCHAR) AS group_cvx
+                FROM main.cvx_metadata
+                """
+            )
+        else:
+            con.execute(
+                f"""
+                CREATE TABLE {qualified} AS
+                SELECT
+                  CAST(code AS VARCHAR) AS code,
+                  CAST(group_name AS VARCHAR) AS group_name,
+                  CAST(short_name AS VARCHAR) AS short_name
+                FROM main.cvx_metadata
+                """
+            )
     else:
         con.execute(
             f"""
