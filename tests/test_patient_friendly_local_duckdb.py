@@ -277,19 +277,11 @@ def test_local_duckdb_cvx_group_without_network():
 
 
 def test_local_duckdb_loads_default_cvx_groups(monkeypatch):
-    class FakeResponse:
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *_exc_info):
-            return False
-
-        def read(self):
-            return b"VGID|208|ignore|COVID-19|ignore\nVGID|208|ignore|COVID-19|ignore\n"
-
+    """Group cache now loads from the vendored VG.txt (no network path).
+    CVX 208 (Pfizer 30mcg COVID, inactive) groups under COVID-19 —
+    row verified against the vendored CDC file."""
     monkeypatch.delenv("MEDTERM4DS_DISABLE_CVX_GROUPS", raising=False)
     monkeypatch.setattr(duckdb_engine, "_CVX_GROUP_CACHE", None)
-    monkeypatch.setattr(duckdb_engine.urllib.request, "urlopen", lambda *_args, **_kwargs: FakeResponse())
     con = duckdb.connect(database=":memory:")
     try:
         _seed_patient_friendly_db(con)

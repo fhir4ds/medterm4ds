@@ -573,35 +573,35 @@ def prepare_derived_tables(con, *, replace: bool = True) -> dict[str, object]:
         }
     else:
         con.execute("DROP TABLE IF EXISTS cvx_metadata")
-        con.execute("CREATE TABLE cvx_metadata (code VARCHAR, group_name VARCHAR, short_name VARCHAR)")
+        # VG-005: group_cvx (the group's own "unspecified" CVX code, VG.txt
+        # column 5) is persisted alongside the group NAME — the historical
+        # build discarded it, leaving only string-level group linkage.
+        con.execute(
+            "CREATE TABLE cvx_metadata ("
+            "code VARCHAR, group_name VARCHAR, short_name VARCHAR, "
+            "group_cvx VARCHAR)"
+        )
 
-        cvx_rows = []
-        try:
-            import urllib.request
-            url = 'https://www2.cdc.gov/vaccines/iis/iisstandards/downloads/VG.txt'
-            with urllib.request.urlopen(url, timeout=15) as response:
-                lines = _read_capped(response).decode('utf-8').splitlines()
-                for line in lines:
-                    parts = line.split('|')
-                    if len(parts) >= 4:
-                        # QC-447 (LOW): VG.txt layout is ShortDesc|CVX|Status|
-                        # Full Name. Pre-fix the full name (parts[3]) was
-                        # stored in BOTH group_name and short_name and the
-                        # CDC short description (parts[0]) was discarded.
-                        cvx_rows.append((parts[1].strip(), parts[3].strip(), parts[0].strip()))
+        # Vendored VG.txt (services.cvx_group_data) — no network at prepare
+        # time; the file ships with the package. QC-447 column semantics
+        # kept: group_name=parts[3] (CDC "GroupName"), short_name=parts[0].
+        from medterm4ds.services.cvx_group_data import load_cvx_group_rows
 
-            if cvx_rows:
-                con.executemany("INSERT INTO cvx_metadata VALUES (?, ?, ?)", cvx_rows)
-        except Exception as exc:
-            # Don't fail the build if the CDC fetch is unavailable (offline
-            # build, network down, format change). But log at warning so a
-            # real bug (404, format change, malformed data) doesn't hide
-            # silently — patient_friendly CVX lookups will fall back through
-            # the hierarchy either way.
+        cvx_rows = [
+            (code, group_name, short_desc, group_cvx)
+            for code, short_desc, _status, group_name, group_cvx
+            in load_cvx_group_rows()
+        ]
+        if cvx_rows:
+            con.executemany(
+                "INSERT INTO cvx_metadata VALUES (?, ?, ?, ?)", cvx_rows
+            )
+        else:
             import logging as _logging
             _logging.getLogger(__name__).warning(
-                "CVX metadata fetch failed (continuing without it): %s: %s",
-                type(exc).__name__, exc,
+                "CVX metadata vendored file yielded no rows "
+                "(continuing without it) — patient_friendly CVX lookups "
+                "fall back through the hierarchy."
             )
 
         row = con.execute("SELECT COUNT(*) FROM cvx_metadata").fetchone()

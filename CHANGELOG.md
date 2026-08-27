@@ -9,6 +9,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **CDC CPT↔CVX crosswalk in the mapping service**: the CDC single-best
+  table (163 rows) is vendored at `medterm4ds/data/cpt_cvx.txt` and merged
+  into `get_code_mappings` for the {CPT, CVX} source/target pair —
+  `match_type="cdc_cpt_cvx"`, CDC rows win on (source, target) conflicts
+  and sort first within the result budget; reverse CVX→CPT is the
+  one-to-many inverse. Works on existing databases with no rebuild. The
+  12 immune-globulin/antitoxin CVX targets are outside VG.txt's
+  vaccine-group scope by design.
+- **`group_cvx` persisted in `cvx_metadata`** (VG-005): VG.txt's 5th column
+  (the group's own "unspecified" CVX code) is now stored alongside group
+  names; the build reads the vendored file instead of downloading.
+- **Vendored CDC reference data**: `VG.txt` ships at
+  `medterm4ds/data/vg.txt` — the runtime CVX-group cache and the
+  `cvx_metadata` build no longer touch the network (the
+  `MEDTERM4DS_CVX_GROUP_URL` override and its SSRF allowlist guard are
+  obsolete and removed). Refresh by re-downloading into the package.
 - **`annotation_fields` on every surface** (QA-005): FHIR `$extract`
   `annotationFields` (GET + POST, validated pre-NER; wrong-typed and dual
   `value[x]` forms rejected), MCP `extract` tool parameter, and CLI

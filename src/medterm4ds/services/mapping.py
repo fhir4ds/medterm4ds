@@ -86,7 +86,7 @@ def get_code_mappings(
         engine=engine,
         resolve_mode=resolve_mode,
     )
-    return engine.get_code_mappings(
+    engine_results = engine.get_code_mappings(
         effective_codes,
         target_sources=normalized_targets,
         max_results_per_code=max_results_per_code,
@@ -94,4 +94,37 @@ def get_code_mappings(
         include_target_ancestors=include_target_ancestors,
         include_target_descendants=include_target_descendants,
     )
+
+    # CDC CPT↔CVX single-best crosswalk (vendored table, no DB needed).
+    # Only fires for the {CPT, CVX} source/target pair; merged so CDC rows
+    # WIN on (source, target) conflicts (single-best semantics), extra
+    # engine rows are kept, and CDC rows sort first so the authoritative
+    # mappings survive the max_results_per_code budget.
+    from medterm4ds.services.cpt_cvx import get_cpt_cvx_mappings
+
+    cdc_results = get_cpt_cvx_mappings(
+        effective_codes, target_sources=normalized_targets,
+    )
+    if not cdc_results:
+        return engine_results
+    cdc_pairs = {
+        (m.source.source, m.source.code, m.target.source, m.target.code)
+        for m in cdc_results
+    }
+    merged: list[CodeMapping] = list(cdc_results)
+    counts: dict[tuple[str, str], int] = {}
+    for m in cdc_results:
+        counts[(m.source.source, m.source.code)] = counts.get(
+            (m.source.source, m.source.code), 0
+        ) + 1
+    for m in engine_results:
+        key = (m.source.source, m.source.code, m.target.source, m.target.code)
+        if key in cdc_pairs:
+            continue
+        budget_key = (m.source.source, m.source.code)
+        if counts.get(budget_key, 0) >= max_results_per_code:
+            continue
+        counts[budget_key] = counts.get(budget_key, 0) + 1
+        merged.append(m)
+    return merged
 
