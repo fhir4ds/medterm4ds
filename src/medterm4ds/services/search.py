@@ -38,10 +38,11 @@ logger = logging.getLogger(__name__)
 
 # Hugging Face repo holding prebuilt artifacts. Override via env vars for
 # testing or private forks. Default revision tracks the artifact-set tag
-# (v0.0.2 = Aug-2026 canonical indexes with CID corrections; v0.0.1 was
-# retargeted to the same commit so existing installs also get them).
+# (v0.0.5 = 2026-08-27 canonical build: shorthand class aliases — SGLT2i/
+# DPP4i/PPI/ARB, CDC vaccine groups, lab SNOMED crosswalk, ICD-10-PCS,
+# guard hardening; v0.0.2 = Aug-2026 canonical indexes with CID corrections).
 _HF_REPO_ID = os.getenv("MEDTERM4DS_HF_REPO_ID", "fhir4ds/medterm4ds")
-_HF_REVISION = os.getenv("MEDTERM4DS_HF_REVISION", "v0.0.2")
+_HF_REVISION = os.getenv("MEDTERM4DS_HF_REVISION", "v0.0.5")
 
 # Artifact cache layout. Two modes:
 #

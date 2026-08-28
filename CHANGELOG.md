@@ -20,6 +20,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`group_cvx` persisted in `cvx_metadata`** (VG-005): VG.txt's 5th column
   (the group's own "unspecified" CVX code) is now stored alongside group
   names; the build reads the vendored file instead of downloading.
+- **Default HF artifact revision → `v0.0.5`** (canonical build
+  2026-08-27: shorthand class aliases — SGLT2i/DPP4i/PPI/ARB resolve
+  exactly; CDC vaccine groups; lab SNOMED crosswalk; ICD-10-PCS; guard
+  hardening). Unpinned clients fetch it on next touch; operator-managed
+  caches (`MEDTERM4DS_CACHE_DIR`) and explicit `MEDTERM4DS_HF_REVISION`
+  pins are unaffected.
 - **Vendored CDC reference data**: `VG.txt` ships at
   `medterm4ds/data/vg.txt` — the runtime CVX-group cache and the
   `cvx_metadata` build no longer touch the network (the
