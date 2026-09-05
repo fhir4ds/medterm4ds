@@ -289,7 +289,14 @@ class TestLens2SupportedSystemExtension:
             for e in extensions
             if e.get("url") == SUPPORTED_SYSTEM_EXTENSION_URL
         }
-        expected = set(SYSTEM_TO_FHIR_URI.values())
+        # QC-367: pseudo-sources are intentionally not advertised.
+        from medterm4ds.engines.fhir import PSEUDO_SYSTEM_SOURCES
+
+        expected = {
+            uri
+            for source, uri in SYSTEM_TO_FHIR_URI.items()
+            if source not in PSEUDO_SYSTEM_SOURCES
+        }
         missing = expected - advertised
         assert not missing, (
             f"Extension under-advertises supported systems: missing={sorted(missing)}"
