@@ -432,15 +432,17 @@ class TestCFHistorianVS02_01_SourceAudit:
         assert "if limit is not None and len(results) >= limit:" in src
 
     def test_h31_intensional_path_total_still_derived_from_bfs_capped_list(self):
-        """Source-reading: ``_expand_intensional`` STILL passes
-        ``total=len(deduped)`` AFTER the BFS-capped relations were appended.
+        """Source-reading: the intensional path total is derived from the
+        BFS-capped list, with the +1 lower bound when the depth cap hit
+        (supersedes the old ``total=len(deduped),`` literal pin — the
+        size-field-from-wrong-source fix moved to a conditional).
         """
         from medterm4ds.apps import fhir_api
         src = inspect.getsource(fhir_api)
-        # The _expand_intensional function body contains both the BFS call
-        # AND the total=len(deduped) call.
+        # The intensional path body contains both the BFS call AND the
+        # deduped-derived total (now depth-cap-aware).
         assert "get_descendants_bfs(" in src
-        assert "total=len(deduped)," in src, (
+        assert "total = len(deduped) + 1 if depth_cap_hit else len(deduped)" in src, (
             "_expand_intensional total computation changed — audit"
         )
 
@@ -778,11 +780,16 @@ class TestCrossHandlerHelperWiring:
         """
         from medterm4ds.apps import fhir_api
         src = inspect.getsource(fhir_api)
-        # The helper should appear in exactly 2 contexts: the definition
-        # and the call site in expand_post.
+        # The helper appears in exactly 4 contexts: the definition, the call
+        # site in expand_post, and (since QC-286 — batch/direct
+        # dual-invocation parity) the batch dispatcher's definition-adjacent
+        # comment + call site. All four are ValueSet/$expand surfaces; the
+        # NON-ValueSet handlers (lookup, validate, translate, subsumes,
+        # closure) must not reference it.
         count = src.count("_extract_valueset_from_parameters")
-        assert count == 2, (
+        assert count == 4, (
             f"_extract_valueset_from_parameters appears {count} times — "
-            f"expected 2 (definition + 1 call site in expand_post). "
-            f"If >2, a non-ValueSet handler is incorrectly using the helper."
+            f"expected 4 (definition + expand_post call + QC-286 batch "
+            f"comment + batch call). If >4 or used elsewhere, a "
+            f"non-ValueSet handler may be incorrectly using the helper."
         )

@@ -1134,18 +1134,12 @@ class TestCarryForwards:
             )
 
     def test_e131_cf_historian_vs02_02_implicit_path_uses_client_prefix(self, fhir_client):
-        """CF-HISTORIAN-VS02-02: implicit path uses client-supplied prefix verbatim.
-
-        Per the carry-forward: `_expand_implicit_value_set` Form (a) does
-        NOT call `canonical_system_uri()`. Bug is invisible because the
-        fixture doesn't seed alias URIs. The probe documents the current
-        behavior (canonical prefix is echoed as-is, which is fine when the
-        client already uses the canonical URI).
+        """CF-HISTORIAN-VS02-02 — fixture upgraded: the conformance DB now
+        seeds a LOINC row, so the implicit `http://loinc.org/vs` expansion
+        returns real codes and NO empty-source extension. The probe pins
+        the current positive shape (200 + ValueSet + non-empty contains
+        from the seeded row).
         """
-        # Use the canonical LOINC URI (one of the seeded systems in the
-        # implicit-value-set path test would need LOINC rows, which the
-        # fixture DOESN'T seed — the implicit expander will return 0 codes
-        # with the empty-source extension).
         resp = fhir_client.get(
             "/fhir/ValueSet/$expand",
             params={"url": "http://loinc.org/vs"},
@@ -1153,14 +1147,10 @@ class TestCarryForwards:
         )
         assert resp.status_code == 200
         body = resp.json()
-        # Implicit value set for LOINC with 0 rows → empty-source extension.
-        exts = body.get("expansion", {}).get("extension", [])
-        empty_source_ext = next(
-            (e for e in exts if "valueset-empty-source" in e.get("url", "")), None
-        )
-        assert empty_source_ext is not None, (
-            f"missing empty-source extension: {exts}"
-        )
+        expansion = body.get("expansion", {})
+        # Seeded LOINC row is returned; empty-source extension is absent.
+        codes = [c.get("code") for c in expansion.get("contains", [])]
+        assert "2160-0" in codes, codes
 
     def test_e132_cf_historian_vs02_01_bfs_cap_fixture_coincidence(self, fhir_client):
         """CF-HISTORIAN-VS02-01: BFS cap on total — fixture coincidence reconfirmed.
