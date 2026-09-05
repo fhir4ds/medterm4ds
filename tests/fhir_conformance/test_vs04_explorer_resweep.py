@@ -115,7 +115,20 @@ def _read_nested_function_source(
                     isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef))
                     and child.name == child_name
                 ):
-                    return ast.get_source_segment(module_src, child)
+                    segment = ast.get_source_segment(module_src, child) or ""
+                    if child_name == "_expand_intensional":
+                        # 18f637b split: the core logic (incl. the BFS +1
+                        # probe) lives in the module-level
+                        # expand_intensional_value_set — audit the union.
+                        for top in tree.body:
+                            if (
+                                isinstance(top, (ast.FunctionDef, ast.AsyncFunctionDef))
+                                and top.name == "expand_intensional_value_set"
+                            ):
+                                segment += "\n\n" + (
+                                    ast.get_source_segment(module_src, top) or ""
+                                )
+                    return segment
     return None
 
 
@@ -298,14 +311,17 @@ class TestL1FilterModeCountLimitedASTContract:
             "inverted direction (count > len(results)) would invert the "
             "truncation signal."
         )
-        # RIGHT operand: count (a Name, not a Call)
+        # RIGHT operand: probe_budget (a Name, not a Call) — QC-241 widened
+        # the budget from plain count to the paging window
+        # min(page_end, _SEARCH_NAMES_MAX_LIMIT - 1) so offset pages can
+        # still detect truncation.
         assert len(cmp_node.comparators) == 1, (
             "filter-mode count_limited comparison MUST have exactly 1 comparator"
         )
         right = cmp_node.comparators[0]
-        assert isinstance(right, ast.Name) and right.id == "count", (
-            f"filter-mode count_limited RIGHT operand MUST be count (a Name); "
-            f"got {ast.dump(right)}"
+        assert isinstance(right, ast.Name) and right.id == "probe_budget", (
+            f"filter-mode count_limited RIGHT operand MUST be probe_budget "
+            f"(a Name; QC-241); got {ast.dump(right)}"
         )
 
     def test_e12_filter_mode_count_limited_uses_plus_one_probe(self):
@@ -319,11 +335,12 @@ class TestL1FilterModeCountLimitedASTContract:
         """
         src = _read_nested_function_source(_read_module_source(), "create_fhir_app", "_do_expand")
         assert src is not None
-        # +1 probe: limit=count + 1 in search_names call
-        assert "limit=count + 1" in src, (
-            "filter-mode search_names MUST use limit=count + 1 (the +1 probe). "
-            "Without this, count_limited = len(results) > count is always False. "
-            "Per VS-02 SKEPTIC QA-001 fix."
+        # +1 probe (QC-241 form): limit=probe_budget + 1 in search_names
+        # call, where probe_budget = min(page_end, _SEARCH_NAMES_MAX_LIMIT-1)
+        assert "limit=probe_budget + 1" in src, (
+            "filter-mode search_names MUST use limit=probe_budget + 1 (the "
+            "QC-241 paging-window +1 probe). Without this, count_limited is "
+            "always False. Per VS-02 SKEPTIC QA-001 fix as widened by QC-241."
         )
 
     def test_e13_filter_mode_count_limited_assigned_before_use(self):
@@ -683,11 +700,12 @@ class TestL4CrossBuilderCountLimitedConsistency:
                 f"line {assign.lineno}; got {type(right).__name__}. The budget "
                 f"is always a named variable (``descendant_budget`` or ``count``)."
             )
-            # Allow: 'count' or 'descendant_budget' (both are budget-style names)
-            assert right.id in ("count", "descendant_budget"), (
+            # Allow budget-style Names: 'count', 'descendant_budget', or
+            # 'probe_budget' (the QC-241 filter-mode paging-window budget).
+            assert right.id in ("count", "descendant_budget", "probe_budget"), (
                 f"count_limited RIGHT operand MUST be a budget-style Name "
-                f"(``count`` or ``descendant_budget``) at line {assign.lineno}; "
-                f"got {right.id!r}."
+                f"(``count``, ``descendant_budget``, or ``probe_budget``) at "
+                f"line {assign.lineno}; got {right.id!r}."
             )
 
     def test_e42_every_count_limited_sibling_left_is_len_call(self):
@@ -770,10 +788,10 @@ class TestL5CrossBuilderPlusOneProbePattern:
         """filter-mode _do_expand uses ``count + 1`` +1 probe via search_names."""
         src = _read_nested_function_source(_read_module_source(), "create_fhir_app", "_do_expand")
         assert src is not None
-        assert "limit=count + 1" in src, (
+        assert "limit=probe_budget + 1" in src, (
             "filter-mode _do_expand MUST use the +1 probe pattern via "
-            "search_names(limit=count + 1). Per VS-02 SKEPTIC QA-001 fix "
-            "(CF-SKEPTIC-VS02-03 closed in the same fix)."
+            "search_names(limit=probe_budget + 1) — the QC-241 paging-window "
+            "form of the VS-02 SKEPTIC QA-001 fix."
         )
 
     def test_e52_intensional_mode_does_NOT_use_plus_one_probe_documented_asymmetry(self):
@@ -802,11 +820,12 @@ class TestL5CrossBuilderPlusOneProbePattern:
         # Per CF-HISTORIAN-VS02-01: this is the deferred structural gap.
         # The probe ASSERTS the current (asymmetric) behavior; when the
         # fix lands, the probe MUST be updated.
-        assert "limit=count" in src or "limit=count," in src, (
-            "intensional _expand_intensional MUST currently use limit=count "
-            "(NOT count + 1). CF-HISTORIAN-VS02-01 (HIGH OPEN) tracks the "
-            "asymmetry. When the fix lands, update this probe to assert the "
-            "+1 probe pattern."
+        # CF-HISTORIAN-VS02-01 RESOLVED: the intensional path (module-level
+        # expand_intensional_value_set since 18f637b) now uses the +1 probe
+        # on its BFS walk too.
+        assert "limit=count + 1" in src, (
+            "intensional path MUST use the +1 probe (limit=count + 1) on its "
+            "BFS walk — CF-HISTORIAN-VS02-01 resolved."
         )
 
 

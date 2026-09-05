@@ -777,7 +777,7 @@ def test_s73_search_returns_bundle_with_all_5_params(fhir_client):
     assert body.get("resourceType") == "Bundle"
     assert body.get("type") == "searchset"
     assert body.get("total") == 0
-    assert body.get("entry") == []
+    assert body.get("entry", []) == []  # QC-330: omitted when empty
 
 
 def test_s74_search_with_special_chars_in_params_returns_bundle(fhir_client):
