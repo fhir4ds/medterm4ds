@@ -1450,14 +1450,23 @@ def test_t81_translate_builder_no_hardcoded_equivalence():
     # (It can appear in docstrings or comments; we check the valueCode line.)
     # Find the equivalence emission line.
     lines = src.splitlines()
+    derived = any(
+        "_fhir_equivalence_from_relationship(" in line
+        for line in lines
+        if "equivalence = " in line
+    )
     for line in lines:
         if '"equivalence"' in line and "valueCode" in line:
-            # The line MUST source via _fhir_equivalence_from_relationship,
-            # NOT a hardcoded string.
-            assert "_fhir_equivalence_from_relationship" in line, (
-                f"equivalence valueCode line MUST source via "
-                f"_fhir_equivalence_from_relationship, NOT hardcoded. Line: {line!r}"
+            # The line must reference the derived variable (never a string
+            # literal); the derivation itself is asserted via `derived`.
+            assert 'valueCode": equivalence' in line.replace("'", '"'), (
+                f"equivalence valueCode line MUST emit the derived `equivalence` "
+                f"variable, NOT a hardcoded literal. Line: {line!r}"
             )
+    assert derived, (
+        "build_parameters_translate MUST derive equivalence via "
+        "_fhir_equivalence_from_relationship (per TS-02 TERMINOLOGIST QA-030 fix)"
+    )
 
 
 def test_t82_do_translate_calls_canonical_system_uri():

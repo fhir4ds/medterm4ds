@@ -260,8 +260,11 @@ def test_s14_default_port_when_no_env_var(monkeypatch, tmp_path):
         r = client.get("/fhir/metadata")
         assert r.status_code == 200, r.text
         impl_url = r.json().get("implementation", {}).get("url", "")
-        assert str(DEFAULT_PORT) in impl_url, (
-            f"Default port not reflected when no env var set: {impl_url!r}"
+        # Request-derived base URL (the no-env path): scheme://netloc of the
+        # actual request — under TestClient that is http://testserver. The
+        # DEFAULT_PORT literal only applies to the env-driven constructor.
+        assert impl_url.startswith("http://"), (
+            f"Request-derived deployment URL must be absolute; got {impl_url!r}"
         )
 
 

@@ -619,7 +619,7 @@ def test_e31_xml_batch_dispatcher_content_type(fhir_client):
     body = r.text
     assert "<Bundle" in body
     # The entry's resource (Parameters) is XML-serialized via resourceType
-    assert 'value="Parameters"' in body
+    assert "<Parameters" in body  # XML-conformance fix: resource root element
     # return parameter is serialized
     assert 'value="return"' in body
     assert "valueString" in body
@@ -1586,7 +1586,7 @@ def test_e130_xml_batch_hostile_name_does_not_500(fhir_client):
     assert r.headers["content-type"] == "application/fhir+xml"
     assert "<Bundle" in r.text
     # The entry's resource is XML-serialized via resourceType
-    assert 'value="Parameters"' in r.text
+    assert "<Parameters" in r.text  # XML-conformance fix: resource root element, not resourceType attr
 
 
 def test_e131_xml_batch_hostile_name_with_concepts(fhir_client):
@@ -1603,7 +1603,7 @@ def test_e131_xml_batch_hostile_name_with_concepts(fhir_client):
     assert r.headers["content-type"] == "application/fhir+xml"
     body = r.text
     assert "<Bundle" in body
-    assert 'value="Parameters"' in body
+    assert "<Parameters" in body  # XML-conformance fix: resource root element
     assert "valueCoding" in body
     assert DM_CODE in body
     assert T2DM_CODE in body
@@ -1628,9 +1628,10 @@ def test_e132_xml_per_op_vs_batch_hostile_name_equivalent_shape(fhir_client):
     # Both have valueString wire-format for the return parameter
     assert "valueString" in r_po.text
     assert "valueString" in r_batch.text
-    # Both have Parameters (per-op uses <Parameters element; batch uses resourceType attr)
+    # Both serialize Parameters as the XML root element (the XML-conformance
+    # fix replaced the spec-invalid resourceType-attr rendering everywhere)
     assert "<Parameters" in r_po.text
-    assert 'value="Parameters"' in r_batch.text
+    assert "<Parameters" in r_batch.text
 
 
 # ===========================================================================

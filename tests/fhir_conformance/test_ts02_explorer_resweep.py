@@ -255,12 +255,14 @@ class TestWhitespaceOnlyRequiredQueryInputs:
             "/fhir/CodeSystem/$search",
             params={"query": " "},
         )
-        # Documenting current behavior: BM25 unavailable in test env →
-        # 503 OR (if available) empty Bundle.
-        assert response.status_code in (200, 503), (
+        # QC-122: whitespace-only query is REJECTED with 400 + FHIR
+        # OperationOutcome (never reaches SapBERT/BM25 to return
+        # confidently-ranked anchors for an empty intent).
+        assert response.status_code == 400, (
             f"Whitespace-only query on $search produced {response.status_code}; "
-            f"expected 200 (empty results) or 503 (BM25 unavailable)."
+            f"expected 400 (QC-122 empty/whitespace rejection)."
         )
+        assert response.json().get("resourceType") == "OperationOutcome"
 
 
 # =============================================================================
@@ -985,10 +987,10 @@ class TestPostWhitespaceInputs:
         response = fhir_client.post(
             "/fhir/CodeSystem/$search", json=body
         )
-        # Whitespace passes the `if not query_text` check (truthy). Then
-        # _check_ready returns 503 (BM25 unavailable) OR service.search
-        # returns empty.
-        assert response.status_code in (200, 503)
+        # QC-122: whitespace-only query is rejected with 400 on POST too
+        # (parity with the GET surface).
+        assert response.status_code == 400
+        assert response.json().get("resourceType") == "OperationOutcome"
 
     def test_e82_lookup_post_empty_string_code_400(self, fhir_client):
         """$lookup POST with EMPTY string code → handler's ``if not

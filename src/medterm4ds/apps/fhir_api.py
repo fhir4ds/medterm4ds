@@ -2433,6 +2433,13 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
         # rather than inlining ``system_to_fhir_uri(source) or system_uri``
         # at every call site (CR-011/012/013 pattern recurrence).
         canonical_uri = canonical_system_uri(system_uri, source=source)
+        # QC-324 empty-code family: a whitespace-only code passes the GET
+        # min_length=1 guard and POST shape checks, but the service boundary
+        # (validate_code_nonempty, QC-422) raises ValueError — which
+        # previously propagated as 500 + traceback. Reject as 400 here at
+        # the worker boundary (same shape as _do_translate).
+        if not str(code).strip():
+            return _fhir_error(400, f"code must be a non-empty string, got {code!r}")
         results = get_code_infos([CodeRef(source, code)], engine=engine)
         code_info = results[0] if results else None
 
@@ -2635,6 +2642,13 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
         # Structural fix (milestone-2 review): delegate to the shared
         # ``canonical_system_uri`` helper (CR-011/012/013 pattern).
         canonical_uri = canonical_system_uri(system_uri, source=source)
+        # QC-324 empty-code family: a whitespace-only code passes the GET
+        # min_length=1 guard and POST shape checks, but the service boundary
+        # (validate_code_nonempty, QC-422) raises ValueError — which
+        # previously propagated as 500 + traceback. Reject as 400 here at
+        # the worker boundary (same shape as _do_translate).
+        if not str(code).strip():
+            return _fhir_error(400, f"code must be a non-empty string, got {code!r}")
         results = get_code_infos([CodeRef(source, code)], engine=engine)
         code_info = results[0] if results else None
         # CS-03 SKEPTIC QA-048: enforce display mismatch per spec example
@@ -2830,6 +2844,13 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
         # ValueSet/$validate-code handler was missed. Spec: FHIR R4 §4.8.21.1
         # Out `system`. Structural fix: shared ``canonical_system_uri``.
         canonical_uri = canonical_system_uri(system_uri, source=source)
+        # QC-324 empty-code family: a whitespace-only code passes the GET
+        # min_length=1 guard and POST shape checks, but the service boundary
+        # (validate_code_nonempty, QC-422) raises ValueError — which
+        # previously propagated as 500 + traceback. Reject as 400 here at
+        # the worker boundary (same shape as _do_translate).
+        if not str(code).strip():
+            return _fhir_error(400, f"code must be a non-empty string, got {code!r}")
         results = get_code_infos([CodeRef(source, code)], engine=engine)
         code_info = results[0] if results else None
         # CF-SKEPTIC-CS03-01 (MEDIUM, RESOLVED in VS-05 SKEPTIC): enforce
@@ -2936,6 +2957,15 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
         source = fhir_uri_to_system(source_uri)
         if source is None:
             return _fhir_error(400, f"Unrecognized source system URI: {source_uri}")
+        # QC-324 empty-code family: whitespace-only codes pass the GET
+        # min_length=1 guard ('   ' has length 3) and the POST body shape
+        # checks, but the service boundary (validate_code_nonempty via
+        # get_code_mappings, QC-422) raises ValueError — which previously
+        # propagated as 500 + traceback on BOTH routes. An empty code is
+        # an input-validation failure: reject with 400 + OperationOutcome
+        # (mirrors the $lookup/$validate-code empty-code handling).
+        if not str(code).strip():
+            return _fhir_error(400, f"code must be a non-empty string, got {code!r}")
         target_sources = []
         if target_uri is not None and not target_uri.strip():
             # QC-423 (MEDIUM): a whitespace-only targetsystem reached here via

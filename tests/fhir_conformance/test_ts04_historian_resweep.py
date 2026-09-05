@@ -371,7 +371,12 @@ def test_h30_deployment_url_https_via_scheme_env_var(monkeypatch, tmp_path):
     exchange". The deployment URL MUST NOT silently downgrade an HTTPS
     deployment to plain HTTP.
     """
-    client = _make_test_client(tmp_path, monkeypatch, scheme="https")
+    # The env-driven URL constructor only engages when a host/port env var
+    # is present (otherwise the route derives scheme://host from the actual
+    # request). Set a host so the scheme env var is load-bearing.
+    client = _make_test_client(
+        tmp_path, monkeypatch, host="fhir.example.com", scheme="https"
+    )
     try:
         r = client.get("/fhir/metadata")
         assert r.status_code == 200

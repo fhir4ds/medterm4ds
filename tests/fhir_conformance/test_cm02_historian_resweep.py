@@ -320,14 +320,11 @@ def test_h21_translate_get_min_length_on_code_query():
 
 
 def test_h22_translate_get_targetsystem_no_min_length():
-    """5th PROMOTED pattern boundary — targetsystem is OPTIONAL, NOT
-    required, so it MUST NOT have min_length=1.
-
-    Per GLOBAL_RULES.md: 'Optional string params declared with Query(None)
-    are NOT affected — empty string on an optional param has a different
-    semantic (server-side handler falls back to "no filter")'. This probe
-    pins the boundary: the pattern applies to REQUIRED string params
-    only.
+    """5th PROMOTED pattern boundary — SUPERSEDED by QC-423 (MEDIUM):
+    ``targetsystem`` is optional, but an empty value is NOT "no filter"
+    here — the POST-side whitespace-only path is rejected with 400 rather
+    than widening to all systems, and the GET declaration now carries
+    min_length=1 for parity. This probe pins the QC-423 shape.
     """
     src = _get_func_source(_FHIR_API_PATH, "translate_get")
     assert src, "translate_get not found"
@@ -343,9 +340,9 @@ def test_h22_translate_get_targetsystem_no_min_length():
         f"targetsystem Query MUST be optional (Query(None, ...)); got: "
         f"{targetsystem_decl!r}"
     )
-    assert "min_length=1" not in targetsystem_decl, (
-        f"targetsystem is optional — MUST NOT have min_length=1 (5th PROMOTED "
-        f"pattern boundary). Got: {targetsystem_decl!r}"
+    assert "min_length=1" in targetsystem_decl, (
+        f"targetsystem MUST carry min_length=1 (QC-423 empty-is-not-absent). Got: "
+        f"{targetsystem_decl!r}"
     )
 
 

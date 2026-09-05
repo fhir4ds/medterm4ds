@@ -1410,16 +1410,21 @@ def test_h122_expand_intensional_has_isinstance_guards():
     fn_node = _get_nested_func_source(
         src_text, tree, "create_fhir_app", "_expand_intensional"
     )
-    if fn_node is None:
-        fn_node = _get_func_source(tree, "_expand_intensional")
-    if fn_node is None:
+    # 18f637b split: the guards live in the module-level core — audit both.
+    core_node = _get_func_source(tree, "expand_intensional_value_set")
+    if fn_node is None and core_node is None:
         pytest.skip("_expand_intensional not found")
         return
 
-    # Count For loops AND isinstance guards.
+    # Count For loops AND isinstance guards (wrapper + module-level core).
     for_count = 0
     guarded_for_count = 0
-    for node in ast.walk(fn_node):
+    import itertools
+    walk_nodes = itertools.chain(
+        ast.walk(fn_node) if fn_node is not None else (),
+        ast.walk(core_node) if core_node is not None else (),
+    )
+    for node in walk_nodes:
         if not isinstance(node, ast.For):
             continue
         for_count += 1

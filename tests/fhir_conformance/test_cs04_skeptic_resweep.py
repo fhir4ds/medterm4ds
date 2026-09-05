@@ -922,8 +922,11 @@ class TestLens7SourceReadStructuralContracts:
         """
         src = _get_nested_func_source("create_fhir_app", "subsumes_get")
         assert src, "subsumes_get source not found"
-        assert "_fhir_response" in src, (
-            f"subsumes_get missing _fhir_response call; src: {src[:500]}"
+        # QC-301 (EC-13): handlers funnel through the single _respond return
+        # point, which routes success dicts through _fhir_response and
+        # re-renders worker errors in the negotiated format.
+        assert "_respond(request, payload)" in src, (
+            f"subsumes_get missing _respond funnel call; src: {src[:500]}"
         )
 
     def test_l77_subsumes_post_returns_via_fhir_response(self):
@@ -932,8 +935,9 @@ class TestLens7SourceReadStructuralContracts:
         """
         src = _get_nested_func_source("create_fhir_app", "subsumes_post")
         assert src, "subsumes_post source not found"
-        assert "_fhir_response" in src, (
-            f"subsumes_post missing _fhir_response call; src: {src[:500]}"
+        # QC-301 (EC-13): single _respond funnel (see test_l76).
+        assert "_respond(request, payload)" in src, (
+            f"subsumes_post missing _respond funnel call; src: {src[:500]}"
         )
 
     def test_l78_batch_dispatcher_handles_subsumes_path(self):
