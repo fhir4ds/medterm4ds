@@ -786,7 +786,7 @@ class TestItem6ReadSearchInteractions:
         assert body["resourceType"] == "Bundle"
         assert body["type"] == "searchset"
         assert body["total"] == 0
-        assert body["entry"] == []
+        assert body.get("entry", []) == []
 
     def test_s72_search_with_version_returns_empty_bundle(self, fhir_client):
         """SEARCH on ValueSet with version param returns an empty Bundle."""

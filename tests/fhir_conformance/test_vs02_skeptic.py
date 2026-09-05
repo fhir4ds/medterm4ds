@@ -630,8 +630,8 @@ class TestItem5PagingSemantics:
         assert status_offset_5 == 200
         # Offset is honored: offset=5 past the fixture's match count pages
         # to fewer (empty) contains[] while total still reports the size.
-        assert len(body_offset_5["expansion"]["contains"]) < len(
-            body_no["expansion"]["contains"]
+        assert len(body_offset_5["expansion"].get("contains", [])) < len(
+            body_no["expansion"].get("contains", [])
         ), (
             "offset appears to be ignored — CF-SKEPTIC-VS02-02 regression "
             "(QC-241 fix must hold)"
@@ -651,7 +651,7 @@ class TestItem5PagingSemantics:
         status, body = _post_expand(fhir_client, vs, params={"offset": 100})
         assert status == 200, f"expected 200, got {status}: {body}"
         # Offset is honored: contains is empty, total still the full count.
-        assert body["expansion"]["contains"] == []
+        assert body["expansion"].get("contains", []) == []
         assert body["expansion"]["total"] == 2
 
     def test_s53_count_default_is_20(self, fhir_client):
@@ -876,7 +876,7 @@ class TestItem8FilterMatching:
         assert status == 200, f"expected 200, got {status}: {body}"
         assert body["resourceType"] == "ValueSet"
         assert body["expansion"]["total"] == 0
-        assert body["expansion"]["contains"] == []
+        assert body["expansion"].get("contains", []) == []
 
     def test_s84_filter_includes_metformin_by_name(self, fhir_client):
         """``filter`` matches by display name (metformin is the RxNorm entry)."""

@@ -343,7 +343,10 @@ class TestLens2CarryForwardSourceAudit:
         # Find the `_expand_intensional` function.
         fn = None
         for node in ast.walk(tree):
-            if isinstance(node, ast.FunctionDef) and node.name == "_expand_intensional":
+            if isinstance(node, ast.FunctionDef) and node.name in (
+                "_expand_intensional",  # nested FHIR wrapper
+                "expand_intensional_value_set",  # module-level core (18f637b)
+            ):
                 fn = node
                 break
         assert fn is not None, "_expand_intensional function not found"
@@ -390,7 +393,10 @@ class TestLens2CarryForwardSourceAudit:
         # Find the exclude loop.
         fn = None
         for node in ast.walk(tree):
-            if isinstance(node, ast.FunctionDef) and node.name == "_expand_intensional":
+            if isinstance(node, ast.FunctionDef) and node.name in (
+                "_expand_intensional",  # nested FHIR wrapper
+                "expand_intensional_value_set",  # module-level core (18f637b)
+            ):
                 fn = node
                 break
         assert fn is not None
@@ -810,7 +816,10 @@ class TestLens5TestSuiteEncodedWrongSpecAudit:
         tree = ast.parse(text)
         fn = None
         for node in ast.walk(tree):
-            if isinstance(node, ast.FunctionDef) and node.name == "_expand_intensional":
+            if isinstance(node, ast.FunctionDef) and node.name in (
+                "_expand_intensional",  # nested FHIR wrapper
+                "expand_intensional_value_set",  # module-level core (18f637b)
+            ):
                 fn = node
                 break
         assert fn is not None
@@ -946,7 +955,8 @@ class TestLens6TestTooLenientAudit:
         assert body.get("resourceType") == "Bundle"
         assert body.get("type") == "searchset"
         assert body.get("total") == 0
-        assert body.get("entry") == []
+        # QC-330: empty entry[] is OMITTED per FHIR JSON convention.
+        assert body.get("entry", []) == []
         # Per §4.9.13: Bundle MUST have a timestamp (3.1.0.1.7).
         # (medterm4ds omits this today — not asserting as required to
         # avoid over-specification; documented for future enhancement.)
@@ -986,7 +996,10 @@ class TestLens7DocumentationVsImplementationDrift:
         tree = ast.parse(text)
         fn = None
         for node in ast.walk(tree):
-            if isinstance(node, ast.FunctionDef) and node.name == "_expand_intensional":
+            if isinstance(node, ast.FunctionDef) and node.name in (
+                "_expand_intensional",  # nested FHIR wrapper
+                "expand_intensional_value_set",  # module-level core (18f637b)
+            ):
                 fn = node
                 break
         assert fn is not None
