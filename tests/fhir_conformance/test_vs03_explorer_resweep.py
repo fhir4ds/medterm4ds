@@ -110,7 +110,18 @@ def _get_func_source(
                     isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef))
                     and child.name == child_name
                 ):
-                    return ast.get_source_segment(src, child) or ""
+                    segment = ast.get_source_segment(src, child) or ""
+                    if child_name == "_expand_intensional":
+                        # 18f637b split: audit wrapper + module-level core.
+                        for top in tree.body:
+                            if (
+                                isinstance(top, (ast.FunctionDef, ast.AsyncFunctionDef))
+                                and top.name == "expand_intensional_value_set"
+                            ):
+                                segment += "\n\n" + (
+                                    ast.get_source_segment(src, top) or ""
+                                )
+                    return segment
     return ""
 
 
@@ -770,12 +781,17 @@ class TestLens4ImplicitValueSetGetPostParity:
         assert any(e.get("url") == TOOCOSTLY_URL for e in p_exts), (
             f"POST toocostly missing: {p_exts}"
         )
-        # Both MUST have un-truncated total = 2 (per QA-057).
-        assert g_body["expansion"]["total"] == 2, (
-            f"GET total={g_body['expansion']['total']}"
+        # QC-299 (MEDIUM) supersedes the QA-057 lower-bound shape: when the
+        # count cap fires the true total is UNKNOWN (LOINC ~100K vs count+1),
+        # so total is OMITTED — a fabricated lower bound misled R4 offset-
+        # paging clients. Both verbs must agree on the omission (parity).
+        assert "total" not in g_body["expansion"], (
+            f"GET must omit total when truncated (QC-299); got "
+            f"{g_body['expansion'].get('total')!r}"
         )
-        assert p_body["expansion"]["total"] == 2, (
-            f"POST total={p_body['expansion']['total']}"
+        assert "total" not in p_body["expansion"], (
+            f"POST must omit total when truncated (QC-299); got "
+            f"{p_body['expansion'].get('total')!r}"
         )
 
     def test_e44_get_vs_post_canonical_system_uri_parity(self, fhir_client):
