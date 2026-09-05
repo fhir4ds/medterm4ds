@@ -609,7 +609,15 @@ def build_terminology_capabilities(base_url: str = "http://127.0.0.1:8001") -> d
     ``content`` is an R5-only element, removed by QC-333/QC-339, EC-15).
     """
     code_systems: list[dict[str, Any]] = []
+    # QC-367: exclude pseudo-sources (PATIENT_FRIENDLY — an output namespace,
+    # not a $lookupable code system) for parity with the CapabilityStatement
+    # advertisement; a TerminologyCapabilities entry promises $lookup/$expand
+    # support the server cannot honor.
+    from medterm4ds.engines.fhir import PSEUDO_SYSTEM_SOURCES
+
     for source, uri in sorted(SYSTEM_TO_FHIR_URI.items()):
+        if source in PSEUDO_SYSTEM_SOURCES:
+            continue
         entry: dict[str, Any] = {"uri": uri}
         # QC-339 (EC-15 MEDIUM): declare subsumption=true where the source
         # has a real subsumption hierarchy so the TerminologyCapabilities no

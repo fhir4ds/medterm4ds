@@ -720,11 +720,21 @@ class TestL4ContentFieldClinicalCorrectness:
         full_resp = fhir_client.get("/fhir/metadata")
         assert term_resp.status_code == 200
         assert full_resp.status_code == 200
+        from medterm4ds.engines.fhir import PSEUDO_SYSTEM_SOURCES
+
         term_uris = {cs["uri"] for cs in term_resp.json().get("codeSystem", [])}
         ext_uris = {
             ext.get("valueUri")
             for ext in full_resp.json().get("extension", [])
             if "supported-system" in ext.get("url", "")
+        }
+        # QC-367: TermCaps iterates the full registry (including pseudo
+        # output namespaces); the CapStmt advertisement excludes them.
+        # Client-facing systems MUST match across both surfaces.
+        term_uris -= {
+            uri
+            for source, uri in SYSTEM_TO_FHIR_URI.items()
+            if source in PSEUDO_SYSTEM_SOURCES
         }
         assert term_uris == ext_uris, (
             f"Cross-surface clinical consistency violation: TermCaps URIs "
@@ -1157,7 +1167,12 @@ class TestL8CrossResourceClinicalConsistency:
             f"SEARCH CodeSystem Bundle.total type={type(body.get('total'))}; "
             f"expected int per FHIR R4 §3.1.1.5."
         )
-        assert isinstance(body.get("entry"), list), (
+        # QC-330: empty entry[] is omitted per FHIR JSON convention.
+        assert body.get("entry", []) == [], (
+            f"SEARCH CodeSystem Bundle.entry must be empty/omitted; got "
+            f"{body.get('entry')!r}"
+        )
+        assert isinstance(body.get("entry", []), list), (
             f"SEARCH CodeSystem Bundle.entry type={type(body.get('entry'))}; "
-            f"expected list per FHIR R4 §3.1.1.5."
+            f"expected list per FHIR R4 §3.1.1.5 (QC-330: omitted when empty)."
         )

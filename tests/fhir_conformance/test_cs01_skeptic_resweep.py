@@ -115,27 +115,22 @@ def _cs_search_param_names(fhir_client) -> set[str]:
 # ===========================================================================
 
 def test_s01_termcaps_content_values_in_r4_enum(fhir_client):
-    """CS-01 item 1 / §4.8.5 content binding (Required):
-    https://hl7.org/fhir/R4/valueset-codesystem-content-mode.html
-
-    Quote (R4.0.1 expansion): "This value set contains 5 concepts" —
-    not-present | example | fragment | complete | supplement.
-
-    Every advertised content value MUST be in the R4 enum. SKEPTIC lens:
-    if any system advertised a stray value (e.g. `partial`, `deprecated`,
-    `full`, `unknown`, `supplemented`), that's a closed-enum violation.
+    """CS-01 item 1 — SUPERSEDED by QC-333/339 (EC-15): ``content`` is an
+    R5-only TerminologyCapabilities element (R4 codeSystem children are
+    uri/version/subsumption). This probe pins the R4 shape: no entry
+    carries ``content``, so no closed-enum violation is possible.
     """
     body = fhir_client.get("/fhir/metadata?mode=terminology").json()
     cs_entries = body.get("codeSystem", [])
-    bad = [
+    offenders = [
         {"uri": e.get("uri"), "content": e.get("content")}
         for e in cs_entries
-        if e.get("content") not in FHIR_R4_CONTENT_MODES
+        if "content" in e
     ]
-    pytest.current_report_extra = f"bad_content={bad}"
-    assert not bad, (
-        f"TerminologyCapabilities content values not in FHIR R4 enum: {bad}. "
-        f"Allowed: {sorted(FHIR_R4_CONTENT_MODES)}."
+    pytest.current_report_extra = f"r5_content_offenders={offenders}"
+    assert not offenders, (
+        f"TerminologyCapabilities codeSystem[] carries R5-only 'content' "
+        f"element (invalid in R4; QC-333/339): {offenders}"
     )
 
 
@@ -856,14 +851,24 @@ def test_s61_termcaps_and_capability_statement_uri_consistency(fhir_client):
     pytest.current_report_extra = (
         f"term_uris={len(term_uris)} supported_ext={len(supported_ext)}"
     )
-    # Both surfaces MUST advertise the same set of canonical URIs.
-    assert term_uris == set(SYSTEM_TO_FHIR_URI.values()), (
+    # Both surfaces MUST advertise the same set of canonical URIs. QC-367:
+    # pseudo-sources (PATIENT_FRIENDLY — an output namespace, not $lookupable)
+    # are excluded from the CapStmt advertisement; compare on client-facing
+    # systems only.
+    from medterm4ds.engines.fhir import PSEUDO_SYSTEM_SOURCES
+
+    client_facing = {
+        uri
+        for source, uri in SYSTEM_TO_FHIR_URI.items()
+        if source not in PSEUDO_SYSTEM_SOURCES
+    }
+    assert term_uris == client_facing, (
         f"TerminologyCapabilities URIs drift from registry. "
-        f"Term: {sorted(term_uris)}; registry: {sorted(SYSTEM_TO_FHIR_URI.values())}"
+        f"Term: {sorted(term_uris)}; client-facing: {sorted(client_facing)}"
     )
-    assert set(supported_ext) == set(SYSTEM_TO_FHIR_URI.values()), (
+    assert set(supported_ext) == client_facing, (
         f"CapabilityStatement supported-system extension drifts from registry. "
-        f"Extension: {sorted(supported_ext)}; registry: {sorted(SYSTEM_TO_FHIR_URI.values())}"
+        f"Extension: {sorted(supported_ext)}; client-facing: {sorted(client_facing)}"
     )
 
 

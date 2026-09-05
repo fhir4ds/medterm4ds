@@ -159,7 +159,8 @@ def test_e10_combined_lookup_read_search_snomed_consistency(fhir_client):
     assert body.get("type") == "searchset"
     # Empty search result is NOT a failure (per FHIR R4 §3.1.1.3).
     assert body.get("total") == 0
-    assert body.get("entry") == []
+    # QC-330: empty entry[] is omitted per FHIR JSON convention.
+    assert body.get("entry", []) == []
 
 
 def test_e11_combined_lookup_read_search_xml_format_consistency(fhir_client):
@@ -571,8 +572,10 @@ def test_e60_search_summary_count_returns_empty_bundle_with_total(fhir_client):
         f"Bundle.total must be int; got {type(body.get('total'))} "
         f"value={body.get('total')!r}"
     )
-    assert body.get("entry") == [], (
-        f"_summary=count Bundle.entry must be empty; got {body.get('entry')!r}"
+    # QC-330: empty entry[] is omitted per FHIR JSON convention —
+    # absent means empty ("no entries" per §3.1.1.5.3).
+    assert body.get("entry", []) == [], (
+        f"_summary=count Bundle.entry must be empty/omitted; got {body.get('entry')!r}"
     )
 
 
