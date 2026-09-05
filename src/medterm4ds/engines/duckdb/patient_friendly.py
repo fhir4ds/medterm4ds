@@ -14,8 +14,15 @@ from __future__ import annotations
 
 from collections import defaultdict
 from collections.abc import Mapping, Sequence
+from typing import TYPE_CHECKING
 
 from medterm4ds.core.models import CodeRef, FriendlyNameResult, Provenance, ProvenanceStep
+
+if TYPE_CHECKING:
+    # Annotation-only (deferred by from __future__ import annotations):
+    # the engine's _Row namedturple is late-imported at runtime to avoid
+    # the circular dependency — this makes the annotations resolvable.
+    from medterm4ds.engines.duckdb.engine import _Row
 
 
 def _resolve_default(

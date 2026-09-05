@@ -17,8 +17,14 @@ from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from uuid import uuid4
+
+if TYPE_CHECKING:
+    # Annotation-only (from __future__ import annotations defers evaluation):
+    # imported here so the CodeInfo | None locals in _do_validate resolve
+    # under typing.get_type_hints() without adding a runtime cycle.
+    from medterm4ds.core.models import CodeInfo
 
 from medterm4ds import __version__
 from medterm4ds.apps._asyncutil import run_db as _run_db
