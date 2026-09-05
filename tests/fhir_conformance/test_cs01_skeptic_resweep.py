@@ -173,7 +173,14 @@ def test_s03_registry_as_contract_bidirectional_uri_invariant(fhir_client):
     """
     body = fhir_client.get("/fhir/metadata?mode=terminology").json()
     advertised = {e.get("uri") for e in body.get("codeSystem", [])}
-    canonical = set(SYSTEM_TO_FHIR_URI.values())
+    # QC-367: pseudo-sources are output namespaces — not advertised.
+    from medterm4ds.engines.fhir import PSEUDO_SYSTEM_SOURCES
+
+    canonical = {
+        uri
+        for source, uri in SYSTEM_TO_FHIR_URI.items()
+        if source not in PSEUDO_SYSTEM_SOURCES
+    }
     missing = canonical - advertised
     extras = advertised - canonical
     pytest.current_report_extra = f"missing={sorted(missing)} extras={sorted(extras)}"
