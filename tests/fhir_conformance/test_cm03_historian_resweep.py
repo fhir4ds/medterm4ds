@@ -688,15 +688,15 @@ def test_h31_reset_clears_concepts_in_new_instance() -> None:
     manager = ClosureManager()
     t1 = manager.get_or_create("historian-reset-clears")
     # Mutate t1 so we can observe whether t2 reflects the mutation.
-    t1.concepts["stale_code"] = {"system": "SNOMEDCT_US", "display": "stale"}
+    t1.concepts[("SNOMEDCT_US", "stale_code")] = {"system": "SNOMEDCT_US", "display": "stale"}
     t2 = manager.reset("historian-reset-clears")
-    assert "stale_code" not in t2.concepts, (
+    assert ("SNOMEDCT_US", "stale_code") not in t2.concepts, (
         "stale_code leaked into the fresh ClosureTable after reset"
     )
     # The OLD instance t1 retains its state — but the manager no longer
     # references it. This is the load-bearing invariant: external refs
     # to t1 continue to see the pre-reset state.
-    assert "stale_code" in t1.concepts, (
+    assert ("SNOMEDCT_US", "stale_code") in t1.concepts, (
         "reset should NOT mutate the old instance — external refs to t1 "
         "must continue to observe pre-reset state"
     )

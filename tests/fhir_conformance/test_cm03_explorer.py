@@ -563,10 +563,15 @@ def test_e50_closure_add_100_concepts(fhir_client):
     Per E1 fix (batched add_concepts): the implementation batches
     ancestor+descendant walks per source (2 walks per source, not 2 per
     concept). 100 SNOMED concepts collapse into 2 walks.
+
+    Uses codes present in the conformance fixture (44054006 root +
+    73211009 child pattern per source). Since QC-282, codes with no
+    active atom are 400-rejected, so fabricated codes cannot be used.
     """
-    # Generate 100 distinct SNOMED codes
+    # Alternate the two SNOMED fixture codes across 100 entries; add_concepts
+    # de-dupes within one POST, and the batched-walk contract is preserved.
     concepts = [
-        {"system": SNOMED_URI, "code": f"99999{i:03d}", "display": f"C{i}"}
+        {"system": SNOMED_URI, "code": ("44054006" if i % 2 else "73211009"), "display": f"C{i}"}
         for i in range(100)
     ]
     response = fhir_client.post(
@@ -576,9 +581,10 @@ def test_e50_closure_add_100_concepts(fhir_client):
     assert response.status_code == 200, response.text
     body = response.json()
     assert body["resourceType"] == "Parameters"
-    # All 100 concepts are in the response
+    # Both distinct concepts are in the response (re-adds are no-ops)
     concept_entries = _find_params(body, "concept")
-    assert len(concept_entries) == 100
+    codes = {c["valueCoding"]["code"] for c in concept_entries}
+    assert codes == {"73211009", "44054006"}
 
 
 def test_e51_closure_add_mixed_systems(fhir_client):
@@ -647,11 +653,15 @@ def test_e52_closure_add_mix_valid_invalid_concepts(fhir_client):
 
 
 def test_e53_closure_add_unknown_system_concepts(fhir_client):
-    """Unknown system URIs are accepted as raw strings.
+    """Unknown system URIs are rejected with 400 (QC-271, HIGH).
 
-    Per SKEPTIC test_s32: unknown system URIs are accepted; the raw URI
-    becomes the source key. EXPLORER confirms with a batch of mixed
-    known + unknown systems.
+    The prior ``fhir_uri_to_system(x) or x`` fallback accepted
+    unresolvable system URIs at 200 — the stored concept then silently
+    produced ZERO subsumption relations because its source matched no
+    hierarchy. QC-271 enforces the same contract as $lookup/$subsumes/
+    $expand: unrecognized system URI → 400 + FHIR OperationOutcome.
+    Mixed known + unknown systems in one batch: the whole batch is
+    rejected (no partial silent adds).
     """
     response = fhir_client.post(
         "/fhir/CodeSystem/$closure",
@@ -663,10 +673,8 @@ def test_e53_closure_add_unknown_system_concepts(fhir_client):
             ],
         ),
     )
-    assert response.status_code == 200, response.text
-    body = response.json()
-    concept_entries = _find_params(body, "concept")
-    assert len(concept_entries) == 2
+    assert response.status_code == 400, response.text
+    assert response.json().get("resourceType") == "OperationOutcome"
 
 
 # ===========================================================================
@@ -870,8 +878,11 @@ def test_e80_do_closure_inline_concept_extraction_source_audit():
     next_def = src.find("\n    def ", idx + 1)
     assert next_def > idx, "Could not bound _do_closure body"
     body = src[idx:next_def]
-    # Inline loop is load-bearing
-    assert "for param in body.get(\"parameter\", []):" in body, (
+    # Inline loop is load-bearing. QC-001 (EDGE_CASE) replaced the naive
+    # ``body.get("parameter", [])`` with the defensive ``_parameter_entries``
+    # helper (malformed ``parameter: null`` / non-list values no longer 500).
+    # The 0..* iteration semantics are unchanged.
+    assert "for param in _parameter_entries(body):" in body, (
         "_do_closure must iterate Parameters inline (0..* semantic). "
         "Swapping to _extract_named_coding_from_parameters would silently "
         "drop all but the first concept."
@@ -982,11 +993,12 @@ def test_e92_cf_skeptic_cm03_02_subsumes_does_not_use_closure(fhir_client):
 
 
 def test_e93_cf_historian_cm03_02_incomplete_since_not_surfaced(fhir_client):
-    """CF-HISTORIAN-CM03-02 (LOW — DEFERRED) pin.
+    """CF-HISTORIAN-CM03-02 (LOW — DEFERRED) pin — SUPERSEDED.
 
-    The ``incomplete_since`` flag is NOT surfaced in the HTTP response.
-    When a future enhancement surfaces it (e.g. as an extension),
-    this probe MUST be updated.
+    The ``incomplete_since`` flag IS now surfaced in the HTTP response:
+    ``build_closure_response`` emits an ``incomplete`` valueBoolean
+    parameter (QC-283 line). This probe pins the current behavior —
+    the flag is present and reports false for a healthy closure.
     """
     response = fhir_client.post(
         "/fhir/CodeSystem/$closure",
@@ -994,10 +1006,10 @@ def test_e93_cf_historian_cm03_02_incomplete_since_not_surfaced(fhir_client):
     )
     assert response.status_code == 200, response.text
     body = response.json()
-    # No extension carrying incomplete-since
-    body_text = response.text
-    assert "incomplete" not in body_text.lower()
-    assert "incomplete_since" not in body_text
+    # The incomplete flag is surfaced as a boolean Out parameter.
+    entries = _find_params(body, "incomplete")
+    assert entries, "incomplete flag must be surfaced (QC-283)"
+    assert entries[0].get("valueBoolean") is False
 
 
 # ===========================================================================
@@ -1037,7 +1049,11 @@ def test_e101_post_closure_hostile_concept_code_no_500(fhir_client):
     """Hostile concept codes do NOT cause 500 + traceback.
 
     Per CM-02 EXPLORER test_e70 + DuckDB prepared statements: hostile
-    concept codes are handled gracefully.
+    concept codes are handled gracefully. Since QC-282 (HIGH), codes
+    that resolve to no active atom are REJECTED with 400 + FHIR
+    OperationOutcome (mirroring $lookup's not-found contract) — never
+    a 500. The 400 path is the conformant answer: hostile strings can
+    never form subsumption relationships anyway.
     """
     hostile_codes = [
         "'; DROP TABLE mrconso; --",
@@ -1054,9 +1070,10 @@ def test_e101_post_closure_hostile_concept_code_no_500(fhir_client):
                 [{"system": SNOMED_URI, "code": code, "display": code}],
             ),
         )
-        assert response.status_code == 200, (
-            f"Hostile code {code!r} caused non-200: {response.status_code}"
+        assert response.status_code in (200, 400), (
+            f"Hostile code {code!r} caused a server error: {response.status_code}"
         )
+        assert response.json().get("resourceType") in ("Parameters", "OperationOutcome")
 
 
 def test_e102_post_closure_no_parameters_body(fhir_client):
@@ -1140,10 +1157,11 @@ def test_e120_build_closure_response_with_multiple_concepts_sorted():
     list. Confirms SKEPTIC test_s120 at the multi-concept level.
     """
     closure = ClosureTable("explorer-e120-unit")
+    # (source, code) tuple keys per QC-266
     closure.concepts = {
-        "zzz": {"system": "SNOMEDCT_US", "display": "Z code"},
-        "aaa": {"system": "SNOMEDCT_US", "display": "A code"},
-        "mmm": {"system": "SNOMEDCT_US", "display": "M code"},
+        ("SNOMEDCT_US", "zzz"): {"system": "SNOMEDCT_US", "display": "Z code"},
+        ("SNOMEDCT_US", "aaa"): {"system": "SNOMEDCT_US", "display": "A code"},
+        ("SNOMEDCT_US", "mmm"): {"system": "SNOMEDCT_US", "display": "M code"},
     }
     response = build_closure_response(closure)
     assert response["resourceType"] == "Parameters"
@@ -1159,7 +1177,7 @@ def test_e121_build_closure_response_includes_return_first():
     """
     closure = ClosureTable("explorer-e121")
     closure.concepts = {
-        "73211009": {"system": "SNOMEDCT_US", "display": "DM"},
+        ("SNOMEDCT_US", "73211009"): {"system": "SNOMEDCT_US", "display": "DM"},
     }
     response = build_closure_response(closure)
     first_param = response["parameter"][0]
@@ -1176,8 +1194,8 @@ def test_e122_build_closure_response_canonical_system_uri():
     """
     closure = ClosureTable("explorer-e122")
     closure.concepts = {
-        "73211009": {"system": "SNOMEDCT_US", "display": "DM"},
-        "E11": {"system": "ICD10CM", "display": "T2DM"},
+        ("SNOMEDCT_US", "73211009"): {"system": "SNOMEDCT_US", "display": "DM"},
+        ("ICD10CM", "E11"): {"system": "ICD10CM", "display": "T2DM"},
     }
     response = build_closure_response(closure)
     concept_entries = _find_params(response, "concept")
@@ -1206,7 +1224,7 @@ def test_e131_closure_manager_reset_creates_fresh_instance():
     instance (not in-place mutation)."""
     manager = ClosureManager()
     t1 = manager.get_or_create("explorer-e131")
-    t1.concepts = {"X": {"system": "S", "display": "X"}}
+    t1.concepts = {("S", "X"): {"system": "S", "display": "X"}}
     t2 = manager.reset("explorer-e131")
     assert t1 is not t2  # different instance
     assert t2.concepts == {}  # fresh state
