@@ -325,7 +325,7 @@ class TestItem2OptionalParamsHostile:
         if status == 422:
             assert body.get("resourceType") == "OperationOutcome"
         else:
-            assert body["expansion"]["contains"] == []
+            assert body["expansion"].get("contains", []) == []  # QC-330
 
     def test_s23_count_huge_capped_at_1000(self, fhir_client):
         """``count=1000000`` MUST be rejected (>1000 cap) per FastAPI Query."""
@@ -863,7 +863,7 @@ class TestItem8FilterMatching:
         )
         assert status == 200
         assert body["expansion"]["total"] == 0
-        assert body["expansion"]["contains"] == []
+        assert body["expansion"].get("contains", []) == []  # QC-330: omitted when empty
 
     def test_s83_filter_case_insensitive(self, fhir_client):
         """filter 'DIABETES' SHOULD match same set as 'diabetes'."""
@@ -1102,9 +1102,10 @@ class TestBuildValuesetExpandCallSiteAudit:
         call site's total= shape.
         """
         src = _get_func_source(_FHIR_API_PATH, "create_fhir_app", "_do_expand")
-        # The QA-001 RESOLVED call site uses the +1 probe + explicit total/extensions.
-        assert "limit=count + 1" in src, (
-            "could not find search_names(limit=count + 1) +1 probe pattern"
+        # The QA-001 RESOLVED call site uses the +1 probe + explicit total/extensions
+        # (QC-241 form: limit=probe_budget + 1, the paging-window probe).
+        assert "limit=probe_budget + 1" in src, (
+            "could not find search_names(limit=probe_budget + 1) +1 probe pattern (QC-241)"
         )
         assert "total=untruncated_total" in src, (
             "filter-mode call site missing total=untruncated_total (QA-001 fix)"
