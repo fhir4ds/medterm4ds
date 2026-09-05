@@ -496,10 +496,11 @@ def build_capability_statement(base_url: str = "http://127.0.0.1:8001") -> dict[
         "rest": [
             {
                 "mode": "server",
-                # QC-348 (EC-15 LOW): the docstring and the QA-037 fix narrative
-                # claim the deployment URL is surfaced as rest[].url per
-                # CapabilityStatement.rest.url (0..1, §3.2.1.0.5) — emit it.
-                "url": base_url,
+                # Note: FHIR R4 has NO CapabilityStatement.rest.url element (it
+                # existed in STU3, was removed in R4). The deployment URL is
+                # surfaced via implementation.url above. Emitting rest[].url
+                # makes the resource schema-invalid (extra_forbidden) — found
+                # by fhir.resources validation; reverting the QC-348 emission.
                 # DA-6 (v0.0.1 docs audit): per FHIR R4 §3.2.1.0.4, a server
                 # that supports batch/transaction processing SHOULD advertise
                 # it via rest[].interaction. Without this, clients introspecting

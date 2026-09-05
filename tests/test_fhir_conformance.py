@@ -138,7 +138,10 @@ class TestFhirResourceConformance:
 
     def test_closure_response_valid(self):
         closure = ClosureTable("test")
-        closure.concepts["44054006"] = {"system": "SNOMEDCT_US", "display": "T2DM"}
+        closure.concepts[("SNOMEDCT_US", "44054006")] = {
+            "system": "SNOMEDCT_US",
+            "display": "T2DM",
+        }
         params = build_closure_response(closure)
         self._validate(params, "Parameters")
 
