@@ -157,6 +157,24 @@ def _get_nested_func_source(parent_name: str, child_name: str) -> str:
     return ""
 
 
+def _expand_intensional_union_source() -> str:
+    """Union of the nested _expand_intensional wrapper and the module-level
+    expand_intensional_value_set core (18f637b split)."""
+    import ast as _ast
+    import inspect as _inspect
+    from medterm4ds.apps import fhir_api as _mod
+
+    src = _inspect.getsource(_mod)
+    tree = _ast.parse(src)
+    parts: list[str] = []
+    for node in _ast.walk(tree):
+        if isinstance(node, _ast.FunctionDef) and node.name in (
+            "_expand_intensional", "expand_intensional_value_set",
+        ):
+            parts.append(_ast.get_source_segment(src, node) or "")
+    return "\n\n".join(parts)
+
+
 # ============================================================================
 # L0: 4th-sibling _expand_intensional isinstance guard (CS-04 HISTORIAN QA-001)
 # ============================================================================
@@ -182,7 +200,7 @@ class TestLens0ExpandIntensionalIsinstanceGuard:
 
     def test_h00_expand_intensional_source_contains_isinstance_guards(self) -> None:
         """Source-read contract: the 5 isinstance guards MUST be present."""
-        src = _get_nested_func_source("create_fhir_app", "_expand_intensional")
+        src = _expand_intensional_union_source()
         assert src, "_expand_intensional not found in apps/fhir_api.py"
         # Each iterator should have its own isinstance guard
         # (compose.include[], compose.include[].concept[],

@@ -199,6 +199,24 @@ def _reset_singleton_manager() -> None:
     closure_mod._manager = None
 
 
+def _expand_intensional_union_source() -> str:
+    """Union of the nested _expand_intensional wrapper and the module-level
+    expand_intensional_value_set core (18f637b split)."""
+    import ast as _ast
+    import inspect as _inspect
+    from medterm4ds.apps import fhir_api as _mod
+
+    src = _inspect.getsource(_mod)
+    tree = _ast.parse(src)
+    parts: list[str] = []
+    for node in _ast.walk(tree):
+        if isinstance(node, _ast.FunctionDef) and node.name in (
+            "_expand_intensional", "expand_intensional_value_set",
+        ):
+            parts.append(_ast.get_source_segment(src, node) or "")
+    return "\n\n".join(parts)
+
+
 # ===========================================================================
 # Lens 1: 4th-sibling AST-walk search for isinstance guards.
 #
@@ -291,7 +309,7 @@ def test_h11_all_compose_include_iterators_have_isinstance_guard() -> None:
     A NEW iterator without the guard would be a regression. Probe class:
     structural source-read audit on the AST of ``_expand_intensional``.
     """
-    src = _get_nested_func_source("create_fhir_app", "_expand_intensional")
+    src = _expand_intensional_union_source()
     assert src, "_expand_intensional not found in create_fhir_app"
     tree = ast.parse(src)
     unguarded: list[int] = []

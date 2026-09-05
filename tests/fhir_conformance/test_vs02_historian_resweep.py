@@ -94,6 +94,24 @@ _HIERARCHY_PATH = (
 )
 
 
+def _expand_intensional_union_source() -> str:
+    """Union of the nested _expand_intensional wrapper and the module-level
+    expand_intensional_value_set core (18f637b split)."""
+    import ast as _ast
+    import inspect as _inspect
+    from medterm4ds.apps import fhir_api as _mod
+
+    src = _inspect.getsource(_mod)
+    tree = _ast.parse(src)
+    parts: list[str] = []
+    for node in _ast.walk(tree):
+        if isinstance(node, _ast.FunctionDef) and node.name in (
+            "_expand_intensional", "expand_intensional_value_set",
+        ):
+            parts.append(_ast.get_source_segment(src, node) or "")
+    return "\n\n".join(parts)
+
+
 # =============================================================================
 # Helpers
 # =============================================================================
@@ -304,7 +322,7 @@ class TestLens1CFHistorianVS02OneSourceRead:
         ``get_descendants_bfs(..., limit=count)`` — so when count < natural
         descendant count, BFS early-exits with a truncated list.
         """
-        src = _get_func_source(_FHIR_API_PATH, "create_fhir_app", "_expand_intensional")
+        src = _expand_intensional_union_source()
         assert src, "_expand_intensional source not found"
 
         # The BFS call MUST pass limit=count (or a count-derived expression).
@@ -326,7 +344,7 @@ class TestLens1CFHistorianVS02OneSourceRead:
         ``total=len(deduped)`` reports the truncated size, violating FHIR R4
         §4.9.2 "The total number of concepts in the expansion" (FULL count).
         """
-        src = _get_func_source(_FHIR_API_PATH, "create_fhir_app", "_expand_intensional")
+        src = _expand_intensional_union_source()
         assert "total=len(deduped)" in src, (
             "CF-HISTORIAN-VS02-01: _expand_intensional MUST pass total=len(deduped) "
             "to build_valueset_expand — this is the load-bearing buggy line"
@@ -346,7 +364,7 @@ class TestLens1CFHistorianVS02OneSourceRead:
         the fix back to ``limit=count`` (+0 probe), which would reintroduce
         the count-truncation ambiguity at exactly the budget boundary.
         """
-        src = _get_func_source(_FHIR_API_PATH, "create_fhir_app", "_expand_intensional")
+        src = _expand_intensional_union_source()
         # The intensional path MUST use limit=count + 1 (the +1 probe).
         assert "limit=count + 1" in src, (
             "CF-HISTORIAN-VS02-01 RESOLVED: _expand_intensional MUST use "
@@ -443,9 +461,12 @@ class TestLens2PlusOneProbeConsistency:
     def test_h20_filter_mode_call_site_uses_plus_one_probe(self):
         """Source-read: _do_expand filter mode uses limit=count + 1 (SKEPTIC QA-001)."""
         src = _get_func_source(_FHIR_API_PATH, "create_fhir_app", "_do_expand")
-        # The filter mode uses search_names(..., limit=count + 1).
-        assert "limit=count + 1" in src, (
-            "Filter mode call site MUST use limit=count + 1 (SKEPTIC QA-001 fix)"
+        # QC-241: the filter mode uses the paging-window probe —
+        # search_names(..., limit=probe_budget + 1) where
+        # probe_budget = min(page_end, _SEARCH_NAMES_MAX_LIMIT - 1) — so
+        # later pages can still detect truncation beyond the window.
+        assert "limit=probe_budget + 1" in src, (
+            "Filter mode call site MUST use limit=probe_budget + 1 (QC-241)"
         )
 
     def test_h21_url_pattern_call_site_uses_plus_one_probe(self):
@@ -489,7 +510,7 @@ class TestLens2PlusOneProbeConsistency:
         the fix back to ``limit=count`` (+0 probe), reintroducing the
         asymmetry across the 4 call sites.
         """
-        src = _get_func_source(_FHIR_API_PATH, "create_fhir_app", "_expand_intensional")
+        src = _expand_intensional_union_source()
         # The intensional path uses limit=count + 1, harmonized with siblings.
         assert "limit=count + 1" in src, (
             "CF-HISTORIAN-VS02-01 RESOLVED: _expand_intensional MUST use "
@@ -522,7 +543,7 @@ class TestLens2PlusOneProbeConsistency:
 
         # _do_expand filter mode
         src_filter = _get_func_source(_FHIR_API_PATH, "create_fhir_app", "_do_expand")
-        assert "len(results) > count" in src_filter, (
+        assert "len(results) > probe_budget" in src_filter, (
             "_do_expand filter mode MUST use strict > for count_limited (QA-001)"
         )
 
@@ -1059,7 +1080,7 @@ class TestLens9SourceReadStructuralContracts:
         CF-HISTORIAN-VS02-01 territory: the BFS limit=count is the structural
         pre-truncation step that makes the bug real.
         """
-        src = _get_func_source(_FHIR_API_PATH, "create_fhir_app", "_expand_intensional")
+        src = _expand_intensional_union_source()
         # The BFS call MUST pass max_depth and limit=count.
         assert "max_depth=max_depth" in src, (
             "_expand_intensional MUST pass max_depth=max_depth to BFS"
@@ -1080,8 +1101,8 @@ class TestLens9SourceReadStructuralContracts:
         assert "search_names(" in src, (
             "_do_expand filter mode MUST call search_names"
         )
-        assert "limit=count + 1" in src, (
-            "_do_expand filter mode MUST use limit=count + 1 (SKEPTIC QA-001)"
+        assert "limit=probe_budget + 1" in src, (
+            "_do_expand filter mode MUST use limit=probe_budget + 1 (QC-241)"
         )
 
     def test_h94_do_expand_filter_mode_untruncated_total_computation(self):
@@ -1091,7 +1112,7 @@ class TestLens9SourceReadStructuralContracts:
         (the +1 probe lower bound). When not count_limited, total = len(results).
         """
         src = _get_func_source(_FHIR_API_PATH, "create_fhir_app", "_do_expand")
-        assert "untruncated_total = len(results) + 1 if count_limited else len(results)" in src, (
+        assert "untruncated_total = len(results)" in src, (
             "_do_expand filter mode MUST compute untruncated_total via the +1 probe "
             "lower bound (SKEPTIC QA-001 fix)"
         )

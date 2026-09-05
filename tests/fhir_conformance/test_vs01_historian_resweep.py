@@ -167,13 +167,35 @@ def _equivalence_text() -> str:
     return p.read_text()
 
 
+def _module_level_func_source(src_text: str, fn_name: str) -> str:
+    """Read source of a module-level function (18f637b wrapper split)."""
+    tree = ast.parse(src_text)
+    for node in tree.body:
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == fn_name:
+            return ast.get_source_segment(src_text, node) or ""
+    return ""
+
+
 def _get_nested_func_source(file_text: str, parent_func: str, nested_func: str) -> str | None:
     """Read source of a nested function definition inside a parent function.
 
     Used to AST-walk ``create_fhir_app._expand_intensional`` etc. The
     function definitions are nested inside ``create_fhir_app`` (a closure
     over engine/settings) so they don't appear at module top level.
+
+    18f637b split ``_expand_intensional`` into a thin FHIR wrapper around
+    the module-level ``expand_intensional_value_set`` — audits targeting
+    it get the union of both (the core logic lives in the module function).
     """
+    if nested_func == "_expand_intensional":
+        nested = _get_nested_func_source_raw(file_text, parent_func, nested_func)
+        return (nested or "") + "\n\n" + _module_level_func_source(
+            file_text, "expand_intensional_value_set"
+        )
+    return _get_nested_func_source_raw(file_text, parent_func, nested_func)
+
+
+def _get_nested_func_source_raw(file_text: str, parent_func: str, nested_func: str) -> str | None:
     tree = ast.parse(file_text)
     for node in ast.walk(tree):
         if isinstance(node, ast.FunctionDef) and node.name == parent_func:
@@ -1351,8 +1373,9 @@ class TestPattern10TestTooLenientAudit:
         assert body.get("total") == 0, (
             f"Empty SEARCH must have total=0; got {body.get('total')}."
         )
-        assert body.get("entry") == [], (
-            f"Empty SEARCH must have entry=[]; got {body.get('entry')}."
+        assert body.get("entry", []) == [], (
+            f"Empty SEARCH must have entry=[] (omitted per QC-330 when "
+            f"empty); got {body.get('entry')}."
         )
 
 

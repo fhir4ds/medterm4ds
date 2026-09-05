@@ -154,13 +154,35 @@ def _outputs_fhir_text() -> str:
     return OUTPUTS_FHIR_PATH.read_text()
 
 
+def _module_level_func_source(src_text: str, fn_name: str) -> str:
+    """Read source of a module-level function (18f637b wrapper split)."""
+    tree = ast.parse(src_text)
+    for node in tree.body:
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == fn_name:
+            return ast.get_source_segment(src_text, node) or ""
+    return ""
+
+
 def _get_nested_func_source(file_text: str, parent_func: str, nested_func: str) -> str | None:
     """Read source of a nested function definition inside a parent function.
 
     Used to AST-walk ``create_fhir_app._expand_intensional`` etc. The
     function definitions are nested inside ``create_fhir_app`` (a closure
     over engine/settings) so they don't appear at module top level.
+
+    18f637b split ``_expand_intensional`` into a thin FHIR wrapper around
+    the module-level ``expand_intensional_value_set`` — audits targeting
+    it get the union of both (the core logic lives in the module function).
     """
+    nested = _get_nested_func_source_raw(file_text, parent_func, nested_func)
+    if nested_func == "_expand_intensional":
+        return (nested or "") + "\n\n" + _module_level_func_source(
+            file_text, "expand_intensional_value_set"
+        )
+    return nested
+
+
+def _get_nested_func_source_raw(file_text: str, parent_func: str, nested_func: str) -> str | None:
     tree = ast.parse(file_text)
     for node in ast.walk(tree):
         if isinstance(node, ast.FunctionDef) and node.name == parent_func:
@@ -458,8 +480,12 @@ class TestLens2FiveSiblingAggregateAstWalkParametersExtractors:
         # a sibling helper that has the loop (e.g.,
         # ``_extract_coding_from_parameters`` delegates to
         # ``_extract_named_coding_from_parameters`` per the DRY contract
-        # verified by test_e23).
+        # verified by test_e23), OR iterate via the QC-001 defensive
+        # boundary ``_parameter_entries(body)`` — that helper owns the
+        # isinstance guard + non-list/None handling for every caller.
         if not found_param_loop:
+            if "_parameter_entries(body)" in func_text:
+                return  # QC-001 boundary helper owns the guard
             # The function MUST call another _extract_*_from_parameters helper
             delegate_found = False
             for sibling in self.EXTRACTOR_FUNCS:

@@ -179,6 +179,24 @@ def _contains_codes_displays(body: dict) -> list[tuple[str, str, str]]:
     return out
 
 
+def _expand_intensional_union_source() -> str:
+    """Union of the nested _expand_intensional wrapper and the module-level
+    expand_intensional_value_set core (18f637b split)."""
+    import ast as _ast
+    import inspect as _inspect
+    from medterm4ds.apps import fhir_api as _mod
+
+    src = _inspect.getsource(_mod)
+    tree = _ast.parse(src)
+    parts: list[str] = []
+    for node in _ast.walk(tree):
+        if isinstance(node, _ast.FunctionDef) and node.name in (
+            "_expand_intensional", "expand_intensional_value_set",
+        ):
+            parts.append(_ast.get_source_segment(src, node) or "")
+    return "\n\n".join(parts)
+
+
 # =============================================================================
 # L1: Canonical-DISPLAY invariant on VS-01 — $expand explicit concept list
 # display byte-exact with $lookup Out display for ALL 4 seeded codes
@@ -1318,7 +1336,7 @@ class TestLens10SourceReadStructuralContracts:
         `get_code_infos(` for the omitted-display canonical resolution
         path (VS-01 TERMINOLOGIST QA-056 RESOLVED).
         """
-        src = _get_func_source(_FHIR_API_PATH, "_expand_intensional")
+        src = _expand_intensional_union_source()
         assert "get_code_infos(" in src, (
             f"_expand_intensional MUST call get_code_infos for omitted-"
             f"display canonical resolution (VS-01 TERMINOLOGIST QA-056)."
@@ -1331,7 +1349,7 @@ class TestLens10SourceReadStructuralContracts:
         Source-read contract: the function body MUST contain
         `root_infos[0].name` for the root display resolution.
         """
-        src = _get_func_source(_FHIR_API_PATH, "_expand_intensional")
+        src = _expand_intensional_union_source()
         assert "root_infos[0].name" in src, (
             f"_expand_intensional MUST source root display from "
             f"root_infos[0].name (engine preferred term)."
@@ -1344,7 +1362,7 @@ class TestLens10SourceReadStructuralContracts:
         Source-read contract: the function body MUST contain
         `d.target_display` for the descendant display resolution.
         """
-        src = _get_func_source(_FHIR_API_PATH, "_expand_intensional")
+        src = _expand_intensional_union_source()
         assert "d.target_display" in src, (
             f"_expand_intensional MUST source descendant display from "
             f"d.target_display (Relation.target_display)."
@@ -1358,7 +1376,7 @@ class TestLens10SourceReadStructuralContracts:
         engine (CodeInfo.name, Relation.target_display), NEVER from
         hardcoded clinical literals.
         """
-        src = _get_func_source(_FHIR_API_PATH, "_expand_intensional")
+        src = _expand_intensional_union_source()
         # Walk AST to find string-literal Constants only (excludes comments)
         tree = ast.parse(src)
         forbidden_literals = {"Diabetes mellitus", "Type 2 diabetes mellitus"}
@@ -1395,7 +1413,7 @@ class TestLens10SourceReadStructuralContracts:
         supplied include[].system through canonical_system_uri to emit
         canonical URIs in contains[].system.
         """
-        src = _get_func_source(_FHIR_API_PATH, "_expand_intensional")
+        src = _expand_intensional_union_source()
         assert "canonical_system_uri(" in src, (
             f"_expand_intensional MUST call canonical_system_uri for "
             f"contains[].system canonical re-resolution (CR-013)."
@@ -1413,7 +1431,7 @@ class TestMetaStructuralInvariants:
 
     def test_t110_expand_intensional_defined(self):
         """_expand_intensional MUST be defined inside create_fhir_app."""
-        src = _get_func_source(_FHIR_API_PATH, "_expand_intensional")
+        src = _expand_intensional_union_source()
         assert src, "_expand_intensional MUST be defined"
 
     def test_t111_get_code_infos_importable(self):

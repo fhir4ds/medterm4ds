@@ -94,6 +94,24 @@ PER_SOURCE_PREFERRED_TTY = {
 }
 
 
+def _expand_intensional_union_source() -> str:
+    """Union of the nested _expand_intensional wrapper and the module-level
+    expand_intensional_value_set core (18f637b split)."""
+    import ast as _ast
+    import inspect as _inspect
+    from medterm4ds.apps import fhir_api as _mod
+
+    src = _inspect.getsource(_mod)
+    tree = _ast.parse(src)
+    parts: list[str] = []
+    for node in _ast.walk(tree):
+        if isinstance(node, _ast.FunctionDef) and node.name in (
+            "_expand_intensional", "expand_intensional_value_set",
+        ):
+            parts.append(_ast.get_source_segment(src, node) or "")
+    return "\n\n".join(parts)
+
+
 # =============================================================================
 # Source path + AST helpers (mirrors TS-01 HISTORIAN strategy; extended by
 # CS-03 HISTORIAN _get_nested_func_source helper)
@@ -1142,7 +1160,7 @@ class TestLens6CFTerminologistVS01One:
         client-supplied display verbatim. When the CF is closed, the source
         will change to apply canonical-wins and this probe MUST fail loudly.
         """
-        src = _get_nested_func_source("create_fhir_app", "_expand_intensional")
+        src = _expand_intensional_union_source()
         assert src is not None, "_expand_intensional not found in create_fhir_app"
         # The CF-VS01-01 pattern: client-supplied display takes precedence.
         assert 'concept.get("display")' in src, (
@@ -1341,7 +1359,7 @@ class TestLens9SourceReadStructuralContracts:
     def test_t91_expand_intensional_calls_canonical_system_uri(self):
         """_expand_intensional calls canonical_system_uri (CR-013 9th-instance
         of client-input-as-canonical drift pattern)."""
-        src = _get_nested_func_source("create_fhir_app", "_expand_intensional")
+        src = _expand_intensional_union_source()
         assert src is not None
         assert "canonical_system_uri(" in src, (
             "_expand_intensional does not call canonical_system_uri — CR-013 "
@@ -1351,7 +1369,7 @@ class TestLens9SourceReadStructuralContracts:
     def test_t92_expand_intensional_uses_canonical_inc_in_contains(self):
         """_expand_intensional uses canonical_inc (NOT inc_system) in
         contains.append for the explicit concept list path."""
-        src = _get_nested_func_source("create_fhir_app", "_expand_intensional")
+        src = _expand_intensional_union_source()
         assert src is not None
         # The load-bearing line: contains.append({..., "system": canonical_inc, ...})
         assert '"system": canonical_inc' in src, (
@@ -1361,7 +1379,7 @@ class TestLens9SourceReadStructuralContracts:
 
     def test_t93_expand_intensional_uses_canonical_inc_in_is_a_root(self):
         """_expand_intensional uses canonical_inc in the is-a root contains.append."""
-        src = _get_nested_func_source("create_fhir_app", "_expand_intensional")
+        src = _expand_intensional_union_source()
         assert src is not None
         # Count occurrences — should be >= 3 (explicit concept list, is-a root,
         # descendant loop).
@@ -1402,7 +1420,7 @@ class TestLens9SourceReadStructuralContracts:
     def test_t96_isinstance_guards_present_in_expand_intensional(self):
         """10th PROMOTED pattern: _expand_intensional has >= 5 isinstance
         guards (compose/include/concept/filter/exclude)."""
-        src = _get_nested_func_source("create_fhir_app", "_expand_intensional")
+        src = _expand_intensional_union_source()
         assert src is not None
         # Count isinstance() calls in the function source.
         occurrences = src.count("isinstance(")
