@@ -649,16 +649,26 @@ def test_e72_batch_advertised_capability_consistency(fhir_client):
 
     # Probe each (resource, op) tuple with a minimal valid request.
     # We expect a 2xx or 4xx (validation), NOT a 404 (route not wired).
+    # QC-310: $closure is POST-only (no GET route on the direct surface —
+    # the batch side mirrors it); probe it with POST like every other op
+    # that accepts Parameters bodies.
     for rtype, op_name in sorted(advertised):
         # Skip custom ops not in the FHIR R4 mandatory matrix
         if op_name in ("search", "extract"):
             continue
+        method = "POST" if op_name == "closure" else "GET"
         # Build a minimal URL
         url = f"{rtype}/${op_name}?_probe=1"
+        entry: dict = {"request": {"method": method, "url": url}}
+        if method == "POST":
+            entry["resource"] = {
+                "resourceType": "Parameters",
+                "parameter": [{"name": "probe", "valueString": "1"}],
+            }
         body = {
             "resourceType": "Bundle",
             "type": "batch",
-            "entry": [{"request": {"method": "GET", "url": url}}],
+            "entry": [entry],
         }
         r = fhir_client.post("/fhir", json=body)
         assert r.status_code == 200
@@ -705,7 +715,10 @@ def test_e83_terminology_capabilities_codesystem_block_non_empty(fhir_client):
     assert cs, "TerminologyCapabilities.codeSystem[] must be non-empty"
     for entry in cs:
         assert "uri" in entry, f"codeSystem entry missing 'uri': {entry}"
-        assert "content" in entry, f"codeSystem entry missing 'content': {entry}"
+        # QC-333/339: 'content' is R5-only — must be absent in R4.
+        assert "content" not in entry, (
+            f"codeSystem entry carries R5-only 'content' (QC-333/339): {entry}"
+        )
 
 
 def test_e84_terminology_capabilities_codesystem_uris_match_registry(
@@ -717,11 +730,16 @@ def test_e84_terminology_capabilities_codesystem_uris_match_registry(
     missing) — verifies the conformance surface is consistent with the
     single-source-of-truth registry.
     """
-    from medterm4ds.engines.fhir import SYSTEM_TO_FHIR_URI
+    from medterm4ds.engines.fhir import PSEUDO_SYSTEM_SOURCES, SYSTEM_TO_FHIR_URI
 
     tc = fhir_client.get("/fhir/metadata?mode=terminology").json()
     advertised = {entry.get("uri") for entry in tc.get("codeSystem", [])}
-    canonical = set(SYSTEM_TO_FHIR_URI.values())
+    # QC-367: pseudo-sources are intentionally not advertised.
+    canonical = {
+        uri
+        for source, uri in SYSTEM_TO_FHIR_URI.items()
+        if source not in PSEUDO_SYSTEM_SOURCES
+    }
     extras = advertised - canonical
     missing = canonical - advertised
     assert not extras, (

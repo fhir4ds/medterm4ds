@@ -262,8 +262,9 @@ class TestItem2ReadSearch:
         assert body.get("type") == "searchset", (
             f"SEARCH {resource_type} → Bundle.type={body.get('type')!r}"
         )
-        # entry must be a list (even if empty) — clients iterate it.
-        assert isinstance(body.get("entry"), list), (
+        # entry is a list when present; QC-330: empty entry[] is OMITTED
+        # per FHIR JSON convention — absent means empty.
+        assert isinstance(body.get("entry", []), list), (
             f"SEARCH {resource_type} → entry is not a list: {type(body.get('entry'))}"
         )
 
@@ -594,23 +595,24 @@ class TestItem5ModeTerminology:
             assert "uri" in entry, (
                 f"codeSystem[{i}] missing 'uri' sub-element: {entry!r}"
             )
-            assert "content" in entry, (
-                f"codeSystem[{i}] missing 'content' sub-element: {entry!r}"
-            )
-            # content must be a valid CodeSystemContentMode value.
-            assert entry["content"] in {
-                "not-present", "example", "fragment", "complete", "supplement"
-            }, (
-                f"codeSystem[{i}].content={entry['content']!r} is not a valid "
-                f"CodeSystemContentMode"
+            # QC-333/339: 'content' is an R5-only TerminologyCapabilities
+            # element; R4 entries carry uri/version/subsumption only.
+            assert "content" not in entry, (
+                f"codeSystem[{i}] carries R5-only 'content' sub-element "
+                f"(invalid in R4; QC-333/339): {entry!r}"
             )
 
     def test_s53_codesystem_uris_match_canonical_registry(self, fhir_client):
         """Each codeSystem.uri MUST be one of the canonical URIs in
         SYSTEM_TO_FHIR_URI (single source of truth). Hostile: catches drift
         where a URI is hardcoded wrong (HCPCS QA-012 regression class)."""
-        from medterm4ds.engines.fhir import SYSTEM_TO_FHIR_URI
-        canonical_uris = set(SYSTEM_TO_FHIR_URI.values())
+        from medterm4ds.engines.fhir import PSEUDO_SYSTEM_SOURCES, SYSTEM_TO_FHIR_URI
+        # QC-367: pseudo-sources are output namespaces, not advertised.
+        canonical_uris = {
+            uri
+            for source, uri in SYSTEM_TO_FHIR_URI.items()
+            if source not in PSEUDO_SYSTEM_SOURCES
+        }
         r = fhir_client.get("/fhir/metadata?mode=terminology")
         body = r.json()
         advertised_uris = {entry["uri"] for entry in body.get("codeSystem", [])}
