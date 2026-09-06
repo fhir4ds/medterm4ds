@@ -27,7 +27,7 @@ from medterm4ds.core.artifact_manifest import (
 )
 
 
-def _model_manifest(space_id: str = "esp_deadbeefdeadbeef") -> dict:
+def _model_manifest(space_id: str = "esp_5a508816b4bb95e9") -> dict:
     return {
         "schema_version": 1,
         "artifact_kind": "model",
@@ -46,7 +46,7 @@ def _model_manifest(space_id: str = "esp_deadbeefdeadbeef") -> dict:
     }
 
 
-def _data_manifest(space_id: str = "esp_deadbeefdeadbeef") -> dict:
+def _data_manifest(space_id: str = "esp_5a508816b4bb95e9") -> dict:
     return {
         "schema_version": 1,
         "artifact_kind": "data",
@@ -110,7 +110,7 @@ class TestReadManifest:
 class TestValidateModelManifest:
     def test_accepts_well_formed(self):
         space = validate_model_manifest(_model_manifest())
-        assert space == "esp_deadbeefdeadbeef"
+        assert space == "esp_5a508816b4bb95e9"
 
     def test_rejects_unknown_schema_version(self):
         m = _model_manifest()
@@ -139,15 +139,27 @@ class TestValidateModelManifest:
         with pytest.raises(ManifestError, match="not accepted by this"):
             validate_model_manifest(_model_manifest())
 
-    def test_empty_registry_accepts_any_wellformed_manifest(self):
+    def test_empty_registry_accepts_any_wellformed_manifest(self, monkeypatch):
         # Migration semantics: acceptance enforcement starts when the
         # registry is populated (Phase 2 dual-publish).
+        import medterm4ds.core.artifact_manifest as mod
+
+        monkeypatch.setattr(mod, "ACCEPTED_EMBEDDING_SPACES", frozenset())
         validate_model_manifest(_model_manifest(space_id="esp_brandnew"))
+
+    def test_live_registry_rejects_unknown_space(self):
+        # The registry now carries esp_5a508816b4bb95e9 (Phase 2
+        # dual-publish); anything else must hard-fail.
+        with pytest.raises(ManifestError, match="not accepted by this"):
+            validate_model_manifest(_model_manifest(space_id="esp_unknown"))
+
+    def test_registry_accepts_the_blessed_space(self):
+        validate_model_manifest(_model_manifest(space_id="esp_5a508816b4bb95e9"))
 
 
 class TestValidateDataManifest:
     def test_accepts_matching_space(self):
-        validate_data_manifest(_data_manifest(), serving_space_id="esp_deadbeefdeadbeef")
+        validate_data_manifest(_data_manifest(), serving_space_id="esp_5a508816b4bb95e9")
 
     def test_rejects_space_mismatch_loudly(self):
         with pytest.raises(ManifestError, match="produced against embedding space"):
@@ -174,7 +186,7 @@ class TestValidateIndexLineage:
         (d / "concepts_metadata.json").write_text("{}")
         m = _data_manifest()
         m["index_lineage"] = {
-            "embedding_space_id": "esp_deadbeefdeadbeef",
+            "embedding_space_id": "esp_5a508816b4bb95e9",
             "built_against_canonical_build": "cdb_2026_09_05_1",
             "index_md5": md5_of_file(d / "concepts_faiss.index") if md5s_match else "0" * 32,
             "metadata_md5": md5_of_file(d / "concepts_metadata.json"),
@@ -202,7 +214,7 @@ class TestValidateIndexLineage:
         m["index_lineage"]["files"]["concepts_faiss.index"] = "0" * 32
         with pytest.raises(ManifestError, match="not the same build"):
             validate_index_lineage(
-                m, d, serving_space_id="esp_deadbeefdeadbeef"
+                m, d, serving_space_id="esp_5a508816b4bb95e9"
             )
 
     def test_stale_index_warns_but_serves(self, tmp_path: Path, caplog):
@@ -212,7 +224,7 @@ class TestValidateIndexLineage:
             validate_index_lineage(
                 m,
                 d,
-                serving_space_id="esp_deadbeefdeadbeef",
+                serving_space_id="esp_5a508816b4bb95e9",
                 data_revision="cdb_2026_09_06_2",  # newer wave
             )
         assert "STALE INDEX" in caplog.text
@@ -225,7 +237,7 @@ class TestValidateIndexLineage:
             validate_index_lineage(
                 m,
                 d,
-                serving_space_id="esp_deadbeefdeadbeef",
+                serving_space_id="esp_5a508816b4bb95e9",
                 data_revision="cdb_2026_09_05_1",  # exact match
             )
         assert "STALE INDEX" not in caplog.text
@@ -234,7 +246,7 @@ class TestValidateIndexLineage:
 class TestHelpers:
     def test_manifest_str_includes_provenance_keys(self):
         s = manifest_str(_model_manifest())
-        assert "embedding_space_id=esp_deadbeefdeadbeef" in s
+        assert "embedding_space_id=esp_5a508816b4bb95e9" in s
         assert "artifact_kind=model" in s
 
     def test_manifest_str_none(self):

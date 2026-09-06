@@ -181,18 +181,24 @@ def _require(manifest: dict[str, Any], key: str, kind: str, source: str) -> Any:
 # Acceptance registry (in code — every bump is a reviewed diff)
 # ---------------------------------------------------------------------------
 
-# Accepted embedding spaces. Empty means "no space has been blessed yet";
-# the first canonical dual-publish (Phase 2) populates this with the id
-# emitted for the current v0.0.5 SapBERT + render policy.
-ACCEPTED_EMBEDDING_SPACES: frozenset[str] = frozenset()
+# Accepted embedding spaces. First entry: the v0.0.5 SapBERT weights
+# (model.safetensors + tokenizer md5s as of the 2026-08-27 build) under
+# render policy rp_1891c4cb719d (canonical-emitted, 2026-09-05 build).
+# Computed via fingerprint_model_dir — see tests/test_artifact_manifest.py.
+ACCEPTED_EMBEDDING_SPACES: frozenset[str] = frozenset({
+    "esp_5a508816b4bb95e9",
+})
 
 # Accepted manifest schema versions (both model and data manifests).
 ACCEPTED_MANIFEST_SCHEMA_VERSIONS: frozenset[int] = frozenset({1})
 
-# Accepted NER calibration ids (hash of labels + threshold). Populated in
-# Phase 2 alongside the first extraction_ner manifest; the legacy
-# commit-pin path stays authoritative until then.
-ACCEPTED_NER_CALIBRATIONS: frozenset[str] = frozenset()
+# Accepted NER calibration ids (hash of labels + threshold). First entry:
+# the shipped defaults (9-label set + 0.15 threshold calibrated Aug 2026
+# against the 185-entity golden set) — see extraction.DEFAULT_LABELS /
+# DEFAULT_THRESHOLD and _calibration_id.
+ACCEPTED_NER_CALIBRATIONS: frozenset[str] = frozenset({
+    "cal_09db3ef9a8e9868b",
+})
 
 
 def manifest_str(manifest: dict[str, Any] | None) -> str:
