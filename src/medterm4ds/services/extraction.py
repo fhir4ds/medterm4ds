@@ -21,6 +21,7 @@ Requires [medterm4ds,extraction] extra: pip install medterm4ds[extraction]
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import re
@@ -39,6 +40,32 @@ DEFAULT_NER_MODEL = os.getenv("MEDTERM4DS_NER_MODEL", "knowledgator/gliner-bi-sm
 # drift can't silently change extraction recall — drift observed 2026-08-14.
 # Override (or disable with an empty value) via MEDTERM4DS_NER_MODEL_REVISION.
 DEFAULT_NER_MODEL_REVISION = os.getenv("MEDTERM4DS_NER_MODEL_REVISION", "3d74c1bf459b8b1c0be1ecbddd679416ce005418") or None
+
+
+def _calibration_id(labels: list[str], threshold: float) -> str:
+    """Hash of the NER calibration (labels + threshold).
+
+    The artifact-governance contract (docs/plans/artifact-governance-plan.md
+    §3): the commit pin alone hides calibration drift — the labels/threshold
+    pair is what the 185-entity golden set was calibrated against. The id
+    ships in the extraction_ner manifest and is checked against the
+    runtime's ACCEPTED_NER_CALIBRATIONS registry.
+    """
+    import hashlib
+
+    payload = json.dumps(
+        {"labels": list(labels), "threshold": threshold},
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    return f"cal_{hashlib.sha256(payload.encode()).hexdigest()[:16]}"
+
+
+# Calibration id of the shipped defaults (the calibrated pair). A loaded
+# pipeline whose calibration differs from an accepted id must be explicitly
+# overridden — and the override logs both ids on every load.
+# Defined after DEFAULT_LABELS/DEFAULT_THRESHOLD below (module order).
+DEFAULT_NER_CALIBRATION_ID: str = ""
 # Canonical mode is the default — it searches canonical anchor names directly
 # via the FAISS concept index, with a 0.70 confidence floor that filters weak
 # matches. Hybrid/lexical modes still available for callers who want raw UMLS.
@@ -68,6 +95,9 @@ DEFAULT_LABELS = [
 # NER confidence threshold. Lower = more recall, more false positives.
 # 0.15 calibrated by the model team for the knowledgator model + 9-label set.
 DEFAULT_THRESHOLD = float(os.getenv("MEDTERM4DS_NER_THRESHOLD", "0.15"))
+
+# Bind the default calibration id now that the calibrated pair is defined.
+DEFAULT_NER_CALIBRATION_ID = _calibration_id(DEFAULT_LABELS, DEFAULT_THRESHOLD)
 
 # NLP label → canonical search result types (passed to SearchService.canonical
 # as result_types=...). Values are the label's canonical anchor categories.
@@ -777,6 +807,34 @@ class NlpPipeline:
         # (a missing dependency is a real error, per GLOBAL_RULES).
         from loguru import logger as _loguru_logger
         _loguru_logger.remove()
+
+        # Artifact-governance calibration gate (plan §5): the loaded
+        # pipeline's calibration (labels + threshold) must be an accepted
+        # one. MEDTERM4DS_NER_ALLOW_UNCALIBRATED=1 loads anyway but logs
+        # the accepted-vs-served ids on EVERY load (never refuse silently,
+        # never override silently). Empty registry = migration mode (the
+        # Phase 2 dual-publish populates ACCEPTED_NER_CALIBRATIONS).
+        from medterm4ds.core.artifact_manifest import ACCEPTED_NER_CALIBRATIONS
+
+        loaded_calibration = _calibration_id(self._labels, self._threshold)
+        if ACCEPTED_NER_CALIBRATIONS and loaded_calibration not in ACCEPTED_NER_CALIBRATIONS:
+            if os.getenv("MEDTERM4DS_NER_ALLOW_UNCALIBRATED", "") == "1":
+                logger.warning(
+                    "NER calibration %s is NOT in the accepted set %s — "
+                    "loading anyway (MEDTERM4DS_NER_ALLOW_UNCALIBRATED=1). "
+                    "Label set / threshold were not calibrated against the "
+                    "golden set; extraction quality is unverified.",
+                    loaded_calibration, sorted(ACCEPTED_NER_CALIBRATIONS),
+                )
+            else:
+                raise RuntimeError(
+                    f"NER calibration {loaded_calibration} (labels+threshold "
+                    f"hash) is not accepted by this medterm4ds release "
+                    f"(accepted: {sorted(ACCEPTED_NER_CALIBRATIONS)}). "
+                    "Recalibrate against the golden set, or set "
+                    "MEDTERM4DS_NER_ALLOW_UNCALIBRATED=1 to load anyway "
+                    "(ids are logged on every load)."
+                )
 
         # Load GLiNER. revision= pins the HF repo commit (see
         # DEFAULT_NER_MODEL_REVISION) so weight drift can't silently change

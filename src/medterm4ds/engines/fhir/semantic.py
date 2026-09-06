@@ -67,6 +67,41 @@ class SemanticSearchEngine:
                     "Set MEDTERM4DS_EMBEDDING_MODEL_DIR to the model directory."
                 )
             logger.info("Loading SapBERT model from %s ...", self._model_dir)
+
+            # Artifact-governance gate (docs/plans/artifact-governance-plan.md
+            # §5): manifest validation at COMPONENT LOAD, never import time.
+            # Absent manifests (legacy revision-keyed layout / operator dirs)
+            # keep today's semantics — Phase 2 dual-publish adds them.
+            from medterm4ds.core.artifact_manifest import (
+                manifest_str,
+                read_manifest,
+                validate_index_lineage,
+                validate_model_manifest,
+            )
+            manifest = read_manifest(self._model_dir)
+            if manifest is not None:
+                self._space_id = validate_model_manifest(
+                    manifest, source=str(self._model_dir)
+                )
+                # Dual-edge check: the per-category FAISS indexes live in the
+                # SAME dir as the model, so their lineage must match the
+                # serving space. Stale-build warnings ride inside.
+                for cat in _CATEGORIES:
+                    index_path = self._model_dir / f"{cat}_faiss.index"
+                    if index_path.exists():
+                        validate_index_lineage(
+                            manifest,
+                            self._model_dir,
+                            serving_space_id=self._space_id,
+                            source=f"{self._model_dir} ({cat} index)",
+                        )
+                        break
+                logger.info(
+                    "SapBERT manifest validated: %s", manifest_str(manifest)
+                )
+            else:
+                self._space_id = None
+
             import torch
             from transformers import AutoModel, AutoTokenizer
 

@@ -59,11 +59,48 @@ def cache_info() -> dict[str, Any]:
                 "present": True,
                 "files": len(files),
                 "bytes": sum(p.stat().st_size for p in files),
+                # Artifact-governance (plan §6.4): surface the family's
+                # manifest when present so incident correlation can see
+                # embedding_space_id / data_revision / lineage without
+                # loading the artifacts (fhir4ds ask). Legacy layout has
+                # no manifests — "absent" keeps current semantics.
+                "manifest": read_manifest_summary(fam_dir),
             }
         else:
             families[fam] = {"present": False}
     info["families"] = families
     return info
+
+
+def read_manifest_summary(directory: Path) -> dict[str, Any]:
+    """Best-effort manifest summary for cache-info (never raises).
+
+    Returns {"status": "absent"} for the legacy layout, {"status":
+    "present", ...provenance keys} for governed artifacts, and a
+    malformed marker (validation problems still surface at component
+    load with the full ManifestError).
+    """
+    from medterm4ds.core.artifact_manifest import read_manifest
+
+    try:
+        manifest = read_manifest(directory)
+    except Exception as exc:  # noqa: BLE001 — reporting path, not a control path
+        return {"status": "malformed", "error": str(exc)}
+    if manifest is None:
+        return {"status": "absent"}
+    summary: dict[str, Any] = {"status": "present"}
+    for key in ("artifact_kind", "embedding_space_id", "data_revision",
+                "render_policy_version"):
+        if key in manifest:
+            summary[key] = manifest[key]
+    lineage = manifest.get("index_lineage")
+    if isinstance(lineage, dict):
+        summary["index_lineage"] = {
+            k: lineage[k]
+            for k in ("embedding_space_id", "built_against_canonical_build")
+            if k in lineage
+        }
+    return summary
 
 
 def cache_refresh(revision: str | None = None, *, families: tuple[str, ...] = ARTIFACT_FAMILIES) -> dict[str, Any]:
