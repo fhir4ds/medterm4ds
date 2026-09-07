@@ -34,13 +34,24 @@ class SemanticSearchEngine:
     Thread-safe: model loading is guarded by a lock.
     """
 
-    def __init__(self, model_dir: str = DEFAULT_MODEL_DIR, device: str | None = None):
+    def __init__(
+        self,
+        model_dir: str = DEFAULT_MODEL_DIR,
+        device: str | None = None,
+        index_dir: str | None = None,
+    ):
         self._model_dir = Path(model_dir)
+        # Split-layout (Phase 3): model weights live under models/<space_id>/
+        # while per-category FAISS indexes may live in another dir (the
+        # legacy semantic/ dir). None → indexes are looked up next to the
+        # model (the co-located legacy layout).
+        self._index_dir = Path(index_dir) if index_dir else None
         self._device_param = device
         self._device = "cpu"
         self._lock = threading.Lock()
         self._model = None
         self._tokenizer = None
+        self._space_id: str | None = None
         self._faiss_indexes: dict[str, Any] = {}
         self._metadata: dict[str, list[dict]] = {}
         self._loaded = False
@@ -53,6 +64,17 @@ class SemanticSearchEngine:
             and (self._model_dir / "model.safetensors").exists()
             and (self._model_dir / "config.json").exists()
         )
+
+    @property
+    def space_id(self) -> str | None:
+        """Embedding-space id from the model manifest (None until loaded
+        or when the layout carries no manifest)."""
+        return self._space_id
+
+    @property
+    def _index_root(self) -> Path:
+        """Directory holding the per-category FAISS indexes."""
+        return self._index_dir or self._model_dir
 
     def _ensure_loaded(self) -> None:
         """Lazily load model, tokenizer, and FAISS indexes on first call."""
@@ -83,19 +105,24 @@ class SemanticSearchEngine:
                 self._space_id = validate_model_manifest(
                     manifest, source=str(self._model_dir)
                 )
-                # Dual-edge check: the per-category FAISS indexes live in the
-                # SAME dir as the model, so their lineage must match the
-                # serving space. Stale-build warnings ride inside.
-                for cat in _CATEGORIES:
-                    index_path = self._model_dir / f"{cat}_faiss.index"
-                    if index_path.exists():
-                        validate_index_lineage(
-                            manifest,
-                            self._model_dir,
-                            serving_space_id=self._space_id,
-                            source=f"{self._model_dir} ({cat} index)",
-                        )
-                        break
+                # Dual-edge check: the per-category FAISS indexes must come
+                # from a lineage matching the serving space. Indexes may be
+                # co-located with the model (legacy layout) or live in a
+                # separate dir (split layout reusing legacy indexes). Only
+                # manifests that CARRY an index_lineage block are checked —
+                # the split models/<space>/ manifest intentionally omits it
+                # (lineage lives in the data manifest).
+                if isinstance(manifest.get("index_lineage"), dict):
+                    for cat in _CATEGORIES:
+                        index_path = self._index_root / f"{cat}_faiss.index"
+                        if index_path.exists():
+                            validate_index_lineage(
+                                manifest,
+                                self._index_root,
+                                serving_space_id=self._space_id,
+                                source=f"{self._index_root} ({cat} index)",
+                            )
+                            break
                 logger.info(
                     "SapBERT manifest validated: %s", manifest_str(manifest)
                 )
@@ -121,8 +148,8 @@ class SemanticSearchEngine:
             import numpy as np  # noqa: F401 — needed by faiss
 
             for cat in _CATEGORIES:
-                index_path = self._model_dir / f"{cat}_faiss.index"
-                meta_path = self._model_dir / f"{cat}_metadata.json"
+                index_path = self._index_root / f"{cat}_faiss.index"
+                meta_path = self._index_root / f"{cat}_metadata.json"
                 if index_path.exists() and meta_path.exists():
                     self._faiss_indexes[cat] = faiss.read_index(str(index_path))
                     with meta_path.open() as f:
@@ -285,7 +312,8 @@ def get_semantic_engine() -> SemanticSearchEngine:
     global _engine_instance
     if _engine_instance is None:
         with _engine_lock:
-            if _engine_instance is None:
-                model_dir = os.getenv("MEDTERM4DS_EMBEDDING_MODEL_DIR", DEFAULT_MODEL_DIR)
-                _engine_instance = SemanticSearchEngine(model_dir)
+                if _engine_instance is None:
+                    model_dir = os.getenv("MEDTERM4DS_EMBEDDING_MODEL_DIR", DEFAULT_MODEL_DIR)
+                    index_dir = os.getenv("MEDTERM4DS_SEMANTIC_INDEX_DIR") or None
+                    _engine_instance = SemanticSearchEngine(model_dir, index_dir=index_dir)
     return _engine_instance

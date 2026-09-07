@@ -324,6 +324,14 @@ def build_parser() -> argparse.ArgumentParser:
     data_cache_refresh.add_argument(
         "--revision", default=None,
         help="Revision to fetch (default: the active MEDTERM4DS_HF_REVISION).")
+    data_cache_refresh.add_argument(
+        "--split", action="store_true",
+        help="Migrate to the split layout: models/<space>/ + data/<revision>/ "
+             "from the repo's main branch (atomic per-unit downloads).")
+    data_cache_refresh.add_argument(
+        "--data-revision", default=None,
+        help="Data revision for --split (default: latest published on main; "
+             "or MEDTERM4DS_DATA_REVISION).")
     data_cache_refresh.set_defaults(func=run_data_cache_refresh)
     data_cache_list = data_subparsers.add_parser(
         "cache-list", help="List artifact-repo tags and branches (network call).")
@@ -1939,7 +1947,11 @@ def run_data_cache_info(args: argparse.Namespace) -> int:
 def run_data_cache_refresh(args: argparse.Namespace) -> int:
     from medterm4ds.core.artifact_cache import cache_refresh
 
-    report = cache_refresh(revision=args.revision)
+    report = cache_refresh(
+        revision=args.revision,
+        split=args.split,
+        data_revision=args.data_revision,
+    )
     sys.stdout.write(_json_dumps(report))
     return 0
 

@@ -69,7 +69,42 @@ def cache_info() -> dict[str, Any]:
         else:
             families[fam] = {"present": False}
     info["families"] = families
+    info["split_layout"] = _split_layout_summary()
     return info
+
+
+def _split_layout_summary() -> dict[str, Any]:
+    """Split models/<space>/ + data/<revision>/ cache state (Phase 3)."""
+    from medterm4ds.services import search as _search
+
+    summary: dict[str, Any] = {
+        "mode": _search._LAYOUT_ENV,
+        "split_root": str(_search._SPLIT_ROOT),
+    }
+    models_dir = _search._SPLIT_ROOT / _search.MODELS_DIRNAME
+    if models_dir.is_dir():
+        spaces = {}
+        for d in sorted(models_dir.iterdir()):
+            if d.is_dir():
+                spaces[d.name] = read_manifest_summary(d)
+        summary["models"] = spaces
+    else:
+        summary["models"] = {}
+    data_dir = _search._SPLIT_ROOT / _search.DATA_DIRNAME
+    if data_dir.is_dir():
+        revs = {}
+        for d in sorted(data_dir.iterdir(), key=lambda p: _search._natural_key(p.name)):
+            if d.is_dir():
+                revs[d.name] = read_manifest_summary(d)
+        summary["data"] = revs
+        local_latest = _search._local_latest_data_dir()
+        if local_latest is not None:
+            summary["resolved_data_revision"] = local_latest.name
+        if _search._DATA_REVISION_ENV:
+            summary["pinned_data_revision"] = _search._DATA_REVISION_ENV
+    else:
+        summary["data"] = {}
+    return summary
 
 
 def read_manifest_summary(directory: Path) -> dict[str, Any]:
@@ -103,13 +138,25 @@ def read_manifest_summary(directory: Path) -> dict[str, Any]:
     return summary
 
 
-def cache_refresh(revision: str | None = None, *, families: tuple[str, ...] = ARTIFACT_FAMILIES) -> dict[str, Any]:
+def cache_refresh(
+    revision: str | None = None,
+    *,
+    families: tuple[str, ...] = ARTIFACT_FAMILIES,
+    split: bool = False,
+    data_revision: str | None = None,
+) -> dict[str, Any]:
     """Force-download artifact families for a revision.
 
     Deletes the revision's cache subtree first so the download cannot be
     satisfied by stale files (the lazy loader never re-pulls existing
     paths). Only meaningful in revision-keyed mode; in operator-managed
     mode this raises rather than deleting a pipeline-managed directory.
+
+    ``split=True`` migrates to the split layout instead: downloads
+    models/<accepted space>/ + data/<latest or data_revision> from the
+    repo's main branch (atomically, per family unit) on top of the legacy
+    families. After the migration, layout resolution prefers the split
+    artifacts; the legacy dirs become deletable.
 
     Returns a summary dict; raises RuntimeError/ImportError on failure.
     """
@@ -122,6 +169,9 @@ def cache_refresh(revision: str | None = None, *, families: tuple[str, ...] = AR
             "that directory with its owning pipeline instead, or unset "
             "MEDTERM4DS_CACHE_DIR to use the revision-keyed cache."
         )
+
+    if split:
+        return _cache_refresh_split(data_revision=data_revision)
 
     repo_id = _search._HF_REPO_ID
     rev = revision or _search._HF_REVISION
@@ -172,6 +222,26 @@ def cache_refresh(revision: str | None = None, *, families: tuple[str, ...] = AR
         "revision": rev,
         "repo_id": repo_id,
         "families": list(families),
+    }
+
+
+def _cache_refresh_split(data_revision: str | None = None) -> dict[str, Any]:
+    """Migrate the cache to the split layout (models/ + data/ from main)."""
+    from medterm4ds.services import search as _search
+
+    model_dir = _search._download_split_model()
+    data_dir = _search._download_split_data(data_revision)
+    return {
+        "cache_dir": str(_search._SPLIT_ROOT),
+        "layout": "split",
+        "model_dir": str(model_dir),
+        "data_dir": str(data_dir),
+        "data_revision": data_dir.name,
+        "note": (
+            "Split layout ready; layout resolution now prefers models/<space>/"
+            " + data/<revision>. The legacy revision-keyed families under "
+            f"{_search._CACHE_DIR} can be deleted once verified."
+        ),
     }
 
 
