@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.4] - 2026-09-08
+
 ### Added
 
 - **CDC CPT↔CVX crosswalk in the mapping service**: the CDC single-best
@@ -36,6 +38,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `value[x]` forms rejected), MCP `extract` tool parameter, and CLI
   `--annotation-fields`. Previously Python-API-only; FHIR silently ignored
   the parameter. Wire semantics now match the Python API.
+- **Artifact governance — manifests and acceptance registries**
+  (Phases 1-2 of docs/plans/artifact-governance-plan.md): every model/data
+  unit ships a `manifest.json`; the runtime fingerprints SapBERT
+  (weights+tokenizer+pooling+L2+max_length+render policy) into an
+  `embedding_space_id`, validates it against an in-code acceptance registry
+  at lazy-load, and hard-refuses on mismatch (per-component — lexical and
+  canonical-only jobs are never blocked by the semantic gate). GLiNER
+  carries a calibration id (`labels`+`threshold`);
+  `MEDTERM4DS_NER_ALLOW_UNCALIBRATED=1` overrides with a warning.
+- **Artifact governance — split-layout cache** (Phases 3-4):
+  `models/<embedding_space_id>/` (content-addressed, registry-pinned) +
+  `data/<data_revision>/` (floats to latest, resolved revision logged and
+  surfaced in `cache-info`) alongside the legacy flat layout, which keeps
+  serving during a deprecation window. `MEDTERM4DS_LAYOUT=legacy` is the
+  kill-switch; `MEDTERM4DS_DATA_REVISION` pins a data revision;
+  `MEDTERM4DS_SEMANTIC_INDEX_DIR` overrides the per-category FAISS source
+  (the automatic bridge reuses the legacy `semantic/` indexes only when
+  weights+tokenizer are byte-identical). All downloads are atomic
+  (tmp+rename); `medterm4ds data cache-refresh --split [--data-revision R]`
+  migrates. Whitespace-only codes on `$translate`/`$lookup`/
+  `$validate-code` return 400 instead of 500 (QC-422/QC-324), and the
+  CapabilityStatement no longer emits the STU3-only `rest[].url` (rejected
+  by fhir.resources in R4).
 - Version test derives its expectation from `pyproject.toml` (QA-002) —
   the hardcoded literal shipped stale once and can't again.
 

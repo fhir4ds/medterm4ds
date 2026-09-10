@@ -40,26 +40,47 @@ The implementation class is `LocalDuckDBEngine`. The old `LocalLiteEngine` name 
 
 Search artifacts (canonical anchors, SapBERT + FAISS indexes, lexical
 indexes) are downloaded lazily from the Hugging Face repo
-(`fhir4ds/medterm4ds`) on first use and cached per revision:
+(`fhir4ds/medterm4ds`) on first use. Two layouts are accepted:
 
-```
-~/.cache/medterm4ds/<revision>/{canonical,semantic,lexical}/...
-```
+**Split layout (current, preferred)** — `models/<embedding_space_id>/`
+(SapBERT weights, content-addressed and pinned by an in-code acceptance
+registry) and `data/<data_revision>/` (canonical value sets + concept
+FAISS index, floats to the latest published revision; the resolved
+revision is logged and surfaced by `cache-info`). Every unit ships a
+`manifest.json`; the runtime validates embedding-space identity and md5
+lineage at component load and hard-refuses on mismatch (a stale index
+warns and serves during a deprecation window).
 
-- The default revision is a **tag** pinned per package release — two runs
-  on different days use the same data. `MEDTERM4DS_HF_REVISION` switches
-  the channel (e.g. `v0.0.4-canonical` preview branch); switching
-  automatically downloads into that revision's own cache subtree, and
-  switching back is instant.
-- Setting `MEDTERM4DS_CACHE_DIR` switches to an operator-managed layout:
-  the directory is used as-is (the `deploy.sh`/data-dir contract), no
-  revision keying, no downloads.
-- Commands: `medterm4ds data cache-info` (what is cached, with
-  provenance), `cache-refresh [--revision R]` (force re-download), and
-  `cache-list` (tags/branches available in the repo).
+**Legacy layout (tag `v0.0.5`)** — flat
+`~/.cache/medterm4ds/<revision>/{canonical,semantic,lexical}/`. Still
+served when present, with a deprecation notice pointing at
+`cache-refresh --split`.
 
-Background downloads are never automatic: campaigns stay reproducible
-unless an operator or env var explicitly moves the revision.
+- `MEDTERM4DS_LAYOUT=legacy` forces the legacy layout (kill-switch /
+  instant rollback); default `auto` prefers split.
+- `MEDTERM4DS_DATA_REVISION` pins a specific data revision (e.g.
+  `cdb_2026_09_07`) instead of floating to latest.
+- `MEDTERM4DS_SEMANTIC_INDEX_DIR` overrides the per-category FAISS index
+  source. By default the split model reuses the legacy `semantic/`
+  indexes when weights + tokenizer are byte-identical (md5 bridge);
+  otherwise per-category semantic search degrades to empty while canonical
+  concept search keeps working.
+- `MEDTERM4DS_HF_REVISION` still selects the legacy-layout tag (default
+  `v0.0.5`); the data family floats from `main` regardless.
+- Setting `MEDTERM4DS_CACHE_DIR` switches to an operator-managed cache
+  root: used as-is (the `deploy.sh`/data-dir contract), no revision
+  keying, `cache-refresh` refuses rather than delete.
+- `MEDTERM4DS_NER_ALLOW_UNCALIBRATED=1` loads a GLiNER config whose
+  calibration id is not in the acceptance registry (warns with both ids).
+- Commands: `medterm4ds data cache-info` (what is cached, resolved
+  revisions, manifests, provenance), `cache-refresh [--revision R]`
+  (legacy force re-download), `cache-refresh --split [--data-revision R]`
+  (download/migrate to the split layout; legacy dirs can be deleted
+  afterward), and `cache-list` (tags/branches available in the repo).
+
+Background downloads are never automatic unless a component is first used
+and nothing is cached; campaigns stay reproducible by pinning
+`MEDTERM4DS_DATA_REVISION` (and/or the layout kill-switch).
 
 ## GPU acceleration (extraction and semantic search)
 

@@ -122,6 +122,40 @@ Valid result types: `condition`, `symptom`, `lab`, `vital`, `medication`,
 - `MEDTERM4DS_SEARCH_INDEX_DIR` — BM25 index directory
 - `MEDTERM4DS_EMBEDDING_MODEL_DIR` — SapBERT model directory
 
+### Artifact cache layout
+
+Search/extract artifacts are cached from the `fhir4ds/medterm4ds` HF repo
+under `~/.cache/medterm4ds/`. Two layouts are accepted (one release of
+dual-layout acceptance; the split layout is preferred):
+
+- **Split (current)** — `models/<embedding_space_id>/` (SapBERT weights,
+  content-addressed, pinned by an in-code acceptance registry) and
+  `data/<data_revision>/` (canonical value sets + concept FAISS index +
+  metadata, floats to the latest published revision, resolved revision is
+  logged). Each unit ships `manifest.json`; the runtime validates
+  embedding-space identity and md5 lineage at component load and hard-fails
+  on mismatch (stale indexes warn and serve during a deprecation window).
+  `medterm4ds data cache-refresh --split [--data-revision R]` downloads or
+  migrates to this layout.
+- **Legacy (tag `v0.0.5`)** — flat `semantic/`, `canonical/`, `lexical/`
+  directories. Still served when present, with a deprecation notice
+  pointing at `cache-refresh --split`.
+
+Environment knobs:
+
+- `MEDTERM4DS_LAYOUT` — `auto` (default) or `legacy` (kill-switch forcing
+  the legacy layout; instant rollback)
+- `MEDTERM4DS_DATA_REVISION` — pin a specific data revision (e.g.
+  `cdb_2026_09_07`) instead of floating to latest
+- `MEDTERM4DS_SEMANTIC_INDEX_DIR` — per-category FAISS index directory,
+  overriding the automatic bridge from the legacy `semantic/` layout
+- `MEDTERM4DS_HF_REVISION` — legacy-layout tag (default `v0.0.5`); the
+  data family floats from `main` regardless
+- `MEDTERM4DS_CACHE_DIR` — operator-managed cache root, used as-is (no
+  revision keying, `cache-refresh` refuses rather than delete)
+- `MEDTERM4DS_NER_ALLOW_UNCALIBRATED` — `1` loads a GLiNER config whose
+  calibration id is not in the acceptance registry (warns with both ids)
+
 ## FHIR R4 Terminology Server
 
 medterm4ds includes a FHIR R4 terminology server that exposes all standard

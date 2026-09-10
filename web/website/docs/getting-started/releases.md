@@ -4,6 +4,53 @@ title: Releases
 
 This page tracks Medical Terminology for Data Science package releases.
 
+## 0.0.4
+
+Artifact-governance and cross-surface parity release. No breaking API
+changes; no DB rebuild required.
+
+Artifact governance (manifests + split cache layout):
+
+- Model and data artifacts from the `fhir4ds/medterm4ds` HF repo now ship
+  `manifest.json` units: `models/&lt;embedding_space_id&gt;/`
+  (content-addressed SapBERT, pinned by an in-code acceptance registry) and
+  `data/&lt;data_revision&gt;/` (canonical value sets + concept index,
+  floating to the latest published revision with the resolved revision
+  logged). The runtime validates embedding-space identity and md5 lineage
+  at component load and hard-refuses on mismatch — per-component, so
+  lexical/canonical-only jobs are never blocked by the semantic gate.
+- The legacy flat layout (`semantic/` + `canonical/` under a pinned tag)
+  keeps working during a deprecation window; `medterm4ds data
+  cache-refresh --split` migrates. Kill-switch: `MEDTERM4DS_LAYOUT=legacy`.
+  Data-revision pin: `MEDTERM4DS_DATA_REVISION`.
+- GLiNER extraction carries a calibration id (labels + threshold);
+  an uncalibrated config refuses to load unless
+  `MEDTERM4DS_NER_ALLOW_UNCALIBRATED=1` is set (warns with both ids).
+
+Terminology and parity:
+
+- CDC CPT↔CVX crosswalk merged into the mapping service (vendored
+  single-best table; CDC rows win conflicts; reverse direction is the
+  one-to-many inverse) — no rebuild needed. CVX group metadata persists
+  `group_cvx`; CDC `VG.txt` is vendored (no runtime downloads).
+- `annotation_fields` wired across all four surfaces (FHIR
+  `$extract` `annotationFields` validated pre-NER, MCP parameter, CLI
+  flag) — previously Python-only, with FHIR silently ignoring it.
+- Default HF artifact revision → `v0.0.5` (shorthand class aliases,
+  CDC vaccine groups, lab SNOMED crosswalk, ICD-10-PCS, guard hardening).
+
+Robustness:
+
+- Whitespace-only codes on `$translate`/`$lookup`/`$validate-code` return
+  400 OperationOutcomes instead of 500s.
+- CapabilityStatement no longer emits the STU3-only `rest[].url`
+  (rejected by fhir.resources in R4).
+- `extract()` validates `annotation_fields`/`result_types`/`min_grade`
+  before any NER work; `resolve_device` rejects out-of-range `cuda:&lt;n&gt;`
+  with an actionable error.
+- CI now runs on `dev` pushes (the Aug-16 gap that let 193 conformance
+  tests drift red).
+
 ## 0.0.3
 
 Performance and configurability release for extraction. No breaking

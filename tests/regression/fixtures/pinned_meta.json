@@ -3,31 +3,31 @@
   "patient_friendly": {
     "icd10cm": {
       "count": 98506,
-      "sha256": "bc52301cc00c898b0cb318a35e75bfb29341f7d1c6a1f8466a8412656800c618"
+      "sha256": "12f07bab1eec1b9d8997647514c58b25c796a30b4df617aa12bc9ef71f81f9a1"
     },
     "icd10pcs": {
       "count": 192560,
-      "sha256": "5a4f5ffea8ec9d9898b7e2f517d2c13c4a332d8093d0f4b6216ebf2cab3a2c59"
+      "sha256": "a33dc3d125a100b13e0d1c52242dc8c2a12bcd10616b23e791746160dea62ddb"
     },
     "snomedct_us": {
       "count": 386110,
-      "sha256": "6eab5c5be3a0fec7cd87f1939d07bb09f0e4413cd6ab93963d157998f837fc2c"
+      "sha256": "6c983397ad9362927ae2343aa01a77fe7ba6084babc40bd16fd8019eb0a5336a"
     },
     "rxnorm": {
       "count": 124919,
-      "sha256": "66e08ea3470045b32c438944aa80b3f766080d07485d7f7ac32751b88848e903"
+      "sha256": "65d41725f1a5a7c5454d4e07ca67c3f99951d03de00d3096bd39207f241facda"
     },
     "lnc": {
       "count": 301558,
-      "sha256": "aaaf47574274a24e54c0eaa52146307e5c613677f41a4c6a88bf63b13db1441a"
+      "sha256": "07265984a9e02807e955a20f5554b0e3a4e82e0a3f14e28ed42590d6eddb487e"
     },
     "cpt": {
       "count": 15468,
-      "sha256": "86dc6586466391a85bca95026441232a061fde275c9ff9f245a464d79b15ee00"
+      "sha256": "87ebf6525d982db84ae1dd1d83f411daba3082d7142fab0bb50ec06fed136320"
     },
     "hcpcs": {
       "count": 7685,
-      "sha256": "ae5dc504be2c064063b69567880c14aca4aeeb01db6fdc0e2b6e4ef55ecaf5be"
+      "sha256": "992964cfc9de406771edcf31ab841e4b49b7bcf716d8304bead352af95cba317"
     },
     "cvx": {
       "count": 288,
@@ -36,24 +36,24 @@
   },
   "patient_friendly_csv": {
     "count": 1127094,
-    "sha256": "4f770f9b30a88c65e26d0faee3f86964420272a540b4afd907e977c06203a794"
+    "sha256": "077bdfa22aae3fd25c8696fb5ac99b0e2cd58df413bb7e42f8f22e19c04059e8"
   },
   "embedding_index": {
     "condition": {
       "count": 245425,
-      "sha256": "37f18b9606b227fa8042d351b24f52ce94decf4b3229da8a11e788a8613be9e1"
+      "sha256": "469fdf2d40bb52ab1c32235aa01049911f07555566ab0af5d3db601615cdfd2d"
     },
     "lab": {
       "count": 116498,
-      "sha256": "31f84428f40f083c33e9bc4fb03058bbf1b01b718a20d349fdf955d4f4fdbd74"
+      "sha256": "cdef564f435641bfe5bca6f9d55735d9d158b9c91775ae8c182e39a7cfe49d3b"
     },
     "medication": {
       "count": 135469,
-      "sha256": "cde7c096b7e663ddd826dc305f68d877c2084a4d59e6309eab4036d092f18fe2"
+      "sha256": "1109a4b5112a84b722763d3d300711fd3a5c2301d3ab926cd7b787c5a8d27f29"
     },
     "procedure": {
       "count": 154997,
-      "sha256": "3663c5bac408eb88c9090f832c5b4a5746483c8239197b3fc62405dcc2feed87"
+      "sha256": "171dd83a93159098888c277027674432ecda48cb4359a0d3cba5c21c2ead5c23"
     },
     "vaccine": {
       "count": 291,
@@ -61,7 +61,7 @@
     },
     "body_structure": {
       "count": 39995,
-      "sha256": "093465c0c3039cc4edcd4a18e9348e2cb55a70389c9584c0a77ecbccf927f09c"
+      "sha256": "281d2f60dabff339120c673c5ad08ff8cb8756049a379c6317441348fb6a5a54"
     }
   },
   "associations": {
@@ -71,5 +71,12 @@
   "rxnorm_ingredients": {
     "count": 92654,
     "sha256": "47cc06cb4dbe7112bf757540b719ec023d5be55fa02f1b2675f95f9b62384800"
+  },
+  "canonical_revision": {
+    "data_revision": "cdb_2026_09_08",
+    "canonical_commit": "ebf3a00",
+    "manifest_published_at": "2026-09-08T22:53:10+00:00",
+    "manifest_path": "/mnt/d/medterm4ds/data/canonical/manifest.json",
+    "note": "Golden tier pinned to the canonical deploy described by this manifest. Verify manifest_published_at is newer than the baseline rebuild before trusting drift signals."
   }
 }
