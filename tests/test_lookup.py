@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import duckdb
+import pytest
 
 from medterm4ds import CodeRef, get_code_info, get_code_infos
 from medterm4ds.engines.duckdb import LocalDuckDBEngine
@@ -276,3 +277,48 @@ def test_cli_code_source_pairs_rejects_uri_form_source():
     # OID form rejected
     with pytest.raises(SystemExit, match="UMLS SAB string"):
         _code_source_pairs(["44054006"], ["urn:oid:2.16.840.1.113883.6.96"])
+
+
+def test_get_code_infos_batch_isolates_invalid_elements_qc01001(caplog):
+    """QC01-001: one bad element must not reject the whole batch.
+
+    The FHIR batch surface gives every entry its own outcome (§3.7); the
+    Python batch surface (lookup_df / get_code_infos) rejected the entire
+    call on the first invalid element. Batch inputs now isolate the bad
+    element to a not-found row with a WARNING naming the first offender;
+    single-code calls keep the hard ValueError (programming-error signal).
+    """
+    import logging as _logging
+
+    con = duckdb.connect(database=":memory:")
+    try:
+        _make_lookup_db(con)
+        engine = LocalDuckDBEngine(con)
+        with caplog.at_level(_logging.WARNING, logger="medterm4ds.services.lookup"):
+            infos = get_code_infos(
+                [
+                    CodeRef("CVX", "208"),
+                    CodeRef("ICD10CM", ""),  # invalid: empty code
+                    ("ICD10CM", "E11.9"),
+                ],
+                engine=engine,
+            )
+    finally:
+        con.close()
+
+    assert infos[0] is not None and infos[0].name == "COVID-19 vaccine"
+    assert infos[1] is None  # isolated bad element -> not-found row
+    assert infos[2] is not None and infos[2].name == "Type 2 diabetes mellitus"
+    assert any("1/3 batch elements invalid" in r.message for r in caplog.records)
+
+
+def test_get_code_infos_single_invalid_still_raises_qc01001():
+    """QC01-001: single-code calls keep the hard ValueError."""
+    con = duckdb.connect(database=":memory:")
+    try:
+        _make_lookup_db(con)
+        engine = LocalDuckDBEngine(con)
+        with pytest.raises(ValueError, match="non-empty string"):
+            get_code_infos([CodeRef("ICD10CM", "")], engine=engine)
+    finally:
+        con.close()

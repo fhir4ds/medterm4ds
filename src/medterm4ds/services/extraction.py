@@ -1849,6 +1849,15 @@ class ExtractionService:
         # on a 2.5K-char text) before raising. Only validates what the
         # chosen format will actually consume, so ignored-for-this-format
         # arguments keep their lenient pass-through semantics.
+        # QC07-001: ``format`` itself is validated FIRST — an unknown value
+        # used to fall through the == "annotated"/== "terms" branches and
+        # silently return codes-shaped results (CLI/FHIR reject the same
+        # input; the Python surface was the lenient one).
+        if format not in ("codes", "terms", "annotated"):
+            raise ValueError(
+                f"Unknown format: {format!r}. "
+                "Valid: codes, terms, annotated."
+            )
         if format == "annotated":
             _normalize_annotation_fields(annotation_fields)
         if format != "terms":

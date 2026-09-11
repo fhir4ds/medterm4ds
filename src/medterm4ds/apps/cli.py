@@ -227,6 +227,9 @@ def build_parser() -> argparse.ArgumentParser:
     # meaningless here. (The missing --output/--format flags are deferred
     # as a feature decision; run_text_search still routes stdout JSON via
     # _write_record_results' getattr defaults.)
+    # QC-382 companion: ``search`` deliberately takes no --db (indexes, not
+    # DuckDB). Display canonicalization (QC-400) therefore runs engine-less
+    # in run_text_search; MEDTERM4DS_DB enables it without a flag.
     text_search.set_defaults(func=run_text_search)
 
     # Text extraction (NER + ConText + code resolution)
@@ -1712,6 +1715,32 @@ def run_text_search(args: argparse.Namespace) -> int:
 
     # Clean CLI errors for input validation (whitespace/over-length query,
     # invalid mode/count) instead of raw tracebacks — QC-022/QC-027 pattern.
+    # QC-400/QC06-001: pass an engine (when one can be opened from
+    # MEDTERM4DS_DB) so result displays are canonicalized to the engine
+    # preferred term — the same one-display convention Python/FHIR/MCP emit.
+    # The ``search`` parser intentionally carries no --db (QC-382: search
+    # reads BM25/SapBERT indexes, not DuckDB), so the engine is optional:
+    # absent MEDTERM4DS_DB the raw index displays ship (documented).
+    engine = None
+    con = None
+    db_path = os.getenv("MEDTERM4DS_DB")
+    if db_path and Path(db_path).exists():
+        try:
+            con = _connect_read_only(Path(db_path))
+            engine = LocalDuckDBEngine(con, config=_local_duckdb_config_from_args(args))
+        except Exception as exc:  # best-effort: canonical displays, not correctness
+            print(
+                f"Warning: could not open {db_path} for display "
+                f"canonicalization ({exc}); serving raw index displays.",
+                file=sys.stderr,
+            )
+            engine = None
+            if con is not None:
+                try:
+                    con.close()
+                except Exception:
+                    pass
+                con = None
     try:
         results = search_service(
             args.query,
@@ -1719,9 +1748,13 @@ def run_text_search(args: argparse.Namespace) -> int:
             sources=args.sources,
             count=args.limit,
             result_types=result_types,
+            engine=engine,
         )
     except (ValueError, TypeError) as exc:
         raise SystemExit(f"Error: {exc}") from exc
+    finally:
+        if con is not None:
+            con.close()
     _write_record_results(
         [r.to_dict() for r in results],
         output=getattr(args, "output", None),

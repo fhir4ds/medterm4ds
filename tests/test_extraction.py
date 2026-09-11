@@ -807,6 +807,26 @@ class TestEagerValidation:
             svc.extract("Patient takes metformin.", format="codes",
                         result_types=["bogus"])
 
+    def test_unknown_format_raises_before_ner_qc07001(self, monkeypatch):
+        """QC07-001: extract() validates `format` eagerly.
+
+        An unknown format used to fall through the annotated/terms
+        comparisons and silently return codes-shaped results — the CLI and
+        FHIR surfaces reject the same input (argparse choices / 422), so the
+        Python surface was the lenient one. Must also fire BEFORE any NER
+        work (QA-004 discipline).
+        """
+        svc = ExtractionService()
+
+        def _boom(*args, **kwargs):
+            raise AssertionError("NER ran before format validation")
+
+        monkeypatch.setattr(svc._nlp, "process", _boom)
+        monkeypatch.setattr(svc._nlp, "process_batch", _boom)
+
+        with pytest.raises(ValueError, match="Unknown format"):
+            svc.extract("Patient takes metformin.", format="bogus_format")
+
     def test_ignored_for_format_stays_lenient(self, monkeypatch):
         """annotation_fields is documented as ignored for non-annotated
         formats — the eager check must not tighten that contract."""

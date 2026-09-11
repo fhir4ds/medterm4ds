@@ -43,9 +43,45 @@ def get_code_infos(
     # here and returned success-shaped null data. Guard at the service
     # boundary so every surface inherits identical diagnostics (helpers in
     # core.normalize are the single source of truth for the messages).
-    for ref in normalized:
-        validate_source_sab(ref.source)
-        validate_code_nonempty(str(ref.code))
+    # QC01-001: in BATCH inputs, isolate the bad element instead of
+    # rejecting the whole call — the FHIR batch surface gives every entry
+    # its own outcome (§3.7), and a 1000-row batch must not die on row 501.
+    # Invalid elements become empty-code refs (not-found rows) with a
+    # WARNING naming the first offender; single-code calls keep the hard
+    # ValueError (programming-error signal).
+    if len(normalized) == 1:
+        validate_source_sab(normalized[0].source)
+        validate_code_nonempty(str(normalized[0].code))
+    else:
+        def _is_invalid(ref: CodeRef) -> bool:
+            try:
+                validate_source_sab(ref.source)
+                validate_code_nonempty(str(ref.code))
+            except ValueError:
+                return True
+            return False
+
+        invalid_count = 0
+        first_invalid: CodeRef | None = None
+        kept: list[CodeRef] = []
+        for ref in normalized:
+            if _is_invalid(ref):
+                invalid_count += 1
+                if first_invalid is None:
+                    first_invalid = ref
+                kept.append(CodeRef(source=ref.source, code=""))
+            else:
+                kept.append(ref)
+        if invalid_count:
+            import logging
+
+            logging.getLogger(__name__).warning(
+                "get_code_infos: %d/%d batch elements invalid and returned "
+                "as not-found rows (first: source=%r code=%r)",
+                invalid_count, len(normalized),
+                first_invalid.source, first_invalid.code,
+            )
+            normalized = kept
     effective, resolutions = effective_code_refs(
         normalized,
         engine=engine,
