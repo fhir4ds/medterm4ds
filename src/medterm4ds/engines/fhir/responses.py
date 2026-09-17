@@ -11,6 +11,7 @@ from medterm4ds.engines.fhir import (
     SYSTEM_TO_FHIR_URI,
     system_to_fhir_uri,
 )
+
 # CR-024 (milestone-3 review): the engine → R4 ConceptMapEquivalence
 # translation map is now defined in the canonical ``equivalence`` submodule.
 # Both this module (the $translate HTTP surface) and ``outputs/fhir.py`` (the
@@ -20,6 +21,7 @@ from medterm4ds.engines.fhir import (
 from medterm4ds.engines.fhir.equivalence import (
     INTERNAL_REL_TO_FHIR_EQUIVALENCE as _INTERNAL_REL_TO_FHIR_EQUIVALENCE,
 )
+
 # QC-339 (EC-15): TerminologyCapabilities.codeSystem.subsumption is derived
 # from the strategy registry (single source of truth), not a duplicated list.
 from medterm4ds.sources import SOURCE_STRATEGIES as _SOURCE_STRATEGIES

@@ -57,7 +57,6 @@ import pytest
 # Spec: https://hl7.org/fhir/R4/parameters.html (resource property)
 from medterm4ds.engines.fhir import (
     FHIR_R4_FILTER_OPERATORS,
-    SYSTEM_TO_FHIR_URI,
     canonical_system_uri,
 )
 
@@ -99,6 +98,7 @@ def _expand_intensional_union_source() -> str:
     expand_intensional_value_set core (18f637b split)."""
     import ast as _ast
     import inspect as _inspect
+
     from medterm4ds.apps import fhir_api as _mod
 
     src = _inspect.getsource(_mod)
@@ -1322,8 +1322,8 @@ class TestLens8CFTerminologistVS02FourResolved:
         displays = _contains_displays(b)
         actual = displays.get((SNOMED_URI, "99999999"))
         assert actual, (
-            f"unknown code display is empty/missing — CF-TERMINOLOGIST-VS02-04 "
-            f"3rd-tier fallback broken."
+            "unknown code display is empty/missing — CF-TERMINOLOGIST-VS02-04 "
+            "3rd-tier fallback broken."
         )
 
 

@@ -693,6 +693,7 @@ class TestIndexCreationLogging:
         # Source-read audit: prepared.py must use logger.warning (not debug)
         # for index creation failures, and must catch duckdb.Error (not Exception).
         import inspect
+
         from medterm4ds.engines.duckdb import prepared as prepared_mod
 
         source = inspect.getsource(prepared_mod)

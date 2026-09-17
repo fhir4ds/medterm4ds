@@ -48,13 +48,7 @@ from typing import Any
 
 import pytest
 
-from medterm4ds.engines.fhir import (
-    FHIR_R4_CONCEPT_MAP_EQUIVALENCE,
-    canonical_system_uri,
-    fhir_uri_to_system,
-)
 from medterm4ds.engines.fhir.responses import build_parameters_translate
-
 
 # ---------------------------------------------------------------------------
 # Constants

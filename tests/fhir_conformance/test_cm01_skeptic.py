@@ -35,9 +35,7 @@ import pytest
 
 from medterm4ds.engines.fhir import (
     FHIR_R4_CONCEPT_MAP_EQUIVALENCE,
-    canonical_system_uri,
 )
-
 
 # ---------------------------------------------------------------------------
 # Lens 1: Equivalence vocabulary closed-enum audit (CF-HISTORIAN-VS01-01
@@ -248,7 +246,6 @@ def test_s30_cr012_do_translate_uses_canonical_system_uri_helper():
     import inspect
 
     from medterm4ds.apps.fhir_api import create_fhir_app
-    from medterm4ds.apps.fhir_api import FhirApiSettings
 
     # create_fhir_app is a factory; inspect its source for _do_translate
     # and the canonical_system_uri helper call.
@@ -382,7 +379,7 @@ def test_s50_outputs_fhir_conceptmap_group_has_source_and_target():
     friendly export path exists in ``outputs/fhir.py``; it MUST scope
     groups by source/target system URI pair.
     """
-    from medterm4ds.core.models import CodeMapping, CodeRef, ConceptMapRow
+    from medterm4ds.core.models import CodeRef, ConceptMapRow
     from medterm4ds.outputs.fhir import concept_map_to_fhir
 
     rows = [
@@ -416,7 +413,7 @@ def test_s51_outputs_fhir_conceptmap_url_is_canonical_identifier():
     Verify the field is present in the export and is a non-empty string.
     """
     from medterm4ds.core.models import CodeRef, ConceptMapRow
-    from medterm4ds.outputs.fhir import concept_map_to_fhir, DEFAULT_CONCEPT_MAP_URL
+    from medterm4ds.outputs.fhir import DEFAULT_CONCEPT_MAP_URL, concept_map_to_fhir
 
     rows = [
         ConceptMapRow(

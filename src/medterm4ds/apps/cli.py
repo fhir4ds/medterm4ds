@@ -91,7 +91,7 @@ def _memory_limit_string(value: str) -> str:
     """argparse type: reject malformed --memory-limit values (QC-380)."""
     try:
         return validate_memory_limit(value)
-    except ValueError as exc:
+    except ValueError:
         raise argparse.ArgumentTypeError(
             f"expects a DuckDB size string like 4GB or 512MB, got {value!r}"
         ) from None
@@ -261,6 +261,8 @@ def build_parser() -> argparse.ArgumentParser:
     # than hardcoded hybrid/certain.
     from medterm4ds.services.extraction import (
         DEFAULT_MIN_GRADE as _EXTRACT_DEFAULT_MIN_GRADE,
+    )
+    from medterm4ds.services.extraction import (
         DEFAULT_SEARCH_MODE as _EXTRACT_DEFAULT_MODE,
     )
     extract.add_argument(

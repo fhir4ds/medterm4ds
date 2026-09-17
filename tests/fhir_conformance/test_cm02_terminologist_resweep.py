@@ -66,25 +66,16 @@ Per GLOBAL_RULES.md:
 from __future__ import annotations
 
 import ast
-import inspect
 from pathlib import Path
 from typing import Any
 
 import pytest
 
-from medterm4ds.apps import fhir_api
 from medterm4ds.engines.fhir import (
     FHIR_R4_CONCEPT_MAP_EQUIVALENCE,
-    canonical_system_uri,
-    fhir_uri_to_system,
 )
 from medterm4ds.engines.fhir import equivalence as equivalence_module
 from medterm4ds.engines.fhir import responses as responses_module
-from medterm4ds.engines.fhir.responses import (
-    build_parameters_subsumes,
-    build_parameters_translate,
-)
-
 
 # ---------------------------------------------------------------------------
 # Constants for the probes.
@@ -382,7 +373,7 @@ def test_t11_clinical_directionality_correctness_t2dm_to_t2dm(fhir_client):
         f"(Type 2 DM, not Type 1 or unspecificed)"
     )
     assert target_code != ICD10CM_T1DM_CODE, (
-        f"CLINICAL DIRECTIONALITY BUG: SNOMED T2DM mapped to E10 (Type 1 DM)!"
+        "CLINICAL DIRECTIONALITY BUG: SNOMED T2DM mapped to E10 (Type 1 DM)!"
     )
 
 

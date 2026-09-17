@@ -22,15 +22,12 @@ from __future__ import annotations
 
 import pytest
 
-
 # Canonical registry imports — single source of truth per GLOBAL_RULES.md
 from medterm4ds.engines.fhir import (
     FHIR_URI_ALIASES,
-    FHIR_URI_TO_SYSTEM,
     SYSTEM_TO_FHIR_URI,
     fhir_uri_to_system,
 )
-
 
 SUPPORTED_SYSTEM_EXTENSION_URL = (
     "http://hl7.org/fhir/StructureDefinition/capabilitystatement-supported-system"
@@ -543,7 +540,7 @@ class TestLens4ExternalCodeSystemRecognition:
         """
         # The canonical URI (no trailing slash) MUST be in the registry.
         assert "http://loinc.org" in SYSTEM_TO_FHIR_URI.values(), (
-            f"LOINC canonical URI missing from SYSTEM_TO_FHIR_URI."
+            "LOINC canonical URI missing from SYSTEM_TO_FHIR_URI."
         )
         # The bare canonical form MUST resolve.
         assert fhir_uri_to_system("http://loinc.org") == "LNC", (
@@ -572,7 +569,7 @@ class TestLens4ExternalCodeSystemRecognition:
             f"Canonical LOINC URI not advertised. Got: {advertised}"
         )
         assert "http://loinc.org/" not in advertised, (
-            f"Trailing-slash LOINC URI leaked into advertisement."
+            "Trailing-slash LOINC URI leaked into advertisement."
         )
 
 

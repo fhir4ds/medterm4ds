@@ -11,7 +11,6 @@ Usage:
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 from typing import Any
 
@@ -128,7 +127,6 @@ def _custom_check(case: dict, response_body: dict, client) -> list[str]:
 @pytest.mark.parametrize("case", ALL_CASES, ids=[c["id"] for c in ALL_CASES])
 def test_case(case: dict, fhir_client):
     """Run one FHIR conformance test case."""
-    from pathlib import Path
     model_dir = Path("/mnt/d/fhir4px-model/data/sapbert_finetuned")
     model_available = model_dir.exists()
 

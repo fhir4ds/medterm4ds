@@ -39,7 +39,6 @@ from __future__ import annotations
 import pytest
 
 from medterm4ds.engines.fhir import (
-    FHIR_R4_CONCEPT_MAP_EQUIVALENCE,
     SYSTEM_TO_FHIR_URI,
 )
 
@@ -894,8 +893,8 @@ class TestLens5TerminologyMaintenance:
         # POST on resource collection endpoints — that's spec-compliant.
         if r.status_code == 500:
             assert "text/plain" not in r.headers.get("content-type", ""), (
-                f"500 returned text/plain body — information-disclosure "
-                f"surface per GLOBAL_RULES.md Silent Fallbacks."
+                "500 returned text/plain body — information-disclosure "
+                "surface per GLOBAL_RULES.md Silent Fallbacks."
             )
 
     def test_s62_post_resource_with_non_canonical_system_uri(self, fhir_client):
@@ -981,6 +980,7 @@ class TestLens6SourceReadGuards:
         drift trigger (count=8 PROMOTED).
         """
         import inspect
+
         from medterm4ds.apps.fhir_api import create_fhir_app
 
         # _expand_implicit_value_set is defined inside create_fhir_app;
@@ -1018,6 +1018,7 @@ class TestLens6SourceReadGuards:
         SYSTEM_TO_FHIR_URI, NOT a hardcoded list. Literal-value-vs-canonical-
         registry drift (count=8 PROMOTED) regression guard."""
         import inspect
+
         from medterm4ds.engines.fhir import responses as responses_mod
 
         src = inspect.getsource(responses_mod._supported_system_extensions)

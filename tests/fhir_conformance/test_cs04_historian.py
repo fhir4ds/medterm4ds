@@ -64,8 +64,6 @@ content, not just the absence of one error string.
 
 from __future__ import annotations
 
-import pytest
-
 # Spec: https://hl7.org/fhir/R4/codesystem-operation-subsumes.html
 #
 # Out `outcome` MUST be one of these 4 strings (closed enum,
@@ -574,8 +572,8 @@ def test_h91_mixed_system_error_content_type_is_fhir_json(fhir_client):
 def test_h92_unknown_system_error_content_type_is_fhir_json(fhir_client):
     """HISTORIAN lens (CR-001): the unknown-system error path Content-Type."""
     r = fhir_client.get(
-        f"/fhir/CodeSystem/$subsumes?system=http://fake.example/sys"
-        f"&codeA=1&codeB=2"
+        "/fhir/CodeSystem/$subsumes?system=http://fake.example/sys"
+        "&codeA=1&codeB=2"
     )
     assert r.status_code == 400
     ct = r.headers.get("content-type", "")

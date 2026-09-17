@@ -1133,7 +1133,7 @@ class TestLens9GetVsPostParity:
              if p.get("name") == "result"),
             None,
         )
-        assert get_result == post_result == True, (
+        assert get_result == post_result is True, (
             f"GET vs POST result mismatch: GET={get_result}, POST={post_result}"
         )
 

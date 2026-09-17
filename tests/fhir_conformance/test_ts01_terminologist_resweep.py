@@ -34,20 +34,6 @@ import re
 
 import pytest
 
-from medterm4ds.engines.fhir import (
-    FHIR_URI_ALIASES,
-    SYSTEM_TO_FHIR_URI,
-    SYSTEM_TO_FHIR_URI as _SYS_TO_URI,
-    fhir_uri_to_system,
-    system_to_fhir_uri,
-)
-from medterm4ds.engines.fhir.responses import (
-    SUPPORTED_SYSTEM_EXTENSION_URL,
-    build_capability_statement,
-    build_terminology_capabilities,
-)
-
-
 # Canonical FHIR R4 system URIs as published by HL7 / owning authorities.
 # HTTP-fetched from https://hl7.org/fhir/R4/terminologies-systems.html (the
 # canonical FHIR R4 external-code-systems registry) plus HL7 THO per-system
@@ -56,7 +42,18 @@ from medterm4ds.engines.fhir.responses import (
 # Sourced from the server's SYSTEM_TO_FHIR_URI directly (QC-006 added ATC;
 # a hardcoded copy drifted) with QC-367 pseudo-sources excluded, matching
 # both advertisement surfaces.
-from medterm4ds.engines.fhir import PSEUDO_SYSTEM_SOURCES, SYSTEM_TO_FHIR_URI
+from medterm4ds.engines.fhir import (
+    FHIR_URI_ALIASES,
+    PSEUDO_SYSTEM_SOURCES,
+    SYSTEM_TO_FHIR_URI,
+    fhir_uri_to_system,
+    system_to_fhir_uri,
+)
+from medterm4ds.engines.fhir.responses import (
+    SUPPORTED_SYSTEM_EXTENSION_URL,
+    build_capability_statement,
+    build_terminology_capabilities,
+)
 
 CANONICAL_FHIR_R4_URIS: dict[str, str] = {
     source: uri

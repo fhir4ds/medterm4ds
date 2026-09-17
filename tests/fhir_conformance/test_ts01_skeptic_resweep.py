@@ -36,7 +36,6 @@ from __future__ import annotations
 
 import pytest
 
-
 # =============================================================================
 # Item 1: XML and JSON FHIR formats supported
 # =============================================================================
@@ -132,7 +131,7 @@ class TestItem1XmlJsonFormats:
             f"(XML support is uniform per §4.7.2.1 item 1)"
         )
         assert r.text.lstrip().startswith("<"), (
-            f"mode=terminology&_format=xml but body is not XML"
+            "mode=terminology&_format=xml but body is not XML"
         )
 
     def test_s17_xml_on_invalid_mode_error_path(self, fhir_client):
@@ -523,7 +522,7 @@ class TestItem4ModeFull:
         ct = r.headers.get("content-type", "")
         assert "application/fhir+xml" in ct
         body = r.text.lstrip()
-        assert body.startswith("<"), f"mode=full&_format=xml but body not XML"
+        assert body.startswith("<"), "mode=full&_format=xml but body not XML"
         # XML body must contain CapabilityStatement root element.
         assert "CapabilityStatement" in body[:200]
 

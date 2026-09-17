@@ -1151,6 +1151,7 @@ class TestWhitespaceDriftFixShapeSourceRead:
         update to assert the pattern is present.
         """
         import inspect
+
         from medterm4ds.apps import fhir_api
 
         source = inspect.getsource(fhir_api)

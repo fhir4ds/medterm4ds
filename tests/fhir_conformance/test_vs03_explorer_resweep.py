@@ -39,8 +39,6 @@ from __future__ import annotations
 import ast
 from pathlib import Path
 
-import pytest
-
 # Spec: https://hl7.org/fhir/R4/valueset-operation-expand.html (canonical R4)
 # Spec: https://hl7.org/fhir/R4/extension-valueset-toocostly.html (too-costly)
 # Spec: https://hl7.org/fhir/R4/valueset.html#expansion (expansion shape)

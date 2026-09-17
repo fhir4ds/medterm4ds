@@ -200,9 +200,9 @@ def cache_refresh(
         raise ImportError(
             "huggingface_hub is required for cache-refresh. "
             "Install with: pip install huggingface_hub"
-        )
-    import os
+        ) from None
     import datetime
+    import os
 
     snapshot_download(
         repo_id=repo_id,
@@ -255,7 +255,7 @@ def cache_list_remote() -> dict[str, Any]:
         raise ImportError(
             "huggingface_hub is required for cache-list. "
             "Install with: pip install huggingface_hub"
-        )
+        ) from None
     import os
 
     api = HfApi(token=os.getenv("HF_TOKEN"))

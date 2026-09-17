@@ -388,8 +388,9 @@ def test_mcp_search_result_types_forwarded_not_postfiltered(tmp_path, monkeypatc
 
     monkeypatch.setattr("medterm4ds.services.search.search", fake_service)
 
-    from medterm4ds.apps.mcp import create_mcp_server
     from fastmcp import Client
+
+    from medterm4ds.apps.mcp import create_mcp_server
 
     async def run():
         server = create_mcp_server(runtime=runtime)
@@ -432,8 +433,9 @@ def test_mcp_search_unknown_result_types_skip_service(tmp_path, monkeypatch):
 
     monkeypatch.setattr("medterm4ds.services.search.search", fake_service)
 
-    from medterm4ds.apps.mcp import create_mcp_server
     from fastmcp import Client
+
+    from medterm4ds.apps.mcp import create_mcp_server
 
     async def run():
         server = create_mcp_server(runtime=runtime)
@@ -475,8 +477,9 @@ def test_mcp_extract_annotation_fields_forwarded_qa005(tmp_path, monkeypatch):
 
     monkeypatch.setattr("medterm4ds.services.extraction.extract", fake_extract)
 
-    from medterm4ds.apps.mcp import create_mcp_server
     from fastmcp import Client
+
+    from medterm4ds.apps.mcp import create_mcp_server
 
     async def run():
         server = create_mcp_server(runtime=runtime)

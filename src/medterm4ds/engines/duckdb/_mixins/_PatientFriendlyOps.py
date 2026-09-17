@@ -3,11 +3,12 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
+
 import duckdb
 
-from medterm4ds.engines.duckdb._engine_base import *  # noqa: F401,F403
-from collections.abc import Sequence
 from medterm4ds.core.models import CodeRef, FriendlyNameResult
+from medterm4ds.engines.duckdb._engine_base import *  # noqa: F401,F403
 
 
 class _PatientFriendlyOps:

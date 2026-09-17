@@ -533,7 +533,7 @@ class TestCountOffsetMatrix:
         every offset yields a conformant expansion page, and larger
         offsets return non-larger contains lists.
         """
-        vs = _make_extensional_vs(
+        _make_extensional_vs(
             SNOMED_URI,
             [
                 (SNOMED_DIABETES_MELLITUS, "Diabetes mellitus"),

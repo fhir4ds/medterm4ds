@@ -48,7 +48,6 @@ from medterm4ds.engines.fhir.responses import (
     build_parameters_translate,
 )
 
-
 # ---------------------------------------------------------------------------
 # Constants for the probes.
 # ---------------------------------------------------------------------------
@@ -1013,8 +1012,8 @@ def test_s75_instance_translate_routes_registered():
     src_app = inspect.getsource(create_fhir_app)
     # The route path literal must appear in the factory source.
     assert '"/fhir/ConceptMap/{resource_id}/$translate"' in src_app, (
-        f"Instance-level $translate route literal missing from "
-        f"create_fhir_app source."
+        "Instance-level $translate route literal missing from "
+        "create_fhir_app source."
     )
 
 

@@ -94,10 +94,8 @@ import pytest
 from medterm4ds.engines.fhir import (
     FHIR_R4_CONCEPT_MAP_EQUIVALENCE,
     FHIR_R4_FILTER_OPERATORS,
-    SYSTEM_TO_FHIR_URI,
     canonical_system_uri,
     fhir_uri_to_system,
-    system_to_fhir_uri,
 )
 
 SNOMED_URI = "http://snomed.info/sct"
@@ -1507,7 +1505,6 @@ class TestLens11MetaStructuralInvariants:
         """canonical_system_uri MUST be importable from
         medterm4ds.engines.fhir.
         """
-        from medterm4ds.engines.fhir import canonical_system_uri
         assert callable(canonical_system_uri), (
             "canonical_system_uri MUST be a callable in "
             "medterm4ds.engines.fhir."
@@ -1517,7 +1514,6 @@ class TestLens11MetaStructuralInvariants:
         """fhir_uri_to_system MUST be importable from
         medterm4ds.engines.fhir.
         """
-        from medterm4ds.engines.fhir import fhir_uri_to_system
         assert callable(fhir_uri_to_system), (
             "fhir_uri_to_system MUST be a callable in "
             "medterm4ds.engines.fhir."
@@ -1597,8 +1593,9 @@ class TestLens12BuildValuesetExpandCallSiteAudit:
         Spec: FHIR R4 §4.9.2 — ``expansion.total`` is "The total number
         of concepts in the expansion" (un-truncated count).
         """
-        from medterm4ds.engines.fhir.responses import build_valueset_expand
         import inspect
+
+        from medterm4ds.engines.fhir.responses import build_valueset_expand
         sig = inspect.signature(build_valueset_expand)
         assert "total" in sig.parameters, (
             "build_valueset_expand signature MUST include ``total`` per "

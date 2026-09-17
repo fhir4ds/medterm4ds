@@ -89,7 +89,6 @@ content, not just the absence of one error string.
 from __future__ import annotations
 
 import inspect
-import json
 
 import pytest
 
@@ -107,7 +106,6 @@ from medterm4ds.outputs.fhir import (
     concept_map_to_fhir,
     fhir_equivalence,
 )
-
 
 # ---------------------------------------------------------------------------
 # Lens 1: 4-shape POST Content-Type closure on $translate.
@@ -986,7 +984,6 @@ def test_e74_do_translate_calls_canonical_system_uri():
     VS-05 HISTORIAN strategy 52 (source-reading probes as FIX-level
     regression guards).
     """
-    import inspect
 
     from medterm4ds.apps.fhir_api import create_fhir_app
 
@@ -1132,12 +1129,12 @@ def test_e91_translate_xml_result_boolean_is_lowercase(fhir_client):
     # If there's a result parameter, it MUST be lowercase.
     if "valueBoolean" in body_text:
         assert 'value="true"' in body_text or 'value="false"' in body_text, (
-            f"XML boolean drift: neither 'value=\"true\"' nor 'value=\"false\"' "
-            f"found in body."
+            "XML boolean drift: neither 'value=\"true\"' nor 'value=\"false\"' "
+            "found in body."
         )
         assert 'value="True"' not in body_text, (
-            f"XML capital-T boolean drift: 'value=\"True\"' found in body — "
-            f"CR-002 regression on $translate route."
+            "XML capital-T boolean drift: 'value=\"True\"' found in body — "
+            "CR-002 regression on $translate route."
         )
 
 

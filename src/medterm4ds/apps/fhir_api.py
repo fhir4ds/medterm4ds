@@ -7,18 +7,18 @@ over standard FHIR R4 HTTP endpoints. Binds to 127.0.0.1 by default
 
 from __future__ import annotations
 
-import asyncio
 import json
 import logging
 import os
 import re
-import duckdb
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
+
+import duckdb
 
 if TYPE_CHECKING:
     # Annotation-only (from __future__ import annotations defers evaluation):
@@ -40,7 +40,6 @@ from medterm4ds.engines.fhir import (
     system_to_fhir_uri,
 )
 from medterm4ds.engines.fhir.responses import (
-    MATCH_GRADE_EXTENSION_URL,
     build_bundle_search,
     build_capability_statement,
     build_operation_outcome,
@@ -52,17 +51,12 @@ from medterm4ds.engines.fhir.responses import (
     build_valueset_expand,
 )
 from medterm4ds.engines.fhir.xml import to_fhir_xml
-from medterm4ds.services.discovery import search_names
+
 # Row cap enforced by search_names (QC-217). Used to bound $expand filter-
 # mode fetch windows so deep offsets page to an empty result instead of
 # tripping the cap as a 400 (QC-241).
 from medterm4ds.services.discovery import MAX_DISCOVERY_LIMIT as _SEARCH_NAMES_MAX_LIMIT
-from medterm4ds.services.hierarchy import get_descendants_bfs, is_descendant
-from medterm4ds.services.inventory import DEFAULT_INVENTORY_SOURCES, normalize_sources
-from medterm4ds.services.lookup import get_code_infos
-from medterm4ds.services.mapping import get_code_mappings
-from medterm4ds.services.patient_friendly import get_patient_friendly_names
-from medterm4ds.services.search import MAX_QUERY_CHARS as MAX_SEARCH_QUERY_CHARS
+from medterm4ds.services.discovery import search_names
 
 # Env-configurable $extract defaults (QC-167). Previously the service's
 # env-var support (MEDTERM4DS_EXTRACTION_MODE / _MIN_GRADE) was silently
@@ -70,8 +64,15 @@ from medterm4ds.services.search import MAX_QUERY_CHARS as MAX_SEARCH_QUERY_CHARS
 # service defaults keeps one source of truth.
 from medterm4ds.services.extraction import (  # noqa: E402
     DEFAULT_MIN_GRADE as DEFAULT_EXTRACT_MIN_GRADE,
+)
+from medterm4ds.services.extraction import (
     DEFAULT_SEARCH_MODE as DEFAULT_EXTRACT_MODE,
 )
+from medterm4ds.services.hierarchy import get_descendants_bfs, is_descendant
+from medterm4ds.services.inventory import DEFAULT_INVENTORY_SOURCES, normalize_sources
+from medterm4ds.services.lookup import get_code_infos
+from medterm4ds.services.mapping import get_code_mappings
+from medterm4ds.services.search import MAX_QUERY_CHARS as MAX_SEARCH_QUERY_CHARS
 
 logger = logging.getLogger(__name__)
 
@@ -652,8 +653,7 @@ try:
     import duckdb
     from fastapi import FastAPI, Query, Request
     from fastapi.exceptions import RequestValidationError
-    from fastapi.responses import Response
-    from fastapi.responses import JSONResponse
+    from fastapi.responses import JSONResponse, Response
     from starlette.exceptions import HTTPException as StarletteHTTPException
 except ImportError:
     FastAPI = None  # type: ignore[assignment,misc]
@@ -795,7 +795,7 @@ def expand_intensional_value_set(
             sys_infos = get_code_infos(
                 [CodeRef(source, code) for code in sys_codes], engine=engine,
             )
-            for code, info in zip(sys_codes, sys_infos):
+            for code, info in zip(sys_codes, sys_infos, strict=False):
                 contains.append({
                     "system": canonical_inc,
                     "code": code,
@@ -1648,7 +1648,7 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
                 if body_resource is None:
                     return _batch_error_entry(
                         400,
-                        f"POST entry requires a 'resource' (Parameters body).",
+                        "POST entry requires a 'resource' (Parameters body).",
                     )
                 # QC-285 (MEDIUM): a non-dict entry.resource (string/int/
                 # list) flowed into _parse_parameters/_extract_* helpers and
@@ -1889,7 +1889,7 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
                     # body-presence 400, a direct/batch divergence.
                     return _batch_error_entry(
                         404,
-                        f"Unknown operation '$closure'. "
+                        "Unknown operation '$closure'. "
                         "See /fhir/metadata for the list of supported operations.",
                         issue_code="processing",
                     )
@@ -3199,7 +3199,7 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
                 [CodeRef(source, code) for code, source, _ in concepts]
             )
             resolved: list[tuple[str, str, str]] = []
-            for (code, source, _display), info in zip(concepts, infos):
+            for (code, source, _display), info in zip(concepts, infos, strict=False):
                 if info is None or not info.name:
                     canonical = system_to_fhir_uri(source) or source
                     return _fhir_error(
@@ -3543,7 +3543,7 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
                     "code": r.code.code,
                     "display": (info.name if info else None) or r.name,
                 }
-                for r, info in zip(page, page_infos)
+                for r, info in zip(page, page_infos, strict=False)
             ]
             # Build the toocostly extension when truncation fired — but
             # ONLY on a full page (or page 1): a short page on a PAGING
@@ -3861,7 +3861,7 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
         page_infos = get_code_infos(
             [CodeRef(source, code) for code in page_codes], engine=engine,
         )
-        for code, info in zip(page_codes, page_infos):
+        for code, info in zip(page_codes, page_infos, strict=False):
             display = (info.name if info else None) or code
             contains.append({
                 "system": system_uri,

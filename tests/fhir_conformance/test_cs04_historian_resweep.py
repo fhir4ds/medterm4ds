@@ -162,6 +162,7 @@ def _expand_intensional_union_source() -> str:
     expand_intensional_value_set core (18f637b split)."""
     import ast as _ast
     import inspect as _inspect
+
     from medterm4ds.apps import fhir_api as _mod
 
     src = _inspect.getsource(_mod)
@@ -1035,7 +1036,7 @@ class TestLens8EmptyStringAsPresentOnRequiredQuery:
         # Query MUST have min_length=1. Since system is required by spec for
         # type-level invocation, it should have min_length=1.
         # (If codeA/codeB are also required, they should too.)
-        for param_name in ("system",):
+        for _param_name in ("system",):
             # Find the Query declaration for this param
             # (loose source-read check: substring presence)
             pass  # Source-read details depend on signature shape

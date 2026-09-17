@@ -39,16 +39,15 @@ from pathlib import Path
 
 import pytest
 
-
 # ---------------------------------------------------------------------------
 # Registry-as-contract — single source of truth for closed enums.
 # Per GLOBAL_RULES.md "Code Review Time" 12th PROMOTED pattern: import
 # canonical constants from engines/fhir/__init__.py; NEVER copy into tests.
 # ---------------------------------------------------------------------------
 from medterm4ds.engines.fhir import (
+    FHIR_R4_FILTER_OPERATORS,
     FHIR_URI_ALIASES,
     FHIR_URI_TO_SYSTEM,
-    FHIR_R4_FILTER_OPERATORS,
     SYSTEM_TO_FHIR_URI,
 )
 

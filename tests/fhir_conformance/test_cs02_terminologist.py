@@ -627,7 +627,7 @@ def test_t52_do_lookup_docstring_names_all_custom_properties():
 
     # _do_lookup is defined inside create_fhir_app; fetch via closure.
     # Find the function by walking the source.
-    src = inspect.getsource(create_fhir_app)
+    inspect.getsource(create_fhir_app)
     # The docstring text is verifiable from the source file directly.
     fhir_api_path = Path(__file__).resolve().parents[2] / "src" / "medterm4ds" / "apps" / "fhir_api.py"
     text = fhir_api_path.read_text()

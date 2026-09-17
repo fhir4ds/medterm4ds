@@ -45,24 +45,18 @@ from __future__ import annotations
 import inspect
 from typing import Any
 
-import pytest
-
 from medterm4ds.apps import fhir_api
 from medterm4ds.engines.fhir import (
     FHIR_R4_CONCEPT_MAP_EQUIVALENCE,
-    canonical_system_uri,
-    fhir_uri_to_system,
-    system_to_fhir_uri,
 )
 from medterm4ds.engines.fhir.equivalence import (
     INTERNAL_REL_TO_FHIR_EQUIVALENCE,
     fhir_equivalence,
 )
 from medterm4ds.engines.fhir.responses import (
-    build_parameters_translate,
     _fhir_equivalence_from_relationship,
+    build_parameters_translate,
 )
-
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -827,7 +821,7 @@ def test_h60_get_post_parity_on_translate(fhir_client):
         f"POST={len(matches_post)}."
     )
 
-    for m_get, m_post in zip(matches_get, matches_post):
+    for m_get, m_post in zip(matches_get, matches_post, strict=False):
         equiv_get = next(
             (p.get("valueCode") for p in m_get.get("part", []) if p.get("name") == "equivalence"), None
         )
@@ -987,7 +981,7 @@ def test_h71_batch_translate_clinical_content_matches_single_entry(fhir_client):
         f"Single-vs-batch match count divergence: single={len(single_matches)}, "
         f"batch={len(batch_matches)}."
     )
-    for s, b in zip(single_matches, batch_matches):
+    for s, b in zip(single_matches, batch_matches, strict=False):
         s_equiv = next(
             (p.get("valueCode") for p in s.get("part", []) if p.get("name") == "equivalence"), None
         )

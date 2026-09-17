@@ -50,9 +50,7 @@ import pytest
 # Single source of truth — import canonical constants from engines/fhir.
 # ---------------------------------------------------------------------------
 from medterm4ds.engines.fhir import (
-    FHIR_URI_ALIASES,
     SYSTEM_TO_FHIR_URI,
-    canonical_system_uri,
 )
 
 # Module source paths for source-read probes.
@@ -135,7 +133,7 @@ def test_e10_combined_lookup_read_search_snomed_consistency(fhir_client):
         f"$lookup {snomed} {code} -> {r_lookup.status_code}; expected 200"
     )
     assert "fhir+json" in r_lookup.headers.get("content-type", ""), (
-        f"$lookup Content-Type must be FHIR JSON"
+        "$lookup Content-Type must be FHIR JSON"
     )
 
     # 2. READ — resource route (no persisted resources → 404 + OO)
@@ -145,7 +143,7 @@ def test_e10_combined_lookup_read_search_snomed_consistency(fhir_client):
         f"(no persisted resources — AGENTS.md NOT A BUG Registry)"
     )
     assert "fhir+json" in r_read.headers.get("content-type", ""), (
-        f"READ Content-Type must be FHIR JSON (not framework default)"
+        "READ Content-Type must be FHIR JSON (not framework default)"
     )
     assert r_read.json().get("resourceType") == "OperationOutcome"
 
@@ -643,8 +641,8 @@ def test_e72_search_handler_returns_fhir_response_not_raw_dict():
     search_fn = _get_func_source(src, "search_resource")
     assert search_fn, "search_resource function not found"
     assert "_fhir_response" in search_fn, (
-        f"search_resource MUST call _fhir_response (not return raw dict). "
-        f"CR-001 pattern."
+        "search_resource MUST call _fhir_response (not return raw dict). "
+        "CR-001 pattern."
     )
 
 

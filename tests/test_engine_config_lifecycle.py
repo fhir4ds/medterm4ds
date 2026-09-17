@@ -23,7 +23,6 @@ import pytest
 from medterm4ds.core import provision
 from medterm4ds.core.config import local_duckdb_config
 
-
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
@@ -363,6 +362,7 @@ def test_connect_rejects_uri_suffix_path(tmp_path):
 def _api_fixture(tmp_path):
     pytest.importorskip("fastapi")
     from fastapi.testclient import TestClient
+
     from medterm4ds.apps.api import ApiSettings, create_app
 
     db = tmp_path / "umls.duckdb"

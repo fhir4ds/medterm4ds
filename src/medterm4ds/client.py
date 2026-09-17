@@ -709,7 +709,6 @@ def open_duckdb_engine(
         raise RuntimeError("DuckDB is required. Install medterm4ds[duckdb].") from exc
 
     from medterm4ds.core.config import local_duckdb_config
-    from medterm4ds.engines.duckdb import LocalDuckDBEngine
 
     # QC-468 (LOW): duckdb.connect() runs in create mode, so a typo'd
     # db_path silently materialized a 12KB junk DB and a URI-style suffix
@@ -1015,7 +1014,7 @@ def _empty_codeinfo_frame(backend: str):
             import polars as pl
         except ImportError as exc:
             raise ImportError("Install polars to use to_dataframe(backend='polars').") from exc
-        return pl.DataFrame(schema={col: pl.Utf8 for col in _CODEINFO_COLUMNS})
+        return pl.DataFrame(schema=dict.fromkeys(_CODEINFO_COLUMNS, pl.Utf8))
     raise ValueError("backend must be 'pandas' or 'polars'")
 
 
@@ -1046,7 +1045,7 @@ def _empty_codemapping_frame(backend: str):
             import polars as pl
         except ImportError as exc:
             raise ImportError("Install polars to use to_dataframe(backend='polars').") from exc
-        return pl.DataFrame(schema={col: pl.Utf8 for col in _CODEMAPPING_COLUMNS})
+        return pl.DataFrame(schema=dict.fromkeys(_CODEMAPPING_COLUMNS, pl.Utf8))
     raise ValueError("backend must be 'pandas' or 'polars'")
 
 
@@ -1078,7 +1077,7 @@ def _empty_coderelation_frame(backend: str):
             import polars as pl
         except ImportError as exc:
             raise ImportError("Install polars to use to_dataframe(backend='polars').") from exc
-        return pl.DataFrame(schema={col: pl.Utf8 for col in _CODERELATION_COLUMNS})
+        return pl.DataFrame(schema=dict.fromkeys(_CODERELATION_COLUMNS, pl.Utf8))
     raise ValueError("backend must be 'pandas' or 'polars'")
 
 
@@ -1108,7 +1107,7 @@ def _empty_friendly_frame(backend: str):
             import polars as pl
         except ImportError as exc:
             raise ImportError("Install polars to use to_dataframe(backend='polars').") from exc
-        return pl.DataFrame(schema={col: pl.Utf8 for col in _FRIENDLY_NAME_RESULT_COLUMNS})
+        return pl.DataFrame(schema=dict.fromkeys(_FRIENDLY_NAME_RESULT_COLUMNS, pl.Utf8))
     raise ValueError("backend must be 'pandas' or 'polars'")
 
 
@@ -1140,7 +1139,7 @@ def _empty_conceptmap_frame(backend: str):
             import polars as pl
         except ImportError as exc:
             raise ImportError("Install polars to use to_dataframe(backend='polars').") from exc
-        return pl.DataFrame(schema={col: pl.Utf8 for col in _CONCEPTMAP_ROW_COLUMNS})
+        return pl.DataFrame(schema=dict.fromkeys(_CONCEPTMAP_ROW_COLUMNS, pl.Utf8))
     raise ValueError("backend must be 'pandas' or 'polars'")
 
 
@@ -1168,7 +1167,7 @@ def _empty_name_search_frame(backend: str):
             import polars as pl
         except ImportError as exc:
             raise ImportError("Install polars to use to_dataframe(backend='polars').") from exc
-        return pl.DataFrame(schema={col: pl.Utf8 for col in _NAME_SEARCH_RESULT_COLUMNS})
+        return pl.DataFrame(schema=dict.fromkeys(_NAME_SEARCH_RESULT_COLUMNS, pl.Utf8))
     raise ValueError("backend must be 'pandas' or 'polars'")
 
 
@@ -1203,7 +1202,7 @@ def _empty_resolution_frame(backend: str):
             import polars as pl
         except ImportError as exc:
             raise ImportError("Install polars to use to_dataframe(backend='polars').") from exc
-        return pl.DataFrame(schema={col: pl.Utf8 for col in _RESOLUTION_COLUMNS})
+        return pl.DataFrame(schema=dict.fromkeys(_RESOLUTION_COLUMNS, pl.Utf8))
     raise ValueError("backend must be 'pandas' or 'polars'")
 
 

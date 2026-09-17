@@ -42,7 +42,6 @@ from medterm4ds.engines.fhir import (
     FHIR_R4_CONCEPT_MAP_EQUIVALENCE,
 )
 
-
 # ---------------------------------------------------------------------------
 # Lens 1: Canonical R4 enum cardinality + membership (10 values exact).
 # Source: https://hl7.org/fhir/R4/valueset-concept-map-equivalence.html
@@ -632,8 +631,8 @@ def test_s92_translate_response_equivalence_value_is_code_not_string():
         f"got keys={list(equiv_part.keys())}."
     )
     assert "valueString" not in equiv_part, (
-        f"equivalence part MUST NOT use 'valueString'; FHIR R4 spec "
-        f"requires 'valueCode' for the equivalence enum value."
+        "equivalence part MUST NOT use 'valueString'; FHIR R4 spec "
+        "requires 'valueCode' for the equivalence enum value."
     )
 
 

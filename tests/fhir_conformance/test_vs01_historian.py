@@ -63,10 +63,7 @@ Reference fixture (tests/fhir_conformance/conftest.py:_make_conformance_db):
 from __future__ import annotations
 
 import ast
-import importlib
 from pathlib import Path
-
-import pytest
 
 # Spec: https://hl7.org/fhir/R4/valueset.html (R4 canonical)
 # Spec: https://hl7.org/fhir/R4/valueset.html#filter (Filter operators)
@@ -80,8 +77,6 @@ import pytest
 #   Binding: Filter Operator (Required)
 # CR-014 (milestone-2 review): import the single source of truth from
 # medterm4ds.engines.fhir rather than maintaining a local copy.
-from medterm4ds.engines.fhir import FHIR_R4_FILTER_OPERATORS  # noqa: E402,F401
-
 # FHIR R4 ConceptMapEquivalence enum (10 values)
 # Per https://hl7.org/fhir/R4/valueset-concept-map-equivalence.html
 # (canonical R4 spec page — verified 2026-07-13):
@@ -96,7 +91,10 @@ from medterm4ds.engines.fhir import FHIR_R4_FILTER_OPERATORS  # noqa: E402,F401
 # mapping" is `unmatched` (no match) or `disjoint` (explicit assertion of
 # no mapping).
 # CR-014 (milestone-2 review): import the single source of truth.
-from medterm4ds.engines.fhir import FHIR_R4_CONCEPT_MAP_EQUIVALENCE  # noqa: E402,F401
+from medterm4ds.engines.fhir import (
+    FHIR_R4_CONCEPT_MAP_EQUIVALENCE,  # noqa: E402,F401
+    FHIR_R4_FILTER_OPERATORS,  # noqa: E402,F401
+)
 
 # FHIR R4 CodeSystem $subsumes outcome enum
 # Per https://hl7.org/fhir/R4/codesystem-operation-subsumes.html:
@@ -402,7 +400,6 @@ class TestLens2CarryForwardSourceAudit:
         assert fn is not None
         # Walk the function looking for any reference to `exclude` and a
         # filter lookup. The CF claim: NO filter reading on exclude path.
-        exclude_filter_accessed = False
         for node in ast.walk(fn):
             # Look for Subscript access like `exclude.get("filter", ...)`
             # or `exclude["filter"]`.
@@ -416,7 +413,7 @@ class TestLens2CarryForwardSourceAudit:
                         ):
                             # Heuristic: is the receiver an "exclude"-ish name?
                             # Walk back through the call to see the variable.
-                            exclude_filter_accessed = True
+                            pass
         # Per CF: exclude path does NOT read filter[].
         # NOTE: AST-level precise detection is hard because the same
         # `.get("filter", ...)` call exists in the INCLUDE path. The
@@ -793,7 +790,6 @@ class TestLens5TestSuiteEncodedWrongSpecAudit:
                     # remaining positions are docstrings + comment-like
                     # contexts. Flag any Constant inside a Tuple (which
                     # is the runtime `op in (...)` shape).
-                    parent_found = False
                     # Walk to find the parent — we use a simple textual
                     # proximity check instead.
                     runtime_occurrences.append(f"line {node.lineno}")

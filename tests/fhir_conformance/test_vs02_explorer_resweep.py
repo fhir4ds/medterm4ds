@@ -95,7 +95,6 @@ Per GLOBAL_RULES.md:
 from __future__ import annotations
 
 import ast
-from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
@@ -1300,7 +1299,7 @@ class TestLens8ThreePostEncodingsParity:
         )
         assert s1 == 200 and s2 == 200
         assert _contains_codes(b1) == _contains_codes(b2), (
-            f"GET filter != POST Parameters filter"
+            "GET filter != POST Parameters filter"
         )
         assert _expand_total(b1) == _expand_total(b2)
 

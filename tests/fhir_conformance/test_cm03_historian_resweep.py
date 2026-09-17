@@ -74,7 +74,6 @@ from medterm4ds.engines.fhir.closure import (
     get_closure_manager,
 )
 
-
 # ---------------------------------------------------------------------------
 # Constants.
 # ---------------------------------------------------------------------------
@@ -204,6 +203,7 @@ def _expand_intensional_union_source() -> str:
     expand_intensional_value_set core (18f637b split)."""
     import ast as _ast
     import inspect as _inspect
+
     from medterm4ds.apps import fhir_api as _mod
 
     src = _inspect.getsource(_mod)
@@ -1377,7 +1377,7 @@ def test_h54_batch_per_entry_order_preserved_on_large_batch(fhir_client) -> None
     assert len(entries) == 10, (
         f"expected 10 response entries; got {len(entries)}"
     )
-    for i, (entry, expected) in enumerate(zip(entries, expected_statuses)):
+    for i, (entry, expected) in enumerate(zip(entries, expected_statuses, strict=False)):
         actual = entry["response"]["status"]
         assert actual.startswith(expected[0]), (
             f"entry[{i}] expected {expected}; got {actual}. "

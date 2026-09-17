@@ -72,13 +72,12 @@ from medterm4ds.engines.fhir import (
     FHIR_R4_CONCEPT_MAP_EQUIVALENCE,
 )
 from medterm4ds.engines.fhir import equivalence as equivalence_module
+from medterm4ds.engines.fhir import responses as responses_module
 from medterm4ds.engines.fhir.equivalence import (
     INTERNAL_REL_TO_FHIR_EQUIVALENCE,
     fhir_equivalence,
 )
-from medterm4ds.engines.fhir import responses as responses_module
 from medterm4ds.outputs import fhir as outputs_fhir_module
-
 
 # ---------------------------------------------------------------------------
 # Constants.
@@ -284,7 +283,7 @@ class TestLens1ThreeAngleDefenseInDepth:
         ``build_parameters_translate``. The builder MUST NOT emit off-spec
         constants in return statements.
         """
-        consts = _walk_return_string_constants(
+        _walk_return_string_constants(
             responses_module.build_parameters_translate
         )
         # The builder returns a dict literal; return-statement walk may

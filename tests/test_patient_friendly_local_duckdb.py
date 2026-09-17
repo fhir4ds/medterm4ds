@@ -1,15 +1,10 @@
 from __future__ import annotations
 
-import sys
-from pathlib import Path
-
 import duckdb
-import pytest
 
 from medterm4ds import CodeRef, get_patient_friendly_names
 from medterm4ds.engines.duckdb import LocalDuckDBEngine
 from medterm4ds.engines.duckdb import engine as duckdb_engine
-
 
 
 def _init_schema(con: duckdb.DuckDBPyConnection) -> None:

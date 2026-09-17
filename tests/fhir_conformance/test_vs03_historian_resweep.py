@@ -80,8 +80,7 @@ indistinguishable from "complete at exactly the budget".
 from __future__ import annotations
 
 import ast
-import inspect
-from datetime import datetime, timezone
+from datetime import datetime
 from pathlib import Path
 
 import pytest
@@ -127,6 +126,7 @@ def _expand_intensional_union_source() -> str:
     expand_intensional_value_set core (18f637b split)."""
     import ast as _ast
     import inspect as _inspect
+
     from medterm4ds.apps import fhir_api as _mod
 
     src = _inspect.getsource(_mod)
@@ -353,14 +353,14 @@ class TestLens1CFHistorianVS02OneSourceRead:
         ``total=len(deduped)``, so total reports the truncated size when
         the cap fires.
         """
-        from medterm4ds.core.models import CodeRef
-        from medterm4ds.engines.duckdb.engine import LocalDuckDBEngine
-        from medterm4ds.services.hierarchy import get_descendants_bfs
-
         # Use an in-memory engine seeded with the conformance fixture's
         # 2-level hierarchy. The fixture has T2DM is-a DM, so descendants
         # of DM = [T2DM].
         import duckdb
+
+        from medterm4ds.core.models import CodeRef
+        from medterm4ds.engines.duckdb.engine import LocalDuckDBEngine
+        from medterm4ds.services.hierarchy import get_descendants_bfs
         con = duckdb.connect(":memory:")
         con.execute("""CREATE TABLE mrconso (
             CODE VARCHAR, TTY VARCHAR, STR VARCHAR, AUI VARCHAR,
@@ -895,7 +895,6 @@ class TestLens4CrossHandlerHelperWiring:
 
     def test_h42_extract_valueset_from_parameters_returns_valueset_or_none(self):
         """Source-read: _extract_valueset_from_parameters returns dict | None."""
-        from medterm4ds.apps.fhir_api import create_fhir_app
         # Verify the function exists by checking the source.
         src = _get_func_source(
             _FHIR_API_PATH, "create_fhir_app", "_extract_valueset_from_parameters"

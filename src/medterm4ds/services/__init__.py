@@ -15,13 +15,6 @@ from .conceptmap import (
 )
 from .crosswalk_prepared import get_crosswalk_mappings
 from .crosswalk_walk import find_via_walk
-from .loinc_parts import (
-    get_class_of,
-    get_component_tests,
-    get_lp_ancestors,
-    get_lp_children,
-    get_lp_descendants,
-)
 from .data_setup import (
     DEFAULT_UMLS_RELEASE_TYPE,
     DEFAULT_UMLS_VERIFY_SOURCES,
@@ -48,6 +41,13 @@ from .inventory import (
     count_source_codes,
     iter_source_codes,
     normalize_sources,
+)
+from .loinc_parts import (
+    get_class_of,
+    get_component_tests,
+    get_lp_ancestors,
+    get_lp_children,
+    get_lp_descendants,
 )
 from .lookup import (
     get_code_info,

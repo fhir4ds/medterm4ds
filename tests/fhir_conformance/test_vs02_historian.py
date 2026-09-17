@@ -65,8 +65,6 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import pytest
-
 # Spec: https://hl7.org/fhir/R4/valueset-operation-expand.html (canonical R4)
 # Spec: https://hl7.org/fhir/R4/extension-valueset-toocostly.html (too-costly)
 # Spec: https://hl7.org/fhir/R4/valueset.html#expansion (expansion shape)
@@ -193,7 +191,7 @@ def _function_text(source: str, name: str) -> str:
     # indentation returns to <= def_indent on a non-blank line.
     body_lines: list[str] = []
     in_signature = True
-    for i, line in enumerate(lines):
+    for _i, line in enumerate(lines):
         body_lines.append(line)
         stripped_nl = line.rstrip("\n")
         if in_signature:

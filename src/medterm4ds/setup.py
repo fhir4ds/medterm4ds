@@ -16,7 +16,6 @@ from __future__ import annotations
 import getpass
 import os
 import sys
-from pathlib import Path
 
 UMLS_SIGNUP_URL = "https://www.nlm.nih.gov/account/"
 
@@ -38,7 +37,7 @@ def main() -> int:
     # Step 1: Get the API key
     api_key = os.getenv("UMLS_API_KEY") or os.getenv("UTS_API_KEY")
     if api_key:
-        print(f"Using UMLS_API_KEY from environment.")
+        print("Using UMLS_API_KEY from environment.")
     else:
         # Check config.toml
         config_path = resolve_cache_home() / "config.toml"
@@ -92,9 +91,9 @@ def main() -> int:
     else:
         print("\n✓ Setup complete (lookup verification skipped — no SNOMED data)")
 
-    print(f"\nYou can now use medterm4ds:")
-    print(f"  import medterm4ds as mt")
-    print(f"  terms = mt.connect()  # finds cached data automatically")
+    print("\nYou can now use medterm4ds:")
+    print("  import medterm4ds as mt")
+    print("  terms = mt.connect()  # finds cached data automatically")
     print()
 
     return 0

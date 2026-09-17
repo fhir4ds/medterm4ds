@@ -12,11 +12,10 @@ SNOMED constants, etc.) are late-imported to avoid circular dependencies.
 
 from __future__ import annotations
 
-from collections import defaultdict
 from collections.abc import Mapping, Sequence
 from typing import TYPE_CHECKING
 
-from medterm4ds.core.models import CodeRef, FriendlyNameResult, Provenance, ProvenanceStep
+from medterm4ds.core.models import CodeRef, Provenance, ProvenanceStep
 
 if TYPE_CHECKING:
     # Annotation-only (deferred by from __future__ import annotations):
@@ -34,8 +33,8 @@ def _resolve_default(
     filter_broad: bool = False,
 ) -> list[_Row]:
     from medterm4ds.engines.duckdb.engine import (
-        _Row,
         _is_broad_friendly_name,
+        _Row,
         _source_atom_order_sql,
         _source_hierarchy_atom_order_sql,
         _source_hierarchy_join_sql,
@@ -178,7 +177,6 @@ def _apply_snomed_fallback(
     max_depth: int,
 ) -> None:
     from medterm4ds.engines.duckdb.engine import (
-        _Row,
         _SNOMED_FALLBACK_SOURCES,
     )
     if source not in _SNOMED_FALLBACK_SOURCES:
@@ -212,13 +210,13 @@ def _resolve_default_via_snomed(
 ) -> dict[str, _Row]:
     from medterm4ds.engines.duckdb.engine import (
         _BROAD_CHV_NAME_SQL,
-        _Row,
         _SNOMED_FALLBACK_QUERY_CHUNK_SIZE,
         _SNOMED_TOP_LEVEL_GUARD_DEPTH,
         _chunks,
         _dedupe,
         _is_broad_friendly_name,
         _is_combo_chv_mismatch,
+        _Row,
     )
     if not codes:
         return {}
@@ -681,7 +679,8 @@ FROM all_results
     # Single materialization of the output list — previously three sites
     # (early-return on no fallback, early-return on no mapping, final return)
     # each rebuilt the full list. Hoisted to a local for reuse.
-    materialize = lambda: [by_code.get(code) or engine._make_original(code, "CPT") for code in codes]
+    def materialize():
+        return [by_code.get(code) or engine._make_original(code, "CPT") for code in codes]
     if not fallback_rows:
         return materialize()
 
@@ -752,8 +751,8 @@ FROM all_results
 
 def _resolve_cvx(engine, codes: Sequence[str]) -> list[_Row]:
     from medterm4ds.engines.duckdb.engine import (
-        _Row,
         _load_default_cvx_groups,
+        _Row,
     )
     metadata: dict[str, list[tuple[str | None, str | None]]] = {}
     if codes:
@@ -1253,7 +1252,6 @@ def _resolve_snomed(
 
 def _display_name(engine, code: str, source: str) -> str | None:
     from medterm4ds.engines.duckdb.engine import (
-        _Row,
         _source_atom_order_sql,
     )
     if source == "LNC":
@@ -1283,7 +1281,6 @@ def _display_name(engine, code: str, source: str) -> str | None:
 
 def _technical_name(engine, code: str, source: str) -> str | None:
     from medterm4ds.engines.duckdb.engine import (
-        _Row,
         _source_technical_atom_order_sql,
     )
     if source == "LNC":

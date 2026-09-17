@@ -10,7 +10,6 @@ DuckDB connection and helpers. Same pattern as hierarchy.py and mappings.py.
 
 from __future__ import annotations
 
-from collections.abc import Sequence
 from dataclasses import dataclass
 
 from medterm4ds.core.models import CodeInfo, CodeRef, CodeResolution, Provenance, ProvenanceStep

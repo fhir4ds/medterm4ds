@@ -98,6 +98,7 @@ Reference fixture (tests/fhir_conformance/conftest.py):
 from __future__ import annotations
 
 import inspect
+
 import pytest
 
 from medterm4ds.engines.fhir import FHIR_R4_CONCEPT_MAP_EQUIVALENCE
@@ -105,7 +106,6 @@ from medterm4ds.engines.fhir.equivalence import (
     INTERNAL_REL_TO_FHIR_EQUIVALENCE,
     fhir_equivalence,
 )
-
 
 # =============================================================================
 # Lens 1 — Each of the 10 R4 enum values has a clinical definition matching

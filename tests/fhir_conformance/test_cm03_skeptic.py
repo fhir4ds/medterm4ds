@@ -52,15 +52,12 @@ from __future__ import annotations
 
 from typing import Any
 
-import pytest
-
 from medterm4ds.engines.fhir.closure import (
     ClosureManager,
     ClosureTable,
     build_closure_response,
     get_closure_manager,
 )
-
 
 SNOMED_URI = "http://snomed.info/sct"
 SNOMED_URI_OID_ALIAS = "urn:oid:2.16.840.1.113883.6.96"
@@ -753,6 +750,7 @@ def test_s71_closure_incomplete_since_set_on_duckdb_error():
     path calls both sequentially).
     """
     import duckdb as _duckdb
+
     from medterm4ds.engines.fhir import closure as closure_mod
 
     class _NullEngine:
@@ -785,6 +783,7 @@ def test_s72_closure_add_concepts_incomplete_since_set_on_duckdb_error():
     source per direction and sets ``incomplete_since``.
     """
     import duckdb as _duckdb
+
     from medterm4ds.engines.fhir import closure as closure_mod
 
     class _BoomEngine:
@@ -1076,7 +1075,7 @@ def test_s111_get_or_create_idempotent_for_existing_name():
     """
     manager = ClosureManager()
     t1 = manager.get_or_create("test-goc-111")
-    t1.add_concept  # ensure it's a ClosureTable
+    assert hasattr(t1, "add_concept")  # ensure it's a ClosureTable
     t2 = manager.get_or_create("test-goc-111")
     assert t1 is t2, (
         "get_or_create on existing name should return same instance"

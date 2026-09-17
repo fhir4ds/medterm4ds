@@ -76,7 +76,7 @@ import pytest
 # Spec:
 #   https://hl7.org/fhir/R4/valueset-operation-validate-code.html
 #   https://hl7.org/fhir/R4/codesystem-operation-validate-code.html
-from medterm4ds.engines.fhir import SYSTEM_TO_FHIR_URI, canonical_system_uri
+from medterm4ds.engines.fhir import SYSTEM_TO_FHIR_URI
 
 # ---------------------------------------------------------------------------
 # Constants — seeded systems + codes (mirror SKEPTIC + HISTORIAN resweep).
@@ -1601,12 +1601,9 @@ class TestLens9SourceReadStructuralContracts:
                 # No bare 'except Exception:' allowed
                 if node.type is None:
                     # Bare except — prohibited
-                    assert False, "Bare 'except:' found in _do_vs_validate"
+                    raise AssertionError("Bare 'except:' found in _do_vs_validate")
                 if isinstance(node.type, ast.Name) and node.type.id == "Exception":
-                    assert False, (
-                        "'except Exception:' found in _do_vs_validate "
-                        "(silent-fallback prohibition per GLOBAL_RULES.md)"
-                    )
+                    raise AssertionError("'except Exception:' found in _do_vs_validate " "(silent-fallback prohibition per GLOBAL_RULES.md)")
 
 
 # =============================================================================
@@ -1840,12 +1837,9 @@ class TestLens11CarryForwardReconfirmations:
             for sub in ast.walk(handler_tree):
                 if isinstance(sub, ast.ExceptHandler):
                     if sub.type is None:
-                        assert False, f"Bare 'except:' in {handler_name}"
+                        raise AssertionError(f"Bare 'except:' in {handler_name}")
                     if isinstance(sub.type, ast.Name) and sub.type.id == "Exception":
-                        assert False, (
-                            f"'except Exception:' in {handler_name} "
-                            "(silent-fallback prohibition)"
-                        )
+                        raise AssertionError(f"'except Exception:' in {handler_name} " "(silent-fallback prohibition)")
 
     def test_e114_canonical_system_uri_helper_is_imported(self):
         """e114: ``canonical_system_uri`` helper IS imported in

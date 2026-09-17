@@ -856,11 +856,6 @@ class TestL6LiteralValueVsCanonicalRegistryDrift:
         # Walk ast.Constant nodes only (NOT comments — extends CS-01 HISTORIAN
         # AST-walk-only-on-ast.Constant strategy to avoid false-flagging
         # commentary that quotes a URI in a docstring).
-        forbidden_uris = {
-            "http://snomed.info/sct",
-            "http://hl7.org/fhir/sid/icd-10-cm",
-            "http://www.nlm.nih.gov/research/umls/rxnorm",
-        }
         for node in ast.walk(tree):
             if isinstance(node, ast.Constant) and isinstance(node.value, str):
                 # Allow URLs inside comment-style string literals that are NOT
@@ -1264,8 +1259,9 @@ class TestL13ResponseBuilderDriftStragglers:
         The Out ``system`` parameter MUST be sourced from the caller's
         ``system_uri`` argument.
         """
-        from medterm4ds.engines.fhir import responses as responses_mod
         import inspect
+
+        from medterm4ds.engines.fhir import responses as responses_mod
         sig = inspect.signature(responses_mod.build_parameters_validate)
         # The signature MUST include system_uri as a parameter
         assert "system_uri" in sig.parameters, (
@@ -1277,8 +1273,9 @@ class TestL13ResponseBuilderDriftStragglers:
         ``system_uri`` in the Out ``system`` parameter (NOT a hardcoded
         literal).
         """
-        from medterm4ds.engines.fhir import responses as responses_mod
         import inspect
+
+        from medterm4ds.engines.fhir import responses as responses_mod
         source = inspect.getsource(responses_mod.build_parameters_validate)
         # The builder MUST reference the system_uri parameter
         assert "system_uri" in source, (
@@ -1286,11 +1283,6 @@ class TestL13ResponseBuilderDriftStragglers:
         )
         # MUST NOT hardcode canonical URIs as the Out system value
         tree = ast.parse(source)
-        hardcoded_uris = {
-            "http://snomed.info/sct",
-            "http://hl7.org/fhir/sid/icd-10-cm",
-            "http://www.nlm.nih.gov/research/umls/rxnorm",
-        }
         for node in ast.walk(tree):
             if isinstance(node, ast.Constant) and isinstance(node.value, str):
                 # Allow URIs in docstrings/comments (string literals that

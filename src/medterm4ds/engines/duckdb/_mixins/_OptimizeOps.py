@@ -3,9 +3,10 @@
 
 from __future__ import annotations
 
-from medterm4ds.engines.duckdb._engine_base import *  # noqa: F401,F403
 from collections.abc import Sequence
+
 from medterm4ds.core.models import CodeRef, OptimizeResult
+from medterm4ds.engines.duckdb._engine_base import *  # noqa: F401,F403
 
 # QC-208/QC-214 (HIGH): production hierarchies reach depth 18 (SNOMED,
 # per mt4ds.snomed_top_level_depth) and 15 (LNC). The previous cap of 12

@@ -117,7 +117,6 @@ import pytest
 #   vsd-1: "A value set include/exclude SHALL have a value set or a system"
 #   vsd-2: "A value set with concepts or filters SHALL include a system"
 #   vsd-3: "Cannot have both concept and filter" (in same include clause)
-
 # Source the canonical closed-enum constant — registry-as-contract pattern
 # (CF-SKEPTIC-CS01-RESWEEP-01 LOW DEFERRED for symmetry with the other 2 R4
 # closed enums; the constant is canonical here).
@@ -192,6 +191,7 @@ def _expand_intensional_union_source() -> str:
     expand_intensional_value_set core (18f637b split)."""
     import ast as _ast
     import inspect as _inspect
+
     from medterm4ds.apps import fhir_api as _mod
 
     src = _inspect.getsource(_mod)

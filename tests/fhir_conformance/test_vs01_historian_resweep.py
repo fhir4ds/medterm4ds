@@ -73,10 +73,7 @@ Per GLOBAL_RULES.md:
 from __future__ import annotations
 
 import ast
-import inspect
 from pathlib import Path
-
-import pytest
 
 # Spec: https://hl7.org/fhir/R4/valueset.html (R4 canonical)
 # Spec: https://hl7.org/fhir/R4/valueset.html#filter (Filter operators)
@@ -84,15 +81,13 @@ import pytest
 # CR-014 (milestone-2 review): import the single source of truth from
 # medterm4ds.engines.fhir rather than maintaining a local copy.
 from medterm4ds.engines.fhir import (
-    FHIR_URI_ALIASES,
-    FHIR_URI_TO_SYSTEM,
-    SYSTEM_TO_FHIR_URI,
     FHIR_R4_CONCEPT_MAP_EQUIVALENCE,
     FHIR_R4_FILTER_OPERATORS,
+    FHIR_URI_ALIASES,
+    SYSTEM_TO_FHIR_URI,
     canonical_system_uri,
     fhir_uri_to_system,
     sab_label_to_fhir_uri,
-    system_to_fhir_uri,
 )
 
 SNOMED_URI = "http://snomed.info/sct"

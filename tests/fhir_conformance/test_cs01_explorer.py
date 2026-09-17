@@ -36,7 +36,6 @@ from pathlib import Path
 
 import pytest
 
-
 # ---------------------------------------------------------------------------
 # Helpers (mirrored from CS-01 HISTORIAN)
 # ---------------------------------------------------------------------------
@@ -330,7 +329,7 @@ def test_e30_search_codesystem_accepts_advertised_param(fhir_client, param, valu
     This is a positive success-shape assertion (200 + Bundle body), not a
     negative-only check, per GLOBAL_RULES.md "Test-too-lenient".
     """
-    r = fhir_client.get(f"/fhir/CodeSystem", params={param: value})
+    r = fhir_client.get("/fhir/CodeSystem", params={param: value})
     assert r.status_code == 200, f"GET /fhir/CodeSystem?{param}={value} → {r.status_code}"
     body = r.json()
     assert body.get("resourceType") == "Bundle", (

@@ -42,11 +42,9 @@ mostly wire-format / security. The clinical surface is narrow but real:
 
 from __future__ import annotations
 
-import os
 from pathlib import Path
 
 import pytest
-
 
 # Canonical FHIR R4 ConceptMapEquivalence closed enum.
 # Source: https://hl7.org/fhir/R4/valueset-concept-map-equivalence.html
@@ -55,6 +53,7 @@ import pytest
 # (``encompasses``, ``matches``, ``smaller``, ``subsumedby``,
 # ``not-relatedto``); the R4 spec-correct enum is exactly 10 values.
 from medterm4ds.engines.fhir import FHIR_R4_CONCEPT_MAP_EQUIVALENCE
+
 FHIR_R4_EQUIVALENCE_ENUM = FHIR_R4_CONCEPT_MAP_EQUIVALENCE
 
 
@@ -66,10 +65,11 @@ def _make_https_test_client(tmp_path: Path, monkeypatch, host: str, port: str = 
     """Construct a FHIR app TestClient with env-overridden host/port.
 
     Used by the §4.7.2 HTTPS-deployment probes."""
-    fastapi = pytest.importorskip("fastapi")
-    from starlette.testclient import TestClient
-    from medterm4ds.apps.fhir_api import FhirApiSettings, create_fhir_app
+    pytest.importorskip("fastapi")
     import duckdb
+    from starlette.testclient import TestClient
+
+    from medterm4ds.apps.fhir_api import FhirApiSettings, create_fhir_app
 
     monkeypatch.setenv("MEDTERM4DS_API_HOST", host)
     monkeypatch.setenv("MEDTERM4DS_FHIR_API_PORT", port)

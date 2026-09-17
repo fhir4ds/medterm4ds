@@ -1265,7 +1265,7 @@ class TestL10MetaStructuralInvariant11thPromotedPattern:
           4. _expand_implicit_value_set (EXPLORER test_e30)
         """
         src = _read_module_source()
-        tree = ast.parse(src)
+        ast.parse(src)
         assignments = _find_count_limited_assignments(src)
         # Filter to Compare-only (skip any boolean assignments)
         compare_assignments = [
@@ -1287,7 +1287,7 @@ class TestL10MetaStructuralInvariant11thPromotedPattern:
         harmonization holds across all 4 sites.
         """
         src = _read_module_source()
-        tree = ast.parse(src)
+        ast.parse(src)
         assignments = _find_count_limited_assignments(src)
         for assign in assignments:
             cmp = assign.value

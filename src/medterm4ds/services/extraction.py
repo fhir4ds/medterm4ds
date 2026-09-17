@@ -408,7 +408,7 @@ def _arbitrate_lab_vs_med(span, parser_doc, context_ent, parser_chunks=None) -> 
     return _context_arbitrate_categories(context_ent)
 
 
-def _span_search_categories(span: "FilteredSpan") -> str | list[str] | None:
+def _span_search_categories(span: FilteredSpan) -> str | list[str] | None:
     """Effective canonical search categories for a span (constrain step).
 
     ConText arbitration first — but ONLY for spans GLiNER typed as a
@@ -981,7 +981,7 @@ class NlpPipeline:
                 flat_ner=True, threshold=self._threshold, multi_label=False,
                 batch_size=batch_size,
             )
-            for (doc_idx, sent_offset), sent_ents in zip(owners, batched):
+            for (doc_idx, sent_offset), sent_ents in zip(owners, batched, strict=False):
                 for ent in sent_ents:
                     raw_per_doc[doc_idx].append({
                         "start": sent_offset + ent["start"],
@@ -1001,7 +1001,7 @@ class NlpPipeline:
                 parsed = self._parser_nlp.pipe(
                     (texts[i] for i in needy), batch_size=16
                 )
-                for i, parser_doc in zip(needy, parsed):
+                for i, parser_doc in zip(needy, parsed, strict=False):
                     parser_docs[i] = parser_doc
 
         return [
@@ -1022,7 +1022,6 @@ class NlpPipeline:
             return []
 
         # Step 3: Add GLiNER entities as spaCy spans so ConText can annotate them
-        from spacy.tokens import Span
 
         spacy_spans = []
         for ent in raw_entities:
@@ -1182,8 +1181,8 @@ def _annotation_marker_values(
     *,
     entity_text: str,
     label: str,
-    span: "FilteredSpan",
-    concept: "ExtractedConcept | None",
+    span: FilteredSpan,
+    concept: ExtractedConcept | None,
 ) -> list[str]:
     """Render the configured marker fields for one span.
 
@@ -1215,13 +1214,13 @@ def _annotation_marker_values(
 
 
 def _first_matching_concept(
-    span: "FilteredSpan",
+    span: FilteredSpan,
     results: list,
     ss: tuple[str, ...] | None,
     *,
     result_type_prefixes: set[str] | None,
     grade_threshold: str,
-) -> "ExtractedConcept | None":
+) -> ExtractedConcept | None:
     """First search result passing the span's source/category/grade filters.
 
     Constrain-then-fallback (QC-182 follow-up): try the label's categories
@@ -1287,7 +1286,7 @@ def _first_matching_concept(
     return None
 
 
-def _dedup_concepts(concepts: list["ExtractedConcept"]) -> list["ExtractedConcept"]:
+def _dedup_concepts(concepts: list[ExtractedConcept]) -> list[ExtractedConcept]:
     """Deduplicate by canonical_id (preferred) or source:code (legacy).
 
     QC-183: the key includes status — without it a negated mention could
@@ -1512,7 +1511,7 @@ class ExtractionService:
                     )
                 return part_cache[key]
 
-            for span, results in zip(spans, batch_results):
+            for span, results in zip(spans, batch_results, strict=False):
                 ss = _LABEL_TO_SOURCES.get(span.entity_type.lower())
                 matched = _first_matching_concept(
                     span, results, ss,
@@ -1743,9 +1742,9 @@ class ExtractionService:
             return part_cache[key]
 
         out: list[list[ExtractedConcept]] = []
-        for spans, texts in zip(spans_lists, per_span_texts):
+        for spans, texts in zip(spans_lists, per_span_texts, strict=False):
             concepts: list[ExtractedConcept] = []
-            for span, t in zip(spans, texts):
+            for span, t in zip(spans, texts, strict=False):
                 ss = _LABEL_TO_SOURCES.get(span.entity_type.lower())
                 matched = _first_matching_concept(
                     span, results_by_text.get(t, []), ss,

@@ -37,7 +37,6 @@ from medterm4ds.core.models import CodeMapping, CodeRef
 from medterm4ds.services.prepared_primitives import (
     dedupe_values,
     group_codes_by_source,
-    same_cui_crosswalk_sql,
     temp_codes,
 )
 
@@ -244,7 +243,6 @@ def _isa_walk(
     visited: set[str] = set(seeds)
     # Track which seeds reached each code (for multi-origin attribution).
     # For simplicity, attribute to first seed encountered.
-    origin_for_code: dict[str, str] = {}
     queue: deque[tuple[str, str, int]] = deque((seed, seed, 0) for seed in seeds)
     out: list[tuple[str, str, int]] = []
 
@@ -333,7 +331,7 @@ def _mrrel_walk(
     The mapping is RELA-aware: for each RELA we know which AUI side is the
     "narrower" concept. See ``_rela_orientation``.
     """
-    seed_set = set(seeds)
+    set(seeds)
     visited: set[str] = set(seeds)
     queue: deque[tuple[str, str, int]] = deque((seed, seed, 0) for seed in seeds)
     out: list[tuple[str, str, int]] = []

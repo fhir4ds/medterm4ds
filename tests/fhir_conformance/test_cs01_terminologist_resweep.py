@@ -56,7 +56,6 @@ from pathlib import Path
 
 import pytest
 
-
 # ---------------------------------------------------------------------------
 # Registry-as-contract — single source of truth for closed enums + URIs.
 # Per GLOBAL_RULES.md "Code Review Time" 12th PROMOTED pattern: import
@@ -69,8 +68,6 @@ from medterm4ds.engines.fhir import (
     SYSTEM_TO_FHIR_URI,
     canonical_system_uri,
     fhir_uri_to_system,
-    sab_label_to_fhir_uri,
-    system_to_fhir_uri,
 )
 
 # FHIR R4 CodeSystemContentMode enum (5 values — verified 2026-08-08 against
@@ -688,8 +685,8 @@ class TestL4ContentFieldClinicalCorrectness:
         subsumption=true so the TC does not contradict the CS's $subsumes
         operation.
         """
-        from medterm4ds.engines.fhir.responses import _subsumption_capable
         from medterm4ds.engines.fhir import FHIR_URI_TO_SYSTEM
+        from medterm4ds.engines.fhir.responses import _subsumption_capable
 
         r = fhir_client.get("/fhir/metadata", params={"mode": "terminology"})
         assert r.status_code == 200
@@ -967,7 +964,7 @@ class TestL7FilterFieldClinicalCorrectness:
         cap_stmt = r.json()
         advertised_filters: list[str] = []
         for rest in cap_stmt.get("rest", []):
-            for resource in rest.get("resource", []):
+            for _resource in rest.get("resource", []):
                 # CodeSystem.filter[] would be advertised here per R4 spec.
                 # (medterm4ds does NOT advertise filters today — this probe
                 # documents the load-bearing contract that IF filters are

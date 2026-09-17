@@ -8,9 +8,9 @@ pytest.importorskip("medspacy")
 pytest.importorskip("transformers")
 
 from medterm4ds.services.extraction import (
+    ExtractedConcept,
     ExtractionService,
     FilteredSpan,
-    ExtractedConcept,
     _is_false_positive,
 )
 
@@ -782,8 +782,6 @@ class TestThreadSafety:
             "the service lock is not held (CR-062 regression)"
         )
 
-        assert _normalize_annotation_fields(None) == ["text", "type"]
-
 
 class TestAnnotatedFields:
     """annotation_fields configuration for format="annotated"."""
@@ -929,9 +927,9 @@ class TestBatchExtract:
         singles = [service._nlp.process(t) for t in texts]
         batched = service._nlp.process_batch(texts)
         assert len(batched) == 3
-        for i, (a, b) in enumerate(zip(singles, batched)):
+        for i, (a, b) in enumerate(zip(singles, batched, strict=False)):
             assert len(a) == len(b), f"span count differs for text {i}"
-            for sa, sb in zip(a, b):
+            for sa, sb in zip(a, b, strict=False):
                 assert (sa.text, sa.entity_type, sa.status,
                         sa.span_start, sa.span_end) == (
                        sb.text, sb.entity_type, sb.status,

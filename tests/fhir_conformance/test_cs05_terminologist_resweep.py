@@ -480,7 +480,7 @@ class TestLens2GetPostParityTranslateAndExpand:
             f"GET={len(matches_get)}, POST={len(matches_post)}."
         )
         # Byte-exact on each match's clinical content
-        for i, (mg, mp) in enumerate(zip(matches_get, matches_post)):
+        for i, (mg, mp) in enumerate(zip(matches_get, matches_post, strict=False)):
             equiv_g = _match_part(mg, "equivalence")
             equiv_p = _match_part(mp, "equivalence")
             assert equiv_g == equiv_p, (

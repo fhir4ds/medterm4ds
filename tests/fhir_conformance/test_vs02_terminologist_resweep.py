@@ -98,7 +98,6 @@ Reference fixture (tests/fhir_conformance/conftest.py:_make_conformance_db):
 from __future__ import annotations
 
 import inspect
-import textwrap
 
 import pytest
 
@@ -236,6 +235,7 @@ def _expand_intensional_union_source() -> str:
     expand_intensional_value_set core (18f637b split)."""
     import ast as _ast
     import inspect as _inspect
+
     from medterm4ds.apps import fhir_api as _mod
 
     src = _inspect.getsource(_mod)
@@ -1182,7 +1182,7 @@ class TestLens7PerSourceClinicalCorrectness:
         Parametrized per-source: SNOMED, ICD-10-CM, RxNorm. Each source's
         implicit expansion display byte-equals $lookup Out display.
         """
-        for url, expected_codes in [
+        for url, _expected_codes in [
             (f"{SNOMED_URI}?fhir_vs", [SNOMED_DIABETES_MELLITUS, SNOMED_T2DM]),
             (f"{ICD10CM_URI}/vs", [ICD10CM_T2DM]),
             (f"{RXNORM_URI}/vs", [RXNORM_METFORMIN]),
@@ -1365,7 +1365,6 @@ class TestLens9MetaStructuralInvariants:
         The structural contract: get_code_infos is called in
         _expand_intensional.
         """
-        from medterm4ds.apps import fhir_api
 
         # 18f637b split: the core logic (incl. the QA-056 get_code_infos
         # display resolution) lives in module-level expand_intensional_value_set.

@@ -129,7 +129,6 @@ class SemanticSearchEngine:
             else:
                 self._space_id = None
 
-            import torch
             from transformers import AutoModel, AutoTokenizer
 
             self._tokenizer = AutoTokenizer.from_pretrained(str(self._model_dir))
@@ -221,7 +220,6 @@ class SemanticSearchEngine:
           {code, system, display, score (cosine similarity), match_grade}
         """
         self._ensure_loaded()
-        import numpy as np
 
         cats = categories or list(self._faiss_indexes.keys())
         query_vec = self._embed(query)
@@ -237,7 +235,7 @@ class SemanticSearchEngine:
             if k == 0:
                 continue
             distances, indices = index.search(query_vec, k)
-            for rank, (dist, idx) in enumerate(zip(distances[0], indices[0])):
+            for _rank, (dist, idx) in enumerate(zip(distances[0], indices[0], strict=False)):
                 if idx < 0 or idx >= len(meta):
                     continue
                 entry = meta[idx]

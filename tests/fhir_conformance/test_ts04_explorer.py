@@ -54,12 +54,10 @@ Carry-forwards from SKEPTIC (CF-SKEPTIC-02) and HISTORIAN (CF-HISTORIAN-01):
 
 from __future__ import annotations
 
-import os
 import time
 from pathlib import Path
 
 import pytest
-
 
 # =============================================================================
 # Helper for env-var-overridden deployments
@@ -69,9 +67,10 @@ import pytest
 def _make_env_test_client(tmp_path: Path, monkeypatch, host: str, port: str,
                           scheme: str | None = None):
     pytest.importorskip("fastapi")
-    from starlette.testclient import TestClient
-    from medterm4ds.apps.fhir_api import FhirApiSettings, create_fhir_app
     import duckdb
+    from starlette.testclient import TestClient
+
+    from medterm4ds.apps.fhir_api import FhirApiSettings, create_fhir_app
 
     monkeypatch.setenv("MEDTERM4DS_API_HOST", host)
     monkeypatch.setenv("MEDTERM4DS_FHIR_API_PORT", port)

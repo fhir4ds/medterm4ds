@@ -51,7 +51,6 @@ from medterm4ds.engines.fhir.closure import (
     get_closure_manager,
 )
 
-
 # ---------------------------------------------------------------------------
 # Constants.
 # ---------------------------------------------------------------------------
@@ -383,7 +382,7 @@ def test_e13_combined_lifecycle_three_cycles_no_state_leak(fhir_client):
     hashes_per_cycle_init = []
     hashes_per_cycle_after_add = []
 
-    for cycle in range(3):
+    for _cycle in range(3):
         # init
         r_init = fhir_client.post(
             "/fhir/CodeSystem/$closure",
@@ -815,7 +814,7 @@ def test_e43_hash_format_consistent_across_three_paths(fhir_client):
     )
     hashes.append(_return_hash(r4.json()))
     # All hashes are 12-char MD5 hex
-    for h, label in zip(hashes, ["init", "add1", "add2", "reinit"]):
+    for h, label in zip(hashes, ["init", "add1", "add2", "reinit"], strict=False):
         assert h is not None, f"hash None on {label}"
         assert len(h) == 12, f"hash {h!r} not 12 chars on {label}"
         assert all(c in "0123456789abcdef" for c in h), (

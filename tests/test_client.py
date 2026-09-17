@@ -185,7 +185,7 @@ def test_lookup_df_empty_batch_returns_canonical_schema():
     code (df['name'], df.name.notna()) raised KeyError on the empty case.
     The fix returns the canonical 7-column CodeInfo schema for empty input.
     """
-    pd = pytest.importorskip("pandas")
+    pytest.importorskip("pandas")
     terms = mt.Terminology(StaticTerminologyEngine())
 
     empty_df = terms.lookup_df([])
@@ -207,7 +207,7 @@ def test_map_df_empty_result_returns_canonical_schema():
     The fix returns the canonical 16-column CodeMapping schema for empty
     results. Mirrors the QC-004 fix shape (FIX-007) for lookup_df.
     """
-    pd = pytest.importorskip("pandas")
+    pytest.importorskip("pandas")
 
     class _EmptyMappingEngine(StaticTerminologyEngine):
         def get_code_mappings(self, codes, **kwargs):
@@ -240,7 +240,7 @@ def test_hierarchy_df_empty_result_returns_canonical_schema():
     the canonical 14-column CodeRelation schema for empty results. Mirrors
     the QC-004/QC-024 fix shape (FIX-007 / FIX-006).
     """
-    pd = pytest.importorskip("pandas")
+    pytest.importorskip("pandas")
 
     class _EmptyHierarchyEngine(StaticTerminologyEngine):
         def get_code_relations(self, codes, **kwargs):
@@ -275,7 +275,7 @@ def test_patient_friendly_df_empty_batch_returns_canonical_schema():
     8-column FriendlyNameResult schema for empty results. Mirrors the
     QC-004/QC-024/QC-045 fix shape (FIX-007 / FIX-006 / EC-03 FIX-002).
     """
-    pd = pytest.importorskip("pandas")
+    pytest.importorskip("pandas")
 
     terms = mt.Terminology(StaticTerminologyEngine())
     empty_df = terms.patient_friendly_df([])
@@ -299,7 +299,7 @@ def test_conceptmap_df_empty_batch_returns_canonical_schema():
     raised KeyError on the empty case. The fix returns the canonical
     11-column ConceptMapRow schema for empty results.
     """
-    pd = pytest.importorskip("pandas")
+    pytest.importorskip("pandas")
 
     class _EmptyFriendlyEngine(StaticTerminologyEngine):
         def get_patient_friendly_names(self, codes, max_depth=5):
@@ -328,7 +328,7 @@ def test_mapping_conceptmap_df_empty_batch_returns_canonical_schema():
     More aggressive than patient_friendly_df/conceptmap_df because mapping
     has no 'original' fallback.
     """
-    pd = pytest.importorskip("pandas")
+    pytest.importorskip("pandas")
 
     class _EmptyMappingEngine(StaticTerminologyEngine):
         def get_code_mappings(self, codes, **kwargs):
@@ -358,7 +358,7 @@ def test_search_df_empty_result_returns_canonical_schema():
     canonical 7-column NameSearchResult schema for empty results. Mirrors
     the QC-004/QC-024/QC-045/QC-072/QC-073/QC-080 fix shape.
     """
-    pd = pytest.importorskip("pandas")
+    pytest.importorskip("pandas")
 
     class _EmptySearchEngine(StaticTerminologyEngine):
         def search_names(self, query, *, sources=None, tty_filters=None, limit=25):
@@ -385,7 +385,7 @@ def test_code_ttys_df_empty_batch_returns_canonical_schema():
     canonical 7-column CodeInfo schema for empty results. Mirrors the
     QC-004/QC-024/QC-045/QC-072/QC-073/QC-080 fix shape.
     """
-    pd = pytest.importorskip("pandas")
+    pytest.importorskip("pandas")
 
     class _EmptyTtysEngine(StaticTerminologyEngine):
         def get_code_ttys(self, codes):
@@ -418,7 +418,7 @@ def test_resolve_df_empty_batch_returns_canonical_schema():
     CodeResolution schema for empty input. Mirrors the
     QC-004/QC-024/QC-045/QC-072/QC-073/QC-080/QC-105/QC-106 fix shape.
     """
-    pd = pytest.importorskip("pandas")
+    pytest.importorskip("pandas")
 
     class _EmptyResolveEngine(StaticTerminologyEngine):
         def resolve_codes(self, codes):

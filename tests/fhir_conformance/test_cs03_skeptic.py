@@ -25,8 +25,6 @@ Per GLOBAL_RULES.md:
 
 from __future__ import annotations
 
-import pytest
-
 # Spec: https://hl7.org/fhir/R4/codesystem-operation-validate-code.html
 #
 # In Parameters (relevant):
@@ -585,7 +583,7 @@ def test_s102_validate_unknown_system_with_unknown_code_returns_400(fhir_client)
     """Hostile-input probe: unknown system takes precedence over unknown code
     (cannot determine validity without a known system)."""
     r = fhir_client.get(
-        f"/fhir/CodeSystem/$validate-code?system=http://nonexistent.example&code=XYZ"
+        "/fhir/CodeSystem/$validate-code?system=http://nonexistent.example&code=XYZ"
     )
     assert r.status_code == 400
 

@@ -47,7 +47,6 @@ import pytest
 
 from medterm4ds.engines.fhir import FHIR_R4_CONCEPT_MAP_EQUIVALENCE
 
-
 # ---------------------------------------------------------------------------
 # Lens 1: SKEPTIC FIX-VERIFICATION — re-run the load-bearing assertions.
 # ---------------------------------------------------------------------------

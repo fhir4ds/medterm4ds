@@ -58,27 +58,20 @@ Conformance fixture (tests/fhir_conformance/conftest.py):
 from __future__ import annotations
 
 import ast
-import inspect
 from pathlib import Path
 
 import pytest
 
 from medterm4ds.engines.fhir import (
     FHIR_R4_CONCEPT_MAP_EQUIVALENCE,
-    FHIR_R4_FILTER_OPERATORS,
-    FHIR_URI_ALIASES,
     SYSTEM_TO_FHIR_URI,
-    canonical_system_uri,
-    fhir_uri_to_system,
-    system_to_fhir_uri,
 )
+from medterm4ds.engines.fhir import responses as responses_module
 from medterm4ds.engines.fhir.equivalence import (
     INTERNAL_REL_TO_FHIR_EQUIVALENCE,
     fhir_equivalence,
 )
-from medterm4ds.engines.fhir import responses as responses_module
 from medterm4ds.outputs import fhir as outputs_fhir_module
-
 
 # =============================================================================
 # Constants
@@ -1297,7 +1290,7 @@ def test_h101_search_with_each_param_returns_bundle(fhir_client, search_param, v
         f"SEARCH ConceptMap?{search_param}=... returned {r.status_code}"
     )
     assert "application/fhir" in r.headers.get("content-type", ""), (
-        f"SEARCH ConceptMap MUST return FHIR Content-Type"
+        "SEARCH ConceptMap MUST return FHIR Content-Type"
     )
     body = r.json()
     assert body.get("resourceType") == "Bundle", (

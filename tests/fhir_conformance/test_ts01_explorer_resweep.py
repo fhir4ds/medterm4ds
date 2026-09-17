@@ -23,7 +23,6 @@ from __future__ import annotations
 
 import pytest
 
-
 # ---------------------------------------------------------------------------
 # Lens 1: Accept-header q-value content negotiation
 # ---------------------------------------------------------------------------

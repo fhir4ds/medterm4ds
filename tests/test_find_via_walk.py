@@ -18,7 +18,6 @@ import pytest
 from medterm4ds.core.models import CodeMapping, CodeRef
 from medterm4ds.services.crosswalk import find_via_walk, get_same_cui_mappings
 
-
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------

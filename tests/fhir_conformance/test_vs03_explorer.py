@@ -44,8 +44,6 @@ Conformance fixture (tests/fhir_conformance/conftest.py):
 
 from __future__ import annotations
 
-import pytest
-
 SNOMED_URI = "http://snomed.info/sct"
 SNOMED_DIABETES_MELLITUS = "73211009"  # parent
 SNOMED_T2DM = "44054006"               # child of 73211009
@@ -607,7 +605,7 @@ class TestConceptListEdgeCases:
         vs = _make_extensional_snomed(concepts=concepts)
         status, body, _ = _post_expand(fhir_client, vs)
         assert status == 200, f"status={status} body={body}"
-        codes = _contains_codes(body)
+        _contains_codes(body)
         # The 100+ entries plus the 2 real codes; but truncated at default
         # count=20. Verify total reflects un-truncated size (102).
         # NOTE: count default is 20; contains <= 20.
@@ -737,7 +735,7 @@ class TestCrossSystemIsA:
             # finds no descendants. The result is empty contains (or just
             # the root, which is then excluded because it's not in SNOMED).
             # Pinned as current behavior.
-            for s, c in codes:
+            for s, _c in codes:
                 assert s == SNOMED_URI, (
                     f"unexpected system in cross-system is-a: {codes}"
                 )

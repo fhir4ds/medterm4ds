@@ -46,18 +46,13 @@ XML format, batch dispatcher all OK).
 
 from __future__ import annotations
 
-import json
 from typing import Any
-
-import pytest
 
 from medterm4ds.engines.fhir.closure import (
     ClosureManager,
     ClosureTable,
     build_closure_response,
-    get_closure_manager,
 )
-
 
 SNOMED_URI = "http://snomed.info/sct"
 SNOMED_URI_ALIAS_OID = "urn:oid:2.16.840.1.113883.6.96"
@@ -866,8 +861,9 @@ def test_e80_do_closure_inline_concept_extraction_source_audit():
     probe fails loudly — the engineer MUST add a new sibling helper
     ``_extract_all_codings_from_parameters(body, name)`` instead.
     """
-    import medterm4ds.apps.fhir_api as api_mod
     import inspect
+
+    import medterm4ds.apps.fhir_api as api_mod
 
     src = inspect.getsource(api_mod.create_fhir_app)
     # Find _do_closure definition
@@ -902,8 +898,9 @@ def test_e81_extract_named_coding_helper_isinstance_guard_source_audit():
     regression guard). Guards against a future refactor that removes
     the guard.
     """
-    import medterm4ds.apps.fhir_api as api_mod
     import inspect
+
+    import medterm4ds.apps.fhir_api as api_mod
 
     src = inspect.getsource(api_mod.create_fhir_app)
     marker = "def _extract_named_coding_from_parameters("

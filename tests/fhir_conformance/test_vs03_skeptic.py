@@ -34,7 +34,6 @@ Carry-forwards relevant to VS-03:
 from __future__ import annotations
 
 import re
-from datetime import datetime, timezone
 
 import pytest
 
@@ -44,7 +43,6 @@ import pytest
 #
 # FHIR R4 filter-operator enum — single source of truth per milestone-2 review
 # (CR-014): import the canonical frozen-set rather than redefining it.
-from medterm4ds.engines.fhir import FHIR_R4_FILTER_OPERATORS
 
 SNOMED_URI = "http://snomed.info/sct"
 SNOMED_DIABETES_MELLITUS = "73211009"  # parent

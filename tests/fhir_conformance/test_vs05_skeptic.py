@@ -41,8 +41,6 @@ Conformance fixture seeds (per tests/fhir_conformance/conftest.py):
 
 from __future__ import annotations
 
-import pytest
-
 # Spec sources:
 #   https://build.fhir.org/valueset-operation-validate-code.html
 #   https://hl7.org/fhir/R4/valueset-operation-validate-code.html

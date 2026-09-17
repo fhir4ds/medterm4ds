@@ -657,7 +657,7 @@ def test_h40_empty_string_required_query_min_length_on_lookup():
         if not query_calls:
             continue
         for qc in query_calls:
-            kwargs = {kw.arg for kw in qc.keywords}
+            {kw.arg for kw in qc.keywords}
             # If the Query is required (either `...` positional or
             # `required=True` keyword), min_length MUST be present.
             is_required = (

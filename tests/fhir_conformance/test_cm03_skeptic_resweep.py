@@ -47,10 +47,8 @@ from medterm4ds.apps.fhir_api import create_fhir_app
 from medterm4ds.engines.fhir.closure import (
     ClosureManager,
     ClosureTable,
-    build_closure_response,
     get_closure_manager,
 )
-
 
 # ---------------------------------------------------------------------------
 # Constants.

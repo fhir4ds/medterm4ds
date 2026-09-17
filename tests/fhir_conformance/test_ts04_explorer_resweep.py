@@ -39,10 +39,6 @@ from __future__ import annotations
 import ast
 import inspect
 import time
-from pathlib import Path
-
-import pytest
-
 
 # =============================================================================
 # Shared helpers (mirror HISTORIAN resweep helpers for AST source-reading)

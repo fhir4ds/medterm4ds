@@ -3,13 +3,14 @@
 
 from __future__ import annotations
 
-import duckdb
-
-from medterm4ds.engines.duckdb._engine_base import *  # noqa: F401,F403
 from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
+
+import duckdb
+
 from medterm4ds.core.config import LocalDuckDBConfig
 from medterm4ds.core.sql import chunks
+from medterm4ds.engines.duckdb._engine_base import *  # noqa: F401,F403
 
 # Multi-row VALUES batch size for temp-table staging (QC-371). ~1000 keeps
 # each INSERT statement small while amortizing per-statement overhead.

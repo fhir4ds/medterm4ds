@@ -966,7 +966,7 @@ class TestL11TenPromotedPatternsReDerivation:
         tree = ast.parse(src)
         for node in ast.walk(tree):
             if isinstance(node, ast.Dict):
-                for k, v in zip(node.keys, node.values):
+                for k, v in zip(node.keys, node.values, strict=False):
                     if (
                         isinstance(k, ast.Constant)
                         and k.value == "system"

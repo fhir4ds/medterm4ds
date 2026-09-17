@@ -92,12 +92,11 @@ import inspect
 import pytest
 
 from medterm4ds.engines.fhir import FHIR_R4_CONCEPT_MAP_EQUIVALENCE
+from medterm4ds.engines.fhir import responses as responses_module
 from medterm4ds.engines.fhir.equivalence import (
     INTERNAL_REL_TO_FHIR_EQUIVALENCE,
     fhir_equivalence,
 )
-from medterm4ds.engines.fhir import responses as responses_module
-
 
 # =============================================================================
 # Lens 1 — Wrapper clinical-correctness on hostile camelCase input.
@@ -1089,12 +1088,10 @@ class TestLens10CrossSurfaceClinicalConsistency:
         """
         # All engine vocabulary values are lowercase.
         engine_values = [
-            v for v in [
                 "equivalent", "source-is-narrower-than-target",
                 "source-is-broader-than-target", "related-to",
                 "not-translated", "unmatched",
             ]
-        ]
         for v in engine_values:
             canonical_result = fhir_equivalence(v)
             wrapper_result = (

@@ -35,14 +35,9 @@ from typing import Any
 
 import pytest
 
-from medterm4ds.apps import fhir_api
 from medterm4ds.engines.fhir import (
     FHIR_R4_CONCEPT_MAP_EQUIVALENCE,
-    canonical_system_uri,
-    fhir_uri_to_system,
 )
-from medterm4ds.engines.fhir.responses import build_parameters_translate
-
 
 # ---------------------------------------------------------------------------
 # Constants for the probes.
@@ -273,7 +268,7 @@ def test_e13_optional_params_at_once_get_post_byte_exact_parity(fhir_client):
     get_matches = [p for p in get_body["parameter"] if p.get("name") == "match"]
     post_matches = [p for p in post_body["parameter"] if p.get("name") == "match"]
     assert len(get_matches) == len(post_matches)
-    for g, p in zip(get_matches, post_matches):
+    for g, p in zip(get_matches, post_matches, strict=False):
         g_eq = next((pt for pt in g["part"] if pt.get("name") == "equivalence"), None)
         p_eq = next((pt for pt in p["part"] if pt.get("name") == "equivalence"), None)
         assert g_eq == p_eq, f"equivalence divergence: {g_eq} vs {p_eq}"
@@ -901,7 +896,7 @@ def test_e41_batch_mixed_op_byte_exact_vs_single_entry(fhir_client):
     b_matches = [p for p in batch_translate_params["parameter"] if p.get("name") == "match"]
     s_matches = [p for p in single_translate_params["parameter"] if p.get("name") == "match"]
     assert len(b_matches) == len(s_matches)
-    for b, s in zip(b_matches, s_matches):
+    for b, s in zip(b_matches, s_matches, strict=False):
         b_eq = next((pt for pt in b["part"] if pt.get("name") == "equivalence"), None)
         s_eq = next((pt for pt in s["part"] if pt.get("name") == "equivalence"), None)
         assert b_eq == s_eq
@@ -1033,7 +1028,7 @@ def test_e50_post_coding_alternative_encoding_per_target_system(
     post_matches = [p for p in post_body["parameter"] if p.get("name") == "match"]
     get_matches = [p for p in get_body["parameter"] if p.get("name") == "match"]
     assert len(post_matches) == len(get_matches)
-    for pm, gm in zip(post_matches, get_matches):
+    for pm, gm in zip(post_matches, get_matches, strict=False):
         pm_eq = next((pt for pt in pm["part"] if pt.get("name") == "equivalence"), None)
         gm_eq = next((pt for pt in gm["part"] if pt.get("name") == "equivalence"), None)
         assert pm_eq == gm_eq
@@ -1116,7 +1111,7 @@ def test_e70_instance_level_translate_get_404_operationoutcome(fhir_client):
     named ConceptMaps).
     """
     r = fhir_client.get(
-        f"/fhir/ConceptMap/any-id/$translate",
+        "/fhir/ConceptMap/any-id/$translate",
         params={"system": SNOMED_URI, "code": SNOMED_T2DM_CODE},
     )
     assert r.status_code == 404
@@ -1130,7 +1125,7 @@ def test_e71_instance_level_translate_post_404_operationoutcome(fhir_client):
     returns 404 + OperationOutcome.
     """
     r = fhir_client.post(
-        f"/fhir/ConceptMap/any-id/$translate",
+        "/fhir/ConceptMap/any-id/$translate",
         json={
             "resourceType": "Parameters",
             "parameter": [

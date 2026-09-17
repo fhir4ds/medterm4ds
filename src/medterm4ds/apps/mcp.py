@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import os
 from collections.abc import Sequence
 from concurrent.futures import ThreadPoolExecutor
@@ -855,6 +854,8 @@ def create_mcp_server(
         from medterm4ds.services.search import (
             CANONICAL_RESULT_TYPES,
             SEARCH_CATEGORIES,
+        )
+        from medterm4ds.services.search import (
             search as search_service,
         )
         warnings: list[str] = []

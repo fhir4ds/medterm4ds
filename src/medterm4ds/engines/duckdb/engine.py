@@ -11,16 +11,15 @@ from __future__ import annotations
 # hierarchy.py / mappings.py / patient_friendly.py / resolution.py / etc.
 # that import constants and helpers from this module.
 from medterm4ds.engines.duckdb._engine_base import *  # noqa: F401,F403
-
-from medterm4ds.engines.duckdb._mixins._EngineState import _EngineState
-from medterm4ds.engines.duckdb._mixins._LookupOps import _LookupOps
 from medterm4ds.engines.duckdb._mixins._DiscoveryOps import _DiscoveryOps
+from medterm4ds.engines.duckdb._mixins._EngineState import _EngineState
 from medterm4ds.engines.duckdb._mixins._HierarchyOps import _HierarchyOps
+from medterm4ds.engines.duckdb._mixins._IndicationsOps import _IndicationsOps
+from medterm4ds.engines.duckdb._mixins._LookupOps import _LookupOps
 from medterm4ds.engines.duckdb._mixins._MappingOps import _MappingOps
-from medterm4ds.engines.duckdb._mixins._ResolutionOps import _ResolutionOps
 from medterm4ds.engines.duckdb._mixins._OptimizeOps import _OptimizeOps
 from medterm4ds.engines.duckdb._mixins._PatientFriendlyOps import _PatientFriendlyOps
-from medterm4ds.engines.duckdb._mixins._IndicationsOps import _IndicationsOps
+from medterm4ds.engines.duckdb._mixins._ResolutionOps import _ResolutionOps
 
 
 class LocalDuckDBEngine(

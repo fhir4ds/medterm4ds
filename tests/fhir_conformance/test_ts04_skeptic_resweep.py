@@ -50,11 +50,9 @@ TS-03/TERMINOLOGIST tip:
 
 from __future__ import annotations
 
-import os
 from pathlib import Path
 
 import pytest
-
 
 # =============================================================================
 # Shared helpers (mirror the existing test_ts04_skeptic.py fixture style)
@@ -69,10 +67,11 @@ def _make_test_client(tmp_path: Path, monkeypatch, host: str | None = None,
     MEDTERM4DS_API_SCHEME env vars when set, matching the deployment URL
     constructor's input surface.
     """
-    fastapi = pytest.importorskip("fastapi")
-    from starlette.testclient import TestClient
-    from medterm4ds.apps.fhir_api import FhirApiSettings, create_fhir_app
+    pytest.importorskip("fastapi")
     import duckdb
+    from starlette.testclient import TestClient
+
+    from medterm4ds.apps.fhir_api import FhirApiSettings, create_fhir_app
 
     monkeypatch.delenv("MEDTERM4DS_API_HOST", raising=False)
     monkeypatch.delenv("MEDTERM4DS_API_SCHEME", raising=False)
@@ -241,10 +240,11 @@ def test_s14_default_port_when_no_env_var(monkeypatch, tmp_path):
     monkeypatch.delenv("MEDTERM4DS_FHIR_API_PORT", raising=False)
     monkeypatch.delenv("MEDTERM4DS_API_HOST", raising=False)
     monkeypatch.delenv("MEDTERM4DS_API_SCHEME", raising=False)
-    fastapi = pytest.importorskip("fastapi")
-    from starlette.testclient import TestClient
-    from medterm4ds.apps.fhir_api import DEFAULT_PORT, FhirApiSettings, create_fhir_app
+    pytest.importorskip("fastapi")
     import duckdb
+    from starlette.testclient import TestClient
+
+    from medterm4ds.apps.fhir_api import FhirApiSettings, create_fhir_app
 
     db_path = tmp_path / "umls.duckdb"
     con = duckdb.connect(str(db_path))

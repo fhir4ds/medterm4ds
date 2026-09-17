@@ -3,9 +3,10 @@
 
 from __future__ import annotations
 
-from medterm4ds.engines.duckdb._engine_base import *  # noqa: F401,F403
 from collections.abc import Sequence
+
 from medterm4ds.core.models import CodeRef, NameSearchResult, SourceStats
+from medterm4ds.engines.duckdb._engine_base import *  # noqa: F401,F403
 
 
 class _DiscoveryOps:

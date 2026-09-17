@@ -79,7 +79,7 @@ class TestCacheLayout:
 class TestProvenanceAndRefresh:
     def test_refresh_writes_provenance_and_files(self, monkeypatch, tmp_path):
         monkeypatch.setattr(Path, "home", lambda: tmp_path)
-        mod = _reload_search(monkeypatch, revision="vX-test")
+        _reload_search(monkeypatch, revision="vX-test")
 
         import medterm4ds.core.artifact_cache as ac
 

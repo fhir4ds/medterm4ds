@@ -82,16 +82,11 @@ from typing import Any
 
 import pytest
 
-from medterm4ds.engines.fhir import (
-    FHIR_R4_CONCEPT_MAP_EQUIVALENCE,
-)
+from medterm4ds.engines.fhir import equivalence as equivalence_module
+from medterm4ds.engines.fhir import responses as responses_module
 from medterm4ds.engines.fhir.equivalence import (
-    INTERNAL_REL_TO_FHIR_EQUIVALENCE,
     fhir_equivalence,
 )
-from medterm4ds.engines.fhir import responses as responses_module
-from medterm4ds.engines.fhir import equivalence as equivalence_module
-
 
 # ---------------------------------------------------------------------------
 # Constants.

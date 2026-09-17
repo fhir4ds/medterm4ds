@@ -60,8 +60,6 @@ are structural-contract (patient-friendly cache is empty in fixture).
 
 from __future__ import annotations
 
-import re
-
 import pytest
 
 # Spec: https://hl7.org/fhir/R4/valueset-operation-expand.html (canonical R4)
@@ -675,10 +673,10 @@ class TestLens3FilterMatchingClinicalSafety:
         # Metformin is a diabetes TREATMENT but its display doesn't contain
         # "diabetes". A clinically-correct filter should NOT return it.
         assert RXNORM_METFORMIN not in codes, (
-            f"Filter 'diabetes' returned metformin (RXNORM_METFORMIN). "
-            f"Clinical safety: metformin's display does not contain "
-            f"'diabetes'; the filter should match clinical terms (display), "
-            f"not pharmacological relationships."
+            "Filter 'diabetes' returned metformin (RXNORM_METFORMIN). "
+            "Clinical safety: metformin's display does not contain "
+            "'diabetes'; the filter should match clinical terms (display), "
+            "not pharmacological relationships."
         )
 
 

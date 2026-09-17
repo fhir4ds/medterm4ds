@@ -55,7 +55,7 @@ def _diff_values(expected: Any, actual: Any, prefix: str, deltas: list[FieldDelt
         if len(expected) != len(actual):
             deltas.append(FieldDelta(prefix, expected, actual))
         else:
-            for i, (e, a) in enumerate(zip(expected, actual)):
+            for i, (e, a) in enumerate(zip(expected, actual, strict=False)):
                 _diff_values(e, a, f"{prefix}[{i}]", deltas)
     else:
         deltas.append(FieldDelta(prefix, expected, actual))

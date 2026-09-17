@@ -28,7 +28,6 @@ from __future__ import annotations
 
 import pytest
 
-
 # FHIR R4 CodeSystemContentMode enum
 # Spec: https://hl7.org/fhir/R4/valueset-codesystem-content-mode.html
 FHIR_R4_CONTENT_MODES = {"complete", "example", "fragment", "not-present", "supplement"}

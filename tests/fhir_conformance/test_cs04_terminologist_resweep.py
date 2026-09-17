@@ -1000,7 +1000,7 @@ class TestLens6HyphenatedOutcomeWireFormat:
         same hyphenated form as JSON. A serializer that converts hyphens to
         camelCase would break clinical clients.
         """
-        r = _get_subsumes(
+        _get_subsumes(
             fhir_client, SNOMED_URI, SNOMED_T2DM, SNOMED_DM
         )
         # Force XML via _format param.

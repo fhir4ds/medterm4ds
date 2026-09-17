@@ -53,7 +53,7 @@ from __future__ import annotations
 
 import ast
 import inspect
-from datetime import datetime, timezone
+from datetime import datetime
 from pathlib import Path
 
 import pytest
@@ -67,8 +67,7 @@ import pytest
 # redefining it locally.
 from medterm4ds.engines.fhir import (
     FHIR_R4_CONCEPT_MAP_EQUIVALENCE,  # noqa: F401
-    FHIR_R4_FILTER_OPERATORS,
-)
+    )
 
 SNOMED_URI = "http://snomed.info/sct"
 SNOMED_DIABETES_MELLITUS = "73211009"  # parent
@@ -99,6 +98,7 @@ def _expand_intensional_union_source() -> str:
     expand_intensional_value_set core (18f637b split)."""
     import ast as _ast
     import inspect as _inspect
+
     from medterm4ds.apps import fhir_api as _mod
 
     src = _inspect.getsource(_mod)
@@ -279,14 +279,14 @@ class TestLens1CFHistorianVS02OneSourceRead:
         the cap fires.
         """
         # Import the helper directly.
-        from medterm4ds.core.models import CodeRef
-        from medterm4ds.engines.duckdb.engine import LocalDuckDBEngine
-        from medterm4ds.services.hierarchy import get_descendants_bfs
-
         # Use an in-memory engine seeded with the conformance fixture's
         # 2-level hierarchy. The fixture has T2DM is-a DM, so descendants
         # of DM = [T2DM].
         import duckdb
+
+        from medterm4ds.core.models import CodeRef
+        from medterm4ds.engines.duckdb.engine import LocalDuckDBEngine
+        from medterm4ds.services.hierarchy import get_descendants_bfs
         con = duckdb.connect(":memory:")
         con.execute("""CREATE TABLE mrconso (
             CODE VARCHAR, TTY VARCHAR, STR VARCHAR, AUI VARCHAR,
@@ -948,11 +948,10 @@ class TestLens8PromotedPatternsReDerivation:
         tree = ast.parse(src)
         # Find all Query(...) calls inside the create_fhir_app factory.
         # For required string Query declarations, min_length=1 MUST be present.
-        violations = []
         for node in ast.walk(tree):
             if not isinstance(node, ast.FunctionDef):
                 continue
-            func_src = ast.get_source_segment(src, node) or ""
+            ast.get_source_segment(src, node) or ""
             # Look for patterns like ``code: str = Query(..., ...)`` without min_length=1.
             # Simple heuristic: find ``Query(...)`` on required (with ...) string args.
             # We don't need to walk every function — just verify the global count.
@@ -972,7 +971,7 @@ class TestLens8PromotedPatternsReDerivation:
     def test_h82_promoted_3_closed_enum_filter_operators_imported(self):
         """Source-read: FHIR_R4_FILTER_OPERATORS imported from canonical location."""
         # The closed enum MUST be imported from engines.fhir, not redefined locally.
-        src = _FHIR_API_PATH.read_text()
+        _FHIR_API_PATH.read_text()
         # The import may or may not be in fhir_api directly — verify the
         # canonical location exists in engines.fhir.
         from medterm4ds.engines.fhir import FHIR_R4_FILTER_OPERATORS as _ops

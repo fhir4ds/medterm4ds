@@ -108,7 +108,6 @@ from medterm4ds.engines.fhir.responses import (
     build_parameters_translate,
 )
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -609,7 +608,7 @@ def test_t51_match_source_display_carry_forward_reproduction_shape():
     source_part = next(
         part for part in match["part"] if part.get("name") == "source"
     )
-    coding = source_part["valueCoding"]
+    source_part["valueCoding"]
     # When the carry-forward lands: coding.get("display") ==
     # "Type 2 diabetes mellitus (SNOMED)". Document the expected shape
     # via a comment; the probe above pins the current omission.

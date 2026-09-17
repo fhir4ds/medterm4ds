@@ -7,9 +7,10 @@ and direction bugs without needing the full UMLS DB.
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import duckdb
 import pytest
-from pathlib import Path
 
 from medterm4ds.core.models import CodeRef
 from medterm4ds.engines.duckdb import LocalDuckDBEngine

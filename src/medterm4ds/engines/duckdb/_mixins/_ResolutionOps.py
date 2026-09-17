@@ -3,12 +3,13 @@
 
 from __future__ import annotations
 
-from medterm4ds.engines.duckdb._engine_base import *  # noqa: F401,F403
+from collections.abc import Sequence
+
+from medterm4ds.core.models import CodeRef, CodeResolution
 from medterm4ds.engines.duckdb import mappings as _mappings
 from medterm4ds.engines.duckdb import patient_friendly as _patient_friendly
 from medterm4ds.engines.duckdb import resolution as _resolution
-from collections.abc import Sequence
-from medterm4ds.core.models import CodeRef, CodeResolution
+from medterm4ds.engines.duckdb._engine_base import *  # noqa: F401,F403
 
 
 class _ResolutionOps:

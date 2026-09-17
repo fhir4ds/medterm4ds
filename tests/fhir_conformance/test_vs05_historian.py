@@ -65,9 +65,6 @@ from __future__ import annotations
 
 import re
 
-import pytest
-from fastapi.testclient import TestClient
-
 # Spec sources:
 #   https://build.fhir.org/valueset-operation-validate-code.html
 #   https://hl7.org/fhir/R4/valueset-operation-validate-code.html
@@ -805,8 +802,9 @@ def test_h80_do_vs_validate_calls_canonical_system_uri():
     ``fhir_api.py`` and asserts the canonical helper is invoked inside
     ``_do_vs_validate`` (not inside ``_do_validate`` or another sibling).
     """
-    import medterm4ds.apps.fhir_api as mod
     import inspect
+
+    import medterm4ds.apps.fhir_api as mod
 
     src = inspect.getsource(mod.create_fhir_app)
     # Locate ``_do_vs_validate`` body (NOT ``_do_validate`` — sibling).
@@ -831,8 +829,9 @@ def test_h81_do_vs_validate_enforces_display_mismatch_via_source():
     Guards against a future regression that removes the display-mismatch
     check by inlining or restructuring.
     """
-    import medterm4ds.apps.fhir_api as mod
     import inspect
+
+    import medterm4ds.apps.fhir_api as mod
 
     src = inspect.getsource(mod.create_fhir_app)
     pattern = r"def _do_vs_validate\([^)]*\)[^:]*:(.*?)(?=\n    @app\.|\n    def _do_translate)"
@@ -856,8 +855,9 @@ def test_h82_vs_validate_post_uses_all_pairs_helper():
 
     Guards against a regression that swaps the helper back to single-pair.
     """
-    import medterm4ds.apps.fhir_api as mod
     import inspect
+
+    import medterm4ds.apps.fhir_api as mod
 
     src = inspect.getsource(mod.create_fhir_app)
     # Locate vs_validate_post body.
@@ -879,8 +879,9 @@ def test_h83_extract_vs_validate_params_uses_all_pairs_helper():
     Mirrors CS-03 HISTORIAN QA-052 source-reading pattern on the VS
     surface. Guards against the batch path drifting to single-pair.
     """
-    import medterm4ds.apps.fhir_api as mod
     import inspect
+
+    import medterm4ds.apps.fhir_api as mod
 
     src = inspect.getsource(mod.create_fhir_app)
     pattern = r"def _extract_vs_validate_params\([^)]*\)[^:]*:(.*?)(?=\n    def _extract_translate_params)"
@@ -902,8 +903,9 @@ def test_h84_duckdb_error_handler_registered():
 
     Guards against a future refactor that removes the handler.
     """
-    import medterm4ds.apps.fhir_api as mod
     import inspect
+
+    import medterm4ds.apps.fhir_api as mod
 
     src = inspect.getsource(mod.create_fhir_app)
     assert "exception_handler(duckdb.Error)" in src, (

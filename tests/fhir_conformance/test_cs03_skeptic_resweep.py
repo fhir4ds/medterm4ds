@@ -192,7 +192,7 @@ def test_s04_validate_uppercase_scheme_alias_resolves_to_canonical(fhir_client):
     are accepted on input; Out ``system`` is the lowercase canonical."""
     r = fhir_client.get(
         "/fhir/CodeSystem/$validate-code",
-        params={"system": f"HTTP://snomed.info/sct", "code": SNOMED_T2DM},
+        params={"system": "HTTP://snomed.info/sct", "code": SNOMED_T2DM},
     )
     assert r.status_code == 200, f"uppercase-scheme rejected: {r.status_code}"
     out_system = _param_value(r.json(), "system")

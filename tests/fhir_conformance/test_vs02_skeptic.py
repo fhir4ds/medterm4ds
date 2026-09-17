@@ -34,7 +34,6 @@ sufficient to exercise the spec items in this chunk.
 from __future__ import annotations
 
 import re
-from datetime import datetime, timezone
 
 import pytest
 

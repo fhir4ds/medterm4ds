@@ -19,10 +19,9 @@ from __future__ import annotations
 
 import json
 import logging
-import math
 import os
-import shutil
 import re
+import shutil
 import unicodedata
 from dataclasses import dataclass, field, replace
 from pathlib import Path
@@ -211,7 +210,7 @@ def _hf_download(allow_patterns: list[str]) -> None:
             "huggingface_hub is required to auto-download search artifacts.\n"
             "Install with: pip install huggingface_hub\n"
             f"Or manually download from https://huggingface.co/{_HF_REPO_ID}"
-        )
+        ) from None
     logger.info("Downloading artifacts from Hugging Face (%s, revision=%s)...",
                 _HF_REPO_ID, _HF_REVISION)
     snapshot_download(
@@ -256,7 +255,7 @@ def _hf_download_atomic(
             "huggingface_hub is required to auto-download search artifacts.\n"
             "Install with: pip install huggingface_hub\n"
             f"Or manually download from https://huggingface.co/{_HF_REPO_ID}"
-        )
+        ) from None
     from medterm4ds.core.artifact_manifest import atomic_rename_dir
 
     os_pid = os.getpid()
@@ -290,7 +289,7 @@ def _remote_latest_data_revision() -> str:
         raise ImportError(
             "huggingface_hub is required to resolve the latest data "
             "revision. Install with: pip install huggingface_hub"
-        )
+        ) from None
     api = HfApi(token=_os.getenv("HF_TOKEN"))
     files = api.list_repo_files(_HF_REPO_ID, repo_type="model", revision="main")
     revs = [
@@ -648,7 +647,7 @@ def apply_preferred_display(
         [CodeRef(r.source, r.code) for r in results], engine=engine
     )
     updated: list[SearchResult] = []
-    for r, info in zip(results, infos):
+    for r, info in zip(results, infos, strict=False):
         name = info.name if info else None
         updated.append(replace(r, display=name) if name else r)
     return updated
@@ -1068,8 +1067,8 @@ class SearchService:
 
     @staticmethod
     def _filter_by_source(
-        results: list["SearchResult"], sources: list[str] | None
-    ) -> list["SearchResult"]:
+        results: list[SearchResult], sources: list[str] | None
+    ) -> list[SearchResult]:
         """Drop results whose source isn't in the requested set.
 
         Category-level filtering alone isn't sufficient — ICD10CM and SNOMEDCT_US
@@ -1244,7 +1243,7 @@ class SearchService:
             source_set = normalized
         results: list[CanonicalSearchResult] = []
         seen_ids: set[str] = set()
-        for score, idx in zip(scores[0], ids[0]):
+        for score, idx in zip(scores[0], ids[0], strict=False):
             if idx < 0:
                 break
             if score < min_score:
@@ -1494,7 +1493,7 @@ class SearchService:
         for q_idx in range(len(queries)):
             results: list[CanonicalSearchResult] = []
             seen_ids: set[str] = set()
-            for score, idx in zip(scores[q_idx], ids[q_idx]):
+            for score, idx in zip(scores[q_idx], ids[q_idx], strict=False):
                 if idx < 0 or score < min_score:
                     break
                 m = self._concepts_meta[idx]
@@ -1594,7 +1593,7 @@ class SearchService:
         # (e.g. fresh install before build_canonical_concept_index.py has run).
         # Retrieve candidate code results using sub_mode ('semantic', 'hybrid', or 'lexical')
         raw_results = self.search(query, mode=sub_mode, sources=sources, count=max(count * 5, 50))
-        
+
         # If sub_mode returned fewer candidates, fall back to semantic search for rich semantic recall
         if len(raw_results) < count and sub_mode != "semantic":
             sem_results = self.semantic(query, sources=sources, count=max(count * 5, 50))

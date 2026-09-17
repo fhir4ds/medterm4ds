@@ -18,7 +18,6 @@ from __future__ import annotations
 
 import pytest
 
-
 # ============================================================
 # Pattern A1 — silent-wrong-answer on discrete-value params
 # SKEPTIC fixed mode=invalid. HISTORIAN re-tests the boundary
@@ -36,7 +35,7 @@ def test_h01_mode_validation_does_not_silently_accept_near_misses(fhir_client):
     # Spec: FHIR R4 strings are generally case-sensitive for code values.
     # §4.7.1.1 enumerates mode values as full/terminology (lowercase).
     for near_miss in ("Full", "FULL", " terminology", "terminology ", "full "):
-        r = fhir_client.get(f"/fhir/metadata", params={"mode": near_miss})
+        r = fhir_client.get("/fhir/metadata", params={"mode": near_miss})
         body = r.text or ""
         pytest.current_report_extra = f"mode={near_miss!r} status={r.status_code} body[:80]={body[:80]!r}"
         # If status==200 with resourceType=CapabilityStatement, the server
@@ -94,8 +93,8 @@ def test_h03_no_silent_importerror_in_conformance_modules():
     Inspect the source of the conformance modules to confirm no new
     silent-ImportError pattern was introduced.
     """
-    from medterm4ds.engines.fhir import responses, xml
     from medterm4ds.apps import fhir_api
+    from medterm4ds.engines.fhir import responses, xml
 
     for mod in (responses, xml, fhir_api):
         src = open(mod.__file__).read()
@@ -156,7 +155,6 @@ def test_h05_xml_failure_degrades_loudly(fhir_client, monkeypatch):
     WARNING (not DEBUG) and still returns a structured response.
     """
     from medterm4ds.apps import fhir_api
-    from medterm4ds.engines.fhir import xml as xml_mod
 
     # Force the serializer to raise ValueError on the next call.
     calls = {"warning_logged": False}

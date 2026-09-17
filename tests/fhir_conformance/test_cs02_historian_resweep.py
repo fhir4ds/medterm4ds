@@ -37,7 +37,6 @@ import ast
 from pathlib import Path
 
 import pytest
-from fastapi.testclient import TestClient
 
 # Spec: https://hl7.org/fhir/R4/codesystem-operation-lookup.html
 # Out Parameters:

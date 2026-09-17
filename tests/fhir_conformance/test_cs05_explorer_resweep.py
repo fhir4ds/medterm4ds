@@ -314,7 +314,7 @@ def test_e10_n_way_canonical_display_invariant_snomed_dm(fhir_client):
         for sub in p.get("part", []):
             if sub.get("name") == "source":
                 # source is a Coding with system/code/display
-                for k, v in sub.items():
+                for _k, v in sub.items():
                     if isinstance(v, dict) and "display" in v:
                         source_displays.append(v["display"])
     if source_displays:
@@ -1727,7 +1727,7 @@ def test_e140_translate_source_display_matches_lookup(fhir_client):
             continue
         for sub in p.get("part", []):
             if sub.get("name") == "source":
-                for k, v in sub.items():
+                for _k, v in sub.items():
                     if isinstance(v, dict) and "display" in v:
                         source_displays.append(v["display"])
     if source_displays:
@@ -1757,7 +1757,7 @@ def test_e141_translate_target_system_canonical(fhir_client):
             continue
         for sub in p.get("part", []):
             if sub.get("name") == "concept":
-                for k, v in sub.items():
+                for _k, v in sub.items():
                     if isinstance(v, dict) and "system" in v:
                         target_systems.append(v["system"])
     if target_systems:

@@ -55,8 +55,9 @@ def _make_conformance_db(path: Path) -> None:
 @pytest.fixture(scope="module")
 def fhir_client(tmp_path_factory):
     """Start the FHIR facade with a synthetic DB and yield a TestClient."""
-    fastapi = pytest.importorskip("fastapi")
+    pytest.importorskip("fastapi")
     from starlette.testclient import TestClient
+
     from medterm4ds.apps.fhir_api import FhirApiSettings, create_fhir_app
 
     db_path = tmp_path_factory.mktemp("fhir_conf") / "umls.duckdb"

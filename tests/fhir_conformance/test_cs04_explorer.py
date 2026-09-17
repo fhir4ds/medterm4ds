@@ -289,7 +289,7 @@ def test_e20_instance_level_subsumes_get_falls_through_conformant(fhir_client):
     would be ambiguous even if the route existed.
     """
     r = fhir_client.get(
-        f"/fhir/CodeSystem/anything/$subsumes",
+        "/fhir/CodeSystem/anything/$subsumes",
         params={"codeA": SNOMED_DIABETES_MELLITUS, "codeB": SNOMED_T2DM},
     )
     # Acceptable outcomes: 404 (read_unknown_resource_type catch-all),

@@ -118,3 +118,24 @@ target-version = "py310"
 [tool.ruff.lint]
 select = ["E", "W", "F", "I", "B", "C4", "UP"]
 ignore = ["E501", "B008"]
+
+[tool.ruff.lint.per-file-ignores]
+# Engine mixins consume the shared engine-base namespace via star-import
+# (documented pattern; re-exporting each name explicitly would duplicate
+# the base's __all__ in every mixin).
+"src/medterm4ds/engines/duckdb/_mixins/*.py" = ["F405"]
+"src/medterm4ds/engines/duckdb/engine.py" = ["F405"]
+"src/medterm4ds/engines/duckdb/_engine_base.py" = ["F405", "E402"]
+# Top-level package re-exports sit below optional-dependency try/except
+# blocks by design (lazy surface; moving them up would import eagerly).
+"src/medterm4ds/__init__.py" = ["E402", "F401"]
+# CLI handlers import argparse subcommand helpers mid-file (grouped per
+# command); __version__ re-export is a public pin.
+"src/medterm4ds/apps/cli.py" = ["E402", "F401"]
+# test files use star-import fixtures, broad imports, and post-importorskip
+# imports deliberately
+"tests/**" = ["F401", "E402"]
+# These carry imports below optional-dependency guards / sys.path bootstrap
+# (documented lazy patterns, same rationale as __init__.py).
+"src/medterm4ds/domains/evidence.py" = ["E402"]
+"src/medterm4ds/services/data_setup.py" = ["E402"]

@@ -5,9 +5,10 @@ Tests the may_treat/may_prevent condition→medication traversal with synthetic 
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import duckdb
 import pytest
-from pathlib import Path
 
 from medterm4ds.engines.duckdb import LocalDuckDBEngine
 

@@ -357,7 +357,6 @@ def _walk_lp_transitive(
                     source_cui = from_cui
                     target_cui = to_cui
                     source_aui = from_aui
-                    target_aui = to_aui
                     next_code = to_code
                     relationship = "ancestor"
                 else:
@@ -366,7 +365,6 @@ def _walk_lp_transitive(
                     source_cui = to_cui
                     target_cui = from_cui
                     source_aui = to_aui
-                    target_aui = from_aui
                     next_code = from_code
                     relationship = "descendant"
 

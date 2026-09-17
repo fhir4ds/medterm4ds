@@ -41,7 +41,6 @@ from __future__ import annotations
 
 import pytest
 
-
 SUPPORTED_SYSTEM_EXTENSION_URL = (
     "http://hl7.org/fhir/StructureDefinition/capabilitystatement-supported-system"
 )
@@ -232,7 +231,7 @@ def test_t20_implicit_expansion_codes_round_trip_via_lookup(fhir_client, source,
         )
         # And $lookup with that URI+code MUST succeed.
         lookup_resp = fhir_client.get(
-            f"/fhir/CodeSystem/$lookup",
+            "/fhir/CodeSystem/$lookup",
             params={"system": advertised_uri, "code": code},
         )
         assert lookup_resp.status_code == 200, (

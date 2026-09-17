@@ -410,7 +410,7 @@ class TestLens3HCPCSCanonicalURIDrift:
         """HCPCS legacy alias is in FHIR_URI_ALIASES (backwards-compat)."""
         from medterm4ds.engines.fhir import FHIR_URI_ALIASES
         assert FHIR_URI_ALIASES.get(HCPCS_LEGACY_ALIAS_URI) == "HCPCS", (
-            f"HCPCS legacy alias should map to HCPCS source"
+            "HCPCS legacy alias should map to HCPCS source"
         )
 
     def test_h32_canonical_system_uri_resolves_legacy_alias(self):
@@ -746,7 +746,7 @@ class TestLens7EmptyStringDriftSourceAudit:
         assert search_text, "search_get not found"
         # Find the query declaration line.
         lines = search_text.split("\n")
-        query_lines = [l for l in lines if "query" in l.lower() and "Query" in l]
+        query_lines = [ln for ln in lines if "query" in ln.lower() and "Query" in ln]
         assert query_lines, "search_get should declare a query parameter"
         # The query param should have min_length=1.
         # Some lines may have it on a different line; search the whole function.

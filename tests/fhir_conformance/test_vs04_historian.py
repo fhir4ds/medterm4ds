@@ -507,7 +507,7 @@ class TestHistorianCarryForwardReconfirmations:
         )
         assert resp.status_code == 200
         body = resp.json()
-        contains = body["expansion"]["contains"]
+        body["expansion"]["contains"]
         total = body["expansion"]["total"]
         # Fixture: 1 root + 1 descendant = 2 entries un-truncated.
         # count=1 truncates to 1 entry. total MUST reflect un-truncated size (2).
@@ -670,8 +670,9 @@ class TestHistorianResolveMaxDepthLocation:
         at module scope with the expected signature. Future refactors that
         move the helper (or rename it) MUST update this probe.
         """
-        from medterm4ds.apps.fhir_api import _resolve_max_depth
         import inspect
+
+        from medterm4ds.apps.fhir_api import _resolve_max_depth
 
         # Helper exists and is callable.
         assert callable(_resolve_max_depth)
@@ -698,6 +699,7 @@ class TestHistorianResolveMaxDepthLocation:
         Fallbacks"). Verify the source still implements this.
         """
         import inspect
+
         from medterm4ds.apps.fhir_api import _resolve_max_depth
 
         src = inspect.getsource(_resolve_max_depth)
@@ -807,6 +809,7 @@ class TestHistorianTotalComputationSourceAudit:
         for the exact-count enhancement.
         """
         import inspect
+
         from medterm4ds.apps.fhir_api import expand_url_pattern
 
         src = inspect.getsource(expand_url_pattern)

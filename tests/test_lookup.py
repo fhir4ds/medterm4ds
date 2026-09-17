@@ -265,6 +265,7 @@ def test_cli_code_source_pairs_rejects_uri_form_source():
     detects URI/OID-form inputs and rejects them early with a clear message.
     """
     import pytest
+
     from medterm4ds.apps.cli import _code_source_pairs
 
     # Valid SAB still works

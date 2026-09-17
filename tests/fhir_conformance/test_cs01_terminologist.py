@@ -49,11 +49,9 @@ from pathlib import Path
 
 import pytest
 
-
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
-
 # FHIR R4 ConceptMapEquivalence closed enum
 # Spec: https://hl7.org/fhir/R4/valueset-concept-map-equivalence.html
 # Single source of truth: medterm4ds.engines.fhir.FHIR_R4_CONCEPT_MAP_EQUIVALENCE

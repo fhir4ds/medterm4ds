@@ -55,8 +55,6 @@ document the gap as a carry-forward for future fixture enhancements.
 
 from __future__ import annotations
 
-import pytest
-
 # Spec: https://hl7.org/fhir/R4/codesystem.html
 # Spec: https://hl7.org/fhir/R4/concept-properties.html
 # Standard FHIR R4 concept properties. Per concept-properties.html:
@@ -122,7 +120,7 @@ def _has_property(body: dict, prop_code: str) -> bool:
     """Return True if the Out `property` group contains an entry with the
     given code (regardless of value).
     """
-    sentinel = object()
+    object()
     return _property_value(body, prop_code) is not None or _property_code_present(body, prop_code)
 
 
@@ -514,7 +512,7 @@ def test_s40_lookup_out_abstract_is_boolean_type(fhir_client):
     assert p is not None
     assert "valueBoolean" in p
     assert "valueString" not in p, (
-        f"Out `abstract` uses valueString — wire-type drift (spec mandates valueBoolean)"
+        "Out `abstract` uses valueString — wire-type drift (spec mandates valueBoolean)"
     )
 
 
@@ -561,7 +559,7 @@ def test_s43_expand_includes_seeded_codes(fhir_client):
     a follow-up probe should verify abstract concepts are included with
     the `abstract` flag in the expansion contains[] entry.
     """
-    r = fhir_client.get(f"/fhir/ValueSet/$expand?filter=diabetes&count=10")
+    r = fhir_client.get("/fhir/ValueSet/$expand?filter=diabetes&count=10")
     assert r.status_code == 200
     body = r.json()
     assert body.get("resourceType") == "ValueSet"
@@ -580,7 +578,7 @@ def test_s44_expand_contains_entries_do_not_carry_abstract_flag_today(fhir_clien
     data, the probe will need updating to assert `abstract=false` on
     leaf entries (and `abstract=true` on abstract entries).
     """
-    r = fhir_client.get(f"/fhir/ValueSet/$expand?filter=diabetes&count=10")
+    r = fhir_client.get("/fhir/ValueSet/$expand?filter=diabetes&count=10")
     assert r.status_code == 200
     body = r.json()
     contains = body.get("expansion", {}).get("contains", [])
@@ -816,7 +814,7 @@ def test_s62_lookup_unknown_system_returns_400(fhir_client):
     OperationOutcome body.
     """
     r = fhir_client.get(
-        f"/fhir/CodeSystem/$lookup?system=http://fake.example/sys&code=X"
+        "/fhir/CodeSystem/$lookup?system=http://fake.example/sys&code=X"
     )
     assert r.status_code == 400
     body = r.json()
@@ -827,7 +825,7 @@ def test_s63_validate_code_unknown_system_returns_400(fhir_client):
     """Edge / spec $validate-code: unknown system URI returns 400.
     """
     r = fhir_client.get(
-        f"/fhir/CodeSystem/$validate-code?system=http://fake.example/sys&code=X"
+        "/fhir/CodeSystem/$validate-code?system=http://fake.example/sys&code=X"
     )
     assert r.status_code == 400
 

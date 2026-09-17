@@ -1053,8 +1053,8 @@ class TestLens8SelfSubsumptionDirectionality:
         URI MUST produce 400 + OperationOutcome (not 500 with text/plain).
         """
         r = fhir_client.get(
-            f"/fhir/CodeSystem/$subsumes?system=http://fake.example/sys"
-            f"&codeA=1&codeB=2"
+            "/fhir/CodeSystem/$subsumes?system=http://fake.example/sys"
+            "&codeA=1&codeB=2"
         )
         assert r.status_code == 400, (
             f"unknown system: {r.status_code}; expected 400"

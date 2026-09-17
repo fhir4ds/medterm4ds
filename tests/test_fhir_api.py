@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 
 import duckdb
@@ -19,11 +18,9 @@ from medterm4ds.engines.fhir.responses import (
     build_bundle_search,
     build_capability_statement,
     build_operation_outcome,
-    build_parameters_lookup,
     build_parameters_translate,
     build_parameters_validate,
 )
-
 
 # ---------------------------------------------------------------------------
 # URI mapping tests
@@ -1084,6 +1081,7 @@ class TestFhirEndpoints:
         """Add parent + child to closure, then verify subsumption via
         the closure table's check method."""
         from starlette.testclient import TestClient
+
         from medterm4ds.engines.fhir.closure import get_closure_manager
 
         # Add two concepts: Diabetes (73211009) and Type 2 diabetes (44054006)
@@ -1285,7 +1283,7 @@ class TestFhirEndpoints:
                         if p["name"] == "return"][0]
 
             one_shot = ret_hash(post("qc270-a", ["73211009", "44054006"]))
-            first = ret_hash(post("qc270-b", ["73211009"]))
+            ret_hash(post("qc270-b", ["73211009"]))
             second = ret_hash(post("qc270-b", ["44054006"]))
             assert one_shot == second  # batching-invariant
             # Re-adding already-present concepts: no-op, same hash
@@ -1534,6 +1532,7 @@ class TestFhirEndpoints:
         """QC-300 (HIGH): control chars (0x01, 0x0B, 0x00) echoed into XML
         value attributes must be stripped — the body must parse as XML."""
         import xml.etree.ElementTree as ET
+
         from starlette.testclient import TestClient
         with TestClient(fhir_app) as client:
             for ch in ("\x01", "\x0b", "\x00"):
@@ -1759,7 +1758,6 @@ class TestFhirEndpoints:
         moved into the service so Python/MCP/FHIR share one convention."""
         import duckdb as _duckdb
 
-        from medterm4ds.engines.duckdb import LocalDuckDBEngine
         from medterm4ds.services.search import SearchResult, apply_preferred_display
 
         db_path = tmp_path / "qc400.duckdb"

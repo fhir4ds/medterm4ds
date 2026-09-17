@@ -49,9 +49,7 @@ from medterm4ds.engines.fhir import (
 )
 from medterm4ds.engines.fhir.equivalence import (
     INTERNAL_REL_TO_FHIR_EQUIVALENCE,
-    fhir_equivalence,
 )
-
 
 # =============================================================================
 # Constants — mirror the conformance fixture.
@@ -317,13 +315,13 @@ def test_t11_get_post_translate_clinical_content_parity_target_display(
         fhir_client, source_system, source_code, target_system
     )
     if not get_matches:
-        pytest.skip(f"no GET $translate matches")
+        pytest.skip("no GET $translate matches")
 
     post_matches = _translate_matches_post_coding(
         fhir_client, source_system, source_code, target_system
     )
     assert post_matches, (
-        f"POST $translate coding body returned 0 matches; CF-CM02-01 regression"
+        "POST $translate coding body returned 0 matches; CF-CM02-01 regression"
     )
 
     get_displays = sorted(
@@ -371,12 +369,12 @@ def test_t12_get_post_translate_clinical_content_parity_target_system(
         fhir_client, source_system, source_code, target_system
     )
     if not get_matches:
-        pytest.skip(f"no GET $translate matches")
+        pytest.skip("no GET $translate matches")
 
     post_matches = _translate_matches_post_coding(
         fhir_client, source_system, source_code, target_system
     )
-    assert post_matches, f"POST $translate coding body returned 0 matches"
+    assert post_matches, "POST $translate coding body returned 0 matches"
 
     get_systems = sorted(
         c.get("system")
@@ -430,7 +428,7 @@ def test_t13_get_post_translate_clinical_content_parity_equivalence(
         fhir_client, source_system, source_code, target_system
     )
     if not get_matches:
-        pytest.skip(f"no GET $translate matches")
+        pytest.skip("no GET $translate matches")
 
     post_matches = _translate_matches_post_coding(
         fhir_client, source_system, source_code, target_system
@@ -486,7 +484,7 @@ def test_t14_get_post_translate_clinical_content_parity_match_count(
         fhir_client, source_system, source_code, target_system
     )
     if not get_matches:
-        pytest.skip(f"no GET $translate matches")
+        pytest.skip("no GET $translate matches")
 
     post_matches = _translate_matches_post_coding(
         fhir_client, source_system, source_code, target_system
@@ -578,8 +576,8 @@ def test_t15_post_translate_with_coding_body_clinical_safety_cds_hook(
                 )
 
     assert found_e11, (
-        f"POST $translate coding body did not return ICD-10-CM E11 for "
-        f"SNOMED T2DM. Clinical workflow integration broken."
+        "POST $translate coding body did not return ICD-10-CM E11 for "
+        "SNOMED T2DM. Clinical workflow integration broken."
     )
 
 
@@ -837,8 +835,8 @@ def test_t22_export_target_display_is_clinically_preferred_term(
     display for the target code." The display SHOULD match $lookup Out
     display (which per R4 is "the preferred display").
     """
-    from medterm4ds.outputs.fhir import concept_map_to_fhir
     from medterm4ds.engines.fhir import fhir_uri_to_system
+    from medterm4ds.outputs.fhir import concept_map_to_fhir
 
     target_sab = fhir_uri_to_system(target_system)
     assert target_sab
@@ -926,8 +924,8 @@ def test_t23_lookup_and_translate_and_export_clinical_triad_agree(
                 break
 
     # Export display.
-    from medterm4ds.outputs.fhir import concept_map_to_fhir
     from medterm4ds.engines.fhir import fhir_uri_to_system
+    from medterm4ds.outputs.fhir import concept_map_to_fhir
 
     target_sab = fhir_uri_to_system(system)
     rows = [_make_concept_map_row(
@@ -1098,8 +1096,8 @@ def test_t30_export_target_display_clinically_correct_per_target_system():
 
     Spec: FHIR R4 ConceptMap.target.display = "A display for the target code."
     """
-    from medterm4ds.outputs.fhir import concept_map_to_fhir
     from medterm4ds.engines.fhir import fhir_uri_to_system
+    from medterm4ds.outputs.fhir import concept_map_to_fhir
 
     cases = [
         (SNOMED_URI, SNOMED_DIABETES_MELLITUS, SNOMED_DM_DISPLAY),
@@ -1368,8 +1366,8 @@ def test_t40_export_handles_each_seeded_source_clinical_conventions():
     produces a group with the canonical URI AND the target.display is
     clinically sensible per the source's conventions.
     """
-    from medterm4ds.outputs.fhir import concept_map_to_fhir
     from medterm4ds.engines.fhir import fhir_uri_to_system
+    from medterm4ds.outputs.fhir import concept_map_to_fhir
 
     cases = [
         # (target_system, target_code, expected_display_substring)
@@ -1911,7 +1909,7 @@ def test_t82_responses_module_does_not_hardcode_equivalence_value():
     tree = ast.parse(src)
     for node in ast.walk(tree):
         if isinstance(node, ast.Dict):
-            for key, value in zip(node.keys, node.values):
+            for key, _value in zip(node.keys, node.values, strict=False):
                 if (
                     isinstance(key, ast.Constant)
                     and key.value == "valueCode"

@@ -26,7 +26,6 @@ from __future__ import annotations
 
 import pytest
 
-
 # =============================================================================
 # Item 7 (audited first — advertisement presence gates the rest of the matrix)
 # =============================================================================

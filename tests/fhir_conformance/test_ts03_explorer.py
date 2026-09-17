@@ -28,7 +28,6 @@ from __future__ import annotations
 
 import pytest
 
-
 SUPPORTED_SYSTEM_EXTENSION_URL = (
     "http://hl7.org/fhir/StructureDefinition/capabilitystatement-supported-system"
 )

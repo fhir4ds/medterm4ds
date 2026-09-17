@@ -243,7 +243,7 @@ def test_e11_mode_full_format_xml_crossproduct(fhir_client):
         f"ct={ct!r} body[:120]={body[:120]!r}"
     )
     assert "CapabilityStatement" in body, (
-        f"mode=full should still return CapabilityStatement resourceType"
+        "mode=full should still return CapabilityStatement resourceType"
     )
 
 

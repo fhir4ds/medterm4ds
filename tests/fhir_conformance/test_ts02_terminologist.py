@@ -17,7 +17,6 @@ from __future__ import annotations
 
 import pytest
 
-
 # ---------------------------------------------------------------------------
 # 1. Canonical code-system URI consistency across operations.
 #

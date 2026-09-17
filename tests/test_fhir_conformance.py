@@ -8,11 +8,13 @@ terminology workflow end-to-end.
 
 from __future__ import annotations
 
-import duckdb
-import pytest
 from pathlib import Path
 
+import duckdb
+import pytest
+
 from medterm4ds.core.models import CodeInfo, CodeMapping, CodeRef
+from medterm4ds.engines.fhir.closure import ClosureTable, build_closure_response
 from medterm4ds.engines.fhir.responses import (
     build_bundle_search,
     build_capability_statement,
@@ -23,16 +25,14 @@ from medterm4ds.engines.fhir.responses import (
     build_parameters_validate,
     build_valueset_expand,
 )
-from medterm4ds.engines.fhir.closure import ClosureTable, build_closure_response
-from medterm4ds.engines.fhir.closure import ClosureTable
 
 fhir_resources = pytest.importorskip("fhir.resources")
 
-from fhir.resources.parameters import Parameters
 from fhir.resources.bundle import Bundle
-from fhir.resources.valueset import ValueSet
-from fhir.resources.operationoutcome import OperationOutcome
 from fhir.resources.capabilitystatement import CapabilityStatement
+from fhir.resources.operationoutcome import OperationOutcome
+from fhir.resources.parameters import Parameters
+from fhir.resources.valueset import ValueSet
 
 _VALIDATORS = {
     "Parameters": Parameters,
@@ -216,6 +216,7 @@ class TestIntegrationWorkflow:
     @pytest.fixture
     def client(self, tmp_path):
         from starlette.testclient import TestClient
+
         from medterm4ds.apps.fhir_api import FhirApiSettings, create_fhir_app
         db_path = tmp_path / "umls.duckdb"
         _make_workflow_db(db_path)

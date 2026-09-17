@@ -32,7 +32,6 @@ mrrel has a single isa relationship (T2DM → Diabetes mellitus).
 from __future__ import annotations
 
 import ast
-import inspect
 from pathlib import Path
 
 import pytest

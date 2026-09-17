@@ -921,7 +921,7 @@ def test_h80_lookup_get_post_parity_for_abstract(fhir_client):
     assert r_post.status_code == 200
     post_abstract = _lookup_param_value(r_post.json(), "abstract")
 
-    assert get_abstract == post_abstract == False
+    assert get_abstract == post_abstract is False
 
 
 def test_h81_lookup_get_post_parity_for_property_group(fhir_client):

@@ -38,7 +38,6 @@ import json
 
 import pytest
 
-
 # =============================================================================
 # Pattern 1: HCPCS canonical URI drift (QA-012 class, count=7 PROMOTED)
 # Re-derive: every URI in SYSTEM_TO_FHIR_URI must be the canonical URI
@@ -437,7 +436,9 @@ class TestSkepticTip1ContentNotPresentHardcoded:
         NOT an R4 TerminologyCapabilities.codeSystem child (R5-only). No
         entry may carry it — an absent element cannot violate the enum.
         https://hl7.org/fhir/R4/terminologycapabilities-definitions.html"""
-        from medterm4ds.engines.fhir import FHIR_R4_CONCEPT_MAP_EQUIVALENCE  # noqa: F401 (sanity import)
+        from medterm4ds.engines.fhir import (
+            FHIR_R4_CONCEPT_MAP_EQUIVALENCE,  # noqa: F401 (sanity import)
+        )
         r = fhir_client.get("/fhir/metadata", params={"mode": "terminology"})
         assert r.status_code == 200
         payload = r.json()
@@ -480,12 +481,12 @@ class TestSkepticTip1ContentNotPresentHardcoded:
         end = src.index("\ndef ", start + 1)
         body = src[start:end]
         assert '"content"' not in body, (
-            f"build_terminology_capabilities still emits a 'content' "
-            f"element — R5-only on the TC backbone per EC-15 QC-333."
+            "build_terminology_capabilities still emits a 'content' "
+            "element — R5-only on the TC backbone per EC-15 QC-333."
         )
         assert "_subsumption_capable" in body, (
-            f"build_terminology_capabilities must derive subsumption via "
-            f"_subsumption_capable (strategy registry) per EC-15 QC-339."
+            "build_terminology_capabilities must derive subsumption via "
+            "_subsumption_capable (strategy registry) per EC-15 QC-339."
         )
 
     def test_h53_not_present_value_clinically_correct_for_medterm4ds(self):
@@ -614,8 +615,8 @@ class TestSkepticTip2XmlSerializerFallbackWarning:
         scope MUST be limited to the ``_fhir_response`` body — the broader
         ``create_fhir_app`` contains the intentionally-broad
         ``_process_batch_entry`` boundary (per QA-038 / AGENTS.md)."""
+
         from medterm4ds.apps import fhir_api
-        import inspect
 
         src = open(fhir_api.__file__).read()
         start = src.index("def _fhir_response(")
@@ -630,8 +631,8 @@ class TestSkepticTip2XmlSerializerFallbackWarning:
             "_fhir_response missing narrow ValueError catch."
         )
         assert "except Exception" not in body, (
-            f"_fhir_response uses broad `except Exception` — GLOBAL_RULES.md "
-            f"'Silent Fallbacks' prohibition."
+            "_fhir_response uses broad `except Exception` — GLOBAL_RULES.md "
+            "'Silent Fallbacks' prohibition."
         )
         assert "logger.warning" in body, (
             "_fhir_response missing logger.warning on fallback path."
