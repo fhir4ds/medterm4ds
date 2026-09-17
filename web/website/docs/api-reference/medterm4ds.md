@@ -2,7 +2,7 @@
 title: Overview
 ---
 
-This reference documents the public Python contract for `0.0.1`. Private
+This reference documents the public Python contract. Private
 DuckDB SQL helpers, ranking functions, CLI parser functions, and
 underscore-prefixed members are implementation details.
 
@@ -56,6 +56,10 @@ All source names are normalized by `CodeRef`, so aliases such as `LOINC` and
   shapes.
 - [Service Functions](./service-functions.md): lower-level batch functions and
   engine-level signatures.
+- Text extraction (`extract` / `find_terms` / `resolve_spans`, batch list
+  inputs, `annotation_fields`, GPU/device and batch-size knobs):
+  see the [Text Extraction capability](../capabilities/text-extraction.md)
+  and [Engine Configuration](../getting-started/engine-configuration.md).
 - [Data Setup](./data-setup.md): UMLS download/build/verify helpers.
 - [Engines and Outputs](./engines-outputs.md): local/remote engines,
   DataFrame/record helpers, compact renderers, and FHIR ConceptMap output.

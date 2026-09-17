@@ -56,7 +56,6 @@ from medterm4ds.engines.fhir import (
     FHIR_R4_CONCEPT_MAP_EQUIVALENCE,
 )
 
-
 # ---------------------------------------------------------------------------
 # Constants.
 # ---------------------------------------------------------------------------
@@ -294,8 +293,8 @@ class TestLens2R5OnlyMatchesValue:
         )
         for v in INTERNAL_REL_TO_FHIR_EQUIVALENCE.values():
             assert v != "matches", (
-                f"INTERNAL_REL_TO_FHIR_EQUIVALENCE MUST NOT emit 'matches' "
-                f"(R5-only value)."
+                "INTERNAL_REL_TO_FHIR_EQUIVALENCE MUST NOT emit 'matches' "
+                "(R5-only value)."
             )
 
 

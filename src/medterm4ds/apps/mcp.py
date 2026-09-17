@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import os
 from collections.abc import Sequence
 from concurrent.futures import ThreadPoolExecutor
@@ -624,15 +623,22 @@ class McpRuntime:
         results: list[dict[str, Any]] = []
         truncated = False
         for ref in refs:
+            # CR-055: fetch limit+1 so "exactly at limit" result sets are not
+            # falsely flagged truncated — only a row BEYOND the limit proves
+            # more existed. depth_cap_hit keeps its own signal.
+            fetch_limit = limit + 1 if limit is not None else None
             relations, depth_cap_hit = get_descendants_bfs(
                 ref,
                 engine=self._engine(),
                 max_depth=max_depth,
-                limit=limit,
+                limit=fetch_limit,
                 include_retired=include_retired,
             )
+            if limit is not None and len(relations) > limit:
+                truncated = True
+                relations = relations[:limit]
             results.extend(relation.to_dict() for relation in relations)
-            if depth_cap_hit or (limit is not None and len(relations) >= limit):
+            if depth_cap_hit:
                 truncated = True
         return {"results": results, "truncated": truncated}
 
@@ -848,6 +854,8 @@ def create_mcp_server(
         from medterm4ds.services.search import (
             CANONICAL_RESULT_TYPES,
             SEARCH_CATEGORIES,
+        )
+        from medterm4ds.services.search import (
             search as search_service,
         )
         warnings: list[str] = []
@@ -901,6 +909,7 @@ def create_mcp_server(
         result_types: list[str] | None = None,
         mode: str | None = None,
         min_grade: str | None = None,
+        annotation_fields: list[str] | None = None,
         include_negated: bool = False,
         include_uncertain: bool = False,
         include_historical: bool = False,
@@ -918,6 +927,7 @@ def create_mcp_server(
         - result_types: Filter resolved concepts by result type (condition, medication, drug_class, lab, vital, procedure, vaccine, symptom).
         - mode: Search mode for code resolution (lexical, semantic, hybrid, canonical). Default: canonical (env-configurable via MEDTERM4DS_EXTRACTION_MODE).
         - min_grade: Minimum match grade (certain, exact, probable, possible, broader). Default: certain (env-configurable via MEDTERM4DS_EXTRACTION_MIN_GRADE).
+        - annotation_fields: Fields rendered in each annotated inline marker (format='annotated' only): text, name, type, source_code (SOURCE:code), canonical_id, status. Default: text,type; unresolved fields render as UNKNOWN.
         - include_negated: Include negated mentions (default: excluded).
         - include_uncertain: Include uncertain mentions (default: excluded).
         - include_historical: Include historical mentions (default: excluded).
@@ -932,6 +942,7 @@ def create_mcp_server(
             result_types=result_types,
             mode=mode,
             min_grade=min_grade,
+            annotation_fields=annotation_fields,
             include_negated=include_negated,
             include_uncertain=include_uncertain,
             include_historical=include_historical,

@@ -36,7 +36,7 @@ logger = logging.getLogger(__name__)
 # steer the operator to rebuild instead of silently serving stale answers
 # (QC-404 walk_edges, QC-405 best_atoms, QC-412 same_cui_edges). ANY change
 # to builder SQL below must bump this value.
-PREPARED_SCHEMA_VERSION = "0.9"
+PREPARED_SCHEMA_VERSION = "0.10"
 PATIENT_FRIENDLY_POLICY_VERSION = "0.2"
 
 _UMLS_TABLES = ("mrconso", "mrrel", "mrsat")
@@ -45,6 +45,7 @@ _REQUIRED_MT4DS_TABLES = (
     "best_atoms",
     "hierarchy_edges",
     "walk_edges",
+    "part_edges",
     "same_cui_edges",
     "crosswalk_edges",
     "friendly_atoms",
@@ -650,6 +651,77 @@ def _prepare_walk_edges(con, *, replace: bool) -> dict[str, object]:
     return {table: {"status": "created", "rows": rows}}
 
 
+def _prepare_part_edges(con, *, replace: bool) -> dict[str, object]:
+    """Build mt4ds.part_edges -- decomposition-family edges, SEPARATE from
+    walk_edges.
+
+    walk_edges feeds hierarchy walks, $expand isa, closure, and descendants;
+    loading part/composition edges there would silently change all of those
+    behaviors. part_edges keeps them isolated for the decomposition link
+    builder (panels->member tests, test->component parts, RxNorm
+    combo->ingredient chains). Loader keys on RELA values, not REL prefixes
+    (member_of is RN-prefixed, has_ingredient RO-prefixed). Direction
+    normalization (RELA naming is inconsistent) is the link builder's job --
+    this table stores raw edges.
+
+    DECOMPOSITION_ARCHITECTURE.md (fhir4px-model repo): PART_OF families 1,
+    2, and 4; the CVX combo->antigen family is a manual curation table and
+    IS_A comes from walk_edges.
+    """
+    table = "part_edges"
+    qualified = f"mt4ds.{table}"
+    if not replace and _table_exists(con, "mt4ds", table):
+        return {table: {"status": "exists", "rows": _row_count(con, qualified)}}
+
+    logger.info("Building %s", qualified)
+    con.execute(f"DROP TABLE IF EXISTS {qualified}")
+
+    mrrel_ref = _raw_ref("mrrel", con=con)
+    has_mrrel = _table_exists(con, "umls", "mrrel") or _table_exists(con, "main", "mrrel")
+    if not has_mrrel:
+        con.execute(
+            f"CREATE TABLE {qualified} ("
+            "from_source VARCHAR, from_code VARCHAR, from_tty VARCHAR, "
+            "to_source VARCHAR, to_code VARCHAR, to_tty VARCHAR, "
+            "rela VARCHAR, edge_source VARCHAR)"
+        )
+        rows = 0
+        logger.info("Built %s (empty, no mrrel): %s rows", qualified, rows)
+        return {table: {"status": "created", "rows": rows}}
+
+    con.execute(
+        f"""
+        CREATE TABLE {qualified} AS
+        SELECT DISTINCT
+          b1.source AS from_source, b1.code AS from_code, b1.tty AS from_tty,
+          b2.source AS to_source, b2.code AS to_code, b2.tty AS to_tty,
+          r.RELA AS rela, 'umls_mrrel' AS edge_source
+        FROM {mrrel_ref} r
+        JOIN mt4ds.atoms b1 ON b1.aui = r.AUI1
+        JOIN mt4ds.atoms b2 ON b2.aui = r.AUI2
+        WHERE (b1.source = 'LNC' AND b2.source = 'LNC'
+               AND r.RELA IN ('member_of', 'has_member',
+                              'has_component', 'component_of'))
+           OR (b1.source = 'RXNORM' AND b2.source = 'RXNORM'
+               AND r.RELA IN ('constitutes', 'ingredient_of',
+                              'has_ingredient', 'has_ingredients',
+                              'ingredients_of'))
+        """
+    )
+    for ddl in (
+        f"CREATE INDEX IF NOT EXISTS idx_mt4ds_part_from ON {qualified}(from_source, from_code)",
+        f"CREATE INDEX IF NOT EXISTS idx_mt4ds_part_to ON {qualified}(to_source, to_code)",
+    ):
+        try:
+            con.execute(ddl)
+        except duckdb.Error as exc:
+            logger.warning("Skipping index on %s: %s", qualified, exc)
+
+    rows = _row_count(con, qualified)
+    logger.info("Built %s: %s rows", qualified, rows)
+    return {table: {"status": "created", "rows": rows}}
+
+
 def _walk_closure_seed_sources() -> list[str]:
     """CR-031 (HIGH): derive the closure seed whitelist from SOURCE_STRATEGIES.
 
@@ -1136,16 +1208,38 @@ def _prepare_cvx_metadata(con, *, replace: bool) -> dict[str, object]:
     logger.info("Building %s", qualified)
     con.execute(f"DROP TABLE IF EXISTS {qualified}")
     if _table_exists(con, "main", table):
-        con.execute(
-            f"""
-            CREATE TABLE {qualified} AS
-            SELECT
-              CAST(code AS VARCHAR) AS code,
-              CAST(group_name AS VARCHAR) AS group_name,
-              CAST(short_name AS VARCHAR) AS short_name
-            FROM main.cvx_metadata
-            """
-        )
+        # group_cvx (VG-005) is copied when the main table carries it —
+        # DBs prepared from older builds have the 3-column shape and skip
+        # it (readers never require the column).
+        main_cols = {
+            row[0]
+            for row in con.execute(
+                "SELECT name FROM pragma_table_info('main.cvx_metadata')"
+            ).fetchall()
+        }
+        if "group_cvx" in main_cols:
+            con.execute(
+                f"""
+                CREATE TABLE {qualified} AS
+                SELECT
+                  CAST(code AS VARCHAR) AS code,
+                  CAST(group_name AS VARCHAR) AS group_name,
+                  CAST(short_name AS VARCHAR) AS short_name,
+                  CAST(group_cvx AS VARCHAR) AS group_cvx
+                FROM main.cvx_metadata
+                """
+            )
+        else:
+            con.execute(
+                f"""
+                CREATE TABLE {qualified} AS
+                SELECT
+                  CAST(code AS VARCHAR) AS code,
+                  CAST(group_name AS VARCHAR) AS group_name,
+                  CAST(short_name AS VARCHAR) AS short_name
+                FROM main.cvx_metadata
+                """
+            )
     else:
         con.execute(
             f"""
@@ -1371,6 +1465,7 @@ _TABLE_BUILDERS = [
     _prepare_best_atoms,
     _prepare_hierarchy_edges,
     _prepare_walk_edges,
+    _prepare_part_edges,
     _prepare_walk_closure_limited,
     _prepare_same_cui_edges,
     _prepare_crosswalk_edges,

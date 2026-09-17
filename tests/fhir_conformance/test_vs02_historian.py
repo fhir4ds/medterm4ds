@@ -65,8 +65,6 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import pytest
-
 # Spec: https://hl7.org/fhir/R4/valueset-operation-expand.html (canonical R4)
 # Spec: https://hl7.org/fhir/R4/extension-valueset-toocostly.html (too-costly)
 # Spec: https://hl7.org/fhir/R4/valueset.html#expansion (expansion shape)
@@ -193,7 +191,7 @@ def _function_text(source: str, name: str) -> str:
     # indentation returns to <= def_indent on a non-blank line.
     body_lines: list[str] = []
     in_signature = True
-    for i, line in enumerate(lines):
+    for _i, line in enumerate(lines):
         body_lines.append(line)
         stripped_nl = line.rstrip("\n")
         if in_signature:
@@ -401,7 +399,11 @@ class TestLens1Qa057ThreadVerification:
         list, so len(deduped) is the truncated size.
         """
         source = _fhir_api_text()
-        intensional_text = _function_text(source, "_expand_intensional")
+        # 18f637b split _expand_intensional into a thin FHIR wrapper around
+        # the module-level expand_intensional_value_set; audit the union.
+        intensional_text = _function_text(source, "_expand_intensional") + _function_text(
+            source, "expand_intensional_value_set"
+        )
         assert intensional_text, "_expand_intensional not found"
         assert "get_descendants_bfs" in intensional_text
         assert "limit=count" in intensional_text, (
@@ -432,7 +434,11 @@ class TestLens2CarryForwardSourceAudit:
         Source-reading audit confirms the silent-drop is still in place.
         """
         source = _fhir_api_text()
-        intensional_text = _function_text(source, "_expand_intensional")
+        # 18f637b split _expand_intensional into a thin FHIR wrapper around
+        # the module-level expand_intensional_value_set; audit the union.
+        intensional_text = _function_text(source, "_expand_intensional") + _function_text(
+            source, "expand_intensional_value_set"
+        )
         assert intensional_text, "_expand_intensional not found"
         # The honored set is still is-a + descendent-of.
         assert 'op in ("is-a", "descendent-of")' in intensional_text, (
@@ -491,7 +497,11 @@ class TestLens2CarryForwardSourceAudit:
         ``compose.include[].valueSet``.
         """
         source = _fhir_api_text()
-        intensional_text = _function_text(source, "_expand_intensional")
+        # 18f637b split _expand_intensional into a thin FHIR wrapper around
+        # the module-level expand_intensional_value_set; audit the union.
+        intensional_text = _function_text(source, "_expand_intensional") + _function_text(
+            source, "expand_intensional_value_set"
+        )
         assert intensional_text
         # The compose access is only for include/exclude.
         assert "compose.get(\"include\"" in intensional_text or "compose.get('include'" in intensional_text
@@ -530,7 +540,11 @@ class TestLens3CanonicalSystemUriUsage:
         URI is propagated to every ``contains[].system`` entry in that block.
         """
         source = _fhir_api_text()
-        intensional_text = _function_text(source, "_expand_intensional")
+        # 18f637b split _expand_intensional into a thin FHIR wrapper around
+        # the module-level expand_intensional_value_set; audit the union.
+        intensional_text = _function_text(source, "_expand_intensional") + _function_text(
+            source, "expand_intensional_value_set"
+        )
         assert intensional_text
         assert "canonical_system_uri(" in intensional_text, (
             "_expand_intensional should use canonical_system_uri() (CR-013 fix)"
@@ -735,7 +749,11 @@ class TestLens5DocumentationAccuracy:
         HISTORIAN re-verifies the carry-forward is still open.
         """
         source = _fhir_api_text()
-        intensional_text = _function_text(source, "_expand_intensional")
+        # 18f637b split _expand_intensional into a thin FHIR wrapper around
+        # the module-level expand_intensional_value_set; audit the union.
+        intensional_text = _function_text(source, "_expand_intensional") + _function_text(
+            source, "expand_intensional_value_set"
+        )
         assert intensional_text
         # CF-HISTORIAN-VS01-02 documents: docstring has "descendant-of"
         # (off-spec) while runtime uses "descendent-of" (spec-correct).

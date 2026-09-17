@@ -10,7 +10,6 @@ Structured diff reporting is in golden/{compare,report}.py.
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 
 import pytest
@@ -20,7 +19,6 @@ from .golden.compare import compare
 from .golden.normalize import (
     EMBEDDING_CATEGORIES,
     PATIENT_FRIENDLY_SOURCES,
-    detect_kind,
     load_canonical,
 )
 from .golden.report import format_diff

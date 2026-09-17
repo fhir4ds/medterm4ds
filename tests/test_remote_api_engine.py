@@ -217,7 +217,6 @@ import pytest
 
 from medterm4ds.engines.api.engine import (
     DEFAULT_REMOTE_TIMEOUT,
-    RemoteApiEngine,
     _truncate_detail,
 )
 

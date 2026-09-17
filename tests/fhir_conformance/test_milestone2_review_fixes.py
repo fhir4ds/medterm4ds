@@ -15,7 +15,6 @@ from pathlib import Path
 
 import pytest
 
-
 # =============================================================================
 # CR-005: _check_ready must return-don't-raise (Response is not BaseException)
 # =============================================================================
@@ -465,6 +464,7 @@ def test_cr019_duckdb_error_returns_fhir_operation_outcome(fhir_client, monkeypa
         ::test_cr019_duckdb_error_returns_fhir_operation_outcome -q``
     """
     import duckdb
+
     from medterm4ds.apps import fhir_api as fhir_api_mod
 
     # Monkeypatch get_code_infos (as bound in fhir_api) to raise

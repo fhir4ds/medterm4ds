@@ -38,7 +38,6 @@ import json
 
 import pytest
 
-
 # =============================================================================
 # Pattern 1: HCPCS canonical URI drift (QA-012 class, count=7 PROMOTED)
 # Re-derive: every URI in SYSTEM_TO_FHIR_URI must be the canonical URI
@@ -92,13 +91,18 @@ class TestHcpcsCanonicalUriRegistry:
         TerminologyCapabilities.codeSystem[].uri MUST be in SYSTEM_TO_FHIR_URI
         (canonical registry); no drift introduced by build_terminology_capabilities.
         """
-        from medterm4ds.engines.fhir import SYSTEM_TO_FHIR_URI
+        from medterm4ds.engines.fhir import PSEUDO_SYSTEM_SOURCES, SYSTEM_TO_FHIR_URI
 
         r = fhir_client.get("/fhir/metadata", params={"mode": "terminology"})
         assert r.status_code == 200
         payload = r.json()
         advertised_uris = {entry.get("uri") for entry in payload.get("codeSystem", [])}
-        canonical_uris = set(SYSTEM_TO_FHIR_URI.values())
+        # QC-367: pseudo-sources are intentionally NOT advertised.
+        canonical_uris = {
+            uri
+            for source, uri in SYSTEM_TO_FHIR_URI.items()
+            if source not in PSEUDO_SYSTEM_SOURCES
+        }
         # Bidirectional: no extras AND no missing.
         extras = advertised_uris - canonical_uris
         missing = canonical_uris - advertised_uris
@@ -340,7 +344,10 @@ class TestModeAwareMetadataDispatch:
         assert cs_block, "TerminologyCapabilities.codeSystem is empty"
         for entry in cs_block:
             assert "uri" in entry, f"codeSystem entry missing uri: {entry!r}"
-            assert "content" in entry, f"codeSystem entry missing content: {entry!r}"
+            # QC-333/339: 'content' is R5-only — must be absent in R4.
+            assert "content" not in entry, (
+                f"codeSystem entry carries R5-only content (QC-333/339): {entry!r}"
+            )
 
 
 # =============================================================================
@@ -385,7 +392,11 @@ class TestReadSearchStubs:
             f"{rtype} SEARCH type={payload.get('type')!r} (expected searchset)"
         )
         assert "total" in payload, f"{rtype} SEARCH missing total"
-        assert "entry" in payload, f"{rtype} SEARCH missing entry (must be list)"
+        # QC-330: empty entry[] is omitted per FHIR JSON convention —
+        # absent means empty (still a list semantically).
+        assert "entry" not in payload or isinstance(payload["entry"], list), (
+            f"{rtype} SEARCH entry must be a list when present"
+        )
 
     @pytest.mark.parametrize("rtype", ["CodeSystem", "ValueSet", "ConceptMap"])
     @pytest.mark.parametrize("param", ["url", "version", "name", "title", "status"])
@@ -421,22 +432,25 @@ class TestSkepticTip1ContentNotPresentHardcoded:
     """
 
     def test_h50_content_value_is_in_fhir_r4_codesystem_content_mode_enum(self, fhir_client):
-        """The hardcoded value MUST be a valid FHIR R4 CodeSystemContentMode
-        enum value (complete | example | fragment | not-present).
-        https://hl7.org/fhir/R4/codesystem-content-mode.html"""
-        from medterm4ds.engines.fhir import FHIR_R4_CONCEPT_MAP_EQUIVALENCE  # noqa: F401 (sanity import)
+        """SUPERSEDED by EC-15 QC-333 (see sibling test_h51): ``content`` is
+        NOT an R4 TerminologyCapabilities.codeSystem child (R5-only). No
+        entry may carry it — an absent element cannot violate the enum.
+        https://hl7.org/fhir/R4/terminologycapabilities-definitions.html"""
+        from medterm4ds.engines.fhir import (
+            FHIR_R4_CONCEPT_MAP_EQUIVALENCE,  # noqa: F401 (sanity import)
+        )
         r = fhir_client.get("/fhir/metadata", params={"mode": "terminology"})
         assert r.status_code == 200
         payload = r.json()
-        valid_content_modes = {"complete", "example", "fragment", "not-present"}
-        for entry in payload.get("codeSystem", []):
-            content = entry.get("content")
-            assert content in valid_content_modes, (
-                f"codeSystem entry content={content!r} is NOT in FHIR R4 "
-                f"CodeSystemContentMode closed enum {sorted(valid_content_modes)}. "
-                f"This is a literal-value-vs-canonical-registry drift bug "
-                f"(QA-012-class — would be a NEW instance of the PROMOTED pattern)."
-            )
+        offenders = [
+            entry.get("uri")
+            for entry in payload.get("codeSystem", [])
+            if "content" in entry
+        ]
+        assert not offenders, (
+            f"codeSystem entries carrying R5-only 'content' (invalid in "
+            f"R4; QC-333/339): {offenders}"
+        )
 
     def test_h51_content_not_present_uniform_across_all_systems(self, fhir_client):
         """Source-read investigation — superseded by EC-15 QC-333 (verified
@@ -467,12 +481,12 @@ class TestSkepticTip1ContentNotPresentHardcoded:
         end = src.index("\ndef ", start + 1)
         body = src[start:end]
         assert '"content"' not in body, (
-            f"build_terminology_capabilities still emits a 'content' "
-            f"element — R5-only on the TC backbone per EC-15 QC-333."
+            "build_terminology_capabilities still emits a 'content' "
+            "element — R5-only on the TC backbone per EC-15 QC-333."
         )
         assert "_subsumption_capable" in body, (
-            f"build_terminology_capabilities must derive subsumption via "
-            f"_subsumption_capable (strategy registry) per EC-15 QC-339."
+            "build_terminology_capabilities must derive subsumption via "
+            "_subsumption_capable (strategy registry) per EC-15 QC-339."
         )
 
     def test_h53_not_present_value_clinically_correct_for_medterm4ds(self):
@@ -601,8 +615,8 @@ class TestSkepticTip2XmlSerializerFallbackWarning:
         scope MUST be limited to the ``_fhir_response`` body — the broader
         ``create_fhir_app`` contains the intentionally-broad
         ``_process_batch_entry`` boundary (per QA-038 / AGENTS.md)."""
+
         from medterm4ds.apps import fhir_api
-        import inspect
 
         src = open(fhir_api.__file__).read()
         start = src.index("def _fhir_response(")
@@ -617,8 +631,8 @@ class TestSkepticTip2XmlSerializerFallbackWarning:
             "_fhir_response missing narrow ValueError catch."
         )
         assert "except Exception" not in body, (
-            f"_fhir_response uses broad `except Exception` — GLOBAL_RULES.md "
-            f"'Silent Fallbacks' prohibition."
+            "_fhir_response uses broad `except Exception` — GLOBAL_RULES.md "
+            "'Silent Fallbacks' prohibition."
         )
         assert "logger.warning" in body, (
             "_fhir_response missing logger.warning on fallback path."

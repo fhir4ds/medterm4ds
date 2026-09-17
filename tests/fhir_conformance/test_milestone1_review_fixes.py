@@ -29,7 +29,6 @@ from __future__ import annotations
 
 import pytest
 
-
 # ---------------------------------------------------------------------------
 # CR-001: $search / $extract must return application/fhir+json
 # ---------------------------------------------------------------------------

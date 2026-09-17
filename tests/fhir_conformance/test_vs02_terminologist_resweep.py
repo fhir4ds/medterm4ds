@@ -98,7 +98,6 @@ Reference fixture (tests/fhir_conformance/conftest.py:_make_conformance_db):
 from __future__ import annotations
 
 import inspect
-import textwrap
 
 import pytest
 
@@ -229,6 +228,25 @@ def _vs_validate_display(fhir_client, system: str, code: str) -> str | None:
 def _get_func_source(func) -> str:
     """Return the source text of a function (handles nested functions via closure)."""
     return inspect.getsource(func)
+
+
+def _expand_intensional_union_source() -> str:
+    """Union of the nested _expand_intensional wrapper and the module-level
+    expand_intensional_value_set core (18f637b split)."""
+    import ast as _ast
+    import inspect as _inspect
+
+    from medterm4ds.apps import fhir_api as _mod
+
+    src = _inspect.getsource(_mod)
+    tree = _ast.parse(src)
+    parts: list[str] = []
+    for node in _ast.walk(tree):
+        if isinstance(node, _ast.FunctionDef) and node.name in (
+            "_expand_intensional", "expand_intensional_value_set",
+        ):
+            parts.append(_ast.get_source_segment(src, node) or "")
+    return "\n\n".join(parts)
 
 
 def _get_nested_func_source(module_path: str, parent_name: str, child_name: str) -> str:
@@ -1164,7 +1182,7 @@ class TestLens7PerSourceClinicalCorrectness:
         Parametrized per-source: SNOMED, ICD-10-CM, RxNorm. Each source's
         implicit expansion display byte-equals $lookup Out display.
         """
-        for url, expected_codes in [
+        for url, _expected_codes in [
             (f"{SNOMED_URI}?fhir_vs", [SNOMED_DIABETES_MELLITUS, SNOMED_T2DM]),
             (f"{ICD10CM_URI}/vs", [ICD10CM_T2DM]),
             (f"{RXNORM_URI}/vs", [RXNORM_METFORMIN]),
@@ -1274,10 +1292,12 @@ class TestLens9MetaStructuralInvariants:
             str(fhir_api.__file__), "create_fhir_app", "_do_expand"
         )
         assert source, "_do_expand source not found"
-        # The +1 probe pattern is in the source.
-        assert "limit=count + 1" in source or "limit = count + 1" in source, (
+        # QC-241: the +1 probe survives as the paging-window variant —
+        # probe_budget = min(page_end, cap-1); search_names gets the
+        # probe_budget + 1 fetch so truncation beyond the window is visible.
+        assert "limit=probe_budget + 1" in source, (
             "clinical safety: +1 probe pattern missing in filter mode — "
-            "VS-02 SKEPTIC resweep QA-001 fix regressed"
+            "QC-241 paging-window probe regressed"
         )
 
     def test_t91_filter_mode_passes_total_to_builder(self):
@@ -1345,11 +1365,10 @@ class TestLens9MetaStructuralInvariants:
         The structural contract: get_code_infos is called in
         _expand_intensional.
         """
-        from medterm4ds.apps import fhir_api
 
-        source = _get_nested_func_source(
-            str(fhir_api.__file__), "create_fhir_app", "_expand_intensional"
-        )
+        # 18f637b split: the core logic (incl. the QA-056 get_code_infos
+        # display resolution) lives in module-level expand_intensional_value_set.
+        source = _expand_intensional_union_source()
         assert source
         assert "get_code_infos" in source, (
             "clinical safety: _expand_intensional missing get_code_infos — "
@@ -1391,7 +1410,7 @@ class TestLens9MetaStructuralInvariants:
         assert source
         # count_limited computation uses strict >.
         # Look for "len(results) > count" — the strict-greater-than.
-        assert "len(results) > count" in source, (
+        assert "len(results) > probe_budget" in source, (
             "clinical safety: filter mode count_limited NOT using strict > "
             "— VS-04 TERMINOLOGIST QA-068 pattern may have regressed"
         )

@@ -95,7 +95,6 @@ Per GLOBAL_RULES.md:
 from __future__ import annotations
 
 import ast
-from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
@@ -934,15 +933,11 @@ class TestLens5FilterSystemLateralCombinations:
         status, body = _get_expand(
             fhir_client, params={"filter": "diabetes", "system": ""}
         )
-        # Empty string on optional param: server-side falls through to
-        # "no filter constraint" — search across all sources.
-        assert status == 200, f"status={status}, body={body}"
-        contains = body.get("expansion", {}).get("contains", [])
-        # All 3 diabetes-matching codes should be present.
-        codes = {c.get("code") for c in contains}
-        assert SNOMED_DIABETES_MELLITUS in codes
-        assert SNOMED_T2DM in codes
-        assert ICD10CM_T2DM in codes
+        # QC-423 (MEDIUM): an empty system value is NOT "no constraint" —
+        # the sibling GET surface rejects it with 400 (Unrecognized system
+        # URI: '') instead of silently widening to all sources.
+        assert status == 400, f"status={status}, body={body}"
+        assert body.get("resourceType") == "OperationOutcome"
 
 
 # =============================================================================
@@ -1197,10 +1192,11 @@ class TestLens7PagingSemanticsLateralCombinations:
             fhir_client, params={"filter": "diabetes", "offset": 1, "count": 5}
         )
         assert s1 == 200 and s2 == 200
-        # CF-SKEPTIC-VS02-02 OPEN: offset currently ignored.
-        assert _contains_codes(b1) == _contains_codes(b2), (
-            "CF-SKEPTIC-VS02-02 OPEN: offset currently ignored — "
-            "contains[] should be identical for offset=0 and offset=1"
+        # QC-241 RESOLVED: offset IS honored — offset=1 pages past the
+        # first match, so contains[] shrinks (or empties) vs offset=0.
+        assert len(_contains_codes(b2)) < len(_contains_codes(b1)), (
+            "offset must page the filter expansion (QC-241) — offset=1 "
+            "should return fewer contains than offset=0"
         )
 
     def test_e74_count_zero_rejected_with_422(self, fhir_client):
@@ -1303,7 +1299,7 @@ class TestLens8ThreePostEncodingsParity:
         )
         assert s1 == 200 and s2 == 200
         assert _contains_codes(b1) == _contains_codes(b2), (
-            f"GET filter != POST Parameters filter"
+            "GET filter != POST Parameters filter"
         )
         assert _expand_total(b1) == _expand_total(b2)
 
@@ -1531,8 +1527,9 @@ class TestLens10MetaStructuralInvariants:
         Per CF-HISTORIAN-VS02-01: the BFS helper is the load-bearing
         structure for the intensional mode descendant walk.
         """
-        src = _get_func_source(
-            _FHIR_API_PATH, "create_fhir_app", "_expand_intensional"
+        # 18f637b split: the BFS call lives in the module-level core.
+        src = _get_func_source(_FHIR_API_PATH, "_expand_intensional") + (
+            _get_func_source(_FHIR_API_PATH, "expand_intensional_value_set")
         )
         assert "get_descendants_bfs" in src, (
             "_expand_intensional must use get_descendants_bfs helper"

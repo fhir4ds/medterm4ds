@@ -37,8 +37,6 @@ Default severity: HIGH per GLOBAL_RULES.md "TERMINOLOGIST Findings Are HIGH".
 
 from __future__ import annotations
 
-import re
-
 import pytest
 
 # Spec: https://hl7.org/fhir/R4/valueset-operation-expand.html (canonical R4)
@@ -531,7 +529,7 @@ class TestLens4SystemUriRoundTrip:
         codes = _contains_codes(body)
         # Every contains[].system MUST be the canonical SNOMED URI, not the
         # trailing-slash alias.
-        for sys_uri, code in codes:
+        for sys_uri, _code in codes:
             assert sys_uri == SNOMED_URI, (
                 f"contains[].system is alias {sys_uri!r}, expected canonical "
                 f"{SNOMED_URI!r}: drift on inline path"

@@ -23,7 +23,6 @@ import pytest
 from medterm4ds.core import provision
 from medterm4ds.core.config import local_duckdb_config
 
-
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
@@ -363,6 +362,7 @@ def test_connect_rejects_uri_suffix_path(tmp_path):
 def _api_fixture(tmp_path):
     pytest.importorskip("fastapi")
     from fastapi.testclient import TestClient
+
     from medterm4ds.apps.api import ApiSettings, create_app
 
     db = tmp_path / "umls.duckdb"
@@ -489,3 +489,81 @@ def test_snomed_link_cache_duckdb_error_degrades_with_warning_cr035(tmp_path, ca
         "Failed to create SNOMED parent link cache" in record.message
         for record in caplog.records
     ), [record.message for record in caplog.records]
+
+
+# ---------------------------------------------------------------------------
+# QC06-001: CLI text search display canonicalization (QC-400) via MEDTERM4DS_DB
+# ---------------------------------------------------------------------------
+
+
+def test_cli_text_search_passes_engine_when_db_env_set(monkeypatch, tmp_path, capsys):
+    """QC06-001: ``medterm4ds search`` canonicalizes displays when it can.
+
+    The search parser deliberately carries no --db (QC-382: search reads
+    BM25/SapBERT indexes, not DuckDB), which left run_text_search as the
+    ONLY surface not passing engine= to the search service (QC-400
+    one-display-convention) — the CLI emitted raw lexical displays while
+    Python/FHIR/MCP emitted canonicalized ones. Fix: open a read-only
+    engine from MEDTERM4DS_DB when set; absent/unopenable MEDTERM4DS_DB
+    keeps engine=None (raw index displays, warned on open failure only).
+    """
+    from types import SimpleNamespace
+
+    from medterm4ds.apps import cli as cli_mod
+
+    db = tmp_path / "umls.duckdb"
+    db.write_bytes(b"\0" * 4)
+
+    captured = {}
+
+    class _FakeSearch:
+        def __call__(self, query, *, mode, sources, count, result_types, engine):
+            captured["engine"] = engine
+            return []
+
+    monkeypatch.setattr(cli_mod, "LocalDuckDBEngine", lambda con, config=None: object())
+    fake_con = SimpleNamespace(close=lambda: None)
+    monkeypatch.setattr(cli_mod, "_connect_read_only", lambda p: fake_con)
+    # run_text_search imports search lazily from the module — patch module attr
+    import medterm4ds.services.search as search_mod
+
+    monkeypatch.setattr(search_mod, "search", _FakeSearch())
+    monkeypatch.setenv("MEDTERM4DS_DB", str(db))
+
+    # _local_duckdb_config_from_args reads the shared engine knobs (the
+    # same defaults build_parser puts on every --db command).
+    args = SimpleNamespace(
+        query="type 2 diabetes", mode="lexical", sources=None, limit=3,
+        result_types=None, format="json", output=None,
+        memory_profile="low", memory_limit=None, temp_dir=None,
+        threads=None, query_chunk_size=None,
+    )
+    rc = cli_mod.run_text_search(args)
+    assert rc == 0
+    assert captured["engine"] is not None, "engine= must be passed when MEDTERM4DS_DB resolves"
+
+
+def test_cli_text_search_engine_none_without_db_env(monkeypatch, tmp_path, capsys):
+    """QC06-001 companion: no MEDTERM4DS_DB -> engine=None (documented raw displays)."""
+    from types import SimpleNamespace
+
+    import medterm4ds.services.search as search_mod
+    from medterm4ds.apps import cli as cli_mod
+
+    captured = {}
+
+    class _FakeSearch:
+        def __call__(self, query, *, mode, sources, count, result_types, engine):
+            captured["engine"] = engine
+            return []
+
+    monkeypatch.delenv("MEDTERM4DS_DB", raising=False)
+    monkeypatch.setattr(search_mod, "search", _FakeSearch())
+
+    args = SimpleNamespace(
+        query="type 2 diabetes", mode="lexical", sources=None, limit=3,
+        result_types=None, format="json", output=None,
+    )
+    rc = cli_mod.run_text_search(args)
+    assert rc == 0
+    assert captured["engine"] is None

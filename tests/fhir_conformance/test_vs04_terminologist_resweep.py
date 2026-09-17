@@ -43,7 +43,6 @@ Conformance fixture (tests/fhir_conformance/conftest.py):
 from __future__ import annotations
 
 import ast
-import inspect
 from pathlib import Path
 
 import pytest

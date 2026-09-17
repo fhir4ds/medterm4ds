@@ -50,19 +50,13 @@ from typing import Any
 import pytest
 
 from medterm4ds.engines.fhir import (
-    FHIR_R4_CONCEPT_MAP_EQUIVALENCE,
     SYSTEM_TO_FHIR_URI,
-    canonical_system_uri,
-    fhir_uri_to_system,
-    system_to_fhir_uri,
 )
 from medterm4ds.engines.fhir.closure import (
-    ClosureManager,
     ClosureTable,
     build_closure_response,
     get_closure_manager,
 )
-
 
 SNOMED_URI = "http://snomed.info/sct"
 SNOMED_URI_OID_ALIAS = "urn:oid:2.16.840.1.113883.6.96"
@@ -386,10 +380,14 @@ class TestLens1CfSkepticCm03_01ClinicalEvaluation:
         forward-as-probe pattern).
         """
         # Source-read AGENTS.md to verify CF-SKEPTIC-CM03-01 is documented.
+        # docs/.ai_loop is gitignored: skip in clean checkouts / CI where
+        # the registry file is absent.
         agents_path = (
             Path(__file__).resolve().parents[2]
             / "docs" / ".ai_loop" / "AGENTS.md"
         )
+        if not agents_path.exists():
+            pytest.skip("docs/.ai_loop/AGENTS.md not present (gitignored)")
         src = agents_path.read_text()
         assert "CF-SKEPTIC-CM03-01" in src, (
             "CF-SKEPTIC-CM03-01 MUST be documented in AGENTS.md carry-"
@@ -579,6 +577,7 @@ class TestLens2CfSkepticCm03_02ClinicalSafetyOfHierarchyWalkedOutcomes:
         to the closure's incomplete state.
         """
         import duckdb
+
         import medterm4ds.engines.fhir.closure as closure_mod
 
         name = "t27_incomplete_closure"
@@ -666,6 +665,7 @@ class TestLens3CfHistorianCm03_02ClinicalSafetyOfIncompleteClosure:
         "not-subsumed" for pairs it failed to walk — clinical-safety
         violation."""
         import duckdb
+
         import medterm4ds.engines.fhir.closure as closure_mod
 
         name = "t31_incomplete_signal"
@@ -780,6 +780,7 @@ class TestLens3CfHistorianCm03_02ClinicalSafetyOfIncompleteClosure:
         $subsumes to consult closure, this CF becomes load-bearing.
         """
         import duckdb
+
         import medterm4ds.engines.fhir.closure as closure_mod
 
         name = "t34_http_no_surface"
@@ -822,6 +823,8 @@ class TestLens3CfHistorianCm03_02ClinicalSafetyOfIncompleteClosure:
             Path(__file__).resolve().parents[2]
             / "docs" / ".ai_loop" / "AGENTS.md"
         )
+        if not agents_path.exists():
+            pytest.skip("docs/.ai_loop/AGENTS.md not present (gitignored)")
         src = agents_path.read_text()
         assert "CF-HISTORIAN-CM03-02" in src
         # Verify the clinical-safety context is documented.

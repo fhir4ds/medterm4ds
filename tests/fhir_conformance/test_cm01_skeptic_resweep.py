@@ -51,13 +51,11 @@ import pytest
 
 from medterm4ds.engines.fhir import (
     FHIR_R4_CONCEPT_MAP_EQUIVALENCE,
-    canonical_system_uri,
 )
 from medterm4ds.engines.fhir.equivalence import (
     INTERNAL_REL_TO_FHIR_EQUIVALENCE,
     fhir_equivalence,
 )
-
 
 # =============================================================================
 # Constants
@@ -397,14 +395,14 @@ def _make_minimal_concept_map_row(**overrides):
     """Build a minimal ConceptMapRow for export probes."""
     from medterm4ds.core.models import CodeRef, ConceptMapRow
 
-    base = dict(
-        source=CodeRef(source="SNOMEDCT_US", code=SNOMED_DIABETES_MELLITUS),
-        target=CodeRef(source="ICD10CM", code=ICD10CM_T2DM),
-        source_display="Diabetes mellitus",
-        target_display="Type 2 diabetes mellitus",
-        relationship="equivalent",
-        match_type="exact",
-    )
+    base = {
+        "source": CodeRef(source="SNOMEDCT_US", code=SNOMED_DIABETES_MELLITUS),
+        "target": CodeRef(source="ICD10CM", code=ICD10CM_T2DM),
+        "source_display": "Diabetes mellitus",
+        "target_display": "Type 2 diabetes mellitus",
+        "relationship": "equivalent",
+        "match_type": "exact",
+    }
     base.update(overrides)
     return ConceptMapRow(**base)
 
@@ -777,7 +775,7 @@ def test_s73_search_returns_bundle_with_all_5_params(fhir_client):
     assert body.get("resourceType") == "Bundle"
     assert body.get("type") == "searchset"
     assert body.get("total") == 0
-    assert body.get("entry") == []
+    assert body.get("entry", []) == []  # QC-330: omitted when empty
 
 
 def test_s74_search_with_special_chars_in_params_returns_bundle(fhir_client):
@@ -1200,12 +1198,12 @@ def test_s100_canonical_module_has_subsumes_and_specializes_in_map():
                 if isinstance(k, ast.Constant):
                     keys.add(k.value)
             assert "subsumes" in keys, (
-                f"INTERNAL_REL_TO_FHIR_EQUIVALENCE missing 'subsumes' "
-                f"key — CF-TERMINOLOGIST-CM01-01 regression."
+                "INTERNAL_REL_TO_FHIR_EQUIVALENCE missing 'subsumes' "
+                "key — CF-TERMINOLOGIST-CM01-01 regression."
             )
             assert "specializes" in keys, (
-                f"INTERNAL_REL_TO_FHIR_EQUIVALENCE missing 'specializes' "
-                f"key — CF-TERMINOLOGIST-CM01-01 regression."
+                "INTERNAL_REL_TO_FHIR_EQUIVALENCE missing 'specializes' "
+                "key — CF-TERMINOLOGIST-CM01-01 regression."
             )
             found = True
             break

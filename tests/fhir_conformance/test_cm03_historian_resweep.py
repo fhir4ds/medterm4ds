@@ -74,7 +74,6 @@ from medterm4ds.engines.fhir.closure import (
     get_closure_manager,
 )
 
-
 # ---------------------------------------------------------------------------
 # Constants.
 # ---------------------------------------------------------------------------
@@ -199,6 +198,25 @@ def _reset_singleton_manager() -> None:
     closure_mod._manager = None
 
 
+def _expand_intensional_union_source() -> str:
+    """Union of the nested _expand_intensional wrapper and the module-level
+    expand_intensional_value_set core (18f637b split)."""
+    import ast as _ast
+    import inspect as _inspect
+
+    from medterm4ds.apps import fhir_api as _mod
+
+    src = _inspect.getsource(_mod)
+    tree = _ast.parse(src)
+    parts: list[str] = []
+    for node in _ast.walk(tree):
+        if isinstance(node, _ast.FunctionDef) and node.name in (
+            "_expand_intensional", "expand_intensional_value_set",
+        ):
+            parts.append(_ast.get_source_segment(src, node) or "")
+    return "\n\n".join(parts)
+
+
 # ===========================================================================
 # Lens 1: 4th-sibling AST-walk search for isinstance guards.
 #
@@ -291,7 +309,7 @@ def test_h11_all_compose_include_iterators_have_isinstance_guard() -> None:
     A NEW iterator without the guard would be a regression. Probe class:
     structural source-read audit on the AST of ``_expand_intensional``.
     """
-    src = _get_nested_func_source("create_fhir_app", "_expand_intensional")
+    src = _expand_intensional_union_source()
     assert src, "_expand_intensional not found in create_fhir_app"
     tree = ast.parse(src)
     unguarded: list[int] = []
@@ -688,15 +706,15 @@ def test_h31_reset_clears_concepts_in_new_instance() -> None:
     manager = ClosureManager()
     t1 = manager.get_or_create("historian-reset-clears")
     # Mutate t1 so we can observe whether t2 reflects the mutation.
-    t1.concepts["stale_code"] = {"system": "SNOMEDCT_US", "display": "stale"}
+    t1.concepts[("SNOMEDCT_US", "stale_code")] = {"system": "SNOMEDCT_US", "display": "stale"}
     t2 = manager.reset("historian-reset-clears")
-    assert "stale_code" not in t2.concepts, (
+    assert ("SNOMEDCT_US", "stale_code") not in t2.concepts, (
         "stale_code leaked into the fresh ClosureTable after reset"
     )
     # The OLD instance t1 retains its state — but the manager no longer
     # references it. This is the load-bearing invariant: external refs
     # to t1 continue to see the pre-reset state.
-    assert "stale_code" in t1.concepts, (
+    assert ("SNOMEDCT_US", "stale_code") in t1.concepts, (
         "reset should NOT mutate the old instance — external refs to t1 "
         "must continue to observe pre-reset state"
     )
@@ -1359,7 +1377,7 @@ def test_h54_batch_per_entry_order_preserved_on_large_batch(fhir_client) -> None
     assert len(entries) == 10, (
         f"expected 10 response entries; got {len(entries)}"
     )
-    for i, (entry, expected) in enumerate(zip(entries, expected_statuses)):
+    for i, (entry, expected) in enumerate(zip(entries, expected_statuses, strict=False)):
         actual = entry["response"]["status"]
         assert actual.startswith(expected[0]), (
             f"entry[{i}] expected {expected}; got {actual}. "

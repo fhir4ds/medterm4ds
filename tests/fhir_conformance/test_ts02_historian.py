@@ -16,10 +16,7 @@ HISTORIAN lens:
 
 from __future__ import annotations
 
-import json
-
 import pytest
-
 
 # ---------------------------------------------------------------------------
 # Pattern: A1 silent-wrong-answer — POST $lookup / $validate-code with `coding`
@@ -154,13 +151,13 @@ def test_h04_capability_statement_constants_have_no_hardcoded_port():
     if any include ':port' or 'localhost' it would be the same drift.
     """
     from medterm4ds.engines.fhir.responses import (
-        OPDEF_LOOKUP,
-        OPDEF_CS_VALIDATE_CODE,
-        OPDEF_SUBSUMES,
         OPDEF_CLOSURE,
+        OPDEF_CS_VALIDATE_CODE,
         OPDEF_EXPAND,
-        OPDEF_VS_VALIDATE_CODE,
+        OPDEF_LOOKUP,
+        OPDEF_SUBSUMES,
         OPDEF_TRANSLATE,
+        OPDEF_VS_VALIDATE_CODE,
     )
 
     for label, uri in [

@@ -809,7 +809,7 @@ def test_e90_subsumes_xml_accept_header_negotiation(fhir_client):
     # The Out `outcome` parameter MUST be rendered as valueCode with
     # the value `subsumes` (the parent-child relationship).
     assert 'valueCode value="subsumes"' in body_text, (
-        f"subsumes outcome XML missing valueCode value=\"subsumes\""
+        "subsumes outcome XML missing valueCode value=\"subsumes\""
     )
 
 
@@ -852,7 +852,7 @@ def test_e100_expand_no_abstract_filter_param(fhir_client):
     Parameters (no `abstract` parameter listed).
     """
     r = fhir_client.get(
-        f"/fhir/ValueSet/$expand?filter=diabetes&count=10&includeAllAbstract=true"
+        "/fhir/ValueSet/$expand?filter=diabetes&count=10&includeAllAbstract=true"
     )
     # The implementation is permissive — the unknown param is accepted.
     assert r.status_code == 200, (
@@ -878,7 +878,7 @@ def test_e101_expand_filter_inactive_does_not_filter_active(fhir_client):
     # The `filter=inactive` is a text filter on display, NOT an
     # inactive-code selector.
     r = fhir_client.get(
-        f"/fhir/ValueSet/$expand?filter=inactive&count=10"
+        "/fhir/ValueSet/$expand?filter=inactive&count=10"
     )
     assert r.status_code == 200
     body = r.json()

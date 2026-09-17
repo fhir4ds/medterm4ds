@@ -179,6 +179,25 @@ def _build_subsumes_params(
     return {"resourceType": "Parameters", "parameter": params}
 
 
+def _expand_intensional_union_source() -> str:
+    """Union of the nested _expand_intensional wrapper and the module-level
+    expand_intensional_value_set core (18f637b split)."""
+    import ast as _ast
+    import inspect as _inspect
+
+    from medterm4ds.apps import fhir_api as _mod
+
+    src = _inspect.getsource(_mod)
+    tree = _ast.parse(src)
+    parts: list[str] = []
+    for node in _ast.walk(tree):
+        if isinstance(node, _ast.FunctionDef) and node.name in (
+            "_expand_intensional", "expand_intensional_value_set",
+        ):
+            parts.append(_ast.get_source_segment(src, node) or "")
+    return "\n\n".join(parts)
+
+
 # ============================================================================
 # L1: Lateral MIX of valid + non-dict entries across 5 sibling iterators in
 #     _expand_intensional (HISTORIAN tip — primary probe class)
@@ -1212,7 +1231,7 @@ class TestLens10SourceReadStructuralContracts:
         """Source-read contract: _expand_intensional MUST contain at
         least 4 isinstance(X, dict) guards (include, concept, filt,
         exclude) per CS-04 HISTORIAN QA-001 fix."""
-        src = _get_nested_func_source("create_fhir_app", "_expand_intensional")
+        src = _expand_intensional_union_source()
         assert src
         count = src.count("isinstance(")
         assert count >= 4, (

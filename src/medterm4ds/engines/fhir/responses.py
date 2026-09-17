@@ -11,6 +11,7 @@ from medterm4ds.engines.fhir import (
     SYSTEM_TO_FHIR_URI,
     system_to_fhir_uri,
 )
+
 # CR-024 (milestone-3 review): the engine → R4 ConceptMapEquivalence
 # translation map is now defined in the canonical ``equivalence`` submodule.
 # Both this module (the $translate HTTP surface) and ``outputs/fhir.py`` (the
@@ -20,6 +21,7 @@ from medterm4ds.engines.fhir import (
 from medterm4ds.engines.fhir.equivalence import (
     INTERNAL_REL_TO_FHIR_EQUIVALENCE as _INTERNAL_REL_TO_FHIR_EQUIVALENCE,
 )
+
 # QC-339 (EC-15): TerminologyCapabilities.codeSystem.subsumption is derived
 # from the strategy registry (single source of truth), not a duplicated list.
 from medterm4ds.sources import SOURCE_STRATEGIES as _SOURCE_STRATEGIES
@@ -496,10 +498,11 @@ def build_capability_statement(base_url: str = "http://127.0.0.1:8001") -> dict[
         "rest": [
             {
                 "mode": "server",
-                # QC-348 (EC-15 LOW): the docstring and the QA-037 fix narrative
-                # claim the deployment URL is surfaced as rest[].url per
-                # CapabilityStatement.rest.url (0..1, §3.2.1.0.5) — emit it.
-                "url": base_url,
+                # Note: FHIR R4 has NO CapabilityStatement.rest.url element (it
+                # existed in STU3, was removed in R4). The deployment URL is
+                # surfaced via implementation.url above. Emitting rest[].url
+                # makes the resource schema-invalid (extra_forbidden) — found
+                # by fhir.resources validation; reverting the QC-348 emission.
                 # DA-6 (v0.0.1 docs audit): per FHIR R4 §3.2.1.0.4, a server
                 # that supports batch/transaction processing SHOULD advertise
                 # it via rest[].interaction. Without this, clients introspecting
@@ -608,7 +611,15 @@ def build_terminology_capabilities(base_url: str = "http://127.0.0.1:8001") -> d
     ``content`` is an R5-only element, removed by QC-333/QC-339, EC-15).
     """
     code_systems: list[dict[str, Any]] = []
+    # QC-367: exclude pseudo-sources (PATIENT_FRIENDLY — an output namespace,
+    # not a $lookupable code system) for parity with the CapabilityStatement
+    # advertisement; a TerminologyCapabilities entry promises $lookup/$expand
+    # support the server cannot honor.
+    from medterm4ds.engines.fhir import PSEUDO_SYSTEM_SOURCES
+
     for source, uri in sorted(SYSTEM_TO_FHIR_URI.items()):
+        if source in PSEUDO_SYSTEM_SOURCES:
+            continue
         entry: dict[str, Any] = {"uri": uri}
         # QC-339 (EC-15 MEDIUM): declare subsumption=true where the source
         # has a real subsumption hierarchy so the TerminologyCapabilities no

@@ -51,7 +51,7 @@ import pytest
 # Spec:
 #   https://hl7.org/fhir/R4/valueset-operation-validate-code.html
 #   https://hl7.org/fhir/R4/codesystem-operation-validate-code.html
-from medterm4ds.engines.fhir import SYSTEM_TO_FHIR_URI, canonical_system_uri
+from medterm4ds.engines.fhir import SYSTEM_TO_FHIR_URI
 
 # ---------------------------------------------------------------------------
 # Constants — seeded systems + codes (mirror SKEPTIC resweep constants).
@@ -1099,7 +1099,7 @@ class TestLens3PromotedPatterns:
 
         Re-derive via behavioral probe.
         """
-        r = _validate_vs_get(
+        _validate_vs_get(
             fhir_client, system=SNOMED_URI, code=SNOMED_T2DM_CODE,
         )
         # Pass inferSystem via query string

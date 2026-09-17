@@ -20,7 +20,6 @@ from __future__ import annotations
 
 import pytest
 
-
 # ---------------------------------------------------------------------------
 # Pattern: instance-level POST routes — ARCH-003 carry-forward.
 #

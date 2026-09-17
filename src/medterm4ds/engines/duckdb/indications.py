@@ -21,7 +21,6 @@ from typing import Any
 from medterm4ds.core.display import join_limited
 from medterm4ds.core.normalize import normalize_source
 
-
 _DEFAULT_INDICATION_RELATIONSHIPS = ("may_treat",)
 _ALLOWED_INDICATION_RELATIONSHIPS = {
     "may_treat",

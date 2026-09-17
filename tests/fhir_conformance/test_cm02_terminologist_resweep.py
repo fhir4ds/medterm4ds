@@ -66,25 +66,16 @@ Per GLOBAL_RULES.md:
 from __future__ import annotations
 
 import ast
-import inspect
 from pathlib import Path
 from typing import Any
 
 import pytest
 
-from medterm4ds.apps import fhir_api
 from medterm4ds.engines.fhir import (
     FHIR_R4_CONCEPT_MAP_EQUIVALENCE,
-    canonical_system_uri,
-    fhir_uri_to_system,
 )
 from medterm4ds.engines.fhir import equivalence as equivalence_module
 from medterm4ds.engines.fhir import responses as responses_module
-from medterm4ds.engines.fhir.responses import (
-    build_parameters_subsumes,
-    build_parameters_translate,
-)
-
 
 # ---------------------------------------------------------------------------
 # Constants for the probes.
@@ -382,7 +373,7 @@ def test_t11_clinical_directionality_correctness_t2dm_to_t2dm(fhir_client):
         f"(Type 2 DM, not Type 1 or unspecificed)"
     )
     assert target_code != ICD10CM_T1DM_CODE, (
-        f"CLINICAL DIRECTIONALITY BUG: SNOMED T2DM mapped to E10 (Type 1 DM)!"
+        "CLINICAL DIRECTIONALITY BUG: SNOMED T2DM mapped to E10 (Type 1 DM)!"
     )
 
 
@@ -1450,14 +1441,23 @@ def test_t81_translate_builder_no_hardcoded_equivalence():
     # (It can appear in docstrings or comments; we check the valueCode line.)
     # Find the equivalence emission line.
     lines = src.splitlines()
+    derived = any(
+        "_fhir_equivalence_from_relationship(" in line
+        for line in lines
+        if "equivalence = " in line
+    )
     for line in lines:
         if '"equivalence"' in line and "valueCode" in line:
-            # The line MUST source via _fhir_equivalence_from_relationship,
-            # NOT a hardcoded string.
-            assert "_fhir_equivalence_from_relationship" in line, (
-                f"equivalence valueCode line MUST source via "
-                f"_fhir_equivalence_from_relationship, NOT hardcoded. Line: {line!r}"
+            # The line must reference the derived variable (never a string
+            # literal); the derivation itself is asserted via `derived`.
+            assert 'valueCode": equivalence' in line.replace("'", '"'), (
+                f"equivalence valueCode line MUST emit the derived `equivalence` "
+                f"variable, NOT a hardcoded literal. Line: {line!r}"
             )
+    assert derived, (
+        "build_parameters_translate MUST derive equivalence via "
+        "_fhir_equivalence_from_relationship (per TS-02 TERMINOLOGIST QA-030 fix)"
+    )
 
 
 def test_t82_do_translate_calls_canonical_system_uri():

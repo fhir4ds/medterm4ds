@@ -276,14 +276,16 @@ class TestL1QA068ASTContractDifferentAngle:
         """
         src = _read_function_source(_read_module_source(), "expand_url_pattern")
         assert src is not None
-        if_idx = src.find("if count_limited:")
+        # QC-260 widened the gate: the +1 lower bound fires when EITHER the
+        # count budget OR the depth cap truncated the walk.
+        if_idx = src.find("if count_limited or depth_cap_hit:")
         total_plus_one_idx = src.find("total = len(contains) + 1")
         assert if_idx != -1 and total_plus_one_idx != -1, (
-            "if count_limited: branch AND total = len(contains) + 1 "
-            "MUST both be present"
+            "if count_limited or depth_cap_hit: branch AND "
+            "total = len(contains) + 1 MUST both be present"
         )
         assert if_idx < total_plus_one_idx, (
-            "if count_limited: MUST come BEFORE total = len(contains) + 1. "
+            "the truncation gate MUST come BEFORE total = len(contains) + 1. "
             "Refactor-tolerance probe guarding the +1 in total computation."
         )
 
@@ -539,9 +541,12 @@ class TestL3TenthPromotedPatternIsinstanceGuard:
         VS-04's URL-pattern dispatch (``if url and "fhir_vs" in url:``)
         is the only thing separating the two code paths.
         """
-        src = _read_nested_function_source(
+        # 18f637b split: include the module-level core where the guards live.
+        src = (_read_nested_function_source(
             _read_module_source(), "create_fhir_app", "_expand_intensional"
-        )
+        ) or "") + "\n\n" + (_read_function_source(
+            _read_module_source(), "expand_intensional_value_set"
+        ) or "")
         assert src is not None, "_expand_intensional not found"
         # Count isinstance guards in the function.
         tree = ast.parse(src)
@@ -961,7 +966,7 @@ class TestL11TenPromotedPatternsReDerivation:
         tree = ast.parse(src)
         for node in ast.walk(tree):
             if isinstance(node, ast.Dict):
-                for k, v in zip(node.keys, node.values):
+                for k, v in zip(node.keys, node.values, strict=False):
                     if (
                         isinstance(k, ast.Constant)
                         and k.value == "system"
@@ -982,10 +987,11 @@ class TestL11TenPromotedPatternsReDerivation:
         src = _read_function_source(_read_module_source(), "expand_url_pattern")
         assert src is not None
         # The unconditional literal ``total=len(contains)`` is GONE —
-        # replaced with the if/else guarded by count_limited.
+        # replaced with the if/else guarded by the truncation gate
+        # (QC-260: count_limited OR depth_cap_hit).
         # Verify both branches are structurally present.
-        assert "if count_limited:" in src, (
-            "Pattern 3: count_limited MUST gate the total computation"
+        assert "if count_limited or depth_cap_hit:" in src, (
+            "Pattern 3: the truncation gate MUST guard the total computation"
         )
         assert "total = len(contains) + 1" in src, (
             "Pattern 3: count_limited branch MUST add +1 (lower bound)"

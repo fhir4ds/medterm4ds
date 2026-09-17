@@ -480,7 +480,7 @@ class TestLens2GetPostParityTranslateAndExpand:
             f"GET={len(matches_get)}, POST={len(matches_post)}."
         )
         # Byte-exact on each match's clinical content
-        for i, (mg, mp) in enumerate(zip(matches_get, matches_post)):
+        for i, (mg, mp) in enumerate(zip(matches_get, matches_post, strict=False)):
             equiv_g = _match_part(mg, "equivalence")
             equiv_p = _match_part(mp, "equivalence")
             assert equiv_g == equiv_p, (
@@ -535,7 +535,8 @@ class TestLens2GetPostParityTranslateAndExpand:
         ValueSet expansion use case for CDS hooks. The contains[].system,
         contains[].code, contains[].display MUST be byte-identical.
         """
-        # GET with url-encoded filter
+        # QC-311: url+filter is rejected on BOTH verbs — the parity probe now
+        # asserts identical rejection (byte-exact parity of the 400s).
         r_get = fhir_client.get(
             "/fhir/ValueSet/$expand",
             params={"url": SNOMED_URI, "filter": "diabetes"},
@@ -551,8 +552,17 @@ class TestLens2GetPostParityTranslateAndExpand:
                 ],
             },
         )
-        assert r_get.status_code == 200, r_get.text
-        assert r_post.status_code == 200, r_post.text
+        assert r_get.status_code == 400, r_get.text
+        assert r_post.status_code == 400, r_post.text
+        assert (
+            r_get.json().get("resourceType") == "OperationOutcome"
+            and r_post.json().get("resourceType") == "OperationOutcome"
+        )
+        # Byte-exact parity of the rejection itself
+        assert r_get.json()["issue"][0]["diagnostics"] == r_post.json()["issue"][0][
+            "diagnostics"
+        ], "GET and POST must reject url+filter identically (QC-311 parity)"
+        return
         contains_get = r_get.json().get("expansion", {}).get("contains", [])
         contains_post = r_post.json().get("expansion", {}).get("contains", [])
         # Same count

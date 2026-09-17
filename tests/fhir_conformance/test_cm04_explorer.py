@@ -54,7 +54,6 @@ from medterm4ds.engines.fhir.responses import (
 )
 from medterm4ds.outputs.fhir import concept_map_to_fhir
 
-
 SNOMED_URI = "http://snomed.info/sct"
 SNOMED_URI_OID_ALIAS = "urn:oid:2.16.840.1.113883.6.96"
 SNOMED_URI_TRAILING_SLASH = "http://snomed.info/sct/"
@@ -992,8 +991,8 @@ class TestExportEquivalenceShape:
                     )
                     # The target MUST NOT have a code/display for unmatched.
                     assert "code" not in target, (
-                        f"Export emitted target.code for unmatched — "
-                        f"misleading (unmatched means 'no mapping')."
+                        "Export emitted target.code for unmatched — "
+                        "misleading (unmatched means 'no mapping')."
                     )
                     assert "display" not in target
 
@@ -1090,7 +1089,7 @@ class TestGetPostParityEquivalence:
             f"GET={len(get_matches)}, POST={len(post_matches)}"
         )
         # Compare equivalence values byte-exact.
-        for i, (g, p) in enumerate(zip(get_matches, post_matches)):
+        for i, (g, p) in enumerate(zip(get_matches, post_matches, strict=False)):
             g_equiv = _match_equivalence(g)
             p_equiv = _match_equivalence(p)
             assert g_equiv == p_equiv, (

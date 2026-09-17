@@ -52,15 +52,12 @@ from __future__ import annotations
 
 from typing import Any
 
-import pytest
-
 from medterm4ds.engines.fhir.closure import (
     ClosureManager,
     ClosureTable,
     build_closure_response,
     get_closure_manager,
 )
-
 
 SNOMED_URI = "http://snomed.info/sct"
 SNOMED_URI_OID_ALIAS = "urn:oid:2.16.840.1.113883.6.96"
@@ -195,24 +192,26 @@ def test_s12_post_closure_name_only_value_code_not_value_string(fhir_client):
 
 
 def test_s13_post_closure_name_in_query_string_ignored(fhir_client):
-    """SKEPTIC (item 1): ``name`` sent ONLY as a query string parameter
-    is silently ignored — the implementation reads body params only.
+    """SKEPTIC (item 1) — RESOLVED by QC-306 (MEDIUM).
 
-    Adversarial: FHIR R4 operations may be invoked via GET OR POST on
-    either the type or a resource instance per §3.1.0.1.1. The
-    medterm4ds ``$closure`` POST handler reads body params only;
-    query string ``?name=foo`` is silently ignored. Probe documents
-    current behavior.
+    ``name`` sent ONLY as a query string parameter used to be silently
+    ignored (the POST handler read the body only). Per FHIR R4
+    §3.1.0.1.1, operation parameters MAY come from the query string on
+    POST; QC-298 wired it into the BATCH dispatcher and QC-306 mirrored
+    it on the direct route (body wins, query string is the fallback).
+    This probe pins the fixed behavior.
     """
     r = fhir_client.post(
         "/fhir/CodeSystem/$closure?name=via-query",
         json={"resourceType": "Parameters", "parameter": []},
     )
-    # Body has no name → 400.
-    assert r.status_code == 400, (
-        f"POST $closure with name ONLY in query string — expected 400 "
-        f"(handler reads body only); got {r.status_code}: {r.text}"
+    assert r.status_code == 200, (
+        f"POST $closure with name ONLY in query string — expected 200 "
+        f"(query string is a valid parameter source per QC-306); got "
+        f"{r.status_code}: {r.text}"
     )
+    body = r.json()
+    assert body.get("resourceType") == "Parameters"
 
 
 # ===========================================================================
@@ -751,6 +750,7 @@ def test_s71_closure_incomplete_since_set_on_duckdb_error():
     path calls both sequentially).
     """
     import duckdb as _duckdb
+
     from medterm4ds.engines.fhir import closure as closure_mod
 
     class _NullEngine:
@@ -783,6 +783,7 @@ def test_s72_closure_add_concepts_incomplete_since_set_on_duckdb_error():
     source per direction and sets ``incomplete_since``.
     """
     import duckdb as _duckdb
+
     from medterm4ds.engines.fhir import closure as closure_mod
 
     class _BoomEngine:
@@ -1074,7 +1075,7 @@ def test_s111_get_or_create_idempotent_for_existing_name():
     """
     manager = ClosureManager()
     t1 = manager.get_or_create("test-goc-111")
-    t1.add_concept  # ensure it's a ClosureTable
+    assert hasattr(t1, "add_concept")  # ensure it's a ClosureTable
     t2 = manager.get_or_create("test-goc-111")
     assert t1 is t2, (
         "get_or_create on existing name should return same instance"
@@ -1087,7 +1088,7 @@ def test_s112_reset_creates_fresh_table():
     """
     manager = ClosureManager()
     t1 = manager.get_or_create("test-reset-112")
-    t1.concepts["X"] = {"system": "S", "display": "X"}
+    t1.concepts[("S", "X")] = {"system": "S", "display": "X"}
     t2 = manager.reset("test-reset-112")
     assert t1 is not t2, "reset should return a new instance"
     assert len(t2.concepts) == 0, "fresh table should be empty"

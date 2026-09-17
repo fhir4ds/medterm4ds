@@ -63,10 +63,7 @@ Reference fixture (tests/fhir_conformance/conftest.py:_make_conformance_db):
 from __future__ import annotations
 
 import ast
-import importlib
 from pathlib import Path
-
-import pytest
 
 # Spec: https://hl7.org/fhir/R4/valueset.html (R4 canonical)
 # Spec: https://hl7.org/fhir/R4/valueset.html#filter (Filter operators)
@@ -80,8 +77,6 @@ import pytest
 #   Binding: Filter Operator (Required)
 # CR-014 (milestone-2 review): import the single source of truth from
 # medterm4ds.engines.fhir rather than maintaining a local copy.
-from medterm4ds.engines.fhir import FHIR_R4_FILTER_OPERATORS  # noqa: E402,F401
-
 # FHIR R4 ConceptMapEquivalence enum (10 values)
 # Per https://hl7.org/fhir/R4/valueset-concept-map-equivalence.html
 # (canonical R4 spec page — verified 2026-07-13):
@@ -96,7 +91,10 @@ from medterm4ds.engines.fhir import FHIR_R4_FILTER_OPERATORS  # noqa: E402,F401
 # mapping" is `unmatched` (no match) or `disjoint` (explicit assertion of
 # no mapping).
 # CR-014 (milestone-2 review): import the single source of truth.
-from medterm4ds.engines.fhir import FHIR_R4_CONCEPT_MAP_EQUIVALENCE  # noqa: E402,F401
+from medterm4ds.engines.fhir import (
+    FHIR_R4_CONCEPT_MAP_EQUIVALENCE,  # noqa: E402,F401
+    FHIR_R4_FILTER_OPERATORS,  # noqa: E402,F401
+)
 
 # FHIR R4 CodeSystem $subsumes outcome enum
 # Per https://hl7.org/fhir/R4/codesystem-operation-subsumes.html:
@@ -343,7 +341,10 @@ class TestLens2CarryForwardSourceAudit:
         # Find the `_expand_intensional` function.
         fn = None
         for node in ast.walk(tree):
-            if isinstance(node, ast.FunctionDef) and node.name == "_expand_intensional":
+            if isinstance(node, ast.FunctionDef) and node.name in (
+                "_expand_intensional",  # nested FHIR wrapper
+                "expand_intensional_value_set",  # module-level core (18f637b)
+            ):
                 fn = node
                 break
         assert fn is not None, "_expand_intensional function not found"
@@ -390,13 +391,15 @@ class TestLens2CarryForwardSourceAudit:
         # Find the exclude loop.
         fn = None
         for node in ast.walk(tree):
-            if isinstance(node, ast.FunctionDef) and node.name == "_expand_intensional":
+            if isinstance(node, ast.FunctionDef) and node.name in (
+                "_expand_intensional",  # nested FHIR wrapper
+                "expand_intensional_value_set",  # module-level core (18f637b)
+            ):
                 fn = node
                 break
         assert fn is not None
         # Walk the function looking for any reference to `exclude` and a
         # filter lookup. The CF claim: NO filter reading on exclude path.
-        exclude_filter_accessed = False
         for node in ast.walk(fn):
             # Look for Subscript access like `exclude.get("filter", ...)`
             # or `exclude["filter"]`.
@@ -410,7 +413,7 @@ class TestLens2CarryForwardSourceAudit:
                         ):
                             # Heuristic: is the receiver an "exclude"-ish name?
                             # Walk back through the call to see the variable.
-                            exclude_filter_accessed = True
+                            pass
         # Per CF: exclude path does NOT read filter[].
         # NOTE: AST-level precise detection is hard because the same
         # `.get("filter", ...)` call exists in the INCLUDE path. The
@@ -787,7 +790,6 @@ class TestLens5TestSuiteEncodedWrongSpecAudit:
                     # remaining positions are docstrings + comment-like
                     # contexts. Flag any Constant inside a Tuple (which
                     # is the runtime `op in (...)` shape).
-                    parent_found = False
                     # Walk to find the parent — we use a simple textual
                     # proximity check instead.
                     runtime_occurrences.append(f"line {node.lineno}")
@@ -810,7 +812,10 @@ class TestLens5TestSuiteEncodedWrongSpecAudit:
         tree = ast.parse(text)
         fn = None
         for node in ast.walk(tree):
-            if isinstance(node, ast.FunctionDef) and node.name == "_expand_intensional":
+            if isinstance(node, ast.FunctionDef) and node.name in (
+                "_expand_intensional",  # nested FHIR wrapper
+                "expand_intensional_value_set",  # module-level core (18f637b)
+            ):
                 fn = node
                 break
         assert fn is not None
@@ -946,7 +951,8 @@ class TestLens6TestTooLenientAudit:
         assert body.get("resourceType") == "Bundle"
         assert body.get("type") == "searchset"
         assert body.get("total") == 0
-        assert body.get("entry") == []
+        # QC-330: empty entry[] is OMITTED per FHIR JSON convention.
+        assert body.get("entry", []) == []
         # Per §4.9.13: Bundle MUST have a timestamp (3.1.0.1.7).
         # (medterm4ds omits this today — not asserting as required to
         # avoid over-specification; documented for future enhancement.)
@@ -986,7 +992,10 @@ class TestLens7DocumentationVsImplementationDrift:
         tree = ast.parse(text)
         fn = None
         for node in ast.walk(tree):
-            if isinstance(node, ast.FunctionDef) and node.name == "_expand_intensional":
+            if isinstance(node, ast.FunctionDef) and node.name in (
+                "_expand_intensional",  # nested FHIR wrapper
+                "expand_intensional_value_set",  # module-level core (18f637b)
+            ):
                 fn = node
                 break
         assert fn is not None

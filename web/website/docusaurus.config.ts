@@ -114,35 +114,31 @@ const config: Config = {
       style: 'dark',
       links: [
         {
-          title: 'Docs',
+          title: 'Learn More',
           items: [
-            {label: 'Quickstart', to: '/docs/getting-started/quickstart'},
-            {label: 'First Notebook', to: '/docs/getting-started/first-notebook'},
-            {label: 'Data Setup', to: '/docs/getting-started/data-setup'},
-            {label: 'Python', to: '/docs/interfaces/python'},
-          ],
-        },
-        {
-          title: 'Data Sources',
-          items: [
-            {label: 'Supported Sources', to: '/docs/getting-started/supported-sources'},
-            {label: 'UMLS Release Info', to: '/docs/getting-started/umls-release-info'},
-            {label: 'Source Inventory', to: '/docs/getting-started/source-inventory'},
-          ],
-        },
-        {
-          title: 'Production Recipes',
-          items: [
-            {label: 'ValueSets', to: '/docs/examples/recipes/valuesets'},
-            {label: 'ConceptMaps', to: '/docs/examples/recipes/conceptmaps'},
-            {label: 'Quality Review', to: '/docs/examples/recipes/quality-review'},
-          ],
-        },
-        {
-          title: 'Resources',
-          items: [
-            {label: 'API Reference', to: '/docs/api-reference/medterm4ds'},
+            {label: 'Documentation', to: '/docs/getting-started/quickstart'},
             {label: 'Notebook Examples', to: '/docs/examples/notebooks/overview'},
+          ],
+        },
+        {
+          title: 'References',
+          items: [
+            {label: 'FHIR R4', href: 'https://hl7.org/fhir/R4/'},
+            {label: 'UMLS', href: 'https://www.nlm.nih.gov/research/umls/'},
+          ],
+        },
+        {
+          title: 'Licensing & Support',
+          items: [
+            {label: 'Licensing', to: '/docs/getting-started/licensing'},
+            {label: 'GitHub', href: 'https://github.com/fhir4ds/medterm4ds'},
+          ],
+        },
+        {
+          title: 'Projects',
+          items: [
+            {label: 'medterm4ds', to: '/'},
+            {label: 'fhir4ds', href: 'https://fhir4ds.com'},
           ],
         },
       ],

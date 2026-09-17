@@ -3,10 +3,10 @@
 
 from __future__ import annotations
 
-from medterm4ds.engines.duckdb._engine_base import *  # noqa: F401,F403
-from typing import Any
 from collections.abc import Sequence
-from medterm4ds.core.models import CodeRef
+from typing import Any
+
+from medterm4ds.engines.duckdb._engine_base import *  # noqa: F401,F403
 
 
 class _IndicationsOps:

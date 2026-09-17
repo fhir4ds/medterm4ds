@@ -54,7 +54,6 @@ from __future__ import annotations
 import ast
 import inspect
 from pathlib import Path
-from urllib.parse import urlencode
 
 import pytest
 
@@ -1375,7 +1374,7 @@ class TestL9MetaPatternReDerivation:
         for node in ast.walk(tree):
             if isinstance(node, ast.Dict):
                 # Look for keys "system" with value being a Name node.
-                for k, v in zip(node.keys, node.values):
+                for k, v in zip(node.keys, node.values, strict=False):
                     if (
                         isinstance(k, ast.Constant)
                         and k.value == "system"

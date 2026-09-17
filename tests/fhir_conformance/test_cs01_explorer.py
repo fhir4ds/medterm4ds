@@ -36,7 +36,6 @@ from pathlib import Path
 
 import pytest
 
-
 # ---------------------------------------------------------------------------
 # Helpers (mirrored from CS-01 HISTORIAN)
 # ---------------------------------------------------------------------------
@@ -330,7 +329,7 @@ def test_e30_search_codesystem_accepts_advertised_param(fhir_client, param, valu
     This is a positive success-shape assertion (200 + Bundle body), not a
     negative-only check, per GLOBAL_RULES.md "Test-too-lenient".
     """
-    r = fhir_client.get(f"/fhir/CodeSystem", params={param: value})
+    r = fhir_client.get("/fhir/CodeSystem", params={param: value})
     assert r.status_code == 200, f"GET /fhir/CodeSystem?{param}={value} → {r.status_code}"
     body = r.json()
     assert body.get("resourceType") == "Bundle", (
@@ -410,9 +409,11 @@ def test_e34_search_codesystem_exact_canonical_uri(fhir_client):
 
 def test_e35_search_codesystem_honest_empty_bundle_shape(fhir_client):
     """Search response Bundle MUST be conformant: resourceType=Bundle,
-    type=searchset, total=0, entry=[]. Empty Bundle is INTENDED per
-    AGENTS.md (medterm4ds doesn't persist resources), but the SHAPE matters
-    — clients depend on `entry[]` being present (even when empty) to iterate.
+    type=searchset, total=0. Empty Bundle is INTENDED per AGENTS.md
+    (medterm4ds doesn't persist resources). Per QC-330 (LOW), empty
+    entry[] is OMITTED per FHIR JSON convention (properties with no
+    value are never empty arrays; keeps JSON and XML renderings
+    shape-equivalent) — absent entry means empty result.
     """
     r = fhir_client.get("/fhir/CodeSystem", params={"url": "http://snomed.info/sct"})
     assert r.status_code == 200
@@ -420,8 +421,7 @@ def test_e35_search_codesystem_honest_empty_bundle_shape(fhir_client):
     assert body.get("resourceType") == "Bundle"
     assert body.get("type") == "searchset"
     assert body.get("total") == 0
-    assert isinstance(body.get("entry"), list)
-    assert body.get("entry") == []
+    assert body.get("entry", []) == []
 
 
 # ---------------------------------------------------------------------------

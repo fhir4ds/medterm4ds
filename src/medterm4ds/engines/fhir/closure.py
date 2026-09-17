@@ -31,6 +31,12 @@ logger = logging.getLogger(__name__)
 # first entry and conflates cross-system subsumption pairs (QC-266).
 _ConceptKey = tuple[str, str]
 
+# CR-057: per-concept BFS bound for closure walks. Most concepts sit far
+# below this; hitting it means the closure cannot be complete for that
+# concept, which is surfaced via WARNING + incomplete_since rather than
+# paying an unbounded walk (or OOM) on pathological hierarchies.
+_WALK_LIMIT = 10_000
+
 
 class ClosureTable:
     """One named closure table storing pre-computed subsumption relationships."""
@@ -100,8 +106,21 @@ class ClosureTable:
         # Walk ancestors: codes that subsume this one. BFS visits each
         # ancestor exactly once (visited set), so the multiply-inherited
         # path explosion of the recursive CTE cannot occur.
+        # CR-057: limit= bounds each walk — unbounded per-concept BFS on
+        # huge hierarchies could walk the whole source; a cap hit is
+        # surfaced like a transient failure (WARNING + incomplete_since)
+        # so $subsumes callers can detect the degraded closure.
         try:
-            ancestors, _cap = get_ancestors_bfs(seed, engine=engine, max_depth=20)
+            ancestors, cap_hit = get_ancestors_bfs(
+                seed, engine=engine, max_depth=20, limit=_WALK_LIMIT,
+            )
+            if cap_hit:
+                logger.warning(
+                    "Ancestor walk capped at %d relations for %s in closure %s "
+                    "— closure is incomplete, $subsumes may return false negatives.",
+                    _WALK_LIMIT, code, self.name,
+                )
+                self.incomplete_since = True
             for rel in ancestors:
                 anc_key = (source, rel.target.code)
                 if anc_key in self.concepts:
@@ -122,7 +141,17 @@ class ClosureTable:
 
         # Walk descendants: codes this one subsumes.
         try:
-            descendants, _cap = get_descendants_bfs(seed, engine=engine, max_depth=20)
+            descendants, cap_hit = get_descendants_bfs(
+                seed, engine=engine, max_depth=20, limit=_WALK_LIMIT,
+            )
+            if cap_hit:
+                logger.warning(
+                    "Descendant walk capped at %d relations for %s in closure "
+                    "%s — closure is incomplete, $subsumes may return false "
+                    "negatives.",
+                    _WALK_LIMIT, code, self.name,
+                )
+                self.incomplete_since = True
             for rel in descendants:
                 desc_key = (source, rel.target.code)
                 if desc_key in self.concepts:

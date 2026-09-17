@@ -383,7 +383,7 @@ def test_e22_inferSystem_with_unknown_code_accepted(fhir_client):
     CURRENT behavior (likely 400 because system is required).
     """
     r = fhir_client.get(
-        f"/fhir/ValueSet/$validate-code?code=NOT-A-REAL-CODE&inferSystem=true"
+        "/fhir/ValueSet/$validate-code?code=NOT-A-REAL-CODE&inferSystem=true"
     )
     assert r.status_code in (200, 400), (
         f"inferSystem=true with unknown code: accepted (200 or 400). "
@@ -944,7 +944,7 @@ def test_e101_get_post_parity_on_known_code(fhir_client):
     assert r_get.status_code == r_post.status_code == 200
     get_result = _param_value(r_get.json(), "result")
     post_result = _param_value(r_post.json(), "result")
-    assert get_result == post_result == True
+    assert get_result == post_result is True
 
 
 def test_e102_get_post_parity_on_unknown_code(fhir_client):
@@ -964,7 +964,7 @@ def test_e102_get_post_parity_on_unknown_code(fhir_client):
     assert r_get.status_code == r_post.status_code == 200
     get_result = _param_value(r_get.json(), "result")
     post_result = _param_value(r_post.json(), "result")
-    assert get_result == post_result == False
+    assert get_result == post_result is False
 
 
 # ===========================================================================

@@ -34,9 +34,6 @@ References:
 
 from __future__ import annotations
 
-import os
-from urllib.parse import urlencode
-
 import pytest
 
 SNOMED_URI = "http://snomed.info/sct"

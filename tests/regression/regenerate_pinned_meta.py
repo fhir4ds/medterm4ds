@@ -38,7 +38,45 @@ from regression.golden.normalize import (  # noqa: E402
 
 DEFAULT_DB = "/mnt/d/medterm4ds/data/umls_current.duckdb"
 DEFAULT_BASELINE = "/mnt/d/medterm4ds/reports/fhir4px"
+DEFAULT_CANONICAL_MANIFEST = "/mnt/d/medterm4ds/data/canonical/manifest.json"
 OUTPUT_PATH = REPO_ROOT / "tests" / "regression" / "fixtures" / "pinned_meta.json"
+
+
+def _canonical_revision_block() -> dict | None:
+    """Read the canonical revision pin from data/canonical/manifest.json.
+
+    The manifest is the single source of truth (emitted fresh by the
+    canonical deploy pipeline every deploy). Recording data_revision +
+    canonical commit + manifest emit-time here pins the golden tier to a
+    NAMED canonical revision and makes stale-manifest detection possible:
+    a baseline rebuilt against a different deploy than the manifest
+    describes shows up as a mismatch between pinned_meta and the manifest.
+    Returns None (and notes it) when no manifest is present — the legacy
+    behavior (no pin block).
+    """
+    manifest_path = Path(
+        os.getenv("MEDTERM4DS_CANONICAL_MANIFEST", DEFAULT_CANONICAL_MANIFEST)
+    )
+    try:
+        manifest = json.loads(manifest_path.read_text())
+    except (OSError, ValueError) as exc:
+        print(
+            f"  NOTE: no canonical_revision pin — could not read "
+            f"{manifest_path} ({exc})"
+        )
+        return None
+    build = manifest.get("canonical_build") or {}
+    return {
+        "data_revision": manifest.get("data_revision"),
+        "canonical_commit": build.get("commit"),
+        "manifest_published_at": manifest.get("published_at"),
+        "manifest_path": str(manifest_path),
+        "note": (
+            "Golden tier pinned to the canonical deploy described by this "
+            "manifest. Verify manifest_published_at is newer than the "
+            "baseline rebuild before trusting drift signals."
+        ),
+    }
 
 _RELEASE_RE = re.compile(r"umls_([0-9]{4}[A-B]{2})\.duckdb$", re.IGNORECASE)
 
@@ -146,6 +184,15 @@ def main() -> int:
         "associations": associations,
         "rxnorm_ingredients": rxnorm,
     }
+    canonical_revision = _canonical_revision_block()
+    if canonical_revision is not None:
+        pinned["canonical_revision"] = canonical_revision
+        print(
+            "  canonical_revision pin: "
+            f"{canonical_revision['data_revision']} "
+            f"(canonical {canonical_revision['canonical_commit']}, "
+            f"manifest {canonical_revision['manifest_published_at']})"
+        )
 
     OUTPUT_PATH.parent.mkdir(parents=True, exist_ok=True)
     OUTPUT_PATH.write_text(json.dumps(pinned, indent=2) + "\n")

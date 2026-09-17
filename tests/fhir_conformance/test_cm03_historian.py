@@ -40,12 +40,10 @@ from typing import Any
 import pytest
 
 from medterm4ds.engines.fhir.closure import (
-    ClosureManager,
     ClosureTable,
     build_closure_response,
     get_closure_manager,
 )
-
 
 SNOMED_URI = "http://snomed.info/sct"
 SNOMED_URI_OID_ALIAS = "urn:oid:2.16.840.1.113883.6.96"
@@ -506,6 +504,7 @@ def test_h31_add_concepts_partial_failure_preserves_successful_walks():
     affect the closure module's already-imported reference).
     """
     import duckdb as _duckdb
+
     from medterm4ds.engines.fhir import closure as closure_mod
 
     class _NullEngine:
@@ -638,6 +637,7 @@ def test_h50_duckdb_error_handler_covers_do_closure(fhir_client):
     has its own imported reference to ``get_ancestors``).
     """
     import duckdb as _duckdb
+
     from medterm4ds.engines.fhir import closure as closure_mod
 
     # Save original (EC-11 BFS migration: closure imports
@@ -700,16 +700,11 @@ def test_h51_duckdb_error_handler_emits_503_on_engine_failure(fhir_client):
     """
     # We verify the handler is registered by checking the app's
     # exception_handlers map.
-    from medterm4ds.apps.fhir_api import create_fhir_app
-    from medterm4ds.apps.fhir_api import FhirApiSettings
-    import duckdb as _duckdb
-    import tempfile
-    from pathlib import Path
-    from medterm4ds.engines.fhir.closure import ClosureManager
-
     # Source-read: verify the handler is registered at the app level
     # (covers _do_closure structurally).
     import inspect
+
+    from medterm4ds.apps.fhir_api import create_fhir_app
     src = inspect.getsource(create_fhir_app)
     assert "exception_handler(duckdb.Error)" in src, (
         "systemic duckdb.Error handler MUST be registered at app level "

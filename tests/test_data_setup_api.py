@@ -243,8 +243,9 @@ def test_failed_replace_build_keeps_previous_db(tmp_path):
     broken_rrf = _ec20_rrf(tmp_path / "broken")
     (broken_rrf / "MRCONSO.RRF").write_text("", encoding="utf-8")
     fresh = tmp_path / "fresh.duckdb"
-    with pytest.raises(Exception):
+    with pytest.raises(Exception) as excinfo:
         mt.build_umls_duckdb(rrf_dir=broken_rrf, output_db=fresh)
+    assert excinfo.value is not None
     assert not fresh.exists()
     assert list(tmp_path.glob("fresh.duckdb*")) == []
 

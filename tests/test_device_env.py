@@ -60,3 +60,14 @@ def test_cuda_with_index_parsed(monkeypatch):
         pytest.skip("host has no CUDA")
     monkeypatch.delenv("MEDTERM4DS_DEVICE", raising=False)
     assert resolve_device("cuda:0") == "cuda:0"
+
+
+def test_cuda_index_out_of_range_names_the_variable(monkeypatch):
+    """QA-003: cuda:99 must raise the env-var-naming RuntimeError here,
+    not a torch-internal 'invalid device ordinal' at model.to() later."""
+    import torch
+
+    monkeypatch.delenv("MEDTERM4DS_DEVICE", raising=False)
+    bad = torch.cuda.device_count() + 99
+    with pytest.raises(RuntimeError, match="MEDTERM4DS_DEVICE"):
+        resolve_device(f"cuda:{bad}")

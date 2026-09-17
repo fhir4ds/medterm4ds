@@ -44,18 +44,14 @@ from medterm4ds.apps import fhir_api
 from medterm4ds.engines.fhir import (
     FHIR_R4_CONCEPT_MAP_EQUIVALENCE,
     canonical_system_uri,
-    fhir_uri_to_system,
-    system_to_fhir_uri,
 )
 from medterm4ds.engines.fhir.equivalence import (
     INTERNAL_REL_TO_FHIR_EQUIVALENCE,
     fhir_equivalence,
 )
 from medterm4ds.engines.fhir.responses import (
-    _fhir_equivalence_from_relationship,
     build_parameters_translate,
 )
-
 
 # ---------------------------------------------------------------------------
 # Constants for the probes.
@@ -166,8 +162,8 @@ def test_h10_object_identity_internal_rel_to_fhir_equivalence():
     contract: any future fork would have to explicitly reassign the
     alias, which the next-day-source-read audit would catch.
     """
-    from medterm4ds.engines.fhir import responses as responses_module
     from medterm4ds.engines.fhir import equivalence as equivalence_module
+    from medterm4ds.engines.fhir import responses as responses_module
 
     assert (
         responses_module._INTERNAL_REL_TO_FHIR_EQUIVALENCE
@@ -320,14 +316,11 @@ def test_h21_translate_get_min_length_on_code_query():
 
 
 def test_h22_translate_get_targetsystem_no_min_length():
-    """5th PROMOTED pattern boundary — targetsystem is OPTIONAL, NOT
-    required, so it MUST NOT have min_length=1.
-
-    Per GLOBAL_RULES.md: 'Optional string params declared with Query(None)
-    are NOT affected — empty string on an optional param has a different
-    semantic (server-side handler falls back to "no filter")'. This probe
-    pins the boundary: the pattern applies to REQUIRED string params
-    only.
+    """5th PROMOTED pattern boundary — SUPERSEDED by QC-423 (MEDIUM):
+    ``targetsystem`` is optional, but an empty value is NOT "no filter"
+    here — the POST-side whitespace-only path is rejected with 400 rather
+    than widening to all systems, and the GET declaration now carries
+    min_length=1 for parity. This probe pins the QC-423 shape.
     """
     src = _get_func_source(_FHIR_API_PATH, "translate_get")
     assert src, "translate_get not found"
@@ -343,9 +336,9 @@ def test_h22_translate_get_targetsystem_no_min_length():
         f"targetsystem Query MUST be optional (Query(None, ...)); got: "
         f"{targetsystem_decl!r}"
     )
-    assert "min_length=1" not in targetsystem_decl, (
-        f"targetsystem is optional — MUST NOT have min_length=1 (5th PROMOTED "
-        f"pattern boundary). Got: {targetsystem_decl!r}"
+    assert "min_length=1" in targetsystem_decl, (
+        f"targetsystem MUST carry min_length=1 (QC-423 empty-is-not-absent). Got: "
+        f"{targetsystem_decl!r}"
     )
 
 
@@ -818,7 +811,7 @@ def test_h70_get_post_byte_exact_parity_seeded_matrix(
         f"GET={len(matches_get)}, POST={len(matches_post)}"
     )
     # (d)+(e) per-match equivalence + concept code parity
-    for m_get, m_post in zip(matches_get, matches_post):
+    for m_get, m_post in zip(matches_get, matches_post, strict=False):
         parts_get = {p.get("name"): p for p in m_get.get("part", [])}
         parts_post = {p.get("name"): p for p in m_post.get("part", [])}
         equiv_get = parts_get.get("equivalence", {}).get("valueCode")
@@ -966,7 +959,7 @@ def test_h91_batch_vs_single_translate_byte_exact(fhir_client):
         f"Single-vs-batch match count divergence: single={len(single_matches)}, "
         f"batch={len(batch_matches)}."
     )
-    for s, b in zip(single_matches, batch_matches):
+    for s, b in zip(single_matches, batch_matches, strict=False):
         s_equiv = next(
             (p.get("valueCode") for p in s.get("part", []) if p.get("name") == "equivalence"),
             None,
@@ -1050,7 +1043,7 @@ def test_h100_coding_body_matches_scalar_byte_exact(fhir_client):
         f"Scalar-vs-coding-body match count divergence: scalar="
         f"{len(matches_scalar)}, coding={len(matches_coding)}."
     )
-    for s, c in zip(matches_scalar, matches_coding):
+    for s, c in zip(matches_scalar, matches_coding, strict=False):
         s_equiv = next(
             (p.get("valueCode") for p in s.get("part", []) if p.get("name") == "equivalence"),
             None,
@@ -1245,10 +1238,9 @@ def test_h120_cross_op_lookup_then_translate_same_code(fhir_client):
     assert r_lookup.status_code == 200
     lookup_body = r_lookup.json()
     # Extract the canonical system from $lookup
-    lookup_system = None
     for p in lookup_body.get("parameter", []):
         if p.get("name") == "system":
-            lookup_system = p.get("valueUri")
+            p.get("valueUri")
             break
     # Note: $lookup may not emit system as a top-level Out param; the
     # canonical-system invariant is verified via $translate Out match.source.

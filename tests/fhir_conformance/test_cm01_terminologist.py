@@ -94,8 +94,6 @@ HISTORIAN test_h30-h32, EXPLORER test_e40-e43.
 
 from __future__ import annotations
 
-import json
-
 import pytest
 
 from medterm4ds.core.models import CodeMapping, CodeRef, ConceptMapRow
@@ -110,7 +108,6 @@ from medterm4ds.outputs.fhir import (
     concept_map_to_fhir,
     fhir_equivalence,
 )
-
 
 # ---------------------------------------------------------------------------
 # Lens 1 — Clinical-directionality of SKEPTIC FIX-001 on representative
@@ -549,7 +546,7 @@ def test_t33_concept_map_export_clinical_correctness_on_engine_pipeline():
     # Every value MUST be spec-correct for the engine pipeline
     # relationship that produced it. Re-resolve via fhir_equivalence
     # for parity.
-    for rel, val in zip(sorted(ENGINE_PIPELINE_RELATIONSHIPS), equivalence_values):
+    for rel, val in zip(sorted(ENGINE_PIPELINE_RELATIONSHIPS), equivalence_values, strict=False):
         assert val == fhir_equivalence(rel), (
             f"ConceptMap export for relationship {rel!r} emitted {val!r}; "
             f"expected {fhir_equivalence(rel)!r} (parity with fhir_equivalence)."

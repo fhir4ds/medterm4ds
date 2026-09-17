@@ -117,7 +117,6 @@ import pytest
 #   vsd-1: "A value set include/exclude SHALL have a value set or a system"
 #   vsd-2: "A value set with concepts or filters SHALL include a system"
 #   vsd-3: "Cannot have both concept and filter" (in same include clause)
-
 # Source the canonical closed-enum constant — registry-as-contract pattern
 # (CF-SKEPTIC-CS01-RESWEEP-01 LOW DEFERRED for symmetry with the other 2 R4
 # closed enums; the constant is canonical here).
@@ -185,6 +184,25 @@ def _contains_codes(body: dict) -> list[tuple[str, str]]:
     for c in body.get("expansion", {}).get("contains", []):
         out.append((c.get("system", ""), c.get("code", "")))
     return out
+
+
+def _expand_intensional_union_source() -> str:
+    """Union of the nested _expand_intensional wrapper and the module-level
+    expand_intensional_value_set core (18f637b split)."""
+    import ast as _ast
+    import inspect as _inspect
+
+    from medterm4ds.apps import fhir_api as _mod
+
+    src = _inspect.getsource(_mod)
+    tree = _ast.parse(src)
+    parts: list[str] = []
+    for node in _ast.walk(tree):
+        if isinstance(node, _ast.FunctionDef) and node.name in (
+            "_expand_intensional", "expand_intensional_value_set",
+        ):
+            parts.append(_ast.get_source_segment(src, node) or "")
+    return "\n\n".join(parts)
 
 
 # =============================================================================
@@ -309,7 +327,14 @@ class TestLens1IntensionalVsExtensionalBoundary:
         assert codes == []
 
     def test_s17_compose_with_empty_filter_list(self, fhir_client):
-        """compose.include[].filter = [] — empty filter list."""
+        """compose.include[].filter = [] — empty filter list.
+
+        QC-243 semantics: an include block with a system and NO effective
+        filter constraints means "all codes in the code system" (same as
+        the implicit ``<system>/vs`` URL). An empty filter list imposes no
+        constraint, so the system-only enumeration fires — the prior
+        silently-empty expansion was the bug. Fixture: both SNOMED codes.
+        """
         vs = {
             "resourceType": "ValueSet",
             "compose": {"include": [{"system": SNOMED_URI, "filter": []}]},
@@ -317,7 +342,8 @@ class TestLens1IntensionalVsExtensionalBoundary:
         status, body = _post_expand(fhir_client, vs)
         assert status == 200
         codes = _contains_codes(body)
-        assert codes == []
+        got = {code for _sys, code in codes}
+        assert {SNOMED_DIABETES_MELLITUS, SNOMED_T2DM} <= got, codes
 
     def test_s18_compose_include_and_exclude_same_code(self, fhir_client):
         """Both include AND exclude of same concept: exclude wins (subtract)."""
@@ -1035,7 +1061,7 @@ class TestLens6ReadSearchInteractions:
         assert body["resourceType"] == "Bundle"
         assert body["type"] == "searchset"
         assert body["total"] == 0
-        assert body["entry"] == []
+        assert body.get("entry", []) == []
 
     @pytest.mark.parametrize("status", [
         "draft", "active", "retired", "unknown",
@@ -1303,7 +1329,7 @@ class TestLens8SourceReadStructuralContracts:
     def test_s80_expand_intensional_has_isinstance_guard_on_include_loop(self):
         """SOURCE-READ: ``_expand_intensional`` MUST have isinstance guard
         on the compose.include[] loop (10th PROMOTED pattern, count=4)."""
-        src = self._get_nested_func_source("create_fhir_app", "_expand_intensional")
+        src = _expand_intensional_union_source()
         assert src, "_expand_intensional source not found"
         # Find the include loop pattern: "for include in compose.get('include', []):"
         # followed within 5 statements by an isinstance(include, dict) check.
@@ -1337,7 +1363,7 @@ class TestLens8SourceReadStructuralContracts:
         so the AST pattern matches either ``include.get("concept", [])`` OR
         ``include["concept"]``.
         """
-        src = self._get_nested_func_source("create_fhir_app", "_expand_intensional")
+        src = _expand_intensional_union_source()
         assert src
         tree = ast.parse(src)
         found_guard = False
@@ -1359,7 +1385,7 @@ class TestLens8SourceReadStructuralContracts:
 
     def test_s82_expand_intensional_has_isinstance_guard_on_filter_loop(self):
         """SOURCE-READ: isinstance guard on compose.include[].filter[] loop."""
-        src = self._get_nested_func_source("create_fhir_app", "_expand_intensional")
+        src = _expand_intensional_union_source()
         assert src
         tree = ast.parse(src)
         found_guard = False
@@ -1383,7 +1409,7 @@ class TestLens8SourceReadStructuralContracts:
 
     def test_s83_expand_intensional_has_isinstance_guard_on_exclude_loop(self):
         """SOURCE-READ: isinstance guard on compose.exclude[] loop."""
-        src = self._get_nested_func_source("create_fhir_app", "_expand_intensional")
+        src = _expand_intensional_union_source()
         assert src
         tree = ast.parse(src)
         found_guard = False
@@ -1410,7 +1436,7 @@ class TestLens8SourceReadStructuralContracts:
         ``descendent-of`` per VS-01 SKEPTIC QA-054 fix. Walks ast.Constant
         nodes for the operator check tuple.
         """
-        src = self._get_nested_func_source("create_fhir_app", "_expand_intensional")
+        src = _expand_intensional_union_source()
         assert src
         tree = ast.parse(src)
         # The condition is `if prop == "concept" and op in ("is-a", "descendent-of")`.

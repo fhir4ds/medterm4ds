@@ -34,7 +34,6 @@ SKEPTIC lens:
 
 from __future__ import annotations
 
-import os
 from pathlib import Path
 
 import pytest
@@ -43,10 +42,11 @@ import pytest
 def _make_https_test_client(tmp_path: Path, monkeypatch, host: str, port: str):
     """Construct a FHIR app TestClient with a synthetic DB and env-overridden
     host/port. Used by the §4.7.2 SSL/HTTPS probes."""
-    fastapi = pytest.importorskip("fastapi")
-    from starlette.testclient import TestClient
-    from medterm4ds.apps.fhir_api import FhirApiSettings, create_fhir_app
+    pytest.importorskip("fastapi")
     import duckdb
+    from starlette.testclient import TestClient
+
+    from medterm4ds.apps.fhir_api import FhirApiSettings, create_fhir_app
 
     monkeypatch.setenv("MEDTERM4DS_API_HOST", host)
     monkeypatch.setenv("MEDTERM4DS_FHIR_API_PORT", port)
@@ -103,8 +103,8 @@ def test_s01_https_env_var_reflected_in_capabilitystatement(monkeypatch, tmp_pat
         # schema — confirmed by fhir.resources validator.)
         impl_url = body.get("implementation", {}).get("url") or ""
         assert impl_url, (
-            f"CapabilityStatement.implementation.url missing — required to "
-            f"surface the deployment endpoint (per FHIR R4 §3.2.1.0.5)."
+            "CapabilityStatement.implementation.url missing — required to "
+            "surface the deployment endpoint (per FHIR R4 §3.2.1.0.5)."
         )
         assert "https://fhir.example.com" in impl_url, (
             f"CapabilityStatement.implementation.url does not reflect the "
@@ -801,7 +801,7 @@ def test_s32_batch_uri_round_trip_validate_code_results(fhir_client):
     sys_uri = sys_param["valueUri"]
     code = code_param["valueCode"]
     # URI round-trip: $lookup with the returned system+code MUST succeed.
-    r2 = fhir_client.get(f"/fhir/CodeSystem/$lookup", params={"system": sys_uri, "code": code})
+    r2 = fhir_client.get("/fhir/CodeSystem/$lookup", params={"system": sys_uri, "code": code})
     assert r2.status_code == 200
     body2 = r2.json()
     assert body2.get("resourceType") == "Parameters"

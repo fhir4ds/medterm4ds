@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [main, dev]
   pull_request:
 
 jobs:
@@ -27,16 +27,17 @@ jobs:
           python -m pip install -e ".[dev]"
 
       - name: Lint
-        run: ruff check src tests scripts
+        run: ruff check src tests ${{ hashFiles('scripts/**') != '' && 'scripts' || '' }}
 
       - name: Test
         run: pytest -q
 
-      - name: Notebook smoke
+      - name: Notebook smoke (local scripts/ only)
+        if: hashFiles('scripts/run_notebook_smoke.py') != ''
         run: python scripts/run_notebook_smoke.py
 
       - name: Compile
-        run: python -m py_compile $(find src scripts tests -name '*.py' -print)
+        run: python -m py_compile $(find src tests -name '*.py' -print)
 
   package:
     runs-on: ubuntu-latest
@@ -55,10 +56,12 @@ jobs:
           python -m pip install -e ".[dev]"
 
       - name: Build and check package
-        run: python scripts/build_package.py --skip-verify
+        run: python -m build --wheel --sdist && pip install twine && twine check dist/*
 
       - name: Wheel install smoke
-        run: python scripts/test_wheel_install.py
+        run: |
+          pip install dist/medterm4ds-*.whl
+          python -c "import medterm4ds; assert medterm4ds.__version__"
 
   docs:
     runs-on: ubuntu-latest

@@ -1020,7 +1020,7 @@ def test_t73_build_parameters_validate_canonical_precedence(fhir_client):
             func_src = ast.get_source_segment(source, node) or ""
             break
     else:
-        assert False, "build_parameters_validate not found in responses.py"
+        raise AssertionError("build_parameters_validate not found in responses.py")
     # The canonical precedence: code_info.name is preferred.
     assert "code_info.name" in func_src, (
         "build_parameters_validate MUST prefer code_info.name (canonical) "
@@ -1044,7 +1044,7 @@ def test_t74_build_parameters_validate_does_not_echo_client_display_on_mismatch(
             func_src = ast.get_source_segment(source, node) or ""
             break
     else:
-        assert False, "build_parameters_validate not found"
+        raise AssertionError("build_parameters_validate not found")
     # The canonical precedence expression: ``(code_info.name if code_info and
     # code_info.name else None) or display`` — canonical wins when present.
     assert "or display" in func_src, (

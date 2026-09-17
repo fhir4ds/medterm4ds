@@ -13,7 +13,7 @@ from medterm4ds.core.models import ConceptMapRow
 from medterm4ds.core.normalize import normalize_source
 from medterm4ds.engines.fhir import SYSTEM_TO_FHIR_URI
 from medterm4ds.engines.fhir.equivalence import (
-    INTERNAL_REL_TO_FHIR_EQUIVALENCE as FHIR_EQUIVALENCES,
+    INTERNAL_REL_TO_FHIR_EQUIVALENCE as FHIR_EQUIVALENCES,  # noqa: F401 — public re-export
 )
 from medterm4ds.engines.fhir.equivalence import fhir_equivalence
 

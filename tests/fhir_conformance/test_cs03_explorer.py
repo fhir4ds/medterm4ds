@@ -114,7 +114,7 @@ def test_e10_validate_display_case_differs_from_canonical_returns_false(fhir_cli
     )
     body = _assert_validate_200_with_result(r, "case-differing display")
     assert _param_value(body, "result") is False, (
-        f"case-differing display should NOT match canonical; result should be False"
+        "case-differing display should NOT match canonical; result should be False"
     )
     msg = _param_value(body, "message")
     assert msg is not None, (
@@ -503,7 +503,7 @@ def test_e80_get_validate_with_coding_query_param_accepted_without_5xx(fhir_clie
             "coding": "ignored-on-get",  # bogus but harmless
         },
     )
-    body = _assert_validate_200_with_result(r, "GET with bogus coding query param")
+    _assert_validate_200_with_result(r, "GET with bogus coding query param")
 
 
 # ---------------------------------------------------------------------------

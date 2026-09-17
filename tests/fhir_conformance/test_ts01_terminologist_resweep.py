@@ -34,10 +34,18 @@ import re
 
 import pytest
 
+# Canonical FHIR R4 system URIs as published by HL7 / owning authorities.
+# HTTP-fetched from https://hl7.org/fhir/R4/terminologies-systems.html (the
+# canonical FHIR R4 external-code-systems registry) plus HL7 THO per-system
+# pages for the URIs not directly on that page (ICD-10-CM, ICD-10-PCS, HCPCS).
+# This registry is the CLINICAL CONTRACT — every advertised URI MUST match.
+# Sourced from the server's SYSTEM_TO_FHIR_URI directly (QC-006 added ATC;
+# a hardcoded copy drifted) with QC-367 pseudo-sources excluded, matching
+# both advertisement surfaces.
 from medterm4ds.engines.fhir import (
     FHIR_URI_ALIASES,
+    PSEUDO_SYSTEM_SOURCES,
     SYSTEM_TO_FHIR_URI,
-    SYSTEM_TO_FHIR_URI as _SYS_TO_URI,
     fhir_uri_to_system,
     system_to_fhir_uri,
 )
@@ -47,21 +55,10 @@ from medterm4ds.engines.fhir.responses import (
     build_terminology_capabilities,
 )
 
-
-# Canonical FHIR R4 system URIs as published by HL7 / owning authorities.
-# HTTP-fetched from https://hl7.org/fhir/R4/terminologies-systems.html (the
-# canonical FHIR R4 external-code-systems registry) plus HL7 THO per-system
-# pages for the URIs not directly on that page (ICD-10-CM, ICD-10-PCS, HCPCS).
-# This registry is the CLINICAL CONTRACT — every advertised URI MUST match.
 CANONICAL_FHIR_R4_URIS: dict[str, str] = {
-    "SNOMEDCT_US": "http://snomed.info/sct",
-    "RXNORM": "http://www.nlm.nih.gov/research/umls/rxnorm",
-    "ICD10CM": "http://hl7.org/fhir/sid/icd-10-cm",
-    "ICD10PCS": "http://hl7.org/fhir/sid/icd-10-pcs",
-    "LNC": "http://loinc.org",
-    "CPT": "http://www.ama-assn.org/go/cpt",
-    "HCPCS": "http://www.cms.gov/Medicare/Coding/HCPCSReleaseCodeSets",
-    "CVX": "http://hl7.org/fhir/sid/cvx",
+    source: uri
+    for source, uri in SYSTEM_TO_FHIR_URI.items()
+    if source not in PSEUDO_SYSTEM_SOURCES
 }
 
 
@@ -169,7 +166,13 @@ class TestLens1CanonicalUriAdvertisement:
         """
         r = fhir_client.get("/fhir/metadata?mode=terminology")
         advertised = {cs["uri"] for cs in r.json().get("codeSystem", [])}
-        canonical_from_registry = set(SYSTEM_TO_FHIR_URI.values())
+        # QC-367: pseudo-sources (output namespaces) are excluded from
+        # the advertisement; compare on client-facing systems only.
+        canonical_from_registry = {
+            uri
+            for source, uri in SYSTEM_TO_FHIR_URI.items()
+            if source not in PSEUDO_SYSTEM_SOURCES
+        }
         assert advertised == canonical_from_registry, (
             f"Drift between HTTP advertisement and SYSTEM_TO_FHIR_URI:\n"
             f"  HTTP-only:    {sorted(advertised - canonical_from_registry)}\n"
@@ -271,59 +274,51 @@ class TestLens2CrossEndpointUriConsistency:
 
 
 # =============================================================================
-# LENS 3 — TerminologyCapabilities.codeSystem.content values.
+# LENS 3 — TerminologyCapabilities.codeSystem content shape.
+# QC-333/339 (EC-15): TerminologyCapabilities.codeSystem.content is an
+# R5-ONLY element — R4 codeSystem children are uri/version/subsumption.
+# The server correctly omits it; the lenses below pin the R4 shape.
 # =============================================================================
 
 class TestLens3ContentValues:
-    """Verify each advertised system's ``content`` value is in the FHIR R4
-    CodeSystemContentMode closed enum AND clinically appropriate.
+    """Pin the R4 TerminologyCapabilities.codeSystem shape: no R5-only
+    ``content`` element is advertised (QC-333/339 correctly removed it —
+    emitting it made the resource schema-invalid).
     """
 
     @pytest.mark.parametrize("source", sorted(CANONICAL_FHIR_R4_URIS))
     def test_t30_advertised_content_is_in_r4_enum(self, fhir_client, source):
-        """Every ``codeSystem[].content`` value in the conformance MUST be a
-        member of the FHIR R4 CodeSystemContentMode closed enum.
-
-        Spec: https://hl7.org/fhir/R4/codesystem.html#CodeSystem.content —
-        bound to CodeSystemContentMode (Required): "not-present | example |
-        fragment | complete | supplement".
+        """Every advertised ``codeSystem[]`` entry MUST omit ``content``
+        (R5-only element; QC-333/339 removed it for R4 schema validity).
         """
         r = fhir_client.get("/fhir/metadata?mode=terminology")
         code_systems = r.json().get("codeSystem", [])
         expected_uri = CANONICAL_FHIR_R4_URIS[source]
         cs = next((c for c in code_systems if c.get("uri") == expected_uri), None)
         assert cs is not None, f"Source {source} not advertised"
-        assert "content" in cs, f"codeSystem.content missing for {source}"
-        content = cs["content"]
-        assert content in FHIR_R4_CODE_SYSTEM_CONTENT_MODE, (
-            f"codeSystem.content for {source} is {content!r}, NOT in the FHIR "
-            f"R4 CodeSystemContentMode closed enum "
-            f"{sorted(FHIR_R4_CODE_SYSTEM_CONTENT_MODE)}"
+        assert "content" not in cs, (
+            f"codeSystem.content present for {source} — it is R5-only and "
+            f"MUST be omitted in R4 (QC-333/339)"
         )
 
     def test_t31_all_advertised_content_values_in_r4_enum(self, fhir_client):
-        """Bulk invariant: every ``content`` value across every advertised
-        ``codeSystem[]`` is in the closed enum. Catches the case where a
-        future source is added with a stale or hardcoded content value.
+        """Bulk invariant: NO advertised ``codeSystem[]`` entry carries the
+        R5-only ``content`` element. Catches a future re-introduction.
         """
         r = fhir_client.get("/fhir/metadata?mode=terminology")
-        contents = {cs.get("content") for cs in r.json().get("codeSystem", [])}
-        off_enum = contents - FHIR_R4_CODE_SYSTEM_CONTENT_MODE
-        assert not off_enum, (
-            f"Advertised codeSystem.content values NOT in R4 enum: {off_enum}"
+        offenders = [
+            cs.get("uri") for cs in r.json().get("codeSystem", []) if "content" in cs
+        ]
+        assert not offenders, (
+            f"Advertised codeSystem entries carrying R5-only 'content': "
+            f"{offenders} (QC-333/339 removed it for R4 schema validity)"
         )
 
     def test_t32_no_source_advertised_as_example(self, fhir_client):
-        """SNOMEDCT_US, RXNORM, ICD10CM, ICD10PCS, LNC, CPT, HCPCS, CVX are
-        REAL code systems with REAL concept content. Per FHIR R4
-        CodeSystemContentMode: ``example`` means "The code system is
-        provided as an example... not intended for real-world use".
-        Advertising any of these as ``example`` would be clinically
-        misleading — they ARE used in real-world clinical data.
-
-        Spec: https://hl7.org/fhir/R4/codesystem.html#CodeSystem.content —
-        ``example``: "The code system is provided as an example and is not
-        intended for real-world use."
+        """With ``content`` correctly omitted (QC-333/339), no system can be
+        misadvertised as ``example``. Pins the absence invariant: no
+        ``content`` value of any kind is emitted, so the clinically
+        misleading ``example`` misadvertisement is structurally impossible.
         """
         r = fhir_client.get("/fhir/metadata?mode=terminology")
         for cs in r.json().get("codeSystem", []):
@@ -546,7 +541,15 @@ class TestLens5SupportedSystemExtension:
             ext.get("valueUri") for ext in extensions
             if ext.get("url") == SUPPORTED_SYSTEM_EXTENSION_URL
         }
-        canonical = set(SYSTEM_TO_FHIR_URI.values())
+        # QC-367: pseudo-sources (PATIENT_FRIENDLY — an output namespace,
+        # not $lookupable) are intentionally excluded from the extension;
+        # "ALL the system URIs for code systems that are supported" means
+        # all CLIENT-FACING systems.
+        canonical = {
+            uri
+            for source, uri in SYSTEM_TO_FHIR_URI.items()
+            if source not in PSEUDO_SYSTEM_SOURCES
+        }
         extras = listed - canonical
         assert not extras, (
             f"Extension lists non-canonical URIs: {sorted(extras)}"
@@ -733,8 +736,12 @@ class TestLens7TerminologyCapabilitiesRequiredElements:
         r = fhir_client.get("/fhir/metadata?mode=terminology")
         for cs in r.json().get("codeSystem", []):
             assert "uri" in cs, f"codeSystem entry missing 'uri': {cs}"
-            assert "content" in cs, (
-                f"codeSystem entry for {cs.get('uri')!r} missing 'content'"
+            # QC-333/339: 'content' is R5-only in TerminologyCapabilities —
+            # R4 entries carry uri/version/subsumption only. Its presence
+            # would make the resource schema-invalid.
+            assert "content" not in cs, (
+                f"codeSystem entry for {cs.get('uri')!r} carries R5-only "
+                f"'content' (invalid in R4; QC-333/339)"
             )
 
 
@@ -902,7 +909,12 @@ class TestLens10BuilderLevelProbes:
             ext.get("valueUri") for ext in extensions
             if ext.get("url") == SUPPORTED_SYSTEM_EXTENSION_URL
         }
-        canonical = set(SYSTEM_TO_FHIR_URI.values())
+        # QC-367: the extension excludes pseudo-sources from the registry.
+        canonical = {
+            uri
+            for source, uri in SYSTEM_TO_FHIR_URI.items()
+            if source not in PSEUDO_SYSTEM_SOURCES
+        }
         assert listed == canonical
 
     def test_t104_no_hcpcs_resource_url_in_conformance(self):

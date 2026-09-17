@@ -1,4 +1,4 @@
-import {useState} from 'react';
+import React, {useState} from 'react';
 import Link from '@docusaurus/Link';
 import Layout from '@theme/Layout';
 import Heading from '@theme/Heading';
@@ -198,7 +198,7 @@ function InteractiveSnippet() {
   );
 }
 
-function FeatureCard({icon, title, body}) {
+function FeatureCard({icon, title, body}: {icon: React.ReactNode; title: string; body: string}) {
   return (
     <div className={styles.feature}>
       <div style={{fontSize: '2rem', marginBottom: '0.75rem'}}>{icon}</div>
@@ -215,7 +215,7 @@ export default function Home() {
       <header className={styles.hero}>
         <div className={styles.grid} />
         <div className={`container ${styles.heroInner}`}>
-          <span className={styles.badge}>medterm4ds v0.0.3 · UMLS 2026AA</span>
+          <span className={styles.badge}>medterm4ds v0.0.4 · UMLS 2026AA</span>
           <Heading as="h1" className={styles.title}>
             Medical Terminology<br />for Data Science
           </Heading>

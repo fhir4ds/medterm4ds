@@ -341,20 +341,24 @@ class TestExplorerIntensionalUrlCombinations:
     def test_e41_intensional_url_with_filter_param_filter_ignored_or_explicit(
         self, fhir_client
     ):
-        """intensional URL + filter → the implementation routes by URL presence
-        (Mode 3 fires before Mode 4 filter). The filter is silently ignored
-        when the URL carries a ``fhir_vs`` pattern. Verify the response is the
-        intensional expansion (not the filter-text-search result).
+        """intensional URL + filter → QC-311 (HIGH) rejects the combination
+        with 400 + FHIR OperationOutcome.
 
-        INTENDED behavior per dispatch order: URL-with-fhir_vs wins.
-        Alternative semantics (combining url + filter) is a future enhancement.
+        R4 §4.9.2: "Combining parameters must either work or the server
+        returns an error." The prior Mode-3-wins dispatch silently dropped
+        the filter (or the url, for non-fhir_vs urls) — both directions
+        were silent-wrong-answers. Per-mode post-filter semantics are
+        future work; until then the combination fails loudly. When
+        combined semantics land, this probe MUST be updated to assert
+        200 + the filtered intensional expansion.
         """
         resp = _expand_get(fhir_client, self.INTENSIONAL_URL, filter="diabetes")
-        assert resp.status_code == 200, resp.text
+        assert resp.status_code == 400, resp.text
         body = resp.json()
-        codes = _contains_codes(body)
-        # Root MUST be present (intensional expansion shape, not filter search).
-        assert SNOMED_DIABETES_MELLITUS in codes, codes
+        assert body.get("resourceType") == "OperationOutcome"
+        assert any(
+            "url" in (i.get("diagnostics") or "") for i in body.get("issue", [])
+        ), body
 
     def test_e42_intensional_url_with_offset_param_accepted(self, fhir_client):
         """intensional URL + offset → offset pages the expansion (QC-241).

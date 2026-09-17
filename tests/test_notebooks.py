@@ -6,7 +6,16 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 ROOT = Path(__file__).resolve().parents[1]
+
+# scripts/ is gitignored operator-local tooling (v0.0.3 QA-001): skip in
+# clean checkouts / sdists rather than fail.
+pytestmark = pytest.mark.skipif(
+    not (ROOT / "scripts").is_dir(),
+    reason="scripts/ not present (clean checkout / sdist); see v0.0.3 QA-001",
+)
 
 
 def test_example_notebooks_execute_against_synthetic_fixture(tmp_path):

@@ -39,20 +39,12 @@ from typing import Any
 
 import pytest
 
-from medterm4ds.engines.fhir import (
-    FHIR_R4_CONCEPT_MAP_EQUIVALENCE,
-    SYSTEM_TO_FHIR_URI,
-    canonical_system_uri,
-    fhir_uri_to_system,
-    system_to_fhir_uri,
-)
 from medterm4ds.engines.fhir.closure import (
     ClosureManager,
     ClosureTable,
     build_closure_response,
     get_closure_manager,
 )
-
 
 SNOMED_URI = "http://snomed.info/sct"
 SNOMED_URI_OID_ALIAS = "urn:oid:2.16.840.1.113883.6.96"
@@ -1290,7 +1282,7 @@ class TestLens12CrossHandlerClinicalContentParity:
         resp_batch = fhir_client.post("/fhir", json=bundle)
         assert resp_batch.status_code == 200
         batch_body = resp_batch.json()
-        entry_resp = batch_body["entry"][0]["response"]
+        batch_body["entry"][0]["response"]
         # Per spec, batch response status for a 2xx is "200" (or similar);
         # the resource is in entry[].resource
         entry_resource = batch_body["entry"][0].get("resource", {})

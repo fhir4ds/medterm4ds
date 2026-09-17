@@ -78,7 +78,7 @@ import pytest
 # Spec: https://hl7.org/fhir/R4/codesystem-operation-validate-code.html
 # (cross-reference per FHIR R4 §4.9.3 — In/Out Parameters structurally
 # identical to the CodeSystem operation)
-from medterm4ds.engines.fhir import SYSTEM_TO_FHIR_URI, canonical_system_uri
+from medterm4ds.engines.fhir import SYSTEM_TO_FHIR_URI
 
 # Seeded systems + canonical URIs
 SNOMED_URI = SYSTEM_TO_FHIR_URI["SNOMEDCT_US"]   # http://snomed.info/sct
@@ -1118,7 +1118,7 @@ class TestL8SourceReadStructuralContracts:
                 helper_node = node
                 break
         assert helper_node is not None
-        helper_src = ast.get_source_segment(src_all, helper_node) or ""
+        ast.get_source_segment(src_all, helper_node) or ""
         # Look for isinstance(<var>, dict) in the body
         has_isinstance_dict = False
         for child in ast.walk(helper_node):

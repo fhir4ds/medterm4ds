@@ -48,7 +48,6 @@ from medterm4ds.engines.fhir.responses import (
     build_parameters_translate,
 )
 
-
 # ---------------------------------------------------------------------------
 # Constants for the probes.
 # ---------------------------------------------------------------------------
@@ -903,11 +902,13 @@ def test_s70_translate_get_has_min_length_on_system_and_code():
     src_app = inspect.getsource(create_fhir_app)
     src = _get_func_source(src_app, "translate_get")
     assert src, "Could not find translate_get handler source"
-    # Both required-string Query declarations must have min_length=1.
+    # Required-string Query declarations must have min_length=1. `code` is
+    # Optional since the QC 2026-08-10 sourceCode alias (R4 spec name) —
+    # either spelling carries min_length=1.
     assert "system: str = Query(..., min_length=1" in src, (
         f"GET $translate missing min_length=1 on system Query. Source:\n{src}"
     )
-    assert "code: str = Query(..., min_length=1" in src, (
+    assert "code: str | None = Query(None, min_length=1" in src, (
         f"GET $translate missing min_length=1 on code Query. Source:\n{src}"
     )
 
@@ -948,9 +949,11 @@ def test_s72_translate_get_handler_does_NOT_use_targetCode_or_source():
     )
     # The handler invokes _do_translate with only (engine, system, code, targetsystem).
     # targetCode and source are NOT in the call signature.
-    assert "_do_translate, _engine(request), system, code, targetsystem" in src, (
+    assert (
+        "_do_translate, _engine(request), system, actual_code, targetsystem" in src
+    ), (
         f"_do_translate call does NOT pass targetCode/source through; "
-        f"expected 4-tuple (engine, system, code, targetsystem). Source:\n{src}"
+        f"expected (engine, system, actual_code, targetsystem). Source:\n{src}"
     )
 
 
@@ -1009,8 +1012,8 @@ def test_s75_instance_translate_routes_registered():
     src_app = inspect.getsource(create_fhir_app)
     # The route path literal must appear in the factory source.
     assert '"/fhir/ConceptMap/{resource_id}/$translate"' in src_app, (
-        f"Instance-level $translate route literal missing from "
-        f"create_fhir_app source."
+        "Instance-level $translate route literal missing from "
+        "create_fhir_app source."
     )
 
 

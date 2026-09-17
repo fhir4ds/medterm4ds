@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 
 import duckdb
@@ -19,11 +18,9 @@ from medterm4ds.engines.fhir.responses import (
     build_bundle_search,
     build_capability_statement,
     build_operation_outcome,
-    build_parameters_lookup,
     build_parameters_translate,
     build_parameters_validate,
 )
-
 
 # ---------------------------------------------------------------------------
 # URI mapping tests
@@ -334,13 +331,30 @@ class TestFhirEndpoints:
             )
         assert resp.status_code == 503
 
-    def test_search_semantic_requires_model(self, fhir_app):
+    def test_search_semantic_requires_model(self, fhir_app, monkeypatch):
         """Semantic mode returns 503 when embedding model is unavailable."""
-        from pathlib import Path
-        model_dir = Path("/mnt/d/fhir4px-model/data/sapbert_finetuned")
-        if model_dir.exists():
-            pytest.skip("SapBERT model is available on this machine — cannot test 503 path.")
         from starlette.testclient import TestClient
+
+        import medterm4ds.services.search as search_module
+
+        # The split-layout loader auto-downloads the SapBERT unit on first
+        # use (artifact governance Phase 3), so 'model missing' can no
+        # longer be arranged by environment absence — pin the service into
+        # the unavailable state instead.
+        class _UnavailableService:
+            lexical_available = False
+            semantic_available = False
+
+        monkeypatch.setattr(
+            search_module, "get_search_service", lambda: _UnavailableService()
+        )
+        # fhir_api imports get_search_service inside the handler; patch it
+        # at its import source too so the handler sees the stub.
+        import medterm4ds.apps.fhir_api as fhir_api_module
+        monkeypatch.setattr(
+            "medterm4ds.services.search.get_search_service",
+            lambda: _UnavailableService(),
+        )
         with TestClient(fhir_app) as client:
             resp = client.get(
                 "/fhir/CodeSystem/$search",
@@ -1084,6 +1098,7 @@ class TestFhirEndpoints:
         """Add parent + child to closure, then verify subsumption via
         the closure table's check method."""
         from starlette.testclient import TestClient
+
         from medterm4ds.engines.fhir.closure import get_closure_manager
 
         # Add two concepts: Diabetes (73211009) and Type 2 diabetes (44054006)
@@ -1285,7 +1300,7 @@ class TestFhirEndpoints:
                         if p["name"] == "return"][0]
 
             one_shot = ret_hash(post("qc270-a", ["73211009", "44054006"]))
-            first = ret_hash(post("qc270-b", ["73211009"]))
+            ret_hash(post("qc270-b", ["73211009"]))
             second = ret_hash(post("qc270-b", ["44054006"]))
             assert one_shot == second  # batching-invariant
             # Re-adding already-present concepts: no-op, same hash
@@ -1534,6 +1549,7 @@ class TestFhirEndpoints:
         """QC-300 (HIGH): control chars (0x01, 0x0B, 0x00) echoed into XML
         value attributes must be stripped — the body must parse as XML."""
         import xml.etree.ElementTree as ET
+
         from starlette.testclient import TestClient
         with TestClient(fhir_app) as client:
             for ch in ("\x01", "\x0b", "\x00"):
@@ -1759,7 +1775,6 @@ class TestFhirEndpoints:
         moved into the service so Python/MCP/FHIR share one convention."""
         import duckdb as _duckdb
 
-        from medterm4ds.engines.duckdb import LocalDuckDBEngine
         from medterm4ds.services.search import SearchResult, apply_preferred_display
 
         db_path = tmp_path / "qc400.duckdb"
@@ -1952,3 +1967,106 @@ class TestFhirEndpoints:
             )
         assert resp.status_code == 400
         assert "string/integer" in resp.json()["issue"][0]["diagnostics"]
+
+    def test_extract_dual_value_x_rejected_cr053(self, fhir_app):
+        """CR-053: a parameter carrying BOTH valueBoolean and a scalar
+        value[x] violates FHIR R4 param-1 (at most one value[x]) — the
+        wrong-typed check used to pass it and silently ignore the stray."""
+        from starlette.testclient import TestClient
+        with TestClient(fhir_app) as client:
+            dual_bool = client.post(
+                "/fhir/CodeSystem/$extract",
+                json={"resourceType": "Parameters", "parameter": [
+                    {"name": "text", "valueString": "no evidence of diabetes"},
+                    {"name": "includeNegated", "valueBoolean": True,
+                     "valueString": "yes"},
+                ]},
+            )
+            dual_scalar = client.post(
+                "/fhir/CodeSystem/$extract",
+                json={"resourceType": "Parameters", "parameter": [
+                    {"name": "text", "valueString": "x", "valueCode": "y"},
+                ]},
+            )
+        assert dual_bool.status_code == 400
+        assert dual_scalar.status_code == 400
+
+
+    # -- $extract annotationFields (QA-005 cross-surface parity) --
+
+    def test_extract_annotation_fields_forwarded_qa005(self, fhir_app, monkeypatch):
+        """QA-005: annotationFields must reach the service from BOTH routes.
+        Previously FHIR silently ignored the parameter (200 + default
+        markers) while MCP rejected it — the worst of the three postures."""
+        from starlette.testclient import TestClient
+
+        import medterm4ds.services.extraction as extraction_module
+
+        calls: list[dict] = []
+
+        def _fake_annotated(text, *, format="codes", **kwargs):
+            calls.append(kwargs)
+            if format == "annotated":
+                return {"concepts": [], "annotated_text": f"[{text}]", "spans": []}
+            return []
+
+        monkeypatch.setattr(extraction_module, "extract", _fake_annotated)
+        with TestClient(fhir_app) as client:
+            get_resp = client.get(
+                "/fhir/CodeSystem/$extract",
+                params={"text": "takes metformin", "format": "annotated",
+                        "annotationFields": "source_code,text"},
+            )
+            post_resp = client.post(
+                "/fhir/CodeSystem/$extract",
+                json={"resourceType": "Parameters", "parameter": [
+                    {"name": "text", "valueString": "takes metformin"},
+                    {"name": "format", "valueCode": "annotated"},
+                    {"name": "annotationFields", "valueString": "canonical_id"},
+                ]},
+            )
+        assert get_resp.status_code == 200, get_resp.text
+        assert post_resp.status_code == 200, post_resp.text
+        assert calls[0]["annotation_fields"] == ["source_code", "text"]
+        assert calls[1]["annotation_fields"] == ["canonical_id"]
+
+    def test_extract_annotation_fields_bogus_400_pre_ner_qa005(
+        self, fhir_app, monkeypatch,
+    ):
+        """Bogus annotationFields must 400 in milliseconds (QC-163 parity),
+        never reach the NER executor, and valueBoolean is a type error."""
+        from starlette.testclient import TestClient
+
+        import medterm4ds.services.extraction as extraction_module
+
+        calls: list[dict] = []
+        monkeypatch.setattr(
+            extraction_module, "extract",
+            lambda *a, **k: calls.append(k) or [],
+        )
+        with TestClient(fhir_app) as client:
+            get_resp = client.get(
+                "/fhir/CodeSystem/$extract",
+                params={"text": "takes metformin", "format": "annotated",
+                        "annotationFields": "bogus"},
+            )
+            post_resp = client.post(
+                "/fhir/CodeSystem/$extract",
+                json={"resourceType": "Parameters", "parameter": [
+                    {"name": "text", "valueString": "takes metformin"},
+                    {"name": "annotationFields", "valueString": "text,bogus"},
+                ]},
+            )
+            bool_resp = client.post(
+                "/fhir/CodeSystem/$extract",
+                json={"resourceType": "Parameters", "parameter": [
+                    {"name": "text", "valueString": "takes metformin"},
+                    {"name": "annotationFields", "valueBoolean": True},
+                ]},
+            )
+        for resp in (get_resp, post_resp):
+            assert resp.status_code == 400, resp.text
+            assert resp.json()["resourceType"] == "OperationOutcome"
+        assert bool_resp.status_code == 400
+        assert "string/integer" in bool_resp.json()["issue"][0]["diagnostics"]
+        assert calls == [], "service must not run on invalid annotationFields"

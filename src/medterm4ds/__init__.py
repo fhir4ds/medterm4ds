@@ -45,13 +45,11 @@ Same engine, four deliverables:
 - `medterm4ds.ds` — dataframe helpers for pandas/polars workflows.
 """
 
-__version__ = "0.0.3"
+__version__ = "0.0.4"
 
 # ============================================================================
 # Primary API — what most users need
 # ============================================================================
-
-from .client import Terminology, connect, connect_remote
 
 # Intelligent text-to-code search (optional — requires BM25/SapBERT indexes)
 # Log ImportError at WARNING so real bugs (typos, broken transitive imports)
@@ -59,6 +57,8 @@ from .client import Terminology, connect, connect_remote
 # Optional-deps users who expectedly lack BM25/SapBERT see one warning per
 # missing surface, which they can silence via logging config if desired.
 import logging as _logging
+
+from .client import Terminology, connect, connect_remote
 
 _logger = _logging.getLogger(__name__)
 
@@ -105,12 +105,26 @@ except ImportError as _exc:
     _logger.warning("medterm4ds.create_fhir_app unavailable (install medterm4ds[fhir]?): %s", _exc)
 
 # Cache management — inspect and clean the ~/.medterm4ds/ cache
-from .core.provision import cache_clear, cache_info, cache_versions
+# ============================================================================
+# Advanced — engine implementations, service functions, domain helpers
+#
+# These are re-exported at the top level for legacy callers and for users who
+# need direct access without going through the Terminology facade. Most new
+# code should import from the submodule directly (e.g.
+# `from medterm4ds.services.hierarchy import get_descendants`) for clarity.
+# ============================================================================
+from .core.config import (
+    LOCAL_DUCKDB_MEMORY_PROFILES,
+    LOCAL_LITE_MEMORY_PROFILES,
+    LocalDuckDBConfig,
+    LocalLiteConfig,
+    local_duckdb_config,
+    local_lite_config,
+)
 
 # ============================================================================
 # Types — what most call sites need
 # ============================================================================
-
 from .core.models import (
     CodeInfo,
     CodeMapping,
@@ -126,24 +140,7 @@ from .core.models import (
     ProvenanceStep,
     SourceStats,
 )
-
-# ============================================================================
-# Advanced — engine implementations, service functions, domain helpers
-#
-# These are re-exported at the top level for legacy callers and for users who
-# need direct access without going through the Terminology facade. Most new
-# code should import from the submodule directly (e.g.
-# `from medterm4ds.services.hierarchy import get_descendants`) for clarity.
-# ============================================================================
-
-from .core.config import (
-    LOCAL_DUCKDB_MEMORY_PROFILES,
-    LOCAL_LITE_MEMORY_PROFILES,
-    LocalDuckDBConfig,
-    LocalLiteConfig,
-    local_duckdb_config,
-    local_lite_config,
-)
+from .core.provision import cache_clear, cache_info, cache_versions
 from .core.schemas import (
     OUTPUT_SCHEMA_VERSION,
     OutputField,

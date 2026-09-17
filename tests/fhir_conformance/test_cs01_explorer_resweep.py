@@ -50,9 +50,7 @@ import pytest
 # Single source of truth — import canonical constants from engines/fhir.
 # ---------------------------------------------------------------------------
 from medterm4ds.engines.fhir import (
-    FHIR_URI_ALIASES,
     SYSTEM_TO_FHIR_URI,
-    canonical_system_uri,
 )
 
 # Module source paths for source-read probes.
@@ -135,7 +133,7 @@ def test_e10_combined_lookup_read_search_snomed_consistency(fhir_client):
         f"$lookup {snomed} {code} -> {r_lookup.status_code}; expected 200"
     )
     assert "fhir+json" in r_lookup.headers.get("content-type", ""), (
-        f"$lookup Content-Type must be FHIR JSON"
+        "$lookup Content-Type must be FHIR JSON"
     )
 
     # 2. READ — resource route (no persisted resources → 404 + OO)
@@ -145,7 +143,7 @@ def test_e10_combined_lookup_read_search_snomed_consistency(fhir_client):
         f"(no persisted resources — AGENTS.md NOT A BUG Registry)"
     )
     assert "fhir+json" in r_read.headers.get("content-type", ""), (
-        f"READ Content-Type must be FHIR JSON (not framework default)"
+        "READ Content-Type must be FHIR JSON (not framework default)"
     )
     assert r_read.json().get("resourceType") == "OperationOutcome"
 
@@ -159,7 +157,8 @@ def test_e10_combined_lookup_read_search_snomed_consistency(fhir_client):
     assert body.get("type") == "searchset"
     # Empty search result is NOT a failure (per FHIR R4 §3.1.1.3).
     assert body.get("total") == 0
-    assert body.get("entry") == []
+    # QC-330: empty entry[] is omitted per FHIR JSON convention.
+    assert body.get("entry", []) == []
 
 
 def test_e11_combined_lookup_read_search_xml_format_consistency(fhir_client):
@@ -571,8 +570,10 @@ def test_e60_search_summary_count_returns_empty_bundle_with_total(fhir_client):
         f"Bundle.total must be int; got {type(body.get('total'))} "
         f"value={body.get('total')!r}"
     )
-    assert body.get("entry") == [], (
-        f"_summary=count Bundle.entry must be empty; got {body.get('entry')!r}"
+    # QC-330: empty entry[] is omitted per FHIR JSON convention —
+    # absent means empty ("no entries" per §3.1.1.5.3).
+    assert body.get("entry", []) == [], (
+        f"_summary=count Bundle.entry must be empty/omitted; got {body.get('entry')!r}"
     )
 
 
@@ -640,8 +641,8 @@ def test_e72_search_handler_returns_fhir_response_not_raw_dict():
     search_fn = _get_func_source(src, "search_resource")
     assert search_fn, "search_resource function not found"
     assert "_fhir_response" in search_fn, (
-        f"search_resource MUST call _fhir_response (not return raw dict). "
-        f"CR-001 pattern."
+        "search_resource MUST call _fhir_response (not return raw dict). "
+        "CR-001 pattern."
     )
 
 

@@ -47,10 +47,8 @@ from medterm4ds.apps.fhir_api import create_fhir_app
 from medterm4ds.engines.fhir.closure import (
     ClosureManager,
     ClosureTable,
-    build_closure_response,
     get_closure_manager,
 )
-
 
 # ---------------------------------------------------------------------------
 # Constants.
@@ -1578,13 +1576,13 @@ def test_s101_manager_reset_creates_independent_instance():
     DIFFERENT instance from the prior one."""
     m = ClosureManager()
     t1 = m.get_or_create("test-s101")
-    t1.concepts["X"] = {"system": "S", "display": "X"}
+    t1.concepts[("S", "X")] = {"system": "S", "display": "X"}
     t2 = m.reset("test-s101")
     assert t1 is not t2
     assert len(t2.concepts) == 0
     # The OLD instance is unchanged (mutating it doesn't affect the new).
-    t1.concepts["Y"] = {"system": "S", "display": "Y"}
-    assert "Y" not in t2.concepts
+    t1.concepts[("S", "Y")] = {"system": "S", "display": "Y"}
+    assert ("S", "Y") not in t2.concepts
 
 
 def test_s102_manager_list_names_reflects_state():

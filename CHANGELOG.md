@@ -7,9 +7,104 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-_No unreleased changes yet. v0.0.3 was cut 2026-08-24 (re-cut from the 2026-08-20 tag
-to include the CR-062 annotated-path lock fix; no artifact was published from the
-earlier cut); subsequent work tracks here until the next tag._
+## [0.0.4] - 2026-09-08
+
+### Added
+
+- **CDC CPT↔CVX crosswalk in the mapping service**: the CDC single-best
+  table (163 rows) is vendored at `medterm4ds/data/cpt_cvx.txt` and merged
+  into `get_code_mappings` for the {CPT, CVX} source/target pair —
+  `match_type="cdc_cpt_cvx"`, CDC rows win on (source, target) conflicts
+  and sort first within the result budget; reverse CVX→CPT is the
+  one-to-many inverse. Works on existing databases with no rebuild. The
+  12 immune-globulin/antitoxin CVX targets are outside VG.txt's
+  vaccine-group scope by design.
+- **`group_cvx` persisted in `cvx_metadata`** (VG-005): VG.txt's 5th column
+  (the group's own "unspecified" CVX code) is now stored alongside group
+  names; the build reads the vendored file instead of downloading.
+- **Default HF artifact revision → `v0.0.5`** (canonical build
+  2026-08-27: shorthand class aliases — SGLT2i/DPP4i/PPI/ARB resolve
+  exactly; CDC vaccine groups; lab SNOMED crosswalk; ICD-10-PCS; guard
+  hardening). Unpinned clients fetch it on next touch; operator-managed
+  caches (`MEDTERM4DS_CACHE_DIR`) and explicit `MEDTERM4DS_HF_REVISION`
+  pins are unaffected.
+- **Vendored CDC reference data**: `VG.txt` ships at
+  `medterm4ds/data/vg.txt` — the runtime CVX-group cache and the
+  `cvx_metadata` build no longer touch the network (the
+  `MEDTERM4DS_CVX_GROUP_URL` override and its SSRF allowlist guard are
+  obsolete and removed). Refresh by re-downloading into the package.
+- **`annotation_fields` on every surface** (QA-005): FHIR `$extract`
+  `annotationFields` (GET + POST, validated pre-NER; wrong-typed and dual
+  `value[x]` forms rejected), MCP `extract` tool parameter, and CLI
+  `--annotation-fields`. Previously Python-API-only; FHIR silently ignored
+  the parameter. Wire semantics now match the Python API.
+- **Artifact governance — manifests and acceptance registries**
+  (Phases 1-2 of docs/plans/artifact-governance-plan.md): every model/data
+  unit ships a `manifest.json`; the runtime fingerprints SapBERT
+  (weights+tokenizer+pooling+L2+max_length+render policy) into an
+  `embedding_space_id`, validates it against an in-code acceptance registry
+  at lazy-load, and hard-refuses on mismatch (per-component — lexical and
+  canonical-only jobs are never blocked by the semantic gate). GLiNER
+  carries a calibration id (`labels`+`threshold`);
+  `MEDTERM4DS_NER_ALLOW_UNCALIBRATED=1` overrides with a warning.
+- **Artifact governance — split-layout cache** (Phases 3-4):
+  `models/<embedding_space_id>/` (content-addressed, registry-pinned) +
+  `data/<data_revision>/` (floats to latest, resolved revision logged and
+  surfaced in `cache-info`) alongside the legacy flat layout, which keeps
+  serving during a deprecation window. `MEDTERM4DS_LAYOUT=legacy` is the
+  kill-switch; `MEDTERM4DS_DATA_REVISION` pins a data revision;
+  `MEDTERM4DS_SEMANTIC_INDEX_DIR` overrides the per-category FAISS source
+  (the automatic bridge reuses the legacy `semantic/` indexes only when
+  weights+tokenizer are byte-identical). All downloads are atomic
+  (tmp+rename); `medterm4ds data cache-refresh --split [--data-revision R]`
+  migrates. Whitespace-only codes on `$translate`/`$lookup`/
+  `$validate-code` return 400 instead of 500 (QC-422/QC-324), and the
+  CapabilityStatement no longer emits the STU3-only `rest[].url` (rejected
+  by fhir.resources in R4).
+- Version test derives its expectation from `pyproject.toml` (QA-002) —
+  the hardcoded literal shipped stale once and can't again.
+
+### Fixed
+
+- `resolve_device` rejects out-of-range `cuda:<n>` indexes with the
+  `MEDTERM4DS_DEVICE`-naming error instead of a torch-internal
+  "invalid device ordinal" at model load (QA-003).
+- `extract()` validates `annotation_fields` / `result_types` / `min_grade`
+  BEFORE any NER work — garbage arguments previously paid the full
+  extraction cost before raising (QA-004).
+- ConText copula pattern no longer includes "at" — clock times and
+  whole-number doses ("given at 8") no longer fire MEASUREMENT
+  sentence-wide (CR-052; integer results like "platelets was 150" keep
+  firing).
+- FHIR `$extract` POST rejects parameters carrying more than one
+  `value[x]` (FHIR R4 param-1) instead of silently dropping the extra
+  value (CR-053).
+- Past-the-end `$expand` pages omit `contains` instead of emitting an
+  empty array (CR-058).
+- MCP `discover` no longer flags exactly-at-limit result sets as
+  truncated (CR-055 — fetch limit+1 pattern).
+- CSV reader docstring no longer claims type-preserving round-trips
+  (CR-060); data setup replaces the output database atomically without
+  the unlink crash window, with an actionable error when the target is
+  held open on Windows (CR-061).
+
+### Changed
+
+- Resolve paths fetch resolved-atom TTYs in one batch instead of per-code
+  engine round-trips (CR-056).
+- Closure-table walks are bounded (10k relations per direction); a cap
+  hit marks the closure incomplete with a WARNING instead of walking
+  unbounded hierarchies (CR-057).
+- `search_names` source-presence probe is memoized per engine instance
+  (CR-059).
+- The en_core_web_sm parse runs only for texts that have entities, in
+  both single and batch paths (CR-054).
+- `SemanticSearchEngine.embed_batch()` is the public batch-embed API;
+  the search service no longer touches engine-private attributes
+  (ARCH-001). Single-path dedup now shares `_dedup_concepts` with the
+  batch path (CR-063).
+- `uv.lock` regenerates with version bumps and the release checklist
+  gains lock + stale-literal-grep steps (QA-006).
 
 ## [0.0.3] - 2026-08-24
 

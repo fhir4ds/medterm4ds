@@ -15,13 +15,6 @@ from pathlib import Path
 
 import pytest
 
-from .conftest import (
-    ASSOCIATIONS_DELIVERABLE,
-    EMBEDDING_DELIVERABLES,
-    PATIENT_FRIENDLY_CSV_DELIVERABLE,
-    PATIENT_FRIENDLY_DELIVERABLES,
-    RXNORM_INGREDIENTS_DELIVERABLE,
-)
 from .golden.normalize import (
     EMBEDDING_CATEGORIES,
     PATIENT_FRIENDLY_SOURCES,

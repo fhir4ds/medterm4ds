@@ -3,10 +3,11 @@
 
 from __future__ import annotations
 
-from medterm4ds.engines.duckdb._engine_base import *  # noqa: F401,F403
-from medterm4ds.engines.duckdb import mappings as _mappings
 from collections.abc import Sequence
+
 from medterm4ds.core.models import CodeMapping, CodeRef
+from medterm4ds.engines.duckdb import mappings as _mappings
+from medterm4ds.engines.duckdb._engine_base import *  # noqa: F401,F403
 
 
 class _MappingOps:

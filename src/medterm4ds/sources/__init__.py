@@ -9,10 +9,10 @@ from __future__ import annotations
 from .base import (
     BROAD_CHV_NAMES,
     BROAD_MEDLINEPLUS_NAMES,
-    DefaultStrategy,
     LOINC_CLASS_RELA,
     RELA_HIERARCHY_CHILD_SIDE,
     RELA_HIERARCHY_PARENT_SIDE,
+    DefaultStrategy,
     SourceStrategy,
 )
 from .cpt_hcpcs import CptStrategy, HcpcsStrategy

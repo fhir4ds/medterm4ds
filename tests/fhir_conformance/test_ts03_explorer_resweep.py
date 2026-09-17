@@ -37,7 +37,6 @@ from pathlib import Path
 
 import pytest
 
-
 SUPPORTED_SYSTEM_EXTENSION_URL = (
     "http://hl7.org/fhir/StructureDefinition/capabilitystatement-supported-system"
 )
@@ -211,21 +210,16 @@ class TestLens1CombinedOperationsImplicitVs:
                 ("count", 20),
             ],
         )
-        assert r.status_code == 200, (
-            f"Implicit URL + filter combination failed. "
-            f"Status={r.status_code}, body={r.text[:200]}"
+        # QC-311 (HIGH): url+filter is 400-rejected per R4 §4.9.2
+        # ("work or error") — the prior URL-wins dispatch silently dropped
+        # the filter. When combined semantics land, this probe MUST be
+        # updated to assert 200 + the sub-filtered expansion.
+        assert r.status_code == 400, (
+            f"url+filter must be rejected per QC-311 (or 200 if combined "
+            f"semantics landed). Status={r.status_code}, body={r.text[:200]}"
         )
         body = r.json()
-        expansion = body.get("expansion", {})
-        contains = expansion.get("contains", [])
-        # URL wins: the implicit VS expansion returns all SNOMED codes
-        # (filter is ignored). The "zzznomatch" filter would have produced
-        # ZERO results if filter won.
-        codes = {c.get("code") for c in contains}
-        assert "73211009" in codes or "44054006" in codes, (
-            f"Implicit URL did not win over filter — got empty/wrong results. "
-            f"Codes: {codes}"
-        )
+        assert body.get("resourceType") == "OperationOutcome"
 
     def test_e14_implicit_vs_form_a_url_in_post_parameters_body(self, fhir_client):
         """Lens 1(c): implicit VS URL via POST Parameters body.
@@ -451,14 +445,15 @@ class TestLens3MixedCaseScheme:
         assert body.get("resourceType") == "ValueSet", (
             f"Expected ValueSet; got {body.get('resourceType')!r}"
         )
-        # Empty expansion is acceptable (fixture has no LOINC); the
-        # empty-source extension SHOULD be attached.
+        # The conformance fixture now seeds a LOINC row (2160-0), so the
+        # expansion is NON-empty and the empty-source extension is absent.
+        # The mixed-case-scheme invariant is simply: no 500/reject and a
+        # conformant ValueSet (asserted above).
         expansion = body.get("expansion", {})
-        exts = expansion.get("extension", [])
-        ext_urls = {e.get("url") for e in exts}
-        assert EMPTY_SOURCE_EXT_URL in ext_urls, (
-            f"empty-source extension not attached for unseeded LOINC. "
-            f"Extensions: {ext_urls}"
+        codes = [c.get("code") for c in expansion.get("contains", [])]
+        assert "2160-0" in codes, (
+            f"Uppercase-scheme implicit VS URL did not expand the seeded "
+            f"LOINC row. Codes: {codes}"
         )
 
     def test_e31_mixed_case_scheme_lookup_snomed(self, fhir_client):
@@ -806,11 +801,16 @@ class TestLens6CodeSystemValueSetUriLateral:
         assert ct.startswith("application/fhir"), (
             f"Non-FHIR Content-Type: {ct!r}"
         )
-        # Acceptance: either 200 (filter applied) or 503 (BM25 unavailable).
-        assert r.status_code in (200, 503), (
+        # QC-311 (HIGH): url+filter is 400-rejected regardless of whether
+        # the url is an implicit-VS, fhir_vs, or bare system URI — the
+        # prior bare-URI fall-through silently dropped the url. 503 remains
+        # acceptable when BM25 is unavailable (unchanged surface).
+        assert r.status_code in (400, 503), (
             f"Bare URI + filter produced unexpected status {r.status_code}. "
             f"Body: {r.text[:200]}"
         )
+        if r.status_code == 400:
+            assert r.json().get("resourceType") == "OperationOutcome"
 
     def test_e62_urn_oid_alias_canonical_uri_alone_no_canonical_drift(
         self, fhir_client
@@ -1030,18 +1030,19 @@ class TestLens8ImplicitVsPathSourceRead:
         )
 
     def test_e84_intensional_path_bfs_limit_still_present(self):
-        """Lens 8 — CF-HISTORIAN-VS02-01 STILL OPEN. Per the
-        carry-forward-as-probe pattern (strategy 56), this probe asserts the
-        BUGGY behavior exists today (``limit=count`` + ``total=len(deduped)``
-        in ``_expand_intensional``). When a future fix lands extending
-        ``get_descendants_bfs`` to return a 3-tuple OR issuing a separate
-        COUNT query, this probe MUST be tightened (will fail loudly).
+        """Lens 8 — CF-HISTORIAN-VS02-01 PARTIALLY RESOLVED. The module-level
+        ``expand_intensional_value_set`` (18f637b extracted it from the
+        nested wrapper) now passes an explicit count to the BFS walk and
+        derives ``total`` depth-cap-aware (``len(deduped) + 1`` when the
+        cap fired). This probe pins the CURRENT shape across the wrapper
+        and the module-level core.
         """
-        text = self._read_function_source("_expand_intensional")
-        # The bug: BFS uses limit=count which itself pre-truncates the
-        # descendants list BEFORE it's appended to contains.
-        assert "limit=count" in text or "get_descendants_bfs" in text, (
-            "_expand_intensional must still use the BFS-limit pattern "
-            "(CF-HISTORIAN-VS02-01 deferred bug). When the fix lands, "
-            "this probe MUST be tightened."
+        text = self._read_function_source("_expand_intensional") + (
+            self._read_function_source("expand_intensional_value_set")
+        )
+        # The BFS walk is still the structural descendant-enumeration step.
+        assert "get_descendants_bfs" in text, (
+            "_expand_intensional must still use the BFS walk "
+            "(expand_intensional_value_set). When this changes, this "
+            "probe MUST be tightened."
         )

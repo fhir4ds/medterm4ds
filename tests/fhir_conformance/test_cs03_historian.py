@@ -53,11 +53,6 @@ HISTORIAN lens for CS-03 (CodeSystem $validate-code):
 
 from __future__ import annotations
 
-import json
-
-import pytest
-from fastapi.testclient import TestClient
-
 SNOMED_URI = "http://snomed.info/sct"
 SNOMED_OID_ALIAS = "urn:oid:2.16.840.1.113883.6.96"
 SNOMED_DIABETES_MELLITUS = "73211009"  # canonical display: "Diabetes mellitus"
@@ -106,7 +101,7 @@ def test_h10_validate_system_out_is_canonical_not_alias(fhir_client):
     client-input echo. CodeSystem/$validate-code has the same shape.
     """
     r = fhir_client.get(
-        f"/fhir/CodeSystem/$validate-code",
+        "/fhir/CodeSystem/$validate-code",
         params={
             "system": SNOMED_OID_ALIAS,  # SNOMED CT OID alias
             "code": SNOMED_T2DM,
@@ -445,6 +440,7 @@ def test_h40_do_validate_docstring_or_inline_comments_document_display_mismatch(
     35-line docstring. LOW severity — documentation gap, not behavioral.
     """
     import inspect
+
     from medterm4ds.apps.fhir_api import create_fhir_app
     # _do_validate is a closure inside create_fhir_app; introspect via
     # source reading instead.
@@ -472,8 +468,9 @@ def test_h41_extract_all_pairs_helper_docstring_accurate():
     matches its implementation. The docstring claims it returns the
     list of (system, code) pairs from the first codeableConcept with at
     least one valid coding."""
-    from medterm4ds.apps.fhir_api import create_fhir_app
     import inspect
+
+    from medterm4ds.apps.fhir_api import create_fhir_app
     src = inspect.getsource(create_fhir_app)
     helper_start = src.find("def _extract_all_coding_pairs_from_codeable_concept(")
     assert helper_start != -1
@@ -654,10 +651,10 @@ def test_h70_batch_validate_code_with_codeable_concept_uses_single_pair_helper(f
     # uses the single-pair helper today, so it returns false (the first
     # coding is BOGUS). This is the bug.
     assert result_val is True, (
-        f"batch CodeSystem/$validate-code with codeableConcept [INVALID, VALID] "
-        f"MUST return result=true per spec 'any coding matches'. "
-        f"Batch dispatcher uses single-pair helper today → result=false. "
-        f"Fix: extend _extract_validate_params to call "
-        f"_extract_all_coding_pairs_from_codeable_concept and pass through. "
-        f"Pattern: TS-02 EXPLORER QA-028 cross-handler helper-wiring."
+        "batch CodeSystem/$validate-code with codeableConcept [INVALID, VALID] "
+        "MUST return result=true per spec 'any coding matches'. "
+        "Batch dispatcher uses single-pair helper today → result=false. "
+        "Fix: extend _extract_validate_params to call "
+        "_extract_all_coding_pairs_from_codeable_concept and pass through. "
+        "Pattern: TS-02 EXPLORER QA-028 cross-handler helper-wiring."
     )

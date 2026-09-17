@@ -1,0 +1,258 @@
+DTP|01        |Inactive|DTAP|107
+OPV, trivalent|02        |Inactive|POLIO|89
+MMR|03        |Active|MMR|03
+M/R|04        |Inactive|MMR|03
+measles|05        |Inactive|MMR|03
+rubella|06        |Inactive|MMR|03
+mumps|07        |Inactive|MMR|03
+Hep B, adolescent or pediatric|08        |Active|HepB|45
+Td (adult), 2 Lf tetanus toxoid, preservative free, adsorbed|09        |Active|Td|139
+IPV|10        |Active|POLIO|89
+pneumococcal conjugate PCV 7|100       |Inactive|PneumoPCV|152
+typhoid, ViCPs|101       |Active|TYPHOID|91
+DTP-Hib-Hep B|102       |Non-US|HIB|17
+DTP-Hib-Hep B|102       |Non-US|DTAP|107
+DTP-Hib-Hep B|102       |Non-US|HepB|45
+meningococcal C conjugate|103       |Inactive|MENING|108
+Hep A-Hep B|104       |Active|HepA|85
+Hep A-Hep B|104       |Active|HepB|45
+vaccinia (smallpox) diluted|105       |Inactive|Orthopoxvirus|325
+DTaP, 5 pertussis antigens|106       |Active|DTAP|107
+DTaP, unspecified formulation|107       |Inactive|DTAP|107
+meningococcal ACWY, unspecified formulation|108       |Inactive|MENING|108
+pneumococcal, unspecified formulation|109       |Inactive|PneumoPCV|152
+pneumococcal, unspecified formulation|109       |Inactive|PneumoPPV|33
+DTaP-Hep B-IPV|110       |Active|DTAP|107
+DTaP-Hep B-IPV|110       |Active|HepB|45
+DTaP-Hep B-IPV|110       |Active|POLIO|89
+Influenza, live, trivalent, intranasal, PF|111       |Active|FLU|88
+Td (adult), 5 Lf tetanus toxoid, preservative free, adsorbed|113       |Active|Td|139
+meningococcal MCV4P|114       |Active|MENING|108
+Tdap|115       |Active|TDAP|115
+rotavirus, pentavalent|116       |Active|ROTAVIRUS|122
+HPV, bivalent|118       |Inactive|HPV|137
+rotavirus, monovalent|119       |Active|ROTAVIRUS|122
+DTaP-Hib-IPV|120       |Active|DTAP|107
+DTaP-Hib-IPV|120       |Active|POLIO|89
+DTaP-Hib-IPV|120       |Active|HIB|17
+zoster live|121       |Inactive|ZOSTER|188
+rotavirus, unspecified formulation|122       |Inactive|ROTAVIRUS|122
+influenza, H5N1-1203|123       |Inactive|H5N1 flu|123
+Novel Influenza-H1N1-09, nasal|125       |Inactive|H1N1 flu|128
+Novel influenza-H1N1-09, preservative-free|126       |Inactive|H1N1 flu|128
+Novel influenza-H1N1-09|127       |Inactive|H1N1 flu|128
+Novel Influenza-H1N1-09, all formulations|128       |Inactive|H1N1 flu|128
+Japanese Encephalitis, unspecified formulation|129       |Inactive|Japanese encephalitis|129
+DTaP-IPV|130       |Active|POLIO|89
+DTaP-IPV|130       |Active|DTAP|107
+DTaP-IPV-HIB-HEP B, historical|132       |Inactive|DTAP|107
+DTaP-IPV-HIB-HEP B, historical|132       |Inactive|HIB|17
+DTaP-IPV-HIB-HEP B, historical|132       |Inactive|POLIO|89
+DTaP-IPV-HIB-HEP B, historical|132       |Inactive|HepB|45
+Pneumococcal conjugate PCV 13|133       |Active|PneumoPCV|152
+Japanese Encephalitis IM|134       |Active|Japanese encephalitis|129
+Influenza, high-dose, trivalent, PF|135       |Active|FLU|88
+Meningococcal MCV4O|136       |Active|MENING|108
+HPV, unspecified formulation|137       |Inactive|HPV|137
+Td (adult)|138       |Inactive|Td|139
+Td(adult) unspecified formulation|139       |Inactive|Td|139
+Influenza, split virus, trivalent, PF|140       |Active|FLU|88
+Influenza, split virus, trivalent, preservative|141       |Active|FLU|88
+Adenovirus types 4 and 7|143       |Active|ADENO|82
+influenza, seasonal, intradermal, preservative free|144       |Inactive|FLU|88
+DTaP,IPV,Hib,HepB|146       |Active|DTAP|107
+DTaP,IPV,Hib,HepB|146       |Active|HIB|17
+DTaP,IPV,Hib,HepB|146       |Active|HepB|45
+DTaP,IPV,Hib,HepB|146       |Active|POLIO|89
+meningococcal MCV4, unspecified formulation|147       |Inactive|MENING|108
+Meningococcal C/Y-HIB PRP|148       |Inactive|MENING|108
+Meningococcal C/Y-HIB PRP|148       |Inactive|HIB|17
+Influenza, live, quadrivalent, intranasal|149       |Active|FLU|88
+influenza, split (incl. purified surface antigen)|15        |Inactive|FLU|88
+Influenza, split virus, quadrivalent, PF|150       |Active|FLU|88
+influenza nasal, unspecified formulation|151       |Inactive|FLU|88
+Pneumococcal Conjugate, unspecified formulation|152       |Inactive|PneumoPCV|152
+Influenza, MDCK, trivalent, PF|153       |Active|FLU|88
+Influenza, recombinant, trivalent, PF|155       |Active|FLU|88
+Influenza, split virus, quadrivalent, preservative|158       |Active|FLU|88
+influenza, whole|16        |Inactive|FLU|88
+Influenza A monovalent (H5N1), ADJUVANTED-2013|160       |Active|H5N1 flu|123
+Influenza, injectable,quadrivalent, preservative free, pediatric|161       |Active|FLU|88
+meningococcal B, recombinant|162       |Active|MeningB|164
+meningococcal B, OMV|163       |Active|MeningB|164
+meningococcal B, unspecified|164       |Inactive|MeningB|164
+HPV9|165       |Active|HPV|137
+influenza, intradermal, quadrivalent, preservative free|166       |Inactive|FLU|88
+Influenza, adjuvanted, trivalent, PF|168       |Active|FLU|88
+Hib, unspecified formulation|17        |Inactive|HIB|17
+DTAP/IPV/HIB - non-US|170       |Non-US|POLIO|89
+DTAP/IPV/HIB - non-US|170       |Non-US|HIB|17
+DTAP/IPV/HIB - non-US|170       |Non-US|DTAP|107
+Influenza, MDCK, quadrivalent, PF|171       |Active|FLU|88
+cholera, WC-rBS|172       |Non-US|cholera|26
+cholera, BivWC|173       |Non-US|cholera|26
+cholera, live attenuated|174       |Active|cholera|26
+Rabies - IM Diploid cell culture|175       |Active|RABIES|90
+Rabies - IM fibroblast culture|176       |Active|RABIES|90
+PCV10|177       |Non-US|PneumoPCV|152
+rabies, intramuscular injection|18        |Inactive|RABIES|90
+Yellow fever vaccine live - alt|183       |Active|YELLOWFEVER|184
+Yellow fever, unspecified|184       |Inactive|YELLOWFEVER|184
+Influenza, recombinant, quadrivalent, PF|185       |Active|FLU|88
+Influenza, MDCK, quadrivalent, preservative|186       |Active|FLU|88
+zoster recombinant|187       |Active|ZOSTER|188
+zoster, unspecified formulation|188       |Inactive|ZOSTER|188
+HepB-CpG|189       |Active|HepB|45
+BCG|19        |Active|BCG|19
+Hep A-Hep B, pediatric/adolescent|193       |Non-US|HepB|45
+Hep A-Hep B, pediatric/adolescent|193       |Non-US|HepA|85
+Influenza, Southern Hemisphere|194       |Inactive|FLU|88
+DT, IPV adsorbed|195       |Non-US|POLIO|89
+DT, IPV adsorbed|195       |Non-US|Td|139
+Td, adsorbed, preservative free, adult use, Lf unspecified|196       |Active|Td|139
+Influenza, high-dose, quadrivalent, PF|197       |Active|FLU|88
+DTaP|20        |Active|DTAP|107
+influenza, Southern Hemisphere, pediatric, preservative free|200       |Active|FLU|88
+Influenza, Southern Hemisphere, quadrivalent, PF|201       |Active|FLU|88
+influenza, Southern Hemisphere, quadrivalent, with preservative|202       |Active|FLU|88
+meningococcal conjugate quadrivalent, MenACWY-TT (MCV4)|203       |Active|MENING|108
+Ebola Zaire vaccine, live, recombinant, 1mL dose|204       |Active|Ebola|214
+Influenza, adjuvanted, quadrivalent, PF|205       |Active|FLU|88
+Vaccinia, smallpox monkeypox vaccine live, PF, SQ or ID injection|206       |Active|Orthopoxvirus|325
+COVID-19, mRNA, LNP-S, PF, 100 mcg/0.5mL dose or 50 mcg/0.25mL dose|207       |Inactive|COVID-19|213
+COVID-19, mRNA, LNP-S, PF, 30 mcg/0.3 mL dose|208       |Inactive|COVID-19|213
+varicella|21        |Active|VARICELLA|21
+COVID-19 vaccine, vector-nr, rS-ChAdOx1, PF, 0.5 mL|210       |Non-US|COVID-19|213
+COVID-19, subunit, rS-nanoparticle+Matrix-M1 Adjuvant, PF, 0.5 mL|211       |Inactive|COVID-19|213
+COVID-19 vaccine, vector-nr, rS-Ad26, PF, 0.5 mL|212       |Inactive|COVID-19|213
+SARS-COV-2 (COVID-19) vaccine, UNSPECIFIED|213       |Inactive|COVID-19|213
+Ebola, unspecified|214       |Inactive|Ebola|214
+Pneumococcal conjugate PCV15, polysaccharide CRM197 conjugate, adjuvant, PF|215       |Active|PneumoPCV|152
+Pneumococcal conjugate PCV20, polysaccharide CRM197 conjugate, adjuvant, PF|216       |Active|PneumoPCV|152
+COVID-19, mRNA, LNP-S, PF, 30 mcg/0.3 mL dose, tris-sucrose|217       |Inactive|COVID-19|213
+COVID-19, mRNA, LNP-S, PF, 10 mcg/0.2 mL dose, tris-sucrose|218       |Inactive|COVID-19|213
+COVID-19, mRNA, LNP-S, PF, 3 mcg/0.2 mL dose, tris-sucrose|219       |Inactive|COVID-19|213
+DTP-Hib|22        |Inactive|DTAP|107
+DTP-Hib|22        |Inactive|HIB|17
+HepB recombinant, 3-antigen, Al(OH)3|220       |Inactive|HepB|45
+COVID-19, mRNA, LNP-S, PF, 50 mcg/0.5 mL dose|221       |Inactive|COVID-19|213
+Tick-borne encephalitis, unspecified|222       |Inactive|Tick-borne encephalitis|222
+Tick-borne encephalitis, inactivated, PF, 0.25mL|223       |Active|Tick-borne encephalitis|222
+Tick-borne encephalitis, inactivated, PF, 0.5mL|224       |Active|Tick-borne encephalitis|222
+COVID-19, D614, recomb, preS dTM, AS03 adjuvant add, PF, 5mcg/0.5mL|225       |Never Active|COVID-19|213
+COVID-19, D614, recomb, preS dTM, AS03 adjuvant add, PF, 10mcg/0.5mL|226       |Never Active|COVID-19|213
+COVID-19, mRNA, LNP-S, PF, pediatric 50 mcg/0.5 mL dose|227       |Inactive|COVID-19|213
+COVID-19, mRNA, LNP-S, PF, pediatric 25 mcg/0.25 mL dose|228       |Inactive|COVID-19|213
+COVID-19, mRNA, LNP-S, bivalent, PF, 50 mcg/0.5 mL or 25mcg/0.25 mL dose|229       |Inactive|COVID-19|213
+plague|23        |Inactive|Plague|23
+COVID-19, mRNA, LNP-S, bivalent, PF, 10 mcg/0.2 mL|230       |Inactive|COVID-19|213
+influenza, Southern Hemisphere, high-dose, quadrivalent|231       |Active|FLU|88
+Anthrax, pre-exposure prophylaxis, post-exposure prophylaxis|24        |Active|ANTHRAX|319
+typhoid, oral|25        |Active|TYPHOID|91
+cholera, unspecified formulation|26        |Inactive|cholera|26
+DT (pediatric)|28        |Inactive|DTAP|107
+COVID-19, mRNA, LNP-S, bivalent, PF, 30 mcg/0.3 mL dose|300       |Inactive|COVID-19|213
+COVID-19, mRNA, LNP-S, bivalent, PF, 10 mcg/0.2 mL dose|301       |Inactive|COVID-19|213
+COVID-19, mRNA, LNP-S, bivalent, PF, 3 mcg/0.2 mL dose|302       |Inactive|COVID-19|213
+RSV, recombinant, protein subunit RSVpreF, adjuvant reconstituted, 0.5 mL, PF|303       |Active|RSV|304
+Respiratory syncytial virus (RSV), unspecified|304       |Inactive|RSV|304
+RSV, bivalent, protein subunit RSVpreF, diluent reconstituted, 0.5 mL, PF|305       |Active|RSV|304
+RSV, mAb, nirsevimab-alip, 0.5 mL, neonate to 24 months|306       |Active|RSV|304
+RSV, mAb, nirsevimab-alip, 1 mL, neonate to 24 months|307       |Active|RSV|304
+COVID-19, mRNA, LNP-S, PF, tris-sucrose, 3 mcg/0.3 mL|308       |Inactive|COVID-19|213
+COVID-19, mRNA, LNP-S, PF, tris-sucrose, 30 mcg/0.3 mL|309       |Active|COVID-19|213
+Hep A, pediatric, unspecified formulation|31        |Inactive|HepA|85
+COVID-19, mRNA, LNP-S, PF, tris-sucrose, 10 mcg/0.3 mL|310       |Active|COVID-19|213
+COVID-19, mRNA, LNP-S, PF, 25 mcg/0.25 mL|311       |Active|COVID-19|213
+COVID-19, mRNA, LNP-S, PF, 50 mcg/0.5 mL|312       |Active|COVID-19|213
+COVID-19, subunit, rS-nanoparticle, adjuvanted, PF, 5 mcg/0.5 mL|313       |Active|COVID-19|213
+Respiratory syncytial virus (RSV) vaccine, unspecified|314       |Inactive|RSV|304
+Respiratory syncytial virus (RSV) MAB, unspecified|315       |Inactive|RSV|304
+Meningococcal polysaccharide (MenACWY-TT conjugate), (MenB), PF|316       |Active|MENING|108
+Meningococcal polysaccharide (MenACWY-TT conjugate), (MenB), PF|316       |Active|MeningB|164
+Chikungunya live attenuated vaccine, 0.5 mL, PF|317       |Active|Chikungunya|317
+Anthrax, post-exposure prophylaxis|318       |Active|ANTHRAX|319
+Anthrax vaccine, unspecified|319       |Inactive|ANTHRAX|319
+meningococcal MPSV4|32        |Inactive|MENING|108
+Influenza, MDCK, trivalent, preservative|320       |Active|FLU|88
+Influenza-avian, H5N8, monovalent, PF|321       |Active|FLU-Avian-H5|323
+Influenza-avian, H5N8, monovalent, preservative|322       |Active|FLU-Avian-H5|323
+Influenza-avian, H5, unspecified formulation|323       |Inactive|FLU-Avian-H5|323
+Poliovirus, inactivated, fractional-dose (fIPV)|324       |Non-US|POLIO|89
+Vaccinia (smallpox, monkeypox), unspecified|325       |Inactive|Orthopoxvirus|325
+RSV, mRNA, injectable, PF|326       |Active|RSV|304
+Pneumococcal conjugate PCV21, polysaccharide CRM197 conjugate, PF|327       |Active|PneumoPCV|152
+Meningococcal oligosaccharide (MenACWY), (MenB), PF|328       |Active|MeningB|164
+Meningococcal oligosaccharide (MenACWY), (MenB), PF|328       |Active|MENING|108
+Chikungunya, VLP, recombinant, 0.8 mL, PF|329       |Active|Chikungunya|317
+pneumococcal polysaccharide PPV23|33        |Active|PneumoPPV|33
+Dengue fever, unspecified|330       |Inactive|DENGUE|330
+Influenza, Southern Hemisphere, trivalent, PF|331       |Active|FLU|88
+RSV, mAb, clesrovimab-cfor, 0.7 mL, neonate and infant, PF|332       |Active|RSV|304
+Influenza, live, trivalent, intranasal, self/caregiver admin, PF|333       |Active|FLU|88
+COVID-19, mRNA, LNP-S, PF, 10 mcg/0.2 mL|334       |Active|COVID-19|213
+Influenza, Southern Hemisphere, high-dose, trivalent, PF|337       |Active|FLU|88
+Influenza, mRNA, trivalent, PF|338       |Active|FLU|88
+tetanus toxoid, adsorbed|35        |Inactive|Td|139
+yellow fever live|37        |Active|YELLOWFEVER|184
+rubella/mumps|38        |Inactive|MMR|03
+Japanese encephalitis SC|39        |Inactive|Japanese encephalitis|129
+rabies, intradermal injection|40        |Inactive|RABIES|90
+typhoid, parenteral|41        |Inactive|TYPHOID|91
+Hep B, adolescent/high risk infant|42        |Inactive|HepB|45
+Hep B, adult|43        |Active|HepB|45
+Hep B, high-dosage, dialysis or IC|44        |Active|HepB|45
+Hep B, unspecified formulation|45        |Inactive|HepB|45
+Hib (PRP-D)|46        |Inactive|HIB|17
+Hib (HbOC)|47        |Inactive|HIB|17
+Hib (PRP-T)|48        |Active|HIB|17
+Hib (PRP-OMP)|49        |Active|HIB|17
+DTaP-Hib|50        |Inactive|HIB|17
+DTaP-Hib|50        |Inactive|DTAP|107
+COVID-19 Non-US Vaccine, UNSPECIFIED|500       |Non-US|COVID-19|213
+COVID-19 IV Non-US Vaccine (QAZCOVID-IN)|501       |Non-US|COVID-19|213
+COVID-19 IV Non-US Vaccine (COVAXIN)|502       |Non-US|COVID-19|213
+COVID-19 LAV Non-US Vaccine (COVIVAC)|503       |Non-US|COVID-19|213
+COVID-19 VVnr Non-US Vaccine (Sputnik Light)|504       |Non-US|COVID-19|213
+COVID-19 VVnr Non-US Vaccine (Sputnik V)|505       |Non-US|COVID-19|213
+COVID-19 VVnr Non-US Vaccine (CanSino Biological Inc./Beijing Institute of Biotechnology|506       |Non-US|COVID-19|213
+COVID-19 PS Non-US Vaccine (Anhui Zhifei Longcom Biopharm + Inst of Micro, Chinese Acad of Sciences)|507       |Non-US|COVID-19|213
+COVID-19 PS Non-US Vaccine (Jiangsu Province Centers for Disease Control and Prevention)|508       |Non-US|COVID-19|213
+COVID-19 PS Non-US Vaccine (EpiVacCorona)|509       |Non-US|COVID-19|213
+Hib-Hep B|51        |Inactive|HIB|17
+Hib-Hep B|51        |Inactive|HepB|45
+COVID-19 IV Non-US Vaccine (BIBP, Sinopharm)|510       |Non-US|COVID-19|213
+COVID-19 IV Non-US Vaccine (CoronaVac, Sinovac)|511       |Non-US|COVID-19|213
+SARS-COV-2 COVID-19 VLP Non-US Vaccine (Medicago, Covifenz)|512       |Non-US|COVID-19|213
+SARS-COV-2 COVID-19 PS Non-US Vaccine (Anhui Zhifei Longcom, Zifivax)|513       |Non-US|COVID-19|213
+SARS-COV-2 COVID-19 DNA Non-US Vaccine (Zydus Cadila, ZyCoV-D)|514       |Non-US|COVID-19|213
+SARS-COV-2 COVID-19 PS Non-US Vaccine (Medigen, MVC-COV1901)|515       |Non-US|COVID-19|213
+COV-2 COVID-19 Inactivated Non-US Vaccine Product (Minhai Biotechnology Co, KCONVAC)|516       |Non-US|COVID-19|213
+SARS-COV-2 COVID-19 PS Non-US Vaccine (Biological E Limited, Corbevax)|517       |Non-US|COVID-19|213
+COVID-19 Inactivated, Non-US Vaccine (VLA2001, Valneva)|518       |Non-US|COVID-19|213
+COVID-19 mRNA, bivalent, original/Omicron BA.1, Non-US Vaccine (Spikevax Bivalent), Moderna|519       |Non-US|COVID-19|213
+Hep A, adult|52        |Active|HepA|85
+COVID-19 mRNA, bivalent, original/Omicron BA.1, Non-US Vaccine Product, Pfizer-BioNTech|520       |Non-US|COVID-19|213
+COVID-19 SP, protein-based, adjuvanted (VidPrevtyn Beta), Sanofi-GSK|521       |Non-US|COVID-19|213
+typhoid, parenteral, AKD (U.S. military)|53        |Inactive|TYPHOID|91
+adenovirus, type 4|54        |Inactive|ADENO|82
+adenovirus, type 7|55        |Inactive|ADENO|82
+dengue fever tetravalent|56        |Active|DENGUE|330
+HPV, quadrivalent|62        |Active|HPV|137
+Lyme disease|66        |Inactive|Lyme disease|66
+rotavirus, tetravalent|74        |Inactive|ROTAVIRUS|122
+Vaccinia (smallpox, monkeypox), live|75        |Active|Orthopoxvirus|325
+Tick-borne encephalitis vaccine (non-US)|77        |Non-US|Tick-borne encephalitis|222
+VEE, live|80        |Inactive|VEE|92
+VEE, inactivated|81        |Inactive|VEE|92
+adenovirus, unspecified formulation|82        |Inactive|ADENO|82
+Hep A, ped/adol, 2 dose|83        |Active|HepA|85
+Hep A, ped/adol, 3 dose|84        |Inactive|HepA|85
+Hep A, unspecified formulation|85        |Inactive|HepA|85
+influenza, unspecified formulation|88        |Inactive|FLU|88
+polio, unspecified formulation|89        |Inactive|POLIO|89
+rabies, unspecified formulation|90        |Inactive|RABIES|90
+typhoid, unspecified formulation|91        |Inactive|TYPHOID|91
+VEE, unspecified formulation|92        |Inactive|VEE|92
+MMRV|94        |Active|MMR|03
+MMRV|94        |Active|VARICELLA|21

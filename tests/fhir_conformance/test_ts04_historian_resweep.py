@@ -38,12 +38,10 @@ from __future__ import annotations
 
 import ast
 import inspect
-import os
 from pathlib import Path
 from urllib.parse import urlparse
 
 import pytest
-
 
 # =============================================================================
 # Shared helpers
@@ -58,10 +56,11 @@ def _make_test_client(tmp_path: Path, monkeypatch, host: str | None = None,
     MEDTERM4DS_API_SCHEME env vars when set, matching the deployment URL
     constructor's input surface.
     """
-    fastapi = pytest.importorskip("fastapi")
-    from starlette.testclient import TestClient
-    from medterm4ds.apps.fhir_api import FhirApiSettings, create_fhir_app
+    pytest.importorskip("fastapi")
     import duckdb
+    from starlette.testclient import TestClient
+
+    from medterm4ds.apps.fhir_api import FhirApiSettings, create_fhir_app
 
     monkeypatch.delenv("MEDTERM4DS_API_HOST", raising=False)
     monkeypatch.delenv("MEDTERM4DS_API_SCHEME", raising=False)
@@ -371,7 +370,12 @@ def test_h30_deployment_url_https_via_scheme_env_var(monkeypatch, tmp_path):
     exchange". The deployment URL MUST NOT silently downgrade an HTTPS
     deployment to plain HTTP.
     """
-    client = _make_test_client(tmp_path, monkeypatch, scheme="https")
+    # The env-driven URL constructor only engages when a host/port env var
+    # is present (otherwise the route derives scheme://host from the actual
+    # request). Set a host so the scheme env var is load-bearing.
+    client = _make_test_client(
+        tmp_path, monkeypatch, host="fhir.example.com", scheme="https"
+    )
     try:
         r = client.get("/fhir/metadata")
         assert r.status_code == 200
@@ -680,7 +684,7 @@ def test_h52_batch_dispatcher_supports_lookup(fhir_client):
     assert len(entries) == 1
     s0 = entries[0]["response"]["status"]
     assert s0 != "404", (
-        f"$lookup MUST be wired into batch dispatcher; got 404."
+        "$lookup MUST be wired into batch dispatcher; got 404."
     )
     # MUST be Parameters (success) or OperationOutcome (error); NOT a generic
     # "Unknown operation" error.
@@ -707,7 +711,7 @@ def test_h53_batch_dispatcher_supports_subsumes(fhir_client):
     assert len(entries) == 1
     s0 = entries[0]["response"]["status"]
     assert s0 != "404", (
-        f"$subsumes MUST be wired into batch dispatcher; got 404."
+        "$subsumes MUST be wired into batch dispatcher; got 404."
     )
 
 
@@ -1146,12 +1150,12 @@ def test_h82_large_batch_order_preserved(fhir_client):
     """
     entries_req = []
     # 50 identical entries — order preservation is the contract, not diversity.
-    for i in range(50):
+    for _i in range(50):
         entries_req.append({
             "request": {
                 "method": "GET",
                 "url": ("CodeSystem/$validate-code"
-                        f"?system=http://snomed.info/sct&code=73211009"),
+                        "?system=http://snomed.info/sct&code=73211009"),
             },
         })
     bundle = _batch_bundle(entries_req)

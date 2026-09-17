@@ -64,8 +64,6 @@ Reference: FHIR R4 §4.8.21.3 Operation $subsumes on CodeSystem
 
 from __future__ import annotations
 
-import pytest
-
 # Spec: https://hl7.org/fhir/R4/codesystem-operation-subsumes.html
 #
 # Out `outcome` MUST be one of these 4 strings (closed enum,
@@ -625,8 +623,8 @@ def test_s110_get_subsumes_unknown_system_returns_400(fhir_client):
     OperationOutcome (not 500 with text/plain).
     """
     r = fhir_client.get(
-        f"/fhir/CodeSystem/$subsumes?system=http://fake.example/sys"
-        f"&codeA=1&codeB=2"
+        "/fhir/CodeSystem/$subsumes?system=http://fake.example/sys"
+        "&codeA=1&codeB=2"
     )
     assert r.status_code == 400, f"unknown system: {r.status_code} {r.text[:200]}"
     body = r.json()

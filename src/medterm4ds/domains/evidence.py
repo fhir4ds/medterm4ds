@@ -474,7 +474,7 @@ _LUCENE_SPECIAL_CHARS = set('+-&|!(){}[]^"~*?:\\/')
 
 
 def _escape_openfda_value(value: str) -> str:
-    """Escape Lucene special characters so user input can't alter query semantics.
+    r"""Escape Lucene special characters so user input can't alter query semantics.
 
     Previous version only escaped `"`, which left `:`, `(`, `)`, `\`, `AND`,
     `OR`, `*`, `?` as injection vectors. Now escapes all Lucene metacharacters

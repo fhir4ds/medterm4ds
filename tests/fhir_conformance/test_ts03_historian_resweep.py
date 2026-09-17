@@ -128,7 +128,11 @@ class TestLens1CFHistorianVS0201:
         to assert the NEW spec-correct shape.
         """
         source = _fhir_api_text()
-        intensional_text = _function_text(source, "_expand_intensional")
+        # 18f637b split the nested wrapper from the module-level core
+        # (expand_intensional_value_set); audit the union.
+        intensional_text = _function_text(
+            source, "_expand_intensional"
+        ) + _function_text(source, "expand_intensional_value_set")
         assert intensional_text, "_expand_intensional not found"
         # BFS limit is the structural pre-truncation step.
         assert "get_descendants_bfs" in intensional_text
@@ -302,7 +306,11 @@ class TestLens2ClientInputAsCanonicalDrift:
     def test_h24_expand_intensional_uses_canonical_system_uri(self):
         """`_expand_intensional` uses canonical_system_uri for contains[].system."""
         source = _fhir_api_text()
-        intensional_text = _function_text(source, "_expand_intensional")
+        # 18f637b split the nested wrapper from the module-level core
+        # (expand_intensional_value_set); audit the union.
+        intensional_text = _function_text(
+            source, "_expand_intensional"
+        ) + _function_text(source, "expand_intensional_value_set")
         assert intensional_text, "_expand_intensional not found"
         assert "canonical_system_uri(inc_system" in intensional_text, (
             "_expand_intensional should re-resolve inc_system via canonical_system_uri (CR-013)"
@@ -402,7 +410,7 @@ class TestLens3HCPCSCanonicalURIDrift:
         """HCPCS legacy alias is in FHIR_URI_ALIASES (backwards-compat)."""
         from medterm4ds.engines.fhir import FHIR_URI_ALIASES
         assert FHIR_URI_ALIASES.get(HCPCS_LEGACY_ALIAS_URI) == "HCPCS", (
-            f"HCPCS legacy alias should map to HCPCS source"
+            "HCPCS legacy alias should map to HCPCS source"
         )
 
     def test_h32_canonical_system_uri_resolves_legacy_alias(self):
@@ -533,8 +541,16 @@ class TestLens4SupportedSystemExtension:
             for ext in extensions
             if ext.get("url") == SUPPORTED_SYSTEM_EXTENSION_URL
         }
-        canonical_uris = set(SYSTEM_TO_FHIR_URI.values())
-        # Every canonical URI SHOULD be advertised.
+        # QC-367: pseudo-sources are output namespaces — intentionally
+        # excluded from the advertisement.
+        from medterm4ds.engines.fhir import PSEUDO_SYSTEM_SOURCES
+
+        canonical_uris = {
+            uri
+            for source, uri in SYSTEM_TO_FHIR_URI.items()
+            if source not in PSEUDO_SYSTEM_SOURCES
+        }
+        # Every client-facing canonical URI SHOULD be advertised.
         missing = canonical_uris - supported_uris
         assert not missing, (
             f"Supported-system extension should list every canonical URI; "
@@ -543,10 +559,15 @@ class TestLens4SupportedSystemExtension:
 
     def test_h44_extension_uses_registry(self):
         """Source-read: extension is sourced from SYSTEM_TO_FHIR_URI."""
+        from medterm4ds.engines.fhir import PSEUDO_SYSTEM_SOURCES
         from medterm4ds.engines.fhir.responses import _supported_system_extensions
         extensions = _supported_system_extensions()
         advertised_uris = {ext["valueUri"] for ext in extensions}
-        canonical_uris = set(SYSTEM_TO_FHIR_URI.values())
+        canonical_uris = {
+            uri
+            for source, uri in SYSTEM_TO_FHIR_URI.items()
+            if source not in PSEUDO_SYSTEM_SOURCES
+        }
         assert advertised_uris == canonical_uris, (
             f"Extension URIs should exactly match canonical registry; "
             f"diff: {advertised_uris ^ canonical_uris}"
@@ -725,7 +746,7 @@ class TestLens7EmptyStringDriftSourceAudit:
         assert search_text, "search_get not found"
         # Find the query declaration line.
         lines = search_text.split("\n")
-        query_lines = [l for l in lines if "query" in l.lower() and "Query" in l]
+        query_lines = [ln for ln in lines if "query" in ln.lower() and "Query" in ln]
         assert query_lines, "search_get should declare a query parameter"
         # The query param should have min_length=1.
         # Some lines may have it on a different line; search the whole function.

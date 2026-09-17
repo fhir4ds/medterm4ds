@@ -74,9 +74,7 @@ from medterm4ds.engines.fhir import (
 )
 from medterm4ds.engines.fhir.equivalence import (
     INTERNAL_REL_TO_FHIR_EQUIVALENCE,
-    fhir_equivalence,
 )
-
 
 # =============================================================================
 # Constants
@@ -429,7 +427,7 @@ def test_e20_triangular_matrix_lookup_translate_export_agree(
 
     # Find the translate match for our target code.
     translate_display = None
-    for sys_, code_, display in translate_matches:
+    for _sys, code_, display in translate_matches:
         if code_ == target_code:
             translate_display = display
             break
@@ -1112,7 +1110,6 @@ def test_e71_export_mixed_valid_and_unknown_sab_in_one_call():
 
     Spec: GLOBAL_RULES.md — code_system_uri fallback.
     """
-    from medterm4ds.core.models import CodeRef
     from medterm4ds.outputs.fhir import concept_map_to_fhir
 
     rows = [
@@ -1211,7 +1208,7 @@ def test_e80_merge_row_target_uses_fhir_equivalence_no_hardcode():
     for node in ast.walk(tree):
         if isinstance(node, ast.Assign) and isinstance(node.value, ast.Dict):
             # target = {"equivalence": <value>, ...}
-            for key, value in zip(node.value.keys, node.value.values):
+            for key, value in zip(node.value.keys, node.value.values, strict=False):
                 if (
                     isinstance(key, ast.Constant)
                     and key.value == "equivalence"
@@ -1600,7 +1597,6 @@ def test_e120_outputs_fhir_no_hardcoded_equivalence_string_in_executable_code():
     #    are not enum members.
     #  - The literal "unmatched" appearing in `_merge_row_target` line 144
     #    is a relationship comparison, NOT an emitted equivalence — allowlist.
-    violations = []
     for node in ast.walk(tree):
         if isinstance(node, ast.Constant) and isinstance(node.value, str):
             v = node.value
@@ -1653,7 +1649,6 @@ def test_e121_responses_module_no_r5_r4b_keys_in_internal_rel_to_fhir_equiv():
     Spec: source-read contract. Reference: CF-HISTORIAN-VS01-01 RESOLVED.
     """
     r5_only_keys = {"matches"}  # 'matches' is R5-only; not in R4 enum
-    r5_r4b_keys = {"subsumedby", "subsumed-by"}  # R4B form; allowlisted as defensive
 
     keys = set(INTERNAL_REL_TO_FHIR_EQUIVALENCE.keys())
     r5_only_in_keys = keys & r5_only_keys

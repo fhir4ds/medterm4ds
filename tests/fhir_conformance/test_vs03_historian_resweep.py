@@ -80,8 +80,7 @@ indistinguishable from "complete at exactly the budget".
 from __future__ import annotations
 
 import ast
-import inspect
-from datetime import datetime, timezone
+from datetime import datetime
 from pathlib import Path
 
 import pytest
@@ -120,6 +119,25 @@ _HIERARCHY_PATH = (
     Path(__file__).resolve().parents[2]
     / "src" / "medterm4ds" / "services" / "hierarchy.py"
 )
+
+
+def _expand_intensional_union_source() -> str:
+    """Union of the nested _expand_intensional wrapper and the module-level
+    expand_intensional_value_set core (18f637b split)."""
+    import ast as _ast
+    import inspect as _inspect
+
+    from medterm4ds.apps import fhir_api as _mod
+
+    src = _inspect.getsource(_mod)
+    tree = _ast.parse(src)
+    parts: list[str] = []
+    for node in _ast.walk(tree):
+        if isinstance(node, _ast.FunctionDef) and node.name in (
+            "_expand_intensional", "expand_intensional_value_set",
+        ):
+            parts.append(_ast.get_source_segment(src, node) or "")
+    return "\n\n".join(parts)
 
 
 # =============================================================================
@@ -335,14 +353,14 @@ class TestLens1CFHistorianVS02OneSourceRead:
         ``total=len(deduped)``, so total reports the truncated size when
         the cap fires.
         """
-        from medterm4ds.core.models import CodeRef
-        from medterm4ds.engines.duckdb.engine import LocalDuckDBEngine
-        from medterm4ds.services.hierarchy import get_descendants_bfs
-
         # Use an in-memory engine seeded with the conformance fixture's
         # 2-level hierarchy. The fixture has T2DM is-a DM, so descendants
         # of DM = [T2DM].
         import duckdb
+
+        from medterm4ds.core.models import CodeRef
+        from medterm4ds.engines.duckdb.engine import LocalDuckDBEngine
+        from medterm4ds.services.hierarchy import get_descendants_bfs
         con = duckdb.connect(":memory:")
         con.execute("""CREATE TABLE mrconso (
             CODE VARCHAR, TTY VARCHAR, STR VARCHAR, AUI VARCHAR,
@@ -378,7 +396,7 @@ class TestLens1CFHistorianVS02OneSourceRead:
         ``get_descendants_bfs(..., limit=count)`` — so when count < natural
         descendant count, BFS early-exits with a truncated list.
         """
-        src = _get_func_source(_FHIR_API_PATH, "create_fhir_app", "_expand_intensional")
+        src = _expand_intensional_union_source()
         assert src, "_expand_intensional source not found"
 
         # The BFS call MUST pass limit=count (or a count-derived expression).
@@ -400,7 +418,7 @@ class TestLens1CFHistorianVS02OneSourceRead:
         ``total=len(deduped)`` reports the truncated size, violating FHIR R4
         §4.9.2 "The total number of concepts in the expansion" (FULL count).
         """
-        src = _get_func_source(_FHIR_API_PATH, "create_fhir_app", "_expand_intensional")
+        src = _expand_intensional_union_source()
         assert "total=len(deduped)" in src, (
             "CF-HISTORIAN-VS02-01: _expand_intensional MUST pass total=len(deduped) "
             "to build_valueset_expand — this is the load-bearing buggy line"
@@ -420,7 +438,7 @@ class TestLens1CFHistorianVS02OneSourceRead:
         the fix back to ``limit=count`` (+0 probe), which would reintroduce
         the count-truncation ambiguity at exactly the budget boundary.
         """
-        src = _get_func_source(_FHIR_API_PATH, "create_fhir_app", "_expand_intensional")
+        src = _expand_intensional_union_source()
         # The intensional path MUST use limit=count + 1 (the +1 probe).
         assert "limit=count + 1" in src, (
             "CF-HISTORIAN-VS02-01 RESOLVED: _expand_intensional MUST use "
@@ -594,7 +612,7 @@ class TestLens2ExplicitSizeOnTruncationCallSiteAudit:
 
         # _do_expand filter mode
         src_filter = _get_func_source(_FHIR_API_PATH, "create_fhir_app", "_do_expand")
-        assert "len(results) > count" in src_filter, (
+        assert "len(results) > probe_budget" in src_filter, (
             "_do_expand filter mode MUST use strict > for count_limited (QA-001)"
         )
 
@@ -623,8 +641,8 @@ class TestLens2ExplicitSizeOnTruncationCallSiteAudit:
         """Source-read: _do_expand filter mode uses limit=count + 1 (VS-02 SKEPTIC QA-001)."""
         src = _get_func_source(_FHIR_API_PATH, "create_fhir_app", "_do_expand")
         # The filter mode uses search_names(..., limit=count + 1).
-        assert "limit=count + 1" in src, (
-            "Filter mode call site MUST use limit=count + 1 (VS-02 SKEPTIC QA-001 fix)"
+        assert "limit=probe_budget + 1" in src, (
+            "Filter mode call site MUST use limit=probe_budget + 1 (QC-241)"
         )
 
     def test_h25_url_pattern_call_site_uses_plus_one_probe(self):
@@ -668,7 +686,7 @@ class TestLens2ExplicitSizeOnTruncationCallSiteAudit:
         the fix back to ``limit=count`` (+0 probe), reintroducing the
         asymmetry across the 4 call sites.
         """
-        src = _get_func_source(_FHIR_API_PATH, "create_fhir_app", "_expand_intensional")
+        src = _expand_intensional_union_source()
         # The intensional path uses limit=count + 1, harmonized with siblings.
         assert "limit=count + 1" in src, (
             "CF-HISTORIAN-VS02-01 RESOLVED: _expand_intensional MUST use "
@@ -714,7 +732,7 @@ class TestLens3ClientInputAsCanonicalDrift:
         it to contains[].system. This is the 9th instance of client-input-as-
         canonical drift.
         """
-        src = _get_func_source(_FHIR_API_PATH, "create_fhir_app", "_expand_intensional")
+        src = _expand_intensional_union_source()
         assert "canonical_system_uri(" in src, (
             "CR-013 9th instance: _expand_intensional MUST call canonical_system_uri "
             "on the include[].system to re-resolve alias URIs to canonical"
@@ -802,7 +820,7 @@ class TestLens3ClientInputAsCanonicalDrift:
         Per CR-013: the explicit concept list path assigns canonical_inc to
         contains[].system (NOT raw client-supplied inc_system).
         """
-        src = _get_func_source(_FHIR_API_PATH, "create_fhir_app", "_expand_intensional")
+        src = _expand_intensional_union_source()
         # Look for "system": canonical_inc in the contains.append for explicit concepts.
         assert '"system": canonical_inc' in src, (
             "CR-013: explicit concept list path MUST assign canonical_inc to "
@@ -811,7 +829,7 @@ class TestLens3ClientInputAsCanonicalDrift:
 
     def test_h37_descendant_loop_uses_canonical_inc(self):
         """Source-read: descendant loop uses canonical_inc in contains[].system."""
-        src = _get_func_source(_FHIR_API_PATH, "create_fhir_app", "_expand_intensional")
+        src = _expand_intensional_union_source()
         # The descendant loop MUST also use canonical_inc.
         # Source-read: count occurrences of '"system": canonical_inc'.
         count = src.count('"system": canonical_inc')
@@ -877,7 +895,6 @@ class TestLens4CrossHandlerHelperWiring:
 
     def test_h42_extract_valueset_from_parameters_returns_valueset_or_none(self):
         """Source-read: _extract_valueset_from_parameters returns dict | None."""
-        from medterm4ds.apps.fhir_api import create_fhir_app
         # Verify the function exists by checking the source.
         src = _get_func_source(
             _FHIR_API_PATH, "create_fhir_app", "_extract_valueset_from_parameters"
@@ -1029,7 +1046,7 @@ class TestLens5IsinstanceGuardUntrustedDataBoundary:
         function MUST have isinstance guards at the 5 sibling iterator
         boundaries.
         """
-        src = _get_func_source(_FHIR_API_PATH, "create_fhir_app", "_expand_intensional")
+        src = _expand_intensional_union_source()
         # Count isinstance calls.
         count = src.count("isinstance(")
         assert count >= 5, (
@@ -1044,7 +1061,7 @@ class TestLens5IsinstanceGuardUntrustedDataBoundary:
         have a guard. Without it, compose=null triggers AttributeError on
         compose.get("include", []).
         """
-        src = _get_func_source(_FHIR_API_PATH, "create_fhir_app", "_expand_intensional")
+        src = _expand_intensional_union_source()
         # The compose guard MUST be present.
         assert "isinstance(compose, dict)" in src, (
             "VS-01 resweep QA-001: _expand_intensional MUST guard compose with isinstance"
@@ -1052,28 +1069,28 @@ class TestLens5IsinstanceGuardUntrustedDataBoundary:
 
     def test_h52_intensional_include_isinstance_guard(self):
         """Source-read: include[] loop has isinstance(include, dict) guard."""
-        src = _get_func_source(_FHIR_API_PATH, "create_fhir_app", "_expand_intensional")
+        src = _expand_intensional_union_source()
         assert "isinstance(include, dict)" in src, (
             "CS-04 HISTORIAN QA-001: _expand_intensional MUST guard include with isinstance"
         )
 
     def test_h53_intensional_concept_isinstance_guard(self):
         """Source-read: concept[] loop has isinstance(concept, dict) guard."""
-        src = _get_func_source(_FHIR_API_PATH, "create_fhir_app", "_expand_intensional")
+        src = _expand_intensional_union_source()
         assert "isinstance(concept, dict)" in src, (
             "CS-04 HISTORIAN QA-001: _expand_intensional MUST guard concept with isinstance"
         )
 
     def test_h54_intensional_filter_isinstance_guard(self):
         """Source-read: filter[] loop has isinstance(filt, dict) guard."""
-        src = _get_func_source(_FHIR_API_PATH, "create_fhir_app", "_expand_intensional")
+        src = _expand_intensional_union_source()
         assert "isinstance(filt, dict)" in src, (
             "CS-04 HISTORIAN QA-001: _expand_intensional MUST guard filter with isinstance"
         )
 
     def test_h55_intensional_exclude_isinstance_guard(self):
         """Source-read: exclude[] loop has isinstance(exclude, dict) guard."""
-        src = _get_func_source(_FHIR_API_PATH, "create_fhir_app", "_expand_intensional")
+        src = _expand_intensional_union_source()
         assert "isinstance(exclude, dict)" in src, (
             "CS-04 HISTORIAN QA-001: _expand_intensional MUST guard exclude with isinstance"
         )
@@ -1159,7 +1176,7 @@ class TestLens6CFSkepticVS01OneFilterOperators:
 
     def test_h60_intensional_dispatch_hardcoded_to_two_operators(self):
         """Source-read: _expand_intensional dispatch is hardcoded to is-a + descendent-of."""
-        src = _get_func_source(_FHIR_API_PATH, "create_fhir_app", "_expand_intensional")
+        src = _expand_intensional_union_source()
         # The hardcoded dispatch MUST be present (CF-SKEPTIC-VS01-01 pin).
         assert 'op in ("is-a", "descendent-of")' in src, (
             "CF-SKEPTIC-VS01-01 pin: dispatch hardcoded to is-a + descendent-of"
@@ -1469,7 +1486,7 @@ class TestLens10SourceReadStructuralContracts:
         CF-HISTORIAN-VS02-01 territory: the BFS limit=count is the structural
         pre-truncation step that makes the bug real.
         """
-        src = _get_func_source(_FHIR_API_PATH, "create_fhir_app", "_expand_intensional")
+        src = _expand_intensional_union_source()
         assert "max_depth=max_depth" in src, (
             "_expand_intensional MUST pass max_depth=max_depth to BFS"
         )
@@ -1489,8 +1506,8 @@ class TestLens10SourceReadStructuralContracts:
         assert "search_names(" in src, (
             "_do_expand filter mode MUST call search_names"
         )
-        assert "limit=count + 1" in src, (
-            "_do_expand filter mode MUST use limit=count + 1 (VS-02 SKEPTIC QA-001)"
+        assert "limit=probe_budget + 1" in src, (
+            "_do_expand filter mode MUST use limit=probe_budget + 1 (QC-241)"
         )
 
     def test_h104_do_expand_filter_mode_untruncated_total_computation(self):
@@ -1500,14 +1517,14 @@ class TestLens10SourceReadStructuralContracts:
         (the +1 probe lower bound). When not count_limited, total = len(results).
         """
         src = _get_func_source(_FHIR_API_PATH, "create_fhir_app", "_do_expand")
-        assert "untruncated_total = len(results) + 1 if count_limited else len(results)" in src, (
+        assert "untruncated_total = len(results)" in src, (
             "_do_expand filter mode MUST compute untruncated_total via the +1 probe "
             "lower bound (VS-02 SKEPTIC QA-001 fix)"
         )
 
     def test_h105_intensional_path_uses_dedup_before_total(self):
         """Source-read: _expand_intensional deduplicates BEFORE computing total."""
-        src = _get_func_source(_FHIR_API_PATH, "create_fhir_app", "_expand_intensional")
+        src = _expand_intensional_union_source()
         # The dedup loop MUST be present.
         assert "seen: set[tuple[str, str]]" in src or "seen = set()" in src, (
             "_expand_intensional MUST deduplicate contains[] before computing total"

@@ -12,6 +12,15 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 
+# The repo gitignores scripts/ (operator-local tooling), so a clean
+# checkout — including the sdist, which cannot include gitignored paths —
+# lacks the scripts under test. Skip the suite there rather than fail
+# (v0.0.3 QA-001 packaging trap; see the release checklist).
+pytestmark = pytest.mark.skipif(
+    not (ROOT / "scripts").is_dir(),
+    reason="scripts/ not present (clean checkout / sdist); see v0.0.3 QA-001",
+)
+
 
 def _make_duckdb(path: Path) -> None:
     con = duckdb.connect(str(path))

@@ -67,7 +67,7 @@ import pytest
 # Spec:
 #   https://hl7.org/fhir/R4/valueset-operation-validate-code.html
 #   https://hl7.org/fhir/R4/codesystem-operation-validate-code.html
-from medterm4ds.engines.fhir import SYSTEM_TO_FHIR_URI, canonical_system_uri
+from medterm4ds.engines.fhir import SYSTEM_TO_FHIR_URI
 
 # ---------------------------------------------------------------------------
 # Constants — seeded systems + codes (mirror SKEPTIC + HISTORIAN + EXPLORER resweep).
@@ -444,8 +444,8 @@ class TestLens2CrossHandlerMessageInformativeness:
         assert _param_value(body, "result") is False
         msg = _param_value(body, "message")
         assert msg is not None, (
-            f"Unknown-code response MUST carry a message (spec Out `message`: "
-            f"'Error details, if result = false')"
+            "Unknown-code response MUST carry a message (spec Out `message`: "
+            "'Error details, if result = false')"
         )
         # Clinical-informativeness assertions: message cites BOTH code AND system.
         assert code in msg, (

@@ -53,6 +53,9 @@ Optional (search + extraction assets):
 |---|---|---|
 | `MEDTERM4DS_SEARCH_INDEX_DIR` | (built-in default) | Directory with `<category>_bm25.json`. `$search` lexical/hybrid returns 503 if missing. |
 | `MEDTERM4DS_EMBEDDING_MODEL_DIR` | (built-in default) | SapBERT model dir. `$search` semantic/hybrid returns 503 if missing. |
+| `MEDTERM4DS_LAYOUT` | `auto` | Artifact cache layout: `auto` prefers the split layout (`models/<space>/` + `data/<revision>/`, validated manifests); `legacy` forces the flat legacy layout (kill-switch). |
+| `MEDTERM4DS_DATA_REVISION` | latest | Pin the split-layout data revision (e.g. `cdb_2026_09_07`) instead of floating to the latest publish. |
+| `MEDTERM4DS_SEMANTIC_INDEX_DIR` | md5 bridge | Override the per-category FAISS index dir. Default reuses the legacy `semantic/` indexes when weights + tokenizer are byte-identical to the split model. |
 | `MEDTERM4DS_FHIR4PX_BASELINE` | (built-in default) | Directory with `patient_friendly_<source>.json`. `$lookup` skips patient-friendly properties if missing. |
 
 Optional (request caps):
@@ -70,8 +73,8 @@ Optional (operational):
 | `MEDTERM4DS_DEVICE` | `auto` | torch device for GLiNER/SapBERT inference (`auto`, `cpu`, `cuda`, `cuda:<n>`, `mps`). GPU use in Docker requires the nvidia container runtime; with it, `auto` picks the GPU automatically. |
 | `MEDTERM4DS_EXTRACT_BATCH_SIZE` | `32` | GLiNER inference batch size (sentences per forward pass) when `extract()` is called with a list of texts. |
 | `MEDTERM4DS_EMBED_BATCH_SIZE` | `64` | SapBERT queries per forward pass in canonical search/resolve batches. Raise on large-GPU hosts. |
-| `MEDTERM4DS_DISABLE_CVX_GROUPS` | unset | If set, disables the runtime CDC CVX-group fetch. |
-| `MEDTERM4DS_CVX_GROUP_URL` | (CDC default) | Override URL for CVX group data. **Must be https + cdc.gov** — anything else is rejected as an SSRF guard. |
+| `MEDTERM4DS_DISABLE_CVX_GROUPS` | unset | If set, disables CVX-group resolution from the vendored `VG.txt` (no runtime network fetch since 0.0.4). |
+| `MEDTERM4DS_NER_ALLOW_UNCALIBRATED` | unset | If `1`, loads a GLiNER config whose calibration id is not in the acceptance registry (warns with both ids). |
 
 The startup banner prints every tunable env var with its current value.
 

@@ -221,8 +221,10 @@ def test_e10_search_bundle_shape(fhir_client, rtype):
         f"{rtype} SEARCH Bundle.type should be 'searchset'; got {body.get('type')!r}"
     )
     assert "total" in body, f"{rtype} SEARCH Bundle must include 'total'"
-    assert isinstance(body.get("entry"), list), (
-        f"{rtype} SEARCH Bundle.entry must be a list (possibly empty)"
+    # QC-330: empty entry[] is OMITTED per FHIR JSON convention (properties
+    # with no value are never empty arrays) — absent entry means empty result.
+    assert body.get("entry", []) == [] or isinstance(body.get("entry"), list), (
+        f"{rtype} SEARCH Bundle.entry must be a list (possibly empty/omitted)"
     )
 
 
@@ -241,7 +243,7 @@ def test_e11_mode_full_format_xml_crossproduct(fhir_client):
         f"ct={ct!r} body[:120]={body[:120]!r}"
     )
     assert "CapabilityStatement" in body, (
-        f"mode=full should still return CapabilityStatement resourceType"
+        "mode=full should still return CapabilityStatement resourceType"
     )
 
 

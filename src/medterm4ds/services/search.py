@@ -19,15 +19,14 @@ from __future__ import annotations
 
 import json
 import logging
-import math
 import os
 import re
+import shutil
 import unicodedata
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
-from medterm4ds.core.env import env_int
 from medterm4ds.core.models import CodeRef
 from medterm4ds.core.normalize import SOURCE_LABELS
 
@@ -37,19 +36,49 @@ logger = logging.getLogger(__name__)
 
 # --- Cache directory and HF repo configuration ---
 
-# All medterm4ds artifacts (canonical, semantic, lexical) live under this dir.
-# Override via MEDTERM4DS_CACHE_DIR env var. Defaults to platform cache dir.
-_CACHE_DIR = Path(os.getenv(
-    "MEDTERM4DS_CACHE_DIR",
-    str(Path.home() / ".cache" / "medterm4ds"),
-))
-
 # Hugging Face repo holding prebuilt artifacts. Override via env vars for
 # testing or private forks. Default revision tracks the artifact-set tag
-# (v0.0.2 = Aug-2026 canonical indexes with CID corrections; v0.0.1 was
-# retargeted to the same commit so existing installs also get them).
+# (v0.0.5 = 2026-08-27 canonical build: shorthand class aliases — SGLT2i/
+# DPP4i/PPI/ARB, CDC vaccine groups, lab SNOMED crosswalk, ICD-10-PCS,
+# guard hardening; v0.0.2 = Aug-2026 canonical indexes with CID corrections).
 _HF_REPO_ID = os.getenv("MEDTERM4DS_HF_REPO_ID", "fhir4ds/medterm4ds")
-_HF_REVISION = os.getenv("MEDTERM4DS_HF_REVISION", "v0.0.2")
+_HF_REVISION = os.getenv("MEDTERM4DS_HF_REVISION", "v0.0.5")
+
+# Artifact cache layout. Two modes:
+#
+# DEFAULT (no MEDTERM4DS_CACHE_DIR): revision-keyed —
+#   ~/.cache/medterm4ds/<revision>/{canonical,semantic,lexical}/...
+# Each revision gets its own subtree, so switching MEDTERM4DS_HF_REVISION
+# (or bumping the default at release) triggers the download automatically
+# and rollback is instant. A provenance marker records what was pulled.
+#
+# OPERATOR-MANAGED (MEDTERM4DS_CACHE_DIR set): the directory is used
+# as-is, without revision keying — the deploy.sh/data-dir contract where
+# artifacts are placed by an external pipeline. Files must exist; nothing
+# is re-checked or re-keyed.
+_cache_root_env = os.getenv("MEDTERM4DS_CACHE_DIR")
+if _cache_root_env:
+    _CACHE_DIR = Path(_cache_root_env)
+    _CACHE_REVISION_KEYED = False
+else:
+    _CACHE_DIR = (Path.home() / ".cache" / "medterm4ds") / _HF_REVISION
+    _CACHE_REVISION_KEYED = True
+    # Pre-revision cache detection (root-level family dirs): it cannot be
+    # attributed to a revision, so it is never silently adopted. Tell the
+    # operator instead of re-downloading behind their back.
+    _legacy_root = Path.home() / ".cache" / "medterm4ds"
+    if _CACHE_DIR != _legacy_root and any(
+        (_legacy_root / fam).is_dir()
+        for fam in ("canonical", "semantic", "lexical")
+    ) and not (_CACHE_DIR / "canonical").is_dir():
+        logger.warning(
+            "Pre-revision artifact cache detected at %s (canonical/semantic/"
+            "lexical at the cache root). It will NOT be used because cached "
+            "artifacts cannot be attributed to revision %s. Run "
+            "`medterm4ds data cache-refresh` to fetch this revision, then "
+            "delete the root-level copies.",
+            _legacy_root, _HF_REVISION,
+        )
 
 DEFAULT_SEARCH_INDEX_DIR = str(_CACHE_DIR / "lexical")
 DEFAULT_EMBEDDING_MODEL_DIR = str(_CACHE_DIR / "semantic")
@@ -57,6 +86,73 @@ DEFAULT_CANONICAL_VALUE_SETS_PATH = str(_CACHE_DIR / "canonical" / "canonical_an
 DEFAULT_CANONICAL_CONCEPTS_INDEX = str(_CACHE_DIR / "canonical" / "canonical_concepts_faiss.index")
 DEFAULT_CANONICAL_CONCEPTS_META = str(_CACHE_DIR / "canonical" / "canonical_concepts_metadata.json")
 SEARCH_CATEGORIES = ("condition", "lab", "medication", "procedure", "vaccine", "body_structure")
+
+# --- Split-layout cache (Phase 3, docs/plans/artifact-governance-plan.md §4) ---
+#
+# models/<embedding_space_id>/   content-addressed model dirs (immutable)
+# data/<data_revision>/          canonical data dirs (float via 'latest')
+#
+# The split root is MEDTERM4DS_CACHE_DIR in operator mode, else the cache
+# root WITHOUT revision keying (~/.cache/medterm4ds). MEDTERM4DS_LAYOUT
+# selects the resolution mode: 'auto' (default) prefers split artifacts
+# when present and falls back to the legacy revision-keyed layout;
+# 'legacy' forces the legacy layout (instant rollback kill-switch).
+_LAYOUT_ENV = os.getenv("MEDTERM4DS_LAYOUT", "auto").strip().lower()
+MODELS_DIRNAME = "models"
+DATA_DIRNAME = "data"
+_SPLIT_ROOT = _CACHE_DIR if not _CACHE_REVISION_KEYED else (Path.home() / ".cache" / "medterm4ds")
+_LAYOUT_FORCED_LEGACY = _LAYOUT_ENV == "legacy"
+_DATA_REVISION_ENV = os.getenv("MEDTERM4DS_DATA_REVISION") or None
+
+_split_legacy_deprecation_logged = False
+
+
+def _natural_key(name: str) -> list[int | str]:
+    """Sort key for cdb_YYYY_MM_DD[_N] revision names (natural order)."""
+    return [int(p) if p.isdigit() else p for p in re.split(r"(\d+)", name)]
+
+
+def _local_split_model_dir() -> Path | None:
+    """Local split model dir for an ACCEPTED embedding space, if present."""
+    if _LAYOUT_FORCED_LEGACY:
+        return None
+    from medterm4ds.core.artifact_manifest import ACCEPTED_EMBEDDING_SPACES
+
+    for space in sorted(ACCEPTED_EMBEDDING_SPACES):
+        cand = _SPLIT_ROOT / "models" / space
+        if (cand / "model.safetensors").exists():
+            return cand
+    return None
+
+
+def _local_latest_data_dir() -> Path | None:
+    """Highest natural-ordered local data revision, if any (layout 'auto')."""
+    if _LAYOUT_FORCED_LEGACY:
+        return None
+    if _DATA_REVISION_ENV:
+        pinned = _SPLIT_ROOT / "data" / _DATA_REVISION_ENV
+        return pinned if (pinned / "manifest.json").exists() else None
+    data_root = _SPLIT_ROOT / "data"
+    if not data_root.is_dir():
+        return None
+    revs = [d.name for d in data_root.iterdir() if d.is_dir() and (d / "manifest.json").exists()]
+    if not revs:
+        return None
+    return data_root / max(revs, key=_natural_key)
+
+
+def _maybe_log_legacy_deprecation() -> None:
+    """One-time-per-process nudge when serving legacy artifacts."""
+    global _split_legacy_deprecation_logged
+    if _split_legacy_deprecation_logged:
+        return
+    _split_legacy_deprecation_logged = True
+    logger.info(
+        "Serving search artifacts from the legacy revision-keyed layout "
+        "(%s). Run `medterm4ds data cache-refresh --split` to migrate to "
+        "the split models/<space>/ + data/<revision>/ layout.",
+        _CACHE_DIR,
+    )
 
 # Upper bound on query length accepted by every search entry point
 # (QC-126/QC-140: no cap existed — 10K-char queries were silently tokenized).
@@ -114,7 +210,7 @@ def _hf_download(allow_patterns: list[str]) -> None:
             "huggingface_hub is required to auto-download search artifacts.\n"
             "Install with: pip install huggingface_hub\n"
             f"Or manually download from https://huggingface.co/{_HF_REPO_ID}"
-        )
+        ) from None
     logger.info("Downloading artifacts from Hugging Face (%s, revision=%s)...",
                 _HF_REPO_ID, _HF_REVISION)
     snapshot_download(
@@ -125,7 +221,152 @@ def _hf_download(allow_patterns: list[str]) -> None:
         allow_patterns=allow_patterns,
         token=os.getenv("HF_TOKEN"),
     )
+    # Provenance marker so cache-info/refresh can report WHAT the cache
+    # holds without trusting mtimes or file contents.
+    try:
+        import datetime
+        (_CACHE_DIR / "artifact_provenance.json").write_text(json.dumps({
+            "repo_id": _HF_REPO_ID,
+            "revision": _HF_REVISION,
+            "downloaded_at": datetime.datetime.now().isoformat(timespec="seconds"),
+        }, indent=2))
+    except OSError:
+        pass
     logger.info("Download complete → %s", _CACHE_DIR)
+
+
+def _hf_download_atomic(
+    allow_patterns: list[str],
+    *,
+    target_root: Path,
+    family: str,
+    revision: str,
+) -> None:
+    """Atomic variant of _hf_download for one family unit.
+
+    Downloads into a tmp dir (sibling of the target) and renames the
+    family dir into place, so an FAISS index and its metadata can never
+    be observed mixed (dual-edge rule, plan §5; model-team correction 4).
+    """
+    try:
+        from huggingface_hub import snapshot_download
+    except ImportError:
+        raise ImportError(
+            "huggingface_hub is required to auto-download search artifacts.\n"
+            "Install with: pip install huggingface_hub\n"
+            f"Or manually download from https://huggingface.co/{_HF_REPO_ID}"
+        ) from None
+    from medterm4ds.core.artifact_manifest import atomic_rename_dir
+
+    os_pid = os.getpid()
+    tmp_root = target_root.parent / f".tmp-{family}-{os_pid}"
+    if tmp_root.exists():
+        shutil.rmtree(tmp_root)
+    tmp_root.mkdir(parents=True, exist_ok=True)
+    logger.info(
+        "Downloading artifacts from Hugging Face (%s, revision=%s) → %s/%s ...",
+        _HF_REPO_ID, revision, target_root, family,
+    )
+    snapshot_download(
+        repo_id=_HF_REPO_ID,
+        revision=revision,
+        repo_type="model",
+        local_dir=str(tmp_root),
+        allow_patterns=allow_patterns,
+        token=os.getenv("HF_TOKEN"),
+    )
+    atomic_rename_dir(tmp_root / family, target_root / family)
+    shutil.rmtree(tmp_root, ignore_errors=True)
+
+
+def _remote_latest_data_revision() -> str:
+    """Latest data revision published on the HF repo's main branch."""
+    import os as _os
+
+    try:
+        from huggingface_hub import HfApi
+    except ImportError:
+        raise ImportError(
+            "huggingface_hub is required to resolve the latest data "
+            "revision. Install with: pip install huggingface_hub"
+        ) from None
+    api = HfApi(token=_os.getenv("HF_TOKEN"))
+    files = api.list_repo_files(_HF_REPO_ID, repo_type="model", revision="main")
+    revs = [
+        m.group(1)
+        for f in files
+        if (m := re.match(r"^data/([^/]+)/manifest\.json$", f))
+    ]
+    if not revs:
+        raise RuntimeError(
+            f"No data/*/manifest.json found in {_HF_REPO_ID}@main — the "
+            "split layout is not published yet; run `medterm4ds data "
+            "cache-refresh` (legacy) instead."
+        )
+    latest = max(revs, key=_natural_key)
+    logger.info("Resolved latest data revision: data/%s", latest)
+    return latest
+
+
+def _download_split_data(revision: str | None = None) -> Path:
+    """Download a split data/<revision> unit atomically; return its dir.
+
+    Resolution order: explicit revision (MEDTERM4DS_DATA_REVISION or the
+    argument) → local latest → remote latest (main). The downloaded
+    manifest is validated BEFORE the dir is considered servable; a space
+    mismatch is a loud ManifestError (never a silent legacy fallback —
+    mixing spaces serves wrong vectors).
+    """
+    from medterm4ds.core.artifact_manifest import (
+        read_manifest,
+        validate_data_manifest,
+    )
+
+    rev = revision or _DATA_REVISION_ENV
+    target: Path | None = None
+    if rev:
+        target = _SPLIT_ROOT / "data" / rev
+        if not (target / "manifest.json").exists():
+            _hf_download_atomic(
+                [f"data/{rev}/*"], target_root=_SPLIT_ROOT, family="data",
+                revision="main",
+            )
+    else:
+        local = _local_latest_data_dir()
+        if local is not None:
+            return local
+        rev = _remote_latest_data_revision()
+        target = _SPLIT_ROOT / "data" / rev
+        _hf_download_atomic(
+            [f"data/{rev}/*"], target_root=_SPLIT_ROOT, family="data",
+            revision="main",
+        )
+    manifest = read_manifest(target)
+    if manifest is None:
+        raise RuntimeError(f"Data unit at {target} has no manifest.json")
+    validate_data_manifest(manifest, source=str(target))
+    logger.info("Split data unit ready: %s", target)
+    return target
+
+
+def _download_split_model(space_id: str | None = None) -> Path:
+    """Download the split models/<space_id> unit atomically; return dir."""
+    if space_id is None:
+        from medterm4ds.core.artifact_manifest import ACCEPTED_EMBEDDING_SPACES
+
+        if not ACCEPTED_EMBEDDING_SPACES:
+            raise RuntimeError(
+                "No accepted embedding spaces in this medterm4ds release — "
+                "cannot auto-download the split model layout."
+            )
+        space_id = sorted(ACCEPTED_EMBEDDING_SPACES)[0]
+    target = _SPLIT_ROOT / "models" / space_id
+    if not (target / "model.safetensors").exists():
+        _hf_download_atomic(
+            [f"models/{space_id}/*"], target_root=_SPLIT_ROOT, family="models",
+            revision="main",
+        )
+    return target
 
 _SOURCE_TO_CATEGORIES = {
     "SNOMEDCT_US": list(SEARCH_CATEGORIES),
@@ -194,6 +435,14 @@ class CanonicalSearchResult:
     total_member_count: int
     members: list[dict[str, Any]] = field(default_factory=list)
     combination_members: list[dict[str, Any]] = field(default_factory=list)
+    # Composite-group fan-out (dictionary pass). Populated on every row of a
+    # group result: group_id identifies the group; group_cids lists the parent
+    # CID first (when the composite is anchored) then component CIDs.
+    # Pre-migration consumers take top-1 (the parent) and get today's
+    # behavior; group-aware consumers emit one item per component (skip the
+    # parent entry) per DECOMPOSITION_ARCHITECTURE.md 5.
+    group_id: str | None = None
+    group_cids: list[str] = field(default_factory=list)
 
     @property
     def code(self) -> str:
@@ -223,7 +472,7 @@ class CanonicalSearchResult:
         return _prefix_to_result_type(self.canonical_id)
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        d = {
             "canonical_id": self.canonical_id,
             "domain": self.domain,
             "result_type": self.result_type,
@@ -238,6 +487,10 @@ class CanonicalSearchResult:
             "members": self.members,
             "combination_members": self.combination_members,
         }
+        if self.group_id:
+            d["group_id"] = self.group_id
+            d["group_cids"] = self.group_cids
+        return d
 
 
 def _score_to_grade(score: float) -> str:
@@ -394,7 +647,7 @@ def apply_preferred_display(
         [CodeRef(r.source, r.code) for r in results], engine=engine
     )
     updated: list[SearchResult] = []
-    for r, info in zip(results, infos):
+    for r, info in zip(results, infos, strict=False):
         name = info.name if info else None
         updated.append(replace(r, display=name) if name else r)
     return updated
@@ -421,11 +674,26 @@ class SearchService:
         self._canonical_path = Path(canonical_path)
         self._concepts_index_path = Path(canonical_concepts_index)
         self._concepts_meta_path = Path(canonical_concepts_meta)
+        # Split-layout resolution only applies to DEFAULT (unpinned) paths —
+        # explicitly passed dirs (operator contracts, fhir4ds
+        # FHIR4DS_TERMINOLOGY_SEARCH_INDEX_DIR passthrough, provision flows)
+        # are used exactly as given (plan §6.2).
+        self._model_dir_pinned = embedding_model_dir != DEFAULT_EMBEDDING_MODEL_DIR
+        self._paths_pinned = (
+            canonical_path != DEFAULT_CANONICAL_VALUE_SETS_PATH
+            or canonical_concepts_index != DEFAULT_CANONICAL_CONCEPTS_INDEX
+            or canonical_concepts_meta != DEFAULT_CANONICAL_CONCEPTS_META
+        )
+        self._resolved_index_dir: str | None = None
+        self._concepts_data_dir: Path | None = None
+        self._concepts_data_manifest: dict | None = None
+        self._concepts_space_checked = False
         self._bm25_indexes: dict[str, dict] = {}
         self._semantic_engine = None
         self._bm25_loaded = False
         self._canonical_loaded = False
         self._canonical_by_id: dict[str, dict] = {}
+        self._group_terms: dict[str, dict] = {}
         self._canonical_by_anchor: dict[tuple[str, str], str] = {}
         self._code_to_canonical_id: dict[tuple[str, str], str] = {}
         self._concepts_faiss = None
@@ -438,13 +706,25 @@ class SearchService:
 
     @property
     def semantic_available(self) -> bool:
+        """Whether semantic search assets are available (read-only, no download).
+
+        Split-layout aware: when the model dir is not pinned and a local
+        split models/<space>/ unit exists for an accepted embedding space,
+        semantic search is available even if the legacy semantic/ dir is
+        absent (the post-`cache-refresh --split` state).
+        """
+        if not self._model_dir_pinned and _local_split_model_dir() is not None:
+            return True
         return (self._model_dir / "model.safetensors").exists()
 
     def _ensure_bm25(self) -> None:
         if self._bm25_loaded:
             return
         if not self._bm25_dir.is_dir() or not any(self._bm25_dir.glob("*_bm25.json")):
-            _hf_download(["lexical/*"])
+            _hf_download_atomic(
+                ["lexical/*"], target_root=_CACHE_DIR, family="lexical",
+                revision=_HF_REVISION,
+            )
         if not self._bm25_dir.is_dir():
             raise RuntimeError(f"BM25 index directory not found: {self._bm25_dir}")
         for category in SEARCH_CATEGORIES:
@@ -457,25 +737,163 @@ class SearchService:
                     logger.info("BM25 %s: %d records", category, index.get("num_records", 0))
         self._bm25_loaded = True
 
+    def _split_compatible_legacy_index_dir(self, split_dir: Path) -> str | None:
+        """Legacy semantic/ dir usable as per-category index source for a split model.
+
+        The bridge is valid ONLY when weights + tokenizer are byte-identical
+        (md5) — same-build proof, computed once per resolution; both dirs are
+        local so no download is involved. Render-policy staleness of the
+        legacy per-category indexes is pre-existing v0.0.5 behavior, not
+        worsened by the bridge (transitional, logged).
+        """
+        legacy = self._model_dir  # DEFAULT_EMBEDDING_MODEL_DIR (legacy semantic/)
+        try:
+            from medterm4ds.core.artifact_manifest import md5_of_file
+
+            for name in ("model.safetensors", "tokenizer.json"):
+                if not (legacy / name).exists() or not (split_dir / name).exists():
+                    return None
+                if md5_of_file(legacy / name) != md5_of_file(split_dir / name):
+                    return None
+            if not any(
+                (legacy / f"{cat}_faiss.index").exists() for cat in SEARCH_CATEGORIES
+            ):
+                return None
+        except OSError:
+            return None
+        logger.info(
+            "Bridging per-category FAISS indexes from legacy %s to split "
+            "model %s (byte-identical weights + tokenizer).",
+            legacy, split_dir,
+        )
+        return str(legacy)
+
+    def _resolve_semantic_layouts(self) -> tuple[str, str | None]:
+        """Resolve (model_dir, index_dir) for the semantic engine.
+
+        Pinned dirs are used as-is (operator contract). Otherwise:
+        (a) local split models/<space>/ unit → use it, bridging per-category
+            FAISS indexes from the legacy semantic/ dir when provably from
+            the same build (byte-identical weights + tokenizer);
+        (b) legacy semantic/ dir present → serve it with a one-time
+            deprecation nudge;
+        (c) nothing cached → download the split unit from main; only on
+            download failure fall back to the legacy semantic/* download.
+        """
+        if self._model_dir_pinned:
+            return (
+                str(self._model_dir),
+                os.getenv("MEDTERM4DS_SEMANTIC_INDEX_DIR") or None,
+            )
+
+        split_dir = _local_split_model_dir()
+        if split_dir is None and not self.semantic_available:
+            try:
+                split_dir = _download_split_model()
+            except Exception as exc:
+                logger.warning(
+                    "Split model download failed (%s); falling back to the "
+                    "legacy semantic/* download.", exc,
+                )
+        if split_dir is not None:
+            bridge = self._resolved_index_dir or self._split_compatible_legacy_index_dir(split_dir)
+            self._resolved_index_dir = bridge
+            index_dir = os.getenv("MEDTERM4DS_SEMANTIC_INDEX_DIR") or bridge
+            if index_dir is None:
+                logger.warning(
+                    "Serving split model %s WITHOUT per-category FAISS "
+                    "indexes: semantic mode is degraded (canonical concept "
+                    "search and hybrid re-ranking are unaffected). The "
+                    "legacy semantic/ dir is absent or was built from "
+                    "different weights.",
+                    split_dir,
+                )
+            return str(split_dir), index_dir
+
+        if not self.semantic_available:
+            _hf_download_atomic(
+                ["semantic/*"], target_root=_CACHE_DIR, family="semantic",
+                revision=_HF_REVISION,
+            )
+        if not self.semantic_available:
+            raise RuntimeError(f"SapBERT model not found at {self._model_dir}")
+        if not _LAYOUT_FORCED_LEGACY:
+            _maybe_log_legacy_deprecation()
+        return str(self._model_dir), None
+
     def _ensure_semantic(self):
         if self._semantic_engine is not None:
             return self._semantic_engine
-        if not self.semantic_available:
-            _hf_download(["semantic/*"])
-        if not self.semantic_available:
-            raise RuntimeError(f"SapBERT model not found at {self._model_dir}")
+        model_dir, index_dir = self._resolve_semantic_layouts()
         from medterm4ds.engines.fhir.semantic import SemanticSearchEngine
-        self._semantic_engine = SemanticSearchEngine(str(self._model_dir))
+        self._semantic_engine = SemanticSearchEngine(model_dir, index_dir=index_dir)
         return self._semantic_engine
+
+    def _resolve_split_data_dir(self) -> Path | None:
+        """Resolve the split data/<revision> dir; None means use legacy.
+
+        Manifest shape problems and unacceptable embedding spaces are loud
+        (ManifestError propagates — a malformed or foreign-space published
+        unit must not silently serve); network or not-published-yet
+        conditions degrade to the legacy layout with a warning.
+        """
+        from medterm4ds.core.artifact_manifest import (
+            ACCEPTED_EMBEDDING_SPACES,
+            ManifestError,
+            read_manifest,
+            validate_data_manifest,
+        )
+
+        target = _local_latest_data_dir()
+        if target is None:
+            try:
+                target = _download_split_data()
+            except ManifestError:
+                raise
+            except Exception as exc:
+                logger.warning(
+                    "Split data layout unavailable (%s); falling back to "
+                    "legacy canonical artifacts.", exc,
+                )
+                return None
+        manifest = read_manifest(target)
+        if manifest is None:
+            raise ManifestError(f"Data unit at {target} has no manifest.json")
+        validate_data_manifest(manifest, source=str(target))
+        declared = manifest.get("embedding_space_id")
+        if ACCEPTED_EMBEDDING_SPACES and declared not in ACCEPTED_EMBEDDING_SPACES:
+            raise ManifestError(
+                f"Data unit at {target} declares embedding space "
+                f"{declared!r}, which this medterm4ds release does not "
+                f"accept (accepted: {sorted(ACCEPTED_EMBEDDING_SPACES)}). "
+                "Pin MEDTERM4DS_DATA_REVISION to an accepted revision or "
+                "upgrade medterm4ds."
+            )
+        return target
 
     def _ensure_canonical(self) -> None:
         if self._canonical_loaded:
             return
-        if not self._canonical_path.exists():
-            _hf_download(["canonical/*"])
-        if not self._canonical_path.exists():
-            raise RuntimeError(f"Canonical ValueSets file not found: {self._canonical_path}")
-        with self._canonical_path.open() as f:
+        path = self._canonical_path
+        if not self._paths_pinned:
+            data_dir = self._resolve_split_data_dir()
+            if data_dir is not None:
+                if not (data_dir / "canonical_anchor_value_sets.json").exists():
+                    raise RuntimeError(
+                        f"Split data unit at {data_dir} is missing "
+                        "canonical_anchor_value_sets.json"
+                    )
+                path = data_dir / "canonical_anchor_value_sets.json"
+        if not path.exists():
+            _hf_download_atomic(
+                ["canonical/*"], target_root=_CACHE_DIR, family="canonical",
+                revision=_HF_REVISION,
+            )
+        if not path.exists():
+            raise RuntimeError(f"Canonical ValueSets file not found: {path}")
+        if path == self._canonical_path and not _LAYOUT_FORCED_LEGACY:
+            _maybe_log_legacy_deprecation()
+        with path.open() as f:
             vsets = json.load(f)
         for v in vsets:
             cid = v["canonical_id"]
@@ -486,8 +904,134 @@ class SearchService:
             self._code_to_canonical_id[(anchor_system, anchor_code)] = cid
             for m in v.get("members", []):
                 self._code_to_canonical_id[(m["system"], m["code"])] = cid
+        self._build_group_dictionary(vsets)
         self._canonical_loaded = True
-        logger.info("Loaded %d Master Canonical Value Sets (%d code pairs)", len(vsets), len(self._code_to_canonical_id))
+        logger.info("Loaded %d Master Canonical Value Sets (%d code pairs, %d group terms)",
+                    len(vsets), len(self._code_to_canonical_id), len(self._group_terms))
+
+    def _build_group_dictionary(self, vsets: list[dict]) -> None:
+        """Inverted index for the composite-group dictionary pass.
+
+        Terms map to {group_id, parent_cid, member_cids}: the materialized
+        composite_groups term (panel display name), plus the parent anchor's
+        name and consumer synonyms when the composite is itself anchored.
+        Group membership = anchors carrying the group_id; the parent is the
+        anchor whose code equals the group_id suffix (join contract:
+        group_id == f'GP-{anchor code}').
+        """
+        members_by_group: dict[str, list[str]] = {}
+        terms: dict[str, str] = {}
+        for v in vsets:
+            cid = v["canonical_id"]
+            for g in v.get("composite_groups") or []:
+                gid = g.get("group_id")
+                if not gid:
+                    continue
+                lst = members_by_group.setdefault(gid, [])
+                if cid not in lst:
+                    lst.append(cid)
+                # Same normalization as the query side (lowercase +
+                # whitespace collapse) so term/query normalization can
+                # never diverge.
+                term = " ".join((g.get("term") or "").lower().split())
+                if term:
+                    terms.setdefault(term, gid)
+        # parent anchor per group (code == gid suffix) + its name/synonyms as terms.
+        # Keyed by bare code — group families (LOINC panels, CVX combos,
+        # RxNorm INs) do not collide across systems; revisit if a
+        # mixed-system group family ever appears.
+        parent_by_group: dict[str, str] = {}
+        code_to_cid = {(code): cid for (system, code), cid in self._canonical_by_anchor.items()}
+        for gid in members_by_group:
+            suffix = gid[3:] if gid.startswith("GP-") else gid
+            pcid = code_to_cid.get(suffix)
+            if pcid:
+                parent_by_group[gid] = pcid
+                pa = self._canonical_by_id.get(pcid, {})
+                for t in [pa.get("patient_friendly_name")] + list(pa.get("consumer_synonyms") or []):
+                    if t and str(t).strip():
+                        terms.setdefault(" ".join(str(t).lower().split()), gid)
+        self._group_terms = {
+            t: {"group_id": gid,
+                "parent_cid": parent_by_group.get(gid),
+                "member_cids": sorted(members_by_group[gid])}
+            for t, gid in terms.items()
+        }
+
+    def _group_dictionary_search(
+        self,
+        query: str,
+        *,
+        result_types: str | list[str] | None,
+        sources: list[str] | None,
+        count: int,
+    ) -> list[CanonicalSearchResult]:
+        """Exact-match dictionary pass over composite-group terms.
+
+        Runs BEFORE embedding search (DECOMPOSITION_ARCHITECTURE.md 5): a
+        query that exactly names a composite returns the group fan-out —
+        parent CID first (naive consumers keep today's behavior), then
+        components — each row tagged with group_id/group_cids. Group-ID
+        identity is the trigger, never score ties.
+        """
+        hit = self._group_terms.get(" ".join(query.lower().split()))
+        if hit is None:
+            return []
+        gid = hit["group_id"]
+        row_cids: list[str] = []
+        if hit["parent_cid"]:
+            row_cids.append(hit["parent_cid"])
+        row_cids += [c for c in hit["member_cids"] if c != hit["parent_cid"]]
+
+        result_type_prefixes = _result_types_to_prefixes(result_types)
+        source_set = set(sources or []) or None
+        if source_set:
+            # Pairwise system aliasing only (same pairs the extraction-side
+            # source filter uses) — NOT an admit-all widening. The previous
+            # form added every major system whenever ANY filter was set,
+            # so canonical("lipid panel", sources=["CVX"]) returned LOINC
+            # rows: the caller's filter became a no-op (caught by
+            # test_source_filter_excludes_foreign_rows).
+            upper = {s.upper() for s in source_set}
+            aliases = {
+                "LNC": {"LOINC"}, "LOINC": {"LNC"},
+                "RXNORM": {"ATC"}, "ATC": {"RXNORM"},
+                "SNOMED": {"SNOMEDCT_US"}, "SNOMEDCT_US": {"SNOMED"},
+            }
+            widened = set(upper)
+            for s in upper:
+                widened |= aliases.get(s, set())
+            source_set = widened
+
+        rows: list[CanonicalSearchResult] = []
+        for cid in row_cids:
+            v = self._canonical_by_id.get(cid)
+            if v is None:
+                continue
+            anchor_system = v.get("anchor_system") or v.get("system")
+            if source_set and anchor_system.upper() not in source_set:
+                continue
+            if result_type_prefixes and not any(cid.startswith(p) for p in result_type_prefixes):
+                continue
+            rows.append(CanonicalSearchResult(
+                canonical_id=cid,
+                domain=v.get("domain", []),
+                anchor_system=anchor_system,
+                anchor_code=v.get("anchor_code") or v.get("code"),
+                patient_friendly_name=v.get("patient_friendly_name", ""),
+                score=1.0,
+                match_grade="exact",
+                matched_via_code=f"group:{gid}",
+                matched_via_display=query,
+                total_member_count=self._total_member_count(v),
+                members=v.get("members", []),
+                combination_members=v.get("combination_members", []),
+                group_id=gid,
+                group_cids=row_cids,
+            ))
+            if len(rows) >= count:
+                break
+        return rows
 
     def _resolve_categories(self, sources: list[str] | None) -> list[str]:
         if sources is None:
@@ -523,8 +1067,8 @@ class SearchService:
 
     @staticmethod
     def _filter_by_source(
-        results: list["SearchResult"], sources: list[str] | None
-    ) -> list["SearchResult"]:
+        results: list[SearchResult], sources: list[str] | None
+    ) -> list[SearchResult]:
         """Drop results whose source isn't in the requested set.
 
         Category-level filtering alone isn't sufficient — ICD10CM and SNOMEDCT_US
@@ -560,17 +1104,78 @@ class SearchService:
         """Lazy-load canonical concept FAISS index + metadata (Option C-B)."""
         if self._concepts_loaded:
             return
-        if not self._concepts_index_path.exists() or not self._concepts_meta_path.exists():
-            _hf_download(["canonical/*"])
-        if not self._concepts_index_path.exists() or not self._concepts_meta_path.exists():
+        index_path = self._concepts_index_path
+        meta_path = self._concepts_meta_path
+        if not self._paths_pinned:
+            data_dir = self._resolve_split_data_dir()
+            if data_dir is not None:
+                from medterm4ds.core.artifact_manifest import (
+                    ManifestError,
+                    read_manifest,
+                    validate_index_lineage,
+                )
+
+                manifest = read_manifest(data_dir)
+                if manifest is None:
+                    raise ManifestError(
+                        f"Data unit at {data_dir} has no manifest.json"
+                    )
+                self._concepts_data_dir = data_dir
+                self._concepts_data_manifest = manifest
+                index_path = data_dir / "canonical_concepts_faiss.index"
+                meta_path = data_dir / "canonical_concepts_metadata.json"
+                if not (index_path.exists() and meta_path.exists()):
+                    raise RuntimeError(
+                        f"Split data unit at {data_dir} is missing the "
+                        "canonical concepts index/metadata pair"
+                    )
+                # Dual-edge check: index+metadata md5s vs the manifest, and
+                # the lineage must match the manifest's declared space.
+                validate_index_lineage(
+                    manifest,
+                    data_dir,
+                    serving_space_id=str(manifest.get("embedding_space_id", "")),
+                    data_revision=str(manifest.get("data_revision", "")) or None,
+                    source=f"{data_dir} (canonical concepts)",
+                )
+        if not index_path.exists() or not meta_path.exists():
+            _hf_download_atomic(
+                ["canonical/*"], target_root=_CACHE_DIR, family="canonical",
+                revision=_HF_REVISION,
+            )
+        if not index_path.exists() or not meta_path.exists():
             self._concepts_loaded = True  # mark as checked; concept search unavailable
             return
         import faiss
-        self._concepts_faiss = faiss.read_index(str(self._concepts_index_path))
-        with self._concepts_meta_path.open() as f:
+        self._concepts_faiss = faiss.read_index(str(index_path))
+        with meta_path.open() as f:
             self._concepts_meta = json.load(f)
         self._concepts_loaded = True
         logger.info("Loaded canonical concept index: %d vectors", self._concepts_faiss.ntotal)
+
+    def _check_concepts_space(self, engine) -> None:
+        """Hard space cross-check once the serving engine is loaded.
+
+        The split data manifest's declared embedding_space_id must equal the
+        engine's manifest-validated serving space — mixing spaces serves
+        wrong vectors. Legacy layouts (engine space None) keep today's
+        semantics. Runs once per service instance.
+        """
+        if self._concepts_space_checked:
+            return
+        self._concepts_space_checked = True
+        if self._concepts_data_manifest is None:
+            return
+        serving_space_id = getattr(engine, "space_id", None)
+        if serving_space_id is None:
+            return
+        from medterm4ds.core.artifact_manifest import validate_data_manifest
+
+        validate_data_manifest(
+            self._concepts_data_manifest,
+            serving_space_id=serving_space_id,
+            source=str(self._concepts_data_dir),
+        )
 
     def _canonical_concept_search(
         self,
@@ -599,6 +1204,7 @@ class SearchService:
 
         engine = self._ensure_semantic()
         engine._ensure_loaded()
+        self._check_concepts_space(engine)
         query_emb = engine._embed(query)
 
         # Normalize result_types to a set of canonical_id prefixes.
@@ -637,7 +1243,7 @@ class SearchService:
             source_set = normalized
         results: list[CanonicalSearchResult] = []
         seen_ids: set[str] = set()
-        for score, idx in zip(scores[0], ids[0]):
+        for score, idx in zip(scores[0], ids[0], strict=False):
             if idx < 0:
                 break
             if score < min_score:
@@ -874,25 +1480,9 @@ class SearchService:
             return [[] for _ in queries]
 
         engine = self._ensure_semantic()
-        engine._ensure_loaded()
-
-        # Batch-embed all queries
-        import numpy as np
-        import torch
-        BATCH_SIZE = env_int("MEDTERM4DS_EMBED_BATCH_SIZE", minimum=1) or 64
-        all_embeddings = []
-        for i in range(0, len(queries), BATCH_SIZE):
-            batch = queries[i:i + BATCH_SIZE]
-            inputs = engine._tokenizer(
-                batch, return_tensors="pt", truncation=True, max_length=512, padding=True,
-            )
-            inputs = inputs.to(engine._model.device)
-            with torch.no_grad():
-                outputs = engine._model(**inputs)
-                emb = outputs.last_hidden_state.mean(dim=1)
-                emb = torch.nn.functional.normalize(emb, p=2, dim=1)
-                all_embeddings.append(emb.cpu().numpy().astype("float32"))
-        query_embs = np.vstack(all_embeddings) if all_embeddings else np.zeros((0, 768), dtype="float32")
+        # ARCH-001: batch embedding goes through the engine's public API —
+        # the service no longer reaches into _tokenizer/_model internals.
+        query_embs = engine.embed_batch(queries)
 
         # Batch FAISS search (over-fetch to leave room for per-query filtering)
         k = min(self._concepts_faiss.ntotal, max(count * 3, 20))
@@ -903,7 +1493,7 @@ class SearchService:
         for q_idx in range(len(queries)):
             results: list[CanonicalSearchResult] = []
             seen_ids: set[str] = set()
-            for score, idx in zip(scores[q_idx], ids[q_idx]):
+            for score, idx in zip(scores[q_idx], ids[q_idx], strict=False):
                 if idx < 0 or score < min_score:
                     break
                 m = self._concepts_meta[idx]
@@ -967,6 +1557,14 @@ class SearchService:
         self._ensure_canonical()
         self._ensure_concepts()
 
+        # Composite-group dictionary pass BEFORE embedding search: an exact
+        # group-term match fans out to the group (parent first). Falls
+        # through to the concept-index path on any miss.
+        group_results = self._group_dictionary_search(
+            query, result_types=result_types, sources=sources, count=count)
+        if group_results:
+            return group_results
+
         # Option C-B: concept index is the primary path when available.
         # If it returns empty (all results below 0.70 threshold), that's
         # intentional — don't fall back to the un-thresholded old pipeline.
@@ -995,7 +1593,7 @@ class SearchService:
         # (e.g. fresh install before build_canonical_concept_index.py has run).
         # Retrieve candidate code results using sub_mode ('semantic', 'hybrid', or 'lexical')
         raw_results = self.search(query, mode=sub_mode, sources=sources, count=max(count * 5, 50))
-        
+
         # If sub_mode returned fewer candidates, fall back to semantic search for rich semantic recall
         if len(raw_results) < count and sub_mode != "semantic":
             sem_results = self.semantic(query, sources=sources, count=max(count * 5, 50))

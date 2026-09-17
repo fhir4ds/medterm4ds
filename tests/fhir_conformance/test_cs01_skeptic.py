@@ -28,7 +28,6 @@ from __future__ import annotations
 
 import pytest
 
-
 # FHIR R4 CodeSystemContentMode enum
 # Spec: https://hl7.org/fhir/R4/valueset-codesystem-content-mode.html
 FHIR_R4_CONTENT_MODES = {"complete", "example", "fragment", "not-present", "supplement"}
@@ -52,52 +51,43 @@ FHIR_R4_FILTER_OPERATORS = {
 # ---------------------------------------------------------------------------
 
 def test_s01_termcaps_content_value_in_r4_enum(fhir_client):
-    """CS-01 item 1 / §4.8.5 CodeSystem.content binding (Required):
-    "The extent of the content of the code system ... are represented in a
-    code system resource." CodeSystemContentMode value set is REQUIRED.
-
-    medterm4ds advertises each supported system in TerminologyCapabilities with
-    a `content` value. Per AGENTS.md NOT A BUG Registry, every entry is
-    `not-present` (intentional — medterm4ds does not expose CodeSystem
-    resources). This probe pins that every advertised `content` value is a
-    member of the FHIR R4 enum. Any other value would be a CodeSystemContentMode
-    binding violation.
+    """CS-01 item 1 — SUPERSEDED by QC-333/339 (EC-15): ``content`` is an
+    R5-only TerminologyCapabilities element. R4 codeSystem children are
+    uri/version/subsumption only, so emitting ``content`` made the resource
+    schema-invalid. This probe now pins the R4 shape: NO codeSystem entry
+    carries an R5 ``content`` field.
     """
     r = fhir_client.get("/fhir/metadata?mode=terminology")
     assert r.status_code == 200, f"mode=terminology → {r.status_code}"
     body = r.json()
     assert body.get("resourceType") == "TerminologyCapabilities"
     cs_entries = body.get("codeSystem", [])
-    assert cs_entries, "TerologyCapabilities.codeSystem[] is empty — systems not advertised"
-    bad = [
+    assert cs_entries, "TerminologyCapabilities.codeSystem[] is empty — systems not advertised"
+    offenders = [
         {"uri": e.get("uri"), "content": e.get("content")}
         for e in cs_entries
-        if e.get("content") not in FHIR_R4_CONTENT_MODES
+        if "content" in e
     ]
-    pytest.current_report_extra = f"entries={len(cs_entries)} bad_content={bad}"
-    assert not bad, (
-        f"TerminologyCapabilities advertised content values not in FHIR R4 "
-        f"CodeSystemContentMode enum: {bad}. Allowed: {sorted(FHIR_R4_CONTENT_MODES)}."
+    pytest.current_report_extra = f"entries={len(cs_entries)} offenders={offenders}"
+    assert not offenders, (
+        f"TerminologyCapabilities.codeSystem[] carries R5-only 'content' "
+        f"element (removed in R4; QC-333/339): {offenders}"
     )
 
 
 def test_s02_termcaps_every_advertised_system_has_content(fhir_client):
-    """CS-01 item 1 / §4.7.1.1 item 5: every codeSystem[] entry SHALL have a
-    `content` element (cardinality 1..1 in CodeSystem.content per §4.8.5).
-    TerminologyCapabilities.codeSystem.content is also 1..1 per
-    https://hl7.org/fhir/R4/terminologycapabilities-definitions.html#TerminologyCapabilities.codeSystem.content.
-
-    SKEPTIC lens: catch the case where one source's entry was added without a
-    content field (silent missing-required-element). This is a positive
-    success-shape assertion per GLOBAL_RULES.md "Test-too-lenient".
+    """CS-01 item 1 — SUPERSEDED by QC-333/339 (EC-15): ``content`` is
+    R5-only and MUST be absent in R4 (see test_s01). The R4-required
+    per-entry element is ``uri``; subsumption is optional (present only
+    for hierarchy-capable sources per QC-339). This probe pins that shape.
     """
     r = fhir_client.get("/fhir/metadata?mode=terminology")
     body = r.json()
     cs_entries = body.get("codeSystem", [])
-    missing = [e.get("uri") for e in cs_entries if "content" not in e]
-    pytest.current_report_extra = f"missing_content={missing}"
+    missing = [e.get("uri") for e in cs_entries if not e.get("uri")]
+    pytest.current_report_extra = f"missing_uri={missing}"
     assert not missing, (
-        f"TerminologyCapabilities.codeSystem[] entries missing required `content` "
+        f"TerminologyCapabilities.codeSystem[] entries missing required `uri` "
         f"field: {missing}"
     )
 

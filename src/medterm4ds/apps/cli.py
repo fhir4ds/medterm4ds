@@ -91,7 +91,7 @@ def _memory_limit_string(value: str) -> str:
     """argparse type: reject malformed --memory-limit values (QC-380)."""
     try:
         return validate_memory_limit(value)
-    except ValueError as exc:
+    except ValueError:
         raise argparse.ArgumentTypeError(
             f"expects a DuckDB size string like 4GB or 512MB, got {value!r}"
         ) from None
@@ -227,6 +227,9 @@ def build_parser() -> argparse.ArgumentParser:
     # meaningless here. (The missing --output/--format flags are deferred
     # as a feature decision; run_text_search still routes stdout JSON via
     # _write_record_results' getattr defaults.)
+    # QC-382 companion: ``search`` deliberately takes no --db (indexes, not
+    # DuckDB). Display canonicalization (QC-400) therefore runs engine-less
+    # in run_text_search; MEDTERM4DS_DB enables it without a flag.
     text_search.set_defaults(func=run_text_search)
 
     # Text extraction (NER + ConText + code resolution)
@@ -258,6 +261,8 @@ def build_parser() -> argparse.ArgumentParser:
     # than hardcoded hybrid/certain.
     from medterm4ds.services.extraction import (
         DEFAULT_MIN_GRADE as _EXTRACT_DEFAULT_MIN_GRADE,
+    )
+    from medterm4ds.services.extraction import (
         DEFAULT_SEARCH_MODE as _EXTRACT_DEFAULT_MODE,
     )
     extract.add_argument(
@@ -269,6 +274,14 @@ def build_parser() -> argparse.ArgumentParser:
         "--min-grade", default=_EXTRACT_DEFAULT_MIN_GRADE,
         choices=["certain", "exact", "probable", "possible", "broader"],
         help="Minimum ConText certainty grade to keep (default: certain).",
+    )
+    # QA-005: annotation_fields existed only on the Python API — wire
+    # surfaces either ignored it (FHIR, silently) or rejected it (MCP).
+    extract.add_argument(
+        "--annotation-fields",
+        help="Comma-separated annotated-marker fields for --format annotated "
+             "(text, name, type, source_code, canonical_id, status). "
+             "Default: text,type.",
     )
     extract.add_argument("--include-negated", action="store_true", help="Include negated mentions.")
     # QC-166: these existed only on the Python API — historical mentions
@@ -307,6 +320,27 @@ def build_parser() -> argparse.ArgumentParser:
     data_verify = data_subparsers.add_parser("verify", help="Verify a local DuckDB database.")
     _add_data_verify_args(data_verify)
     data_verify.set_defaults(func=run_data_verify)
+    data_cache_info = data_subparsers.add_parser(
+        "cache-info", help="Show search-artifact cache layout, contents, and provenance.")
+    data_cache_info.set_defaults(func=run_data_cache_info)
+    data_cache_refresh = data_subparsers.add_parser(
+        "cache-refresh",
+        help="Force-download search artifacts for a revision (HF-managed cache only).")
+    data_cache_refresh.add_argument(
+        "--revision", default=None,
+        help="Revision to fetch (default: the active MEDTERM4DS_HF_REVISION).")
+    data_cache_refresh.add_argument(
+        "--split", action="store_true",
+        help="Migrate to the split layout: models/<space>/ + data/<revision>/ "
+             "from the repo's main branch (atomic per-unit downloads).")
+    data_cache_refresh.add_argument(
+        "--data-revision", default=None,
+        help="Data revision for --split (default: latest published on main; "
+             "or MEDTERM4DS_DATA_REVISION).")
+    data_cache_refresh.set_defaults(func=run_data_cache_refresh)
+    data_cache_list = data_subparsers.add_parser(
+        "cache-list", help="List artifact-repo tags and branches (network call).")
+    data_cache_list.set_defaults(func=run_data_cache_list)
 
     return parser
 
@@ -1429,18 +1463,10 @@ def run_hierarchy(args: argparse.Namespace) -> int:
 
 
 def run_mapping(args: argparse.Namespace) -> int:
-    try:
-        import duckdb
-    except ImportError as exc:
-        raise SystemExit("DuckDB is required. Install medterm4ds[duckdb].") from exc
-
-    db_path = Path(args.db)
-    if not db_path.exists():
-        raise SystemExit(f"Database not found: {db_path}")
-
     # QC-023: empty-string --target-source is a clear shell-scripting bug.
     # The service layer rejects '' (QC-021), but surface a clean CLI message
-    # rather than a traceback.
+    # rather than a traceback. Input validation runs BEFORE the DB check so
+    # bad arguments fail identically with or without a local database.
     target_sources = list(args.target_source or [])
     empty_targets = [t for t in target_sources if not t or not t.strip()]
     if empty_targets:
@@ -1458,6 +1484,15 @@ def run_mapping(args: argparse.Namespace) -> int:
                 f"{target!r} (looks like a URI/OID). FHIR URIs are not accepted "
                 f"here; use the SAB form."
             )
+
+    try:
+        import duckdb
+    except ImportError as exc:
+        raise SystemExit("DuckDB is required. Install medterm4ds[duckdb].") from exc
+
+    db_path = Path(args.db)
+    if not db_path.exists():
+        raise SystemExit(f"Database not found: {db_path}")
 
     config = local_duckdb_config(
         args.memory_profile,
@@ -1683,6 +1718,32 @@ def run_text_search(args: argparse.Namespace) -> int:
 
     # Clean CLI errors for input validation (whitespace/over-length query,
     # invalid mode/count) instead of raw tracebacks — QC-022/QC-027 pattern.
+    # QC-400/QC06-001: pass an engine (when one can be opened from
+    # MEDTERM4DS_DB) so result displays are canonicalized to the engine
+    # preferred term — the same one-display convention Python/FHIR/MCP emit.
+    # The ``search`` parser intentionally carries no --db (QC-382: search
+    # reads BM25/SapBERT indexes, not DuckDB), so the engine is optional:
+    # absent MEDTERM4DS_DB the raw index displays ship (documented).
+    engine = None
+    con = None
+    db_path = os.getenv("MEDTERM4DS_DB")
+    if db_path and Path(db_path).exists():
+        try:
+            con = _connect_read_only(Path(db_path))
+            engine = LocalDuckDBEngine(con, config=_local_duckdb_config_from_args(args))
+        except Exception as exc:  # best-effort: canonical displays, not correctness
+            print(
+                f"Warning: could not open {db_path} for display "
+                f"canonicalization ({exc}); serving raw index displays.",
+                file=sys.stderr,
+            )
+            engine = None
+            if con is not None:
+                try:
+                    con.close()
+                except Exception:
+                    pass
+                con = None
     try:
         results = search_service(
             args.query,
@@ -1690,9 +1751,13 @@ def run_text_search(args: argparse.Namespace) -> int:
             sources=args.sources,
             count=args.limit,
             result_types=result_types,
+            engine=engine,
         )
     except (ValueError, TypeError) as exc:
         raise SystemExit(f"Error: {exc}") from exc
+    finally:
+        if con is not None:
+            con.close()
     _write_record_results(
         [r.to_dict() for r in results],
         output=getattr(args, "output", None),
@@ -1709,18 +1774,28 @@ def run_extract(args: argparse.Namespace) -> int:
     # on the parser; the service accepts str | list — pass a list.
     ner_labels = args.ner_labels.split(",") if args.ner_labels else None
     result_types = args.result_types.split(",") if args.result_types else None
-    results = extract_service(
-        args.text,
-        format=args.format,
-        ner_labels=ner_labels,
-        result_types=result_types,
-        mode=args.mode,
-        min_grade=args.min_grade,
-        include_negated=args.include_negated,
-        include_uncertain=args.include_uncertain,
-        include_historical=args.include_historical,
-        include_family=args.include_family,
+    annotation_fields = (
+        args.annotation_fields.split(",") if args.annotation_fields else None
     )
+    try:
+        results = extract_service(
+            args.text,
+            format=args.format,
+            ner_labels=ner_labels,
+            result_types=result_types,
+            mode=args.mode,
+            min_grade=args.min_grade,
+            include_negated=args.include_negated,
+            include_uncertain=args.include_uncertain,
+            include_historical=args.include_historical,
+            include_family=args.include_family,
+            annotation_fields=annotation_fields,
+        )
+    except ValueError as exc:
+        # Comma-list args (annotation_fields, free-form result_types) pass
+        # argparse choices and are validated service-side (eagerly, pre-NER);
+        # surface them as a one-line error like every sibling runner.
+        raise SystemExit(f"Error: {exc}") from exc
     # annotated format returns a dict with annotated_text + spans, not a list of records
     if args.format == "annotated":
         import json as _json
@@ -1896,6 +1971,32 @@ def run_data_verify(args: argparse.Namespace) -> int:
     # was a no-op gate even for a DB missing required tables or with zero
     # codes in every requested source.
     return 0 if report.get("ok") else 1
+
+
+def run_data_cache_info(args: argparse.Namespace) -> int:
+    from medterm4ds.core.artifact_cache import cache_info
+
+    sys.stdout.write(_json_dumps(cache_info()))
+    return 0
+
+
+def run_data_cache_refresh(args: argparse.Namespace) -> int:
+    from medterm4ds.core.artifact_cache import cache_refresh
+
+    report = cache_refresh(
+        revision=args.revision,
+        split=args.split,
+        data_revision=args.data_revision,
+    )
+    sys.stdout.write(_json_dumps(report))
+    return 0
+
+
+def run_data_cache_list(args: argparse.Namespace) -> int:
+    from medterm4ds.core.artifact_cache import cache_list_remote
+
+    sys.stdout.write(_json_dumps(cache_list_remote()))
+    return 0
 
 
 def _run_bulk_record_export(

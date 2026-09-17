@@ -417,6 +417,7 @@ def test_get_code_mappings_rejects_string_max_depth():
 def test_run_mapping_rejects_empty_target_source():
     """QC-023: --target-source '' must exit non-zero with a clean message."""
     import argparse
+
     from medterm4ds.apps.cli import run_mapping
 
     args = argparse.Namespace(
@@ -450,6 +451,7 @@ def test_run_mapping_rejects_uri_form_target_source():
     The fix applies the same URI/OID rejection that --source uses (QC-011).
     """
     import argparse
+
     from medterm4ds.apps.cli import run_mapping
 
     args = argparse.Namespace(
@@ -483,8 +485,8 @@ def test_run_mapping_rejects_negative_max_depth():
     service-layer validation itself is tested above (test_get_code_mappings_*
     tests); this test confirms the CLI renders it as a SystemExit.
     """
-    import argparse
     import inspect
+
     from medterm4ds.apps.cli import run_mapping
 
     # Source-read audit: run_mapping must wrap get_code_mappings in
@@ -508,6 +510,7 @@ def test_run_mapping_disables_progress_bar_for_stdout():
     printing query command; run_mapping must route its connection through it.
     """
     import inspect
+
     from medterm4ds.apps.cli import _connect_read_only, run_mapping
 
     source = inspect.getsource(run_mapping)

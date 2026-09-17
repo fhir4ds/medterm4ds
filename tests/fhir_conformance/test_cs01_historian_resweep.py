@@ -39,7 +39,6 @@ ID; log new pattern-match bugs with a FHIR spec citation.
 from __future__ import annotations
 
 import ast
-import inspect
 from pathlib import Path
 
 import pytest
@@ -51,12 +50,10 @@ import pytest
 # ---------------------------------------------------------------------------
 from medterm4ds.engines.fhir import (
     FHIR_URI_ALIASES,
-    FHIR_R4_FILTER_OPERATORS,
     SYSTEM_TO_FHIR_URI,
     canonical_system_uri,
     fhir_uri_to_system,
     sab_label_to_fhir_uri,
-    system_to_fhir_uri,
 )
 
 # FHIR R4 CodeSystemContentMode enum (5 values — verified 2026-08-08 against
@@ -300,12 +297,12 @@ def test_h15_supported_system_extension_advertises_canonical_hcpcs(fhir_client):
         f"legacy_in_ext={LEGACY_HCPCS_THO_URL in supported_uris}"
     )
     assert CANONICAL_HCPCS_URI in supported_uris, (
-        f"Canonical HCPCS URI missing from capabilitystatement-supported-"
-        f"system extension. HCPCS URI drift regression."
+        "Canonical HCPCS URI missing from capabilitystatement-supported-"
+        "system extension. HCPCS URI drift regression."
     )
     assert LEGACY_HCPCS_THO_URL not in supported_uris, (
-        f"Legacy HCPCS THO URL leaked into capabilitystatement-supported-"
-        f"system extension (should be input-only alias). HCPCS URI drift."
+        "Legacy HCPCS THO URL leaked into capabilitystatement-supported-"
+        "system extension (should be input-only alias). HCPCS URI drift."
     )
 
 
@@ -368,9 +365,9 @@ def test_h20_do_lookup_wires_sab_label_to_fhir_uri_helper():
     pytest.current_report_extra = f"found_lookup_fn={bool(lookup_fn)}"
     assert lookup_fn, "_do_lookup function not found"
     assert "sab_label_to_fhir_uri" in lookup_fn, (
-        f"_do_lookup MUST call sab_label_to_fhir_uri to translate the raw "
-        f"SAB label to the FHIR canonical system URI before emitting the "
-        f"canonical-system custom property. CS-01 SKEPTIC QA-043 regression."
+        "_do_lookup MUST call sab_label_to_fhir_uri to translate the raw "
+        "SAB label to the FHIR canonical system URI before emitting the "
+        "canonical-system custom property. CS-01 SKEPTIC QA-043 regression."
     )
 
 
@@ -684,8 +681,8 @@ def test_h41_canonical_code_is_passthrough_from_patient_friendly_json():
         f"Source: {lookup_fn[:600]}"
     )
     assert 'pf.get("canonical_code")' in lookup_fn or "pf.get('canonical_code')" in lookup_fn, (
-        f"_do_lookup MUST assign canonical-code via pf.get('canonical_code') "
-        f"(passthrough — no transformation). CF-EXPLORER-CS01-01 regression."
+        "_do_lookup MUST assign canonical-code via pf.get('canonical_code') "
+        "(passthrough — no transformation). CF-EXPLORER-CS01-01 regression."
     )
 
 
@@ -742,8 +739,8 @@ def test_h51_termcaps_content_not_present_for_all_systems(fhir_client):
     )
     # QC-339: hierarchical systems declare subsumption support so the TC no
     # longer contradicts the CapabilityStatement's $subsumes operation.
-    from medterm4ds.engines.fhir.responses import _subsumption_capable
     from medterm4ds.engines.fhir import FHIR_URI_TO_SYSTEM
+    from medterm4ds.engines.fhir.responses import _subsumption_capable
 
     missing = [
         e["uri"] for e in entries
@@ -775,11 +772,11 @@ def test_h52_fhir_init_does_not_yet_define_content_modes_constant():
     # Carry-forward-as-probe pattern: assert the DEFERRED state.
     # When the promotion lands, this assertion MUST be flipped.
     assert not has_constant, (
-        f"FHIR_R4_CONTENT_MODES is now defined in engines/fhir/__init__.py — "
-        f"CF-SKEPTIC-CS01-RESWEEP-01 was RESOLVED. This probe (carry-forward-"
-        f"as-probe pattern) MUST be updated: import the constant from "
-        f"engines.fhir instead of defining it locally in this test file, "
-        f"then flip this assertion to `assert has_constant`."
+        "FHIR_R4_CONTENT_MODES is now defined in engines/fhir/__init__.py — "
+        "CF-SKEPTIC-CS01-RESWEEP-01 was RESOLVED. This probe (carry-forward-"
+        "as-probe pattern) MUST be updated: import the constant from "
+        "engines.fhir instead of defining it locally in this test file, "
+        "then flip this assertion to `assert has_constant`."
     )
 
 
@@ -800,13 +797,13 @@ def test_h53_other_r4_closed_enums_are_in_canonical_location():
         f"has_filter_ops={'FHIR_R4_FILTER_OPERATORS' in src}"
     )
     assert "FHIR_R4_CONCEPT_MAP_EQUIVALENCE" in src, (
-        f"FHIR_R4_CONCEPT_MAP_EQUIVALENCE missing from engines/fhir/__init__.py "
-        f"(CR-014 regression). The content enum (CF-SKEPTIC-CS01-RESWEEP-01) "
-        f"is the straggler ONLY if the other 2 are present."
+        "FHIR_R4_CONCEPT_MAP_EQUIVALENCE missing from engines/fhir/__init__.py "
+        "(CR-014 regression). The content enum (CF-SKEPTIC-CS01-RESWEEP-01) "
+        "is the straggler ONLY if the other 2 are present."
     )
     assert "FHIR_R4_FILTER_OPERATORS" in src, (
-        f"FHIR_R4_FILTER_OPERATORS missing from engines/fhir/__init__.py "
-        f"(CR-014 regression)."
+        "FHIR_R4_FILTER_OPERATORS missing from engines/fhir/__init__.py "
+        "(CR-014 regression)."
     )
 
 
@@ -827,7 +824,14 @@ def test_h60_registry_advertised_uris_bidirectional_invariant(fhir_client):
     """
     body = fhir_client.get("/fhir/metadata?mode=terminology").json()
     advertised = {e.get("uri") for e in body.get("codeSystem", [])}
-    canonical = set(SYSTEM_TO_FHIR_URI.values())
+    # QC-367: pseudo-sources are output namespaces — not advertised.
+    from medterm4ds.engines.fhir import PSEUDO_SYSTEM_SOURCES
+
+    canonical = {
+        uri
+        for source, uri in SYSTEM_TO_FHIR_URI.items()
+        if source not in PSEUDO_SYSTEM_SOURCES
+    }
     missing = canonical - advertised
     extras = advertised - canonical
     pytest.current_report_extra = f"missing={sorted(missing)} extras={sorted(extras)}"
@@ -881,8 +885,8 @@ def test_h70_read_route_uses_fhir_response_for_404():
     pytest.current_report_extra = f"found_read_fn={bool(read_fn)}"
     assert read_fn, "read_resource function not found"
     assert "_fhir_response" in read_fn or "_fhir_error" in read_fn, (
-        f"read_resource MUST call _fhir_response/_fhir_error. "
-        f"CS-01 SKEPTIC QA-002 regression."
+        "read_resource MUST call _fhir_response/_fhir_error. "
+        "CS-01 SKEPTIC QA-002 regression."
     )
 
 
@@ -899,8 +903,8 @@ def test_h71_search_route_uses_fhir_response_for_bundle():
     pytest.current_report_extra = f"found_search_fn={bool(search_fn)}"
     assert search_fn, "search_resource function not found"
     assert "_fhir_response" in search_fn, (
-        f"search_resource MUST call _fhir_response. "
-        f"CS-01 SKEPTIC QA-003 regression."
+        "search_resource MUST call _fhir_response. "
+        "CS-01 SKEPTIC QA-003 regression."
     )
 
 

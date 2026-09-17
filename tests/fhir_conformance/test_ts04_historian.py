@@ -52,11 +52,9 @@ Carry-forwards from SKEPTIC (CF-SKEPTIC-01):
 
 from __future__ import annotations
 
-import os
 from pathlib import Path
 
 import pytest
-
 
 # =============================================================================
 # Helper for env-var-overridden deployments
@@ -71,9 +69,10 @@ def _make_https_test_client(tmp_path: Path, monkeypatch, host: str, port: str,
     Mirrors the helper in test_ts04_skeptic.py.
     """
     pytest.importorskip("fastapi")
-    from starlette.testclient import TestClient
-    from medterm4ds.apps.fhir_api import FhirApiSettings, create_fhir_app
     import duckdb
+    from starlette.testclient import TestClient
+
+    from medterm4ds.apps.fhir_api import FhirApiSettings, create_fhir_app
 
     monkeypatch.setenv("MEDTERM4DS_API_HOST", host)
     monkeypatch.setenv("MEDTERM4DS_FHIR_API_PORT", port)
@@ -595,7 +594,7 @@ def test_h50_batch_validate_code_response_uses_canonical_uri(fhir_client):
     )
     # MUST NOT be the raw SAB.
     assert sys_val != "SNOMEDCT_US", (
-        f"Raw SAB leaked into batch response system field"
+        "Raw SAB leaked into batch response system field"
     )
 
 

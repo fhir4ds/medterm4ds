@@ -12,10 +12,7 @@ from __future__ import annotations
 
 import inspect
 
-import pytest
-
 from medterm4ds.engines.fhir import FHIR_R4_CONCEPT_MAP_EQUIVALENCE
-
 
 SNOMED_URI = "http://snomed.info/sct"
 SNOMED_OID_ALIAS = "urn:oid:2.16.840.1.113883.6.96"

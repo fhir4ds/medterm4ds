@@ -21,6 +21,7 @@ Requires [medterm4ds,extraction] extra: pip install medterm4ds[extraction]
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import re
@@ -39,6 +40,32 @@ DEFAULT_NER_MODEL = os.getenv("MEDTERM4DS_NER_MODEL", "knowledgator/gliner-bi-sm
 # drift can't silently change extraction recall — drift observed 2026-08-14.
 # Override (or disable with an empty value) via MEDTERM4DS_NER_MODEL_REVISION.
 DEFAULT_NER_MODEL_REVISION = os.getenv("MEDTERM4DS_NER_MODEL_REVISION", "3d74c1bf459b8b1c0be1ecbddd679416ce005418") or None
+
+
+def _calibration_id(labels: list[str], threshold: float) -> str:
+    """Hash of the NER calibration (labels + threshold).
+
+    The artifact-governance contract (docs/plans/artifact-governance-plan.md
+    §3): the commit pin alone hides calibration drift — the labels/threshold
+    pair is what the 185-entity golden set was calibrated against. The id
+    ships in the extraction_ner manifest and is checked against the
+    runtime's ACCEPTED_NER_CALIBRATIONS registry.
+    """
+    import hashlib
+
+    payload = json.dumps(
+        {"labels": list(labels), "threshold": threshold},
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    return f"cal_{hashlib.sha256(payload.encode()).hexdigest()[:16]}"
+
+
+# Calibration id of the shipped defaults (the calibrated pair). A loaded
+# pipeline whose calibration differs from an accepted id must be explicitly
+# overridden — and the override logs both ids on every load.
+# Defined after DEFAULT_LABELS/DEFAULT_THRESHOLD below (module order).
+DEFAULT_NER_CALIBRATION_ID: str = ""
 # Canonical mode is the default — it searches canonical anchor names directly
 # via the FAISS concept index, with a 0.70 confidence floor that filters weak
 # matches. Hybrid/lexical modes still available for callers who want raw UMLS.
@@ -68,6 +95,9 @@ DEFAULT_LABELS = [
 # NER confidence threshold. Lower = more recall, more false positives.
 # 0.15 calibrated by the model team for the knowledgator model + 9-label set.
 DEFAULT_THRESHOLD = float(os.getenv("MEDTERM4DS_NER_THRESHOLD", "0.15"))
+
+# Bind the default calibration id now that the calibrated pair is defined.
+DEFAULT_NER_CALIBRATION_ID = _calibration_id(DEFAULT_LABELS, DEFAULT_THRESHOLD)
 
 # NLP label → canonical search result types (passed to SearchService.canonical
 # as result_types=...). Values are the label's canonical anchor categories.
@@ -198,12 +228,17 @@ def _register_context_arbiter(nlp) -> bool:
     rules += [ConTextRule(literal=u, category="MEASUREMENT",
                           pattern=_unit_pattern(u))
               for u in _LAB_RESULT_UNIT_REGEXES]
-    # "was/is/at N" — bare numeric result context ("Creatinine was 2.1",
+    # "was/is N" — bare numeric result context ("Creatinine was 2.1",
     # "potassium is 5.2"). These sentences carry no explicit measurement cue
     # word or unit, so Signals 1-2 miss them; the copula+number pattern is
     # the remaining disambiguator (10 no-signal errors in the v2 corpus).
+    # CR-052: "at" is deliberately excluded — it fired MEASUREMENT
+    # sentence-wide on clock times and whole-number doses ("given at 8",
+    # "was 500 mg"), degrading clean medication decisions to [lab,
+    # medication] on parser-less installs. "was/is" keep both integer and
+    # decimal results ("platelets was 150" stays a lab signal).
     rules += [ConTextRule(literal="copula-result", category="MEASUREMENT",
-                          pattern=r"\b(?:was|is|at)\s+\d+(?:\.\d+)?\b")]
+                          pattern=r"\b(?:was|is)\s+\d+(?:\.\d+)?\b")]
     rules += [ConTextRule(literal=c, category="ADMINISTRATION")
               for c in _ADMINISTRATION_CUES]
     ctx.add(rules)
@@ -373,7 +408,7 @@ def _arbitrate_lab_vs_med(span, parser_doc, context_ent, parser_chunks=None) -> 
     return _context_arbitrate_categories(context_ent)
 
 
-def _span_search_categories(span: "FilteredSpan") -> str | list[str] | None:
+def _span_search_categories(span: FilteredSpan) -> str | list[str] | None:
     """Effective canonical search categories for a span (constrain step).
 
     ConText arbitration first — but ONLY for spans GLiNER typed as a
@@ -773,6 +808,34 @@ class NlpPipeline:
         from loguru import logger as _loguru_logger
         _loguru_logger.remove()
 
+        # Artifact-governance calibration gate (plan §5): the loaded
+        # pipeline's calibration (labels + threshold) must be an accepted
+        # one. MEDTERM4DS_NER_ALLOW_UNCALIBRATED=1 loads anyway but logs
+        # the accepted-vs-served ids on EVERY load (never refuse silently,
+        # never override silently). Empty registry = migration mode (the
+        # Phase 2 dual-publish populates ACCEPTED_NER_CALIBRATIONS).
+        from medterm4ds.core.artifact_manifest import ACCEPTED_NER_CALIBRATIONS
+
+        loaded_calibration = _calibration_id(self._labels, self._threshold)
+        if ACCEPTED_NER_CALIBRATIONS and loaded_calibration not in ACCEPTED_NER_CALIBRATIONS:
+            if os.getenv("MEDTERM4DS_NER_ALLOW_UNCALIBRATED", "") == "1":
+                logger.warning(
+                    "NER calibration %s is NOT in the accepted set %s — "
+                    "loading anyway (MEDTERM4DS_NER_ALLOW_UNCALIBRATED=1). "
+                    "Label set / threshold were not calibrated against the "
+                    "golden set; extraction quality is unverified.",
+                    loaded_calibration, sorted(ACCEPTED_NER_CALIBRATIONS),
+                )
+            else:
+                raise RuntimeError(
+                    f"NER calibration {loaded_calibration} (labels+threshold "
+                    f"hash) is not accepted by this medterm4ds release "
+                    f"(accepted: {sorted(ACCEPTED_NER_CALIBRATIONS)}). "
+                    "Recalibrate against the golden set, or set "
+                    "MEDTERM4DS_NER_ALLOW_UNCALIBRATED=1 to load anyway "
+                    "(ids are logged on every load)."
+                )
+
         # Load GLiNER. revision= pins the HF repo commit (see
         # DEFAULT_NER_MODEL_REVISION) so weight drift can't silently change
         # extraction recall; None (explicit constructor override or empty
@@ -840,11 +903,6 @@ class NlpPipeline:
         # Step 1: Run text through medspaCy sentencizer (PyRuSH)
         doc = self._nlp(text)
 
-        # Parser pass (same text, separate model) for the three-signal
-        # arbiter's Signals 1-2 (head noun, unit type). Aligned to spans
-        # by character offsets below.
-        parser_doc = self._parser_nlp(text) if self._parser_nlp is not None else None
-
         # Step 2: Execute GLiNER zero-shot NER per sentence/clause
         raw_entities = []
         for sent in doc.sents:
@@ -867,6 +925,11 @@ class NlpPipeline:
 
         if not raw_entities:
             return []
+
+        # CR-054: parser pass runs only when entities exist — notes with
+        # zero medical entities were paying the full tagger+parser cost on
+        # the whole text for nothing.
+        parser_doc = self._parser_nlp(text) if self._parser_nlp is not None else None
 
         return self._finalize_doc(text, doc, parser_doc, raw_entities)
 
@@ -897,11 +960,6 @@ class NlpPipeline:
             return []
 
         docs = list(self._nlp.pipe(texts, batch_size=8))
-        parser_docs = (
-            list(self._parser_nlp.pipe(texts, batch_size=16))
-            if self._parser_nlp is not None
-            else [None] * len(texts)
-        )
 
         # Pool sentences across all texts, remembering (doc index, sentence
         # start offset) so batched results scatter back exactly like
@@ -923,7 +981,7 @@ class NlpPipeline:
                 flat_ner=True, threshold=self._threshold, multi_label=False,
                 batch_size=batch_size,
             )
-            for (doc_idx, sent_offset), sent_ents in zip(owners, batched):
+            for (doc_idx, sent_offset), sent_ents in zip(owners, batched, strict=False):
                 for ent in sent_ents:
                     raw_per_doc[doc_idx].append({
                         "start": sent_offset + ent["start"],
@@ -932,6 +990,19 @@ class NlpPipeline:
                         "score": ent["score"],
                         "text": ent["text"],
                     })
+
+        # CR-054: the en_core_web_sm parse runs only for texts that HAVE
+        # entities — blanket-parsing every input paid tagger+parser cost on
+        # entity-free texts for nothing, batch-wide.
+        parser_docs: list[Any] = [None] * len(texts)
+        if self._parser_nlp is not None:
+            needy = [i for i, raw in enumerate(raw_per_doc) if raw]
+            if needy:
+                parsed = self._parser_nlp.pipe(
+                    (texts[i] for i in needy), batch_size=16
+                )
+                for i, parser_doc in zip(needy, parsed, strict=False):
+                    parser_docs[i] = parser_doc
 
         return [
             self._finalize_doc(texts[i], docs[i], parser_docs[i], raw_per_doc[i])
@@ -951,7 +1022,6 @@ class NlpPipeline:
             return []
 
         # Step 3: Add GLiNER entities as spaCy spans so ConText can annotate them
-        from spacy.tokens import Span
 
         spacy_spans = []
         for ent in raw_entities:
@@ -1097,13 +1167,22 @@ def _normalize_annotation_fields(value: str | list[str] | None) -> list[str]:
     return list(value)
 
 
+def _validate_min_grade(grade: str) -> None:
+    """QC-161/QA-004: garbage min_grade was silently treated as the strictest
+    grade (0) because _GRADE_ORDER.get(grade_threshold, 0) defaults unknown
+    keys to 0. Shared by the eager extract() boundary and both resolve paths."""
+    if grade not in _GRADE_ORDER:
+        valid = ", ".join(sorted(_GRADE_ORDER))
+        raise ValueError(f"Unknown min_grade: {grade!r}. Valid: {valid}.")
+
+
 def _annotation_marker_values(
     fields: list[str],
     *,
     entity_text: str,
     label: str,
-    span: "FilteredSpan",
-    concept: "ExtractedConcept | None",
+    span: FilteredSpan,
+    concept: ExtractedConcept | None,
 ) -> list[str]:
     """Render the configured marker fields for one span.
 
@@ -1135,13 +1214,13 @@ def _annotation_marker_values(
 
 
 def _first_matching_concept(
-    span: "FilteredSpan",
+    span: FilteredSpan,
     results: list,
     ss: tuple[str, ...] | None,
     *,
     result_type_prefixes: set[str] | None,
     grade_threshold: str,
-) -> "ExtractedConcept | None":
+) -> ExtractedConcept | None:
     """First search result passing the span's source/category/grade filters.
 
     Constrain-then-fallback (QC-182 follow-up): try the label's categories
@@ -1207,7 +1286,7 @@ def _first_matching_concept(
     return None
 
 
-def _dedup_concepts(concepts: list["ExtractedConcept"]) -> list["ExtractedConcept"]:
+def _dedup_concepts(concepts: list[ExtractedConcept]) -> list[ExtractedConcept]:
     """Deduplicate by canonical_id (preferred) or source:code (legacy).
 
     QC-183: the key includes status — without it a negated mention could
@@ -1402,15 +1481,9 @@ class ExtractionService:
         # delegation pattern) and reduce to canonical_id prefixes for the
         # post-filtering below.
         result_type_prefixes = _result_types_to_prefixes(result_types)
-        # QC-161: garbage min_grade was silently treated as the strictest
-        # grade (0) because _GRADE_ORDER.get(grade_threshold, 0) defaults
-        # unknown keys to 0. Validate at the service boundary so wire surfaces
-        # that forward it unconstrained (MCP) get a clean ValueError.
-        if grade_threshold not in _GRADE_ORDER:
-            valid = ", ".join(sorted(_GRADE_ORDER))
-            raise ValueError(
-                f"Unknown min_grade: {grade_threshold!r}. Valid: {valid}."
-            )
+        # QC-161: validate at the service boundary so wire surfaces that
+        # forward min_grade unconstrained (MCP) get a clean ValueError.
+        _validate_min_grade(grade_threshold)
 
         # --- Batch path for canonical mode ---
         # Embed ALL search texts in one SapBERT forward pass, then batch-search
@@ -1438,7 +1511,7 @@ class ExtractionService:
                     )
                 return part_cache[key]
 
-            for span, results in zip(spans, batch_results):
+            for span, results in zip(spans, batch_results, strict=False):
                 ss = _LABEL_TO_SOURCES.get(span.entity_type.lower())
                 matched = _first_matching_concept(
                     span, results, ss,
@@ -1590,13 +1663,9 @@ class ExtractionService:
                             if part_resolved:
                                 break
 
-        seen: dict[tuple[str, str], ExtractedConcept] = {}
-        for c in concepts:
-            # QC-183: include status in the dedup key (see batch path above).
-            key = (c.canonical_id or f"{c.source}:{c.code}", c.status)
-            if key not in seen or c.confidence > seen[key].confidence:
-                seen[key] = c
-        return sorted(seen.values(), key=lambda c: c.confidence, reverse=True)
+        # CR-063: shared with the batch path — a local copy here forked
+        # silently if the QC-183 status-inclusive key ever changed.
+        return _dedup_concepts(concepts)
 
     def _resolve_spans_batch_locked(
         self,
@@ -1632,11 +1701,7 @@ class ExtractionService:
         search = get_search_service()
         grade_threshold = min_grade or "probable"
         result_type_prefixes = _result_types_to_prefixes(result_types)
-        if grade_threshold not in _GRADE_ORDER:
-            valid = ", ".join(sorted(_GRADE_ORDER))
-            raise ValueError(
-                f"Unknown min_grade: {grade_threshold!r}. Valid: {valid}."
-            )
+        _validate_min_grade(grade_threshold)
 
         # Global dedup: each unique entity text is embedded exactly once
         # for the whole batch.
@@ -1677,9 +1742,9 @@ class ExtractionService:
             return part_cache[key]
 
         out: list[list[ExtractedConcept]] = []
-        for spans, texts in zip(spans_lists, per_span_texts):
+        for spans, texts in zip(spans_lists, per_span_texts, strict=False):
             concepts: list[ExtractedConcept] = []
-            for span, t in zip(spans, texts):
+            for span, t in zip(spans, texts, strict=False):
                 ss = _LABEL_TO_SOURCES.get(span.entity_type.lower())
                 matched = _first_matching_concept(
                     span, results_by_text.get(t, []), ss,
@@ -1777,6 +1842,29 @@ class ExtractionService:
             Default ``["text", "type"]`` reproduces the historical
             ``[entity|label]`` marker exactly.
         """
+        # QA-004 (QC-163 parity): fail on garbage BEFORE the NER/resolve
+        # burn — validation used to happen deep inside the resolve paths,
+        # so a bogus argument paid the full extraction cost (measured 2.3s
+        # on a 2.5K-char text) before raising. Only validates what the
+        # chosen format will actually consume, so ignored-for-this-format
+        # arguments keep their lenient pass-through semantics.
+        # QC07-001: ``format`` itself is validated FIRST — an unknown value
+        # used to fall through the == "annotated"/== "terms" branches and
+        # silently return codes-shaped results (CLI/FHIR reject the same
+        # input; the Python surface was the lenient one).
+        if format not in ("codes", "terms", "annotated"):
+            raise ValueError(
+                f"Unknown format: {format!r}. "
+                "Valid: codes, terms, annotated."
+            )
+        if format == "annotated":
+            _normalize_annotation_fields(annotation_fields)
+        if format != "terms":
+            from medterm4ds.services.search import _result_types_to_prefixes
+            _result_types_to_prefixes(result_types)
+            if min_grade is not None:
+                _validate_min_grade(min_grade)
+
         if isinstance(text, (list, tuple)):
             texts = list(text)
             for i, t in enumerate(texts):

@@ -879,18 +879,23 @@ class TestLens6CapabilityStatementClinical:
         is advertised. The HCPCS drift regression class is the load-bearing
         failure mode — verify it does NOT recur.
         """
-        from medterm4ds.engines.fhir import SYSTEM_TO_FHIR_URI
+        from medterm4ds.engines.fhir import PSEUDO_SYSTEM_SOURCES, SYSTEM_TO_FHIR_URI
 
         resp = fhir_client.get("/fhir/metadata", params={"mode": "full"})
         body = resp.json()
-        # The supported-system extension lists every canonical URI.
+        # The supported-system extension lists every client-facing canonical
+        # URI (QC-367: pseudo output namespaces excluded).
         extensions = body.get("extension", [])
         advertised_uris = {
             ext.get("valueUri")
             for ext in extensions
             if ext.get("url", "").endswith("capabilitystatement-supported-system")
         }
-        canonical_uris = set(SYSTEM_TO_FHIR_URI.values())
+        canonical_uris = {
+            uri
+            for source, uri in SYSTEM_TO_FHIR_URI.items()
+            if source not in PSEUDO_SYSTEM_SOURCES
+        }
         # Bidirectional: every canonical URI is advertised.
         missing = canonical_uris - advertised_uris
         assert not missing, (

@@ -28,7 +28,6 @@ from __future__ import annotations
 
 import pytest
 
-
 SUPPORTED_SYSTEM_EXTENSION_URL = (
     "http://hl7.org/fhir/StructureDefinition/capabilitystatement-supported-system"
 )
@@ -39,15 +38,14 @@ TOOCOSTLY_EXT_URL = "http://hl7.org/fhir/StructureDefinition/valueset-toocostly"
 
 # Same canonical URIs the server advertises. Single source of truth: the
 # server's SYSTEM_TO_FHIR_URI map (sourced into the CapabilityStatement).
+# ATC was added by QC-006 (CROSS_SURFACE) after the original 8; sourced
+# from the server map directly so drift is impossible.
+from medterm4ds.engines.fhir import PSEUDO_SYSTEM_SOURCES, SYSTEM_TO_FHIR_URI
+
 CANONICAL_FHIR_R4_URIS = {
-    "SNOMEDCT_US": "http://snomed.info/sct",
-    "RXNORM": "http://www.nlm.nih.gov/research/umls/rxnorm",
-    "ICD10CM": "http://hl7.org/fhir/sid/icd-10-cm",
-    "ICD10PCS": "http://hl7.org/fhir/sid/icd-10-pcs",
-    "LNC": "http://loinc.org",
-    "CPT": "http://www.ama-assn.org/go/cpt",
-    "HCPCS": "http://www.cms.gov/Medicare/Coding/HCPCSReleaseCodeSets",
-    "CVX": "http://hl7.org/fhir/sid/cvx",
+    source: uri
+    for source, uri in SYSTEM_TO_FHIR_URI.items()
+    if source not in PSEUDO_SYSTEM_SOURCES
 }
 
 
@@ -205,14 +203,15 @@ def test_e30_every_advertised_system_expands_via_implicit_url(
     assert body.get("resourceType") == "ValueSet", (
         f"Expected ValueSet, got {body.get('resourceType')!r}"
     )
-    # The expansion MUST have a contains[] array (even if empty).
+    # The expansion MUST have a contains[] array (possibly empty — QC-330:
+    # empty contains[] is OMITTED per FHIR JSON convention).
     expansion = body.get("expansion", {})
-    assert "contains" in expansion and isinstance(expansion["contains"], list), (
-        f"expansion.contains missing for {implicit_url}: {expansion!r}"
+    assert isinstance(expansion.get("contains", []), list), (
+        f"expansion.contains must be a list for {implicit_url}: {expansion!r}"
     )
     # If contains is empty, the empty-source extension MUST be present
     # (per HISTORIAN QA-033 — silent-empty is non-conformant).
-    if not expansion["contains"]:
+    if not expansion.get("contains", []):
         exts = expansion.get("extension", [])
         ext_urls = {e.get("url") for e in exts}
         assert EMPTY_SOURCE_EXT_URL in ext_urls, (
@@ -273,23 +272,26 @@ def test_e40_snomed_intensional_and_allcodes_distinct(fhir_client):
 
 
 def test_e50_implicit_url_with_filter_param(fhir_client):
-    """EXPLORER: `?url=http://loinc.org/vs&filter=glucose` — the spec
-    permits filter to be combined with url. The server SHOULD apply the
-    filter to the implicit expansion. For an empty fixture, the response
-    is still 200 + ValueSet (filter just produces 0 matches).
+    """EXPLORER: `?url=http://loinc.org/vs&filter=glucose` — QC-311 (HIGH)
+    REJECTS the url+filter combination with 400 + FHIR OperationOutcome.
 
-    Spec: https://hl7.org/fhir/operation-valueset-expand.html — `filter`
-    is "Allows server-side processing of the supplied filter".
+    R4 §4.9.2: "Combining parameters must either work or the server
+    returns an error." Applying a display filter inside a url-based
+    expansion was previously a silent parameter drop; until per-mode
+    post-filtering lands, the combination fails loudly. When combined
+    semantics are implemented, this probe MUST be updated to assert
+    200 + filtered expansion.
     """
     r = fhir_client.get(
         "/fhir/ValueSet/$expand",
         params=[("url", "http://loinc.org/vs"), ("filter", "glucose")],
     )
-    assert r.status_code == 200, (
-        f"Implicit URL + filter failed. Status={r.status_code}, body={r.text[:200]}"
+    assert r.status_code == 400, (
+        f"url+filter must be rejected per QC-311 (or, if combined "
+        f"semantics landed, 200). Status={r.status_code}, body={r.text[:200]}"
     )
     body = r.json()
-    assert body.get("resourceType") == "ValueSet"
+    assert body.get("resourceType") == "OperationOutcome"
 
 
 # =============================================================================

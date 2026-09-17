@@ -9,7 +9,6 @@ from __future__ import annotations
 import logging
 import os
 import re
-import urllib.request
 from collections import defaultdict
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
@@ -33,6 +32,7 @@ from medterm4ds.core.models import (
     ProvenanceStep,
     SourceStats,
 )
+
 # NOTE: `from . import hierarchy/mappings/...` is deferred to runtime (lazy
 # import inside the functions that need them). Importing here causes a
 # circular dependency: this module is loaded by engine.py via wildcard
@@ -53,9 +53,6 @@ from medterm4ds.sources.base import (
 )
 from medterm4ds.sources.base import (
     RELA_HIERARCHY_PARENT_SIDE as _RELA_HIERARCHY_PARENT_SIDE,
-)
-from medterm4ds.sources.cvx import (
-    CVX_GROUP_URL as _CVX_GROUP_URL,
 )
 from medterm4ds.sources.loinc import (
     BLACKLIST_LOINC as _BLACKLIST_LOINC,
@@ -148,24 +145,10 @@ _SNOMED_TOP_LEVEL_GUARD_DEPTH = 3
 _SNOMED_TOP_LEVEL_GUARD_EXEMPT_MATCH_TYPES = {"same_cui"}
 _SNOMED_PARENT_LINKS_CACHE_TABLE = "_mt4ds_snomed_parent_links"
 _SNOMED_FALLBACK_QUERY_CHUNK_SIZE = 25
-# _CVX_GROUP_URL imported from sources.cvx (canonical) — see imports above.
+# CVX group data is vendored (services.cvx_group_data, medterm4ds/data/vg.txt)
+# — no runtime network fetch, so the historical MEDTERM4DS_CVX_GROUP_URL
+# override and its SSRF allowlist guard are obsolete and removed.
 _CVX_GROUP_CACHE: dict[str, list[str]] | None = None
-# Allowlist of hosts the engine will fetch CVX group data from. Anything else
-# (set via MEDTERM4DS_CVX_GROUP_URL env override) is rejected as an SSRF guard.
-_CVX_GROUP_HOST_ALLOWLIST = ("www2.cdc.gov", "www.cdc.gov", "cdc.gov")
-
-
-def _is_safe_cvx_url(url: str) -> bool:
-    """Validate that a CVX group URL is https and on the cdc.gov allowlist."""
-    from urllib.parse import urlparse
-    try:
-        parsed = urlparse(url)
-    except (ValueError, TypeError):
-        return False
-    if parsed.scheme != "https":
-        return False
-    host = (parsed.hostname or "").lower()
-    return host in _CVX_GROUP_HOST_ALLOWLIST
 _HIERARCHY_RELATIONSHIPS = {
     "parents": "parent",
     "children": "child",
@@ -259,15 +242,11 @@ def _dedupe(values: Sequence[str]) -> list[str]:
 
 
 def _load_default_cvx_groups() -> dict[str, list[str]]:
-    """Load CDC CVX vaccine groups on demand.
+    """Load CDC CVX vaccine groups on demand (vendored VG.txt).
 
-    Set MEDTERM4DS_DISABLE_CVX_GROUPS=1 to keep CVX resolution fully offline.
-    MEDTERM4DS_CVX_GROUP_URL can point at a local test fixture or mirror but
-    MUST be https and MUST be on the cdc.gov allowlist (or the cdc.gov default
-    URL itself). Anything else is rejected with a warning and the cache is
-    left empty — this is an SSRF guard against attacker-controlled env vars
-    that could otherwise redirect the runtime fetch to internal hosts (cloud
-    metadata endpoints, internal services, etc.).
+    Set MEDTERM4DS_DISABLE_CVX_GROUPS=1 to keep CVX resolution fully
+    offline. Group NAMES keep the historical contract; the group's own
+    CVX code is available from the same loader (services.cvx_group_data).
     """
     global _CVX_GROUP_CACHE
     if os.environ.get("MEDTERM4DS_DISABLE_CVX_GROUPS"):
@@ -275,29 +254,15 @@ def _load_default_cvx_groups() -> dict[str, list[str]]:
     if _CVX_GROUP_CACHE is not None:
         return _CVX_GROUP_CACHE
 
-    url = os.environ.get("MEDTERM4DS_CVX_GROUP_URL") or _CVX_GROUP_URL
-    if not _is_safe_cvx_url(url):
-        # Don't fetch — leave cache empty rather than honor an SSRF vector.
-        # Patient-friendly CVX lookups will fall back through the hierarchy.
-        _CVX_GROUP_CACHE = {}
-        return _CVX_GROUP_CACHE
+    from medterm4ds.services.cvx_group_data import load_cvx_group_rows
 
     cache: dict[str, list[str]] = {}
-    try:
-        with urllib.request.urlopen(url, timeout=10) as response:
-            text = response.read().decode("utf-8", errors="replace")
-        for line in text.splitlines():
-            parts = line.split("|")
-            if len(parts) < 5:
-                continue
-            code = parts[1].strip()
-            group = parts[3].strip()
-            if code and group and group not in cache.setdefault(code, []):
-                cache[code].append(group)
-        for groups in cache.values():
-            groups.sort()
-    except Exception as exc:
-        logger.debug("Failed to load CVX vaccine groups: %s", exc)
+    for code, _short_desc, _status, group_name, _group_cvx in load_cvx_group_rows():
+        groups = cache.setdefault(code, [])
+        if group_name and group_name not in groups:
+            groups.append(group_name)
+    for groups in cache.values():
+        groups.sort()
 
     _CVX_GROUP_CACHE = cache
     return cache
@@ -737,8 +702,6 @@ __all__ = [
     '_COMBO_TERM_STOPWORDS',
     '_CPT_TARGET_PRIORITY',
     '_CVX_GROUP_CACHE',
-    '_CVX_GROUP_HOST_ALLOWLIST',
-    '_CVX_GROUP_URL',
     '_DEFAULT_OPTIMIZE_REL',
     '_HIERARCHY_RELATIONSHIPS',
     '_PAR_HIERARCHY_SOURCES',
@@ -766,7 +729,6 @@ __all__ = [
     '_is_broad_friendly_name',
     '_is_combo_chv_mismatch',
     '_is_isa_relationship',
-    '_is_safe_cvx_url',
     '_load_default_cvx_groups',
     '_ndc_candidates',
     '_normalize_term_tokens',
@@ -789,6 +751,5 @@ __all__ = [
     'logging',
     'os',
     're',
-    'urllib',
     'uuid4',
 ]

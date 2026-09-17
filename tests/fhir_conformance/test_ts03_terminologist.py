@@ -41,7 +41,6 @@ from __future__ import annotations
 
 import pytest
 
-
 SUPPORTED_SYSTEM_EXTENSION_URL = (
     "http://hl7.org/fhir/StructureDefinition/capabilitystatement-supported-system"
 )
@@ -232,7 +231,7 @@ def test_t20_implicit_expansion_codes_round_trip_via_lookup(fhir_client, source,
         )
         # And $lookup with that URI+code MUST succeed.
         lookup_resp = fhir_client.get(
-            f"/fhir/CodeSystem/$lookup",
+            "/fhir/CodeSystem/$lookup",
             params={"system": advertised_uri, "code": code},
         )
         assert lookup_resp.status_code == 200, (
@@ -460,7 +459,7 @@ def test_t51_no_stub_system_in_extension(fhir_client):
     Cross-check: the extension list and SYSTEM_TO_FHIR_URI must have identical
     URI sets (after sorting).
     """
-    from medterm4ds.engines.fhir import SYSTEM_TO_FHIR_URI
+    from medterm4ds.engines.fhir import PSEUDO_SYSTEM_SOURCES, SYSTEM_TO_FHIR_URI
 
     resp = fhir_client.get("/fhir/metadata")
     body = resp.json()
@@ -469,7 +468,13 @@ def test_t51_no_stub_system_in_extension(fhir_client):
         for e in body.get("extension", [])
         if e.get("url") == SUPPORTED_SYSTEM_EXTENSION_URL
     }
-    canonical_uris = set(SYSTEM_TO_FHIR_URI.values())
+    # QC-367: pseudo-sources (output namespaces like PATIENT_FRIENDLY) are
+    # excluded from the advertisement — the server cannot $lookup them.
+    canonical_uris = {
+        uri
+        for source, uri in SYSTEM_TO_FHIR_URI.items()
+        if source not in PSEUDO_SYSTEM_SOURCES
+    }
     assert advertised_uris == canonical_uris, (
         f"capabilitystatement-supported-system extension drifts from "
         f"SYSTEM_TO_FHIR_URI (single source of truth).\n"

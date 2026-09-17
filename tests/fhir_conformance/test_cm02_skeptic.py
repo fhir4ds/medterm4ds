@@ -66,18 +66,15 @@ import pytest
 
 from medterm4ds.engines.fhir import (
     FHIR_R4_CONCEPT_MAP_EQUIVALENCE,
-    canonical_system_uri,
-    fhir_uri_to_system,
 )
 from medterm4ds.engines.fhir.equivalence import (
     INTERNAL_REL_TO_FHIR_EQUIVALENCE,
     fhir_equivalence,
 )
 from medterm4ds.engines.fhir.responses import (
-    build_parameters_translate,
     _fhir_equivalence_from_relationship,
+    build_parameters_translate,
 )
-
 
 # ---------------------------------------------------------------------------
 # Constants for the probes.

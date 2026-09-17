@@ -62,20 +62,16 @@ from __future__ import annotations
 
 import ast
 import inspect
-import os
 from pathlib import Path
-from textwrap import dedent
 
 import pytest
-
 
 # Canonical FHIR R4 ConceptMapEquivalence closed enum — single source of truth.
 # Import from medterm4ds.engines.fhir (NOT a local copy).
 from medterm4ds.engines.fhir import (
     FHIR_R4_CONCEPT_MAP_EQUIVALENCE,
-    SYSTEM_TO_FHIR_URI,
-    canonical_system_uri,
 )
+
 FHIR_R4_EQUIVALENCE_ENUM = FHIR_R4_CONCEPT_MAP_EQUIVALENCE
 
 
@@ -104,10 +100,11 @@ def _extract_match_blocks(parameters_resource: dict) -> list[dict]:
 
 def _make_test_client_with_host(tmp_path: Path, monkeypatch, host: str, port: str = "443"):
     """Construct a FHIR app TestClient with env-overridden host/port."""
-    fastapi = pytest.importorskip("fastapi")
-    from starlette.testclient import TestClient
-    from medterm4ds.apps.fhir_api import FhirApiSettings, create_fhir_app
+    pytest.importorskip("fastapi")
     import duckdb
+    from starlette.testclient import TestClient
+
+    from medterm4ds.apps.fhir_api import FhirApiSettings, create_fhir_app
 
     monkeypatch.setenv("MEDTERM4DS_API_HOST", host)
     monkeypatch.setenv("MEDTERM4DS_FHIR_API_PORT", port)
@@ -533,7 +530,7 @@ def test_t40_batch_translate_equivalence_canonicalizes_like_single(fhir_client):
     batch_matches = _extract_match_blocks(batch.json()["entry"][0]["resource"])
 
     assert len(single_matches) == len(batch_matches)
-    for sm, bm in zip(single_matches, batch_matches):
+    for sm, bm in zip(single_matches, batch_matches, strict=False):
         s_eq = sm.get("equivalence", {}).get("valueCode")
         b_eq = bm.get("equivalence", {}).get("valueCode")
         assert s_eq == b_eq, (
@@ -580,12 +577,12 @@ def test_t41_batch_translate_no_r5_r4b_contamination(fhir_client):
     body_text = batch.text
     # Forbidden R5/R4B values.
     assert "subsumedby" not in body_text, (
-        f"Batch $translate response contains R5/R4B-only value 'subsumedby'. "
-        f"CF-HISTORIAN-VS01-01 RESOLVED check failed."
+        "Batch $translate response contains R5/R4B-only value 'subsumedby'. "
+        "CF-HISTORIAN-VS01-01 RESOLVED check failed."
     )
     assert '"matches"' not in body_text, (
-        f"Batch $translate response contains R5-only value 'matches'. "
-        f"CF-HISTORIAN-VS01-01 RESOLVED check failed."
+        "Batch $translate response contains R5-only value 'matches'. "
+        "CF-HISTORIAN-VS01-01 RESOLVED check failed."
     )
 
 
@@ -682,9 +679,10 @@ def test_t54_default_http_scheme_localhost_dev(tmp_path, monkeypatch):
     monkeypatch.delenv("MEDTERM4DS_API_SCHEME", raising=False)
     monkeypatch.delenv("MEDTERM4DS_FHIR_API_PORT", raising=False)
 
-    from starlette.testclient import TestClient
-    from medterm4ds.apps.fhir_api import FhirApiSettings, create_fhir_app
     import duckdb
+    from starlette.testclient import TestClient
+
+    from medterm4ds.apps.fhir_api import FhirApiSettings, create_fhir_app
 
     db_path = tmp_path / "umls.duckdb"
     con = duckdb.connect(str(db_path))
@@ -1074,8 +1072,8 @@ def test_t100_build_parameters_translate_reuses_canonical_equivalence_map():
     `_INTERNAL_REL_TO_FHIR_EQUIVALENCE` map (imported from
     `engines.fhir.equivalence`). SOURCE-READ audit — the builder is the
     load-bearing contract for batch↔single parity."""
-    from medterm4ds.engines.fhir import responses as responses_module
     from medterm4ds.engines.fhir import equivalence as equivalence_module
+    from medterm4ds.engines.fhir import responses as responses_module
 
     # The responses module imports INTERNAL_REL_TO_FHIR_EQUIVALENCE from the
     # canonical equivalence module under the alias _INTERNAL_REL_TO_FHIR_EQUIVALENCE.
@@ -1095,6 +1093,7 @@ def test_t101_build_parameters_translate_signature_clinical_content_args():
     both `_do_translate` (single) AND the batch dispatcher's `_do_translate`
     with the same arguments."""
     import inspect
+
     from medterm4ds.engines.fhir.responses import build_parameters_translate
 
     sig = inspect.signature(build_parameters_translate)
@@ -1109,7 +1108,6 @@ def test_t102_dispatch_batch_operation_calls_do_translate_directly():
     ConceptMap/$translate (which delegates to `build_parameters_translate`),
     not an inline construction. SOURCE-READ — the dispatcher must not bypass
     the single-entry clinical-content path."""
-    import re
     from medterm4ds.apps import fhir_api as fhir_api_module
 
     # Get the source of _dispatch_batch_operation (nested async function).

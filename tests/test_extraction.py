@@ -8,9 +8,9 @@ pytest.importorskip("medspacy")
 pytest.importorskip("transformers")
 
 from medterm4ds.services.extraction import (
+    ExtractedConcept,
     ExtractionService,
     FilteredSpan,
-    ExtractedConcept,
     _is_false_positive,
 )
 
@@ -455,10 +455,15 @@ def three_signal():
     three-signal lab-vs-med disambiguation, minus GLiNER."""
     spacy = pytest.importorskip("spacy")
     medspacy = pytest.importorskip("medspacy")
+    # en_core_web_sm lives on the spacy-models index, not PyPI (see the
+    # extraction extra note in pyproject) — skip when not installed.
+    try:
+        parser = spacy.load("en_core_web_sm", disable=["ner"])
+    except OSError:
+        pytest.skip("en_core_web_sm not installed (spacy-models index)")
     from medterm4ds.services.extraction import _register_context_arbiter
     nlp = medspacy.load(medspacy_disable=["medspacy_target_matcher"])
     assert _register_context_arbiter(nlp)
-    parser = spacy.load("en_core_web_sm", disable=["ner"])
     return parser, nlp
 
 
@@ -927,9 +932,9 @@ class TestBatchExtract:
         singles = [service._nlp.process(t) for t in texts]
         batched = service._nlp.process_batch(texts)
         assert len(batched) == 3
-        for i, (a, b) in enumerate(zip(singles, batched)):
+        for i, (a, b) in enumerate(zip(singles, batched, strict=False)):
             assert len(a) == len(b), f"span count differs for text {i}"
-            for sa, sb in zip(a, b):
+            for sa, sb in zip(a, b, strict=False):
                 assert (sa.text, sa.entity_type, sa.status,
                         sa.span_start, sa.span_end) == (
                        sb.text, sb.entity_type, sb.status,

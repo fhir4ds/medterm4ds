@@ -26,7 +26,6 @@ from __future__ import annotations
 
 import pytest
 
-
 # =============================================================================
 # Item 1: External code systems recognized via canonical URIs
 # =============================================================================

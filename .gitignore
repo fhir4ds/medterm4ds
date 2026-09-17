@@ -31,6 +31,9 @@ docs/fhir4px-data-deliverable.md
 *.duckdb.tmp
 *.duckdb.tmp/
 data/
+# Vendored CDC reference data ships IN the package (medterm4ds/data/)
+# — the root data/ ignore is for the big local databases, not this.
+!src/medterm4ds/data/
 benchmark_*.json
 parity_*.json
 parity_*.md

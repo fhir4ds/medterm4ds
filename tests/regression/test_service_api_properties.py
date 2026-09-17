@@ -6,7 +6,6 @@ in each fhir4px output. Catches schema breakage that spot-checks miss.
 
 from __future__ import annotations
 
-import json
 from typing import Any
 
 import pytest

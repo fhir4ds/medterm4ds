@@ -39,7 +39,6 @@ from pathlib import Path
 
 import pytest
 
-
 # ---------------------------------------------------------------------------
 # Helpers — load the production patient-friendly JSONs to enumerate the
 # actual surface that the conformance fixture accidentally loads.
@@ -140,7 +139,7 @@ def test_h01_lookup_canonical_system_property_is_fhir_uri_for_every_sab(fhir_cli
         # Cross-check: the URI must be in the canonical map (the single source
         # of truth). Catches silent drift between `_SAB_LABEL_TO_SOURCE` and
         # `SYSTEM_TO_FHIR_URI`.
-        assert fhir_uri in {v for v in SYSTEM_TO_FHIR_URI.values()}, (
+        assert fhir_uri in set(SYSTEM_TO_FHIR_URI.values()), (
             f"sab_label_to_fhir_uri({sab_label!r}) returned {fhir_uri!r} which is NOT "
             f"in SYSTEM_TO_FHIR_URI — the helper is producing values outside the registry."
         )
@@ -242,7 +241,7 @@ def test_h03_lookup_match_type_uses_engine_vocabulary_not_fhir_enum(fhir_client)
     # ``matches``; the R4 spec-correct value is ``specializes``.
     from medterm4ds.engines.fhir import FHIR_R4_CONCEPT_MAP_EQUIVALENCE
     FHIR_R4_EQUIVALENCE = FHIR_R4_CONCEPT_MAP_EQUIVALENCE
-    overlap = actual_match_types & FHIR_R4_EQUIVALENCE
+    actual_match_types & FHIR_R4_EQUIVALENCE
     # Documentation assertion — most production match_type values don't match
     # FHIR R4 ConceptMapEquivalence. If they DID, that would change the picture.
     # Document the actual overlap count for the architect audit.
@@ -363,7 +362,6 @@ def test_h11_do_lookup_emits_raw_sab_when_translation_fails(caplog):
     This test asserts the WORST-CASE behavior: an unrecognized SAB triggers
     a WARNING log AND emits the raw value (diagnostic, not silent).
     """
-    import logging
 
     import inspect
 

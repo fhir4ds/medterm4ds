@@ -22,15 +22,12 @@ from __future__ import annotations
 
 import pytest
 
-
 # Canonical registry imports — single source of truth per GLOBAL_RULES.md
 from medterm4ds.engines.fhir import (
     FHIR_URI_ALIASES,
-    FHIR_URI_TO_SYSTEM,
     SYSTEM_TO_FHIR_URI,
     fhir_uri_to_system,
 )
-
 
 SUPPORTED_SYSTEM_EXTENSION_URL = (
     "http://hl7.org/fhir/StructureDefinition/capabilitystatement-supported-system"
@@ -77,8 +74,14 @@ class TestLens1CanonicalUriAdvertisement:
         Spec: extension value type is 'uri'; the value MUST be the standard
         identifying URI for the code system (HL7 THO / CMS / AMA / NLM / CDC).
         """
+        from medterm4ds.engines.fhir import PSEUDO_SYSTEM_SOURCES
+
         advertised = set(self._supported_systems(fhir_client))
-        registry = set(SYSTEM_TO_FHIR_URI.values())
+        registry = {
+            uri
+            for source, uri in SYSTEM_TO_FHIR_URI.items()
+            if source not in PSEUDO_SYSTEM_SOURCES
+        }
         assert advertised == registry, (
             f"Mismatch between advertised extension URIs and registry.\n"
             f"  In extension but not registry: {advertised - registry}\n"
@@ -87,15 +90,21 @@ class TestLens1CanonicalUriAdvertisement:
         )
 
     def test_t02_extension_contains_exactly_eight_entries(self, fhir_client):
-        """The extension MUST contain exactly one entry per source (8 total —
-        one per SYSTEM_TO_FHIR_URI entry). No duplicates, no missing.
+        """The extension MUST contain exactly one entry per CLIENT-FACING
+        source (SYSTEM_TO_FHIR_URI minus QC-367 pseudo-sources; 9 as of
+        the ATC addition, QC-006). No duplicates, no missing.
 
         Spec: cardinality 0..* — each supported system appears as ONE
         extension entry. Duplicate or missing entries would confuse clients
         introspecting supported systems.
         """
+        from medterm4ds.engines.fhir import PSEUDO_SYSTEM_SOURCES
+
+        client_facing = {
+            s for s in SYSTEM_TO_FHIR_URI if s not in PSEUDO_SYSTEM_SOURCES
+        }
         advertised = self._supported_systems(fhir_client)
-        assert len(advertised) == len(SYSTEM_TO_FHIR_URI), (
+        assert len(advertised) == len(client_facing), (
             f"Expected exactly {len(SYSTEM_TO_FHIR_URI)} entries "
             f"(one per source); got {len(advertised)}."
         )
@@ -247,24 +256,16 @@ class TestLens2UppercaseSchemeClinicalSafety:
         )
 
     def test_t14_host_case_sensitivity_documented(self):
-        """Scope confinement: host case sensitivity is currently PRESERVED
-        (not normalized). Per RFC 3986 §3.2.2, hosts are case-insensitive —
-        so HTTP://SNOMED.INFO/sct SHOULD also resolve. EXPLORER documented
-        this as a separate enhancement (intentional scope confinement to
-        scheme-only). This probe documents the CURRENT behavior — when host
-        case-insensitivity lands, the probe MUST be updated to assert
-        resolution succeeds.
-
-        Per carry-forward-as-probe pattern (strategy 56): this probe pins
-        current behavior so a future enhancement fires loudly.
+        """RESOLVED (1a7335a): per RFC 3986 §3.2.2 the host is case-
+        insensitive, alongside the earlier scheme-only fix (QA-001).
+        ``http://SNOMED.INFO/sct`` now resolves. This probe pins the
+        fixed behavior.
         """
-        # Uppercase host — would resolve if host normalization were applied.
-        # CURRENT behavior: does NOT resolve (host case sensitivity preserved).
         result = fhir_uri_to_system("http://SNOMED.INFO/sct")
-        assert result is None, (
-            f"Host case sensitivity unexpectedly normalized: "
-            f"'http://SNOMED.INFO/sct' resolved to {result!r}. This is a "
-            f"behavior change — update this probe to assert resolution."
+        assert result == "SNOMEDCT_US", (
+            f"Host case-insensitivity regression: "
+            f"'http://SNOMED.INFO/sct' resolved to {result!r} (expected "
+            f"'SNOMEDCT_US' per RFC 3986 §3.2.2)."
         )
 
 
@@ -539,7 +540,7 @@ class TestLens4ExternalCodeSystemRecognition:
         """
         # The canonical URI (no trailing slash) MUST be in the registry.
         assert "http://loinc.org" in SYSTEM_TO_FHIR_URI.values(), (
-            f"LOINC canonical URI missing from SYSTEM_TO_FHIR_URI."
+            "LOINC canonical URI missing from SYSTEM_TO_FHIR_URI."
         )
         # The bare canonical form MUST resolve.
         assert fhir_uri_to_system("http://loinc.org") == "LNC", (
@@ -568,7 +569,7 @@ class TestLens4ExternalCodeSystemRecognition:
             f"Canonical LOINC URI not advertised. Got: {advertised}"
         )
         assert "http://loinc.org/" not in advertised, (
-            f"Trailing-slash LOINC URI leaked into advertisement."
+            "Trailing-slash LOINC URI leaked into advertisement."
         )
 
 

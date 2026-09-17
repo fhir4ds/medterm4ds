@@ -725,7 +725,7 @@ def test_t81_batch_validate_display_mismatch_matches_single_entry(fhir_client):
     assert batch_body.get("resourceType") == "Bundle"
     assert batch_body.get("type") == "batch-response"
     assert len(batch_body.get("entry", [])) == 1
-    batch_resp = batch_body["entry"][0].get("response", {})
+    batch_body["entry"][0].get("response", {})
     # Extract Parameters body from batch entry
     batch_params = batch_body["entry"][0].get("resource", {})
     assert batch_params.get("resourceType") == "Parameters"
