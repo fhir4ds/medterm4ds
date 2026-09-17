@@ -1216,7 +1216,10 @@ class TestLens6CarryForwardDocumentation:
         CR-024 (milestone-3 review): source path updated to
         ``engines/fhir/equivalence.py`` (the canonical module).
         """
-        source_path = "/mnt/d/medterm4ds/src/medterm4ds/engines/fhir/equivalence.py"
+        source_path = (
+            Path(__file__).resolve().parents[2]
+            / "src" / "medterm4ds" / "engines" / "fhir" / "equivalence.py"
+        )
         with open(source_path) as f:
             source_text = f.read()
 

@@ -85,10 +85,12 @@ dev = [
     "uvicorn>=0.27.0",
     # Optional heavy deps are part of the tested surface in CI: the device
     # resolution tests import torch, extraction's PyRuSH sink guard touches
-    # loguru, and the FHIR suite needs fhir.resources.
+    # loguru, the FHIR suite needs fhir.resources, and the $extract probes
+    # exercise the GLiNER pipeline.
     "torch>=2.0.0",
     "loguru>=0.7.0",
     "fhir.resources>=7.0.0",
+    "gliner>=0.2.28",
 ]
 
 [tool.hatch.build.targets.wheel]
