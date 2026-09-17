@@ -127,8 +127,15 @@ def _custom_check(case: dict, response_body: dict, client) -> list[str]:
 @pytest.mark.parametrize("case", ALL_CASES, ids=[c["id"] for c in ALL_CASES])
 def test_case(case: dict, fhir_client):
     """Run one FHIR conformance test case."""
-    model_dir = Path("/mnt/d/fhir4px-model/data/sapbert_finetuned")
-    model_available = model_dir.exists()
+    # The split-layout loader auto-downloads the SapBERT unit (artifact
+    # governance Phase 3), so availability is determined by the SERVICE
+    # state rather than a hardcoded local dir.
+    try:
+        from medterm4ds.services.search import get_search_service
+
+        model_available = bool(get_search_service().semantic_available)
+    except Exception:
+        model_available = False
 
     # Skip if model-dependent test and model is available (can't test the 503 path)
     if case.get("skip_if_model_available") and model_available:

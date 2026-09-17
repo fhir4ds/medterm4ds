@@ -331,13 +331,30 @@ class TestFhirEndpoints:
             )
         assert resp.status_code == 503
 
-    def test_search_semantic_requires_model(self, fhir_app):
+    def test_search_semantic_requires_model(self, fhir_app, monkeypatch):
         """Semantic mode returns 503 when embedding model is unavailable."""
-        from pathlib import Path
-        model_dir = Path("/mnt/d/fhir4px-model/data/sapbert_finetuned")
-        if model_dir.exists():
-            pytest.skip("SapBERT model is available on this machine — cannot test 503 path.")
         from starlette.testclient import TestClient
+
+        import medterm4ds.services.search as search_module
+
+        # The split-layout loader auto-downloads the SapBERT unit on first
+        # use (artifact governance Phase 3), so 'model missing' can no
+        # longer be arranged by environment absence — pin the service into
+        # the unavailable state instead.
+        class _UnavailableService:
+            lexical_available = False
+            semantic_available = False
+
+        monkeypatch.setattr(
+            search_module, "get_search_service", lambda: _UnavailableService()
+        )
+        # fhir_api imports get_search_service inside the handler; patch it
+        # at its import source too so the handler sees the stub.
+        import medterm4ds.apps.fhir_api as fhir_api_module
+        monkeypatch.setattr(
+            "medterm4ds.services.search.get_search_service",
+            lambda: _UnavailableService(),
+        )
         with TestClient(fhir_app) as client:
             resp = client.get(
                 "/fhir/CodeSystem/$search",

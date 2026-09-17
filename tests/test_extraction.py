@@ -455,10 +455,15 @@ def three_signal():
     three-signal lab-vs-med disambiguation, minus GLiNER."""
     spacy = pytest.importorskip("spacy")
     medspacy = pytest.importorskip("medspacy")
+    # en_core_web_sm lives on the spacy-models index, not PyPI (see the
+    # extraction extra note in pyproject) — skip when not installed.
+    try:
+        parser = spacy.load("en_core_web_sm", disable=["ner"])
+    except OSError:
+        pytest.skip("en_core_web_sm not installed (spacy-models index)")
     from medterm4ds.services.extraction import _register_context_arbiter
     nlp = medspacy.load(medspacy_disable=["medspacy_target_matcher"])
     assert _register_context_arbiter(nlp)
-    parser = spacy.load("en_core_web_sm", disable=["ner"])
     return parser, nlp
 
 
