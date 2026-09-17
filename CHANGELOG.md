@@ -106,10 +106,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `uv.lock` regenerates with version bumps and the release checklist
   gains lock + stale-literal-grep steps (QA-006).
 
-_v0.0.3 was cut 2026-08-24 (re-cut from the 2026-08-20 tag to include the
-CR-062 annotated-path lock fix; no artifact was published from the earlier
-cut). Subsequent work tracks here until the next tag._
-
 ## [0.0.3] - 2026-08-24
 
 Performance and configurability release for extraction: GPU acceleration,

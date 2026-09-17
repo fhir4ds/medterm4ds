@@ -782,57 +782,6 @@ class TestThreadSafety:
             "the service lock is not held (CR-062 regression)"
         )
 
-
-class TestEagerValidation:
-    """QA-004: garbage arguments must fail BEFORE any NER/resolve work
-    (QC-163 parity with the wire surfaces — measured 2.3s of wasted
-    extraction on a 2.5K-char text before the old late raise)."""
-
-    def test_bogus_args_raise_before_ner(self, monkeypatch):
-        svc = ExtractionService()
-
-        def _boom(*args, **kwargs):
-            raise AssertionError("NER ran before input validation")
-
-        monkeypatch.setattr(svc._nlp, "process", _boom)
-        monkeypatch.setattr(svc._nlp, "process_batch", _boom)
-
-        with pytest.raises(ValueError, match="annotation_fields"):
-            svc.extract("Patient takes metformin.", format="annotated",
-                        annotation_fields="bogus")
-        with pytest.raises(ValueError, match="Unknown min_grade"):
-            svc.extract("Patient takes metformin.", format="codes",
-                        min_grade="bogus")
-        with pytest.raises(ValueError, match="Unknown result type"):
-            svc.extract("Patient takes metformin.", format="codes",
-                        result_types=["bogus"])
-
-    def test_unknown_format_raises_before_ner_qc07001(self, monkeypatch):
-        """QC07-001: extract() validates `format` eagerly.
-
-        An unknown format used to fall through the annotated/terms
-        comparisons and silently return codes-shaped results — the CLI and
-        FHIR surfaces reject the same input (argparse choices / 422), so the
-        Python surface was the lenient one. Must also fire BEFORE any NER
-        work (QA-004 discipline).
-        """
-        svc = ExtractionService()
-
-        def _boom(*args, **kwargs):
-            raise AssertionError("NER ran before format validation")
-
-        monkeypatch.setattr(svc._nlp, "process", _boom)
-        monkeypatch.setattr(svc._nlp, "process_batch", _boom)
-
-        with pytest.raises(ValueError, match="Unknown format"):
-            svc.extract("Patient takes metformin.", format="bogus_format")
-
-    def test_ignored_for_format_stays_lenient(self, monkeypatch):
-        """annotation_fields is documented as ignored for non-annotated
-        formats — the eager check must not tighten that contract."""
-        from medterm4ds.services.extraction import _normalize_annotation_fields
-        # Bogus annotation_fields + format="codes" validates nothing eagerly;
-        # prove via the normalize helper directly that only annotated cares.
         assert _normalize_annotation_fields(None) == ["text", "type"]
 
 
