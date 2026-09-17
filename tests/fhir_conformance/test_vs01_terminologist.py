@@ -70,6 +70,8 @@ All codes are SUPPRESS='N' (active). No abstract concepts seeded.
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 # Spec citations:
@@ -824,7 +826,8 @@ class TestLens4InactiveAbstractCodeHandling:
 
         # Parse the source and find _expand_implicit_value_set.
         source_path = (
-            "/mnt/d/medterm4ds/src/medterm4ds/apps/fhir_api.py"
+            Path(__file__).resolve().parents[2]
+            / "src" / "medterm4ds" / "apps" / "fhir_api.py"
         )
         with open(source_path) as f:
             tree = ast.parse(f.read())
@@ -1144,7 +1147,10 @@ class TestLens6CarryForwardDocumentation:
         """
         import ast
 
-        source_path = "/mnt/d/medterm4ds/src/medterm4ds/engines/fhir/equivalence.py"
+        source_path = (
+            Path(__file__).resolve().parents[2]
+            / "src" / "medterm4ds" / "engines" / "fhir" / "equivalence.py"
+        )
         with open(source_path) as f:
             tree = ast.parse(f.read())
 

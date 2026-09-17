@@ -380,10 +380,14 @@ class TestLens1CfSkepticCm03_01ClinicalEvaluation:
         forward-as-probe pattern).
         """
         # Source-read AGENTS.md to verify CF-SKEPTIC-CM03-01 is documented.
+        # docs/.ai_loop is gitignored: skip in clean checkouts / CI where
+        # the registry file is absent.
         agents_path = (
             Path(__file__).resolve().parents[2]
             / "docs" / ".ai_loop" / "AGENTS.md"
         )
+        if not agents_path.exists():
+            pytest.skip("docs/.ai_loop/AGENTS.md not present (gitignored)")
         src = agents_path.read_text()
         assert "CF-SKEPTIC-CM03-01" in src, (
             "CF-SKEPTIC-CM03-01 MUST be documented in AGENTS.md carry-"
@@ -819,6 +823,8 @@ class TestLens3CfHistorianCm03_02ClinicalSafetyOfIncompleteClosure:
             Path(__file__).resolve().parents[2]
             / "docs" / ".ai_loop" / "AGENTS.md"
         )
+        if not agents_path.exists():
+            pytest.skip("docs/.ai_loop/AGENTS.md not present (gitignored)")
         src = agents_path.read_text()
         assert "CF-HISTORIAN-CM03-02" in src
         # Verify the clinical-safety context is documented.

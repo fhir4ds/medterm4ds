@@ -1463,18 +1463,10 @@ def run_hierarchy(args: argparse.Namespace) -> int:
 
 
 def run_mapping(args: argparse.Namespace) -> int:
-    try:
-        import duckdb
-    except ImportError as exc:
-        raise SystemExit("DuckDB is required. Install medterm4ds[duckdb].") from exc
-
-    db_path = Path(args.db)
-    if not db_path.exists():
-        raise SystemExit(f"Database not found: {db_path}")
-
     # QC-023: empty-string --target-source is a clear shell-scripting bug.
     # The service layer rejects '' (QC-021), but surface a clean CLI message
-    # rather than a traceback.
+    # rather than a traceback. Input validation runs BEFORE the DB check so
+    # bad arguments fail identically with or without a local database.
     target_sources = list(args.target_source or [])
     empty_targets = [t for t in target_sources if not t or not t.strip()]
     if empty_targets:
@@ -1492,6 +1484,15 @@ def run_mapping(args: argparse.Namespace) -> int:
                 f"{target!r} (looks like a URI/OID). FHIR URIs are not accepted "
                 f"here; use the SAB form."
             )
+
+    try:
+        import duckdb
+    except ImportError as exc:
+        raise SystemExit("DuckDB is required. Install medterm4ds[duckdb].") from exc
+
+    db_path = Path(args.db)
+    if not db_path.exists():
+        raise SystemExit(f"Database not found: {db_path}")
 
     config = local_duckdb_config(
         args.memory_profile,

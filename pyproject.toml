@@ -83,6 +83,12 @@ dev = [
     "ruff>=0.5.0",
     "twine>=5.0.0",
     "uvicorn>=0.27.0",
+    # Optional heavy deps are part of the tested surface in CI: the device
+    # resolution tests import torch, extraction's PyRuSH sink guard touches
+    # loguru, and the FHIR suite needs fhir.resources.
+    "torch>=2.0.0",
+    "loguru>=0.7.0",
+    "fhir.resources>=7.0.0",
 ]
 
 [tool.hatch.build.targets.wheel]
