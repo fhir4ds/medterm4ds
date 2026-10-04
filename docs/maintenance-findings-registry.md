@@ -21,6 +21,7 @@ SUITES themselves are committed and are the load-bearing contracts.
 | F2 | LOW | 2026-10-02 | VS-01/VS-03 $expand | vsd-3 (concept+filter coexistence) accepted, not 400 | test_vs01_filter_semantics_20261002.py (f20) |
 | P1 | LOW | 2026-10-03 | TS-04/VS-04 $expand paging | `expansion.offset` never echoed under paging | test_ts04_paging_semantics_20261003.py (p10/p11) |
 | T2 | LOW | 2026-10-03 | TS-02/CM-02 $translate | "one (and only one)" input contract unenforced; silent scalar precedence | test_ts02_translate_semantics_20261003.py (t20) |
+| X1 | LOW | 2026-10-04 | TS-01 XML surface | cross-format CONTENT divergence: QC-300 XML control-char sanitizer alters message content vs JSON path for identical requests (JSON 'The display "w\x08rong"…' vs XML 'The display "wrong"…'); neither side spec-illegal; asymmetry undocumented. Fix: sanitize at message-building layer (both formats agree) OR document as intended | test_ts01_xml_parity_20261004.py (x10-x12) |
 | CF-SKEPTIC-CS05-01/02 | LOW | 2026-07 (sweep) | CS-05 $lookup | abstract hardcoded False + inactive never emitted; observability landed 2026-10-02 | test_cs05_abstract_observable_20261002.py (a30, d70) |
 | CF-HISTORIAN-VS01-01 | MEDIUM | sweep | equivalence enum | subsumedby/not-relatedto not in R4 enum | (sweep suites, VS-01 historian) |
 | CF-TERMINOLOGIST-VS01-01 | MEDIUM | sweep | VS-01 | omitted-display canonical resolution | (sweep suites) |
