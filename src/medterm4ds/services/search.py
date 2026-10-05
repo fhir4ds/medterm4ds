@@ -116,8 +116,18 @@ def _local_split_model_dir() -> Path | None:
     """Local split model dir for an ACCEPTED embedding space, if present."""
     if _LAYOUT_FORCED_LEGACY:
         return None
-    from medterm4ds.core.artifact_manifest import ACCEPTED_EMBEDDING_SPACES
+    from medterm4ds.core.artifact_manifest import (
+        ACCEPTED_EMBEDDING_SPACES,
+        serving_embedding_space,
+    )
 
+    # Serving pin first (governance rotation knob); lexicographic scan
+    # only as a last resort when the pinned space isn't downloaded.
+    pinned = serving_embedding_space()
+    if pinned in ACCEPTED_EMBEDDING_SPACES:
+        cand = _SPLIT_ROOT / "models" / pinned
+        if (cand / "model.safetensors").exists():
+            return cand
     for space in sorted(ACCEPTED_EMBEDDING_SPACES):
         cand = _SPLIT_ROOT / "models" / space
         if (cand / "model.safetensors").exists():
@@ -352,14 +362,25 @@ def _download_split_data(revision: str | None = None) -> Path:
 def _download_split_model(space_id: str | None = None) -> Path:
     """Download the split models/<space_id> unit atomically; return dir."""
     if space_id is None:
-        from medterm4ds.core.artifact_manifest import ACCEPTED_EMBEDDING_SPACES
+        from medterm4ds.core.artifact_manifest import (
+            ACCEPTED_EMBEDDING_SPACES,
+            serving_embedding_space,
+        )
 
         if not ACCEPTED_EMBEDDING_SPACES:
             raise RuntimeError(
                 "No accepted embedding spaces in this medterm4ds release — "
                 "cannot auto-download the split model layout."
             )
-        space_id = sorted(ACCEPTED_EMBEDDING_SPACES)[0]
+        # Governance pin (MEDTERM4DS_EMBEDDING_SPACE overridable); the
+        # old sorted()[0] fallback served whichever id happened to sort
+        # first across generations.
+        pinned = serving_embedding_space()
+        space_id = (
+            pinned
+            if pinned in ACCEPTED_EMBEDDING_SPACES
+            else sorted(ACCEPTED_EMBEDDING_SPACES)[0]
+        )
     target = _SPLIT_ROOT / "models" / space_id
     if not (target / "model.safetensors").exists():
         _hf_download_atomic(

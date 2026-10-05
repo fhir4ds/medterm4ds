@@ -38,6 +38,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -187,7 +188,32 @@ def _require(manifest: dict[str, Any], key: str, kind: str, source: str) -> Any:
 # Computed via fingerprint_model_dir — see tests/test_artifact_manifest.py.
 ACCEPTED_EMBEDDING_SPACES: frozenset[str] = frozenset({
     "esp_5a508816b4bb95e9",
+    # SapBERT v2 (2026-10-05 rotation): canonical build cdb_2026_10_05,
+    # render policy rp_1891c4cb719d, weights md5 668b86e0…, tokenizer
+    # md5 e566a7ad… — fingerprint esp_f6c5c18d5f3ee3b5.
+    "esp_f6c5c18d5f3ee3b5",
 })
+
+# The space the split-layout resolver serves by default. Governance
+# pin, NOT lexicographic accident: _download_split_model /
+# _local_split_model_dir previously fell back to sorted(
+# ACCEPTED_EMBEDDING_SPACES)[0], which selects by string order — with
+# spaces from different generations co-existing that silently serves
+# whichever id happens to sort first (and keeps serving it after a
+# rotation). Explicit override: MEDTERM4DS_EMBEDDING_SPACE env var.
+DEFAULT_SERVING_EMBEDDING_SPACE = "esp_f6c5c18d5f3ee3b5"
+
+
+def serving_embedding_space() -> str:
+    """Resolve the serving space: env override, else the default pin.
+
+    Read per-call (not at import) so tests and operators can rotate
+    via MEDTERM4DS_EMBEDDING_SPACE without module reloads.
+    """
+    return os.getenv(
+        "MEDTERM4DS_EMBEDDING_SPACE",
+        DEFAULT_SERVING_EMBEDDING_SPACE,
+    )
 
 # Accepted manifest schema versions (both model and data manifests).
 ACCEPTED_MANIFEST_SCHEMA_VERSIONS: frozenset[int] = frozenset({1})

@@ -22,6 +22,7 @@ ENV_KEYS = (
     "MEDTERM4DS_HF_REVISION",
     "MEDTERM4DS_LAYOUT",
     "MEDTERM4DS_DATA_REVISION",
+    "MEDTERM4DS_EMBEDDING_SPACE",
 )
 
 
@@ -409,8 +410,13 @@ class TestAtomicDownloads:
 
 class TestCacheRefreshSplit:
     def test_refresh_split_reports_units(self, monkeypatch, tmp_path):
+        # Pin the LEGACY space for this test's synthetic cache: the
+        # default serving pin (esp_f6c5…, 2026-10-05 rotation) would
+        # attempt an HF download of a unit the test never created.
         monkeypatch.setattr(Path, "home", lambda: tmp_path)
-        _reload_search(monkeypatch)
+        _reload_search(
+            monkeypatch, MEDTERM4DS_EMBEDDING_SPACE=SPACE
+        )
         _make_model_unit(
             tmp_path / ".cache" / "medterm4ds" / "models" / SPACE,
             manifest=_model_manifest(),
