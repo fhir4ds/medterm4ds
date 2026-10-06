@@ -8,6 +8,7 @@ available revisions. Used by the ``medterm4ds data cache-*`` CLI commands.
 from __future__ import annotations
 
 import json
+import os
 import shutil
 from pathlib import Path
 from typing import Any
@@ -81,6 +82,22 @@ def _split_layout_summary() -> dict[str, Any]:
         "mode": _search._LAYOUT_ENV,
         "split_root": str(_search._SPLIT_ROOT),
     }
+    # K2 (maintenance 2026-10-05): surface the serving-pin knob's
+    # effective value so rotation state (and K1-class typos) are
+    # observable from cache-info. pin_status distinguishes "default"
+    # (no explicit pin) from "pinned" (explicit env pin).
+    from medterm4ds.core.artifact_manifest import (
+        DEFAULT_SERVING_EMBEDDING_SPACE,
+        serving_embedding_space,
+    )
+
+    effective_space = serving_embedding_space()
+    summary["serving_space"] = effective_space
+    summary["serving_space_source"] = (
+        "pinned (MEDTERM4DS_EMBEDDING_SPACE)"
+        if os.getenv("MEDTERM4DS_EMBEDDING_SPACE") is not None
+        else f"default ({DEFAULT_SERVING_EMBEDDING_SPACE})"
+    )
     models_dir = _search._SPLIT_ROOT / _search.MODELS_DIRNAME
     if models_dir.is_dir():
         spaces = {}

@@ -118,16 +118,17 @@ def _local_split_model_dir() -> Path | None:
         return None
     from medterm4ds.core.artifact_manifest import (
         ACCEPTED_EMBEDDING_SPACES,
-        serving_embedding_space,
+        effective_embedding_space,
     )
 
-    # Serving pin first (governance rotation knob); lexicographic scan
-    # only as a last resort when the pinned space isn't downloaded.
-    pinned = serving_embedding_space()
-    if pinned in ACCEPTED_EMBEDDING_SPACES:
-        cand = _SPLIT_ROOT / "models" / pinned
-        if (cand / "model.safetensors").exists():
-            return cand
+    # Serving pin first (governance rotation knob). K1: a set-but-
+    # unaccepted pin raises (never silently serve the previous
+    # generation); the lexicographic scan is the documented last
+    # resort ONLY when the effective space's unit is absent locally.
+    effective = effective_embedding_space()
+    cand = _SPLIT_ROOT / "models" / effective
+    if (cand / "model.safetensors").exists():
+        return cand
     for space in sorted(ACCEPTED_EMBEDDING_SPACES):
         cand = _SPLIT_ROOT / "models" / space
         if (cand / "model.safetensors").exists():
@@ -364,7 +365,7 @@ def _download_split_model(space_id: str | None = None) -> Path:
     if space_id is None:
         from medterm4ds.core.artifact_manifest import (
             ACCEPTED_EMBEDDING_SPACES,
-            serving_embedding_space,
+            effective_embedding_space,
         )
 
         if not ACCEPTED_EMBEDDING_SPACES:
@@ -372,15 +373,12 @@ def _download_split_model(space_id: str | None = None) -> Path:
                 "No accepted embedding spaces in this medterm4ds release — "
                 "cannot auto-download the split model layout."
             )
-        # Governance pin (MEDTERM4DS_EMBEDDING_SPACE overridable); the
-        # old sorted()[0] fallback served whichever id happened to sort
-        # first across generations.
-        pinned = serving_embedding_space()
-        space_id = (
-            pinned
-            if pinned in ACCEPTED_EMBEDDING_SPACES
-            else sorted(ACCEPTED_EMBEDDING_SPACES)[0]
-        )
+        # Governance pin (env override over the release default).
+        # K1: an unaccepted pin raises instead of silently falling
+        # back — the sorted()[0] scan (which served whichever id
+        # happened to sort first across generations) is now only the
+        # absent-registry edge, never a typo swallower.
+        space_id = effective_embedding_space()
     target = _SPLIT_ROOT / "models" / space_id
     if not (target / "model.safetensors").exists():
         _hf_download_atomic(

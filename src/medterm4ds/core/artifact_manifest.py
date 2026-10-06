@@ -215,6 +215,40 @@ def serving_embedding_space() -> str:
         DEFAULT_SERVING_EMBEDDING_SPACE,
     )
 
+
+def effective_embedding_space() -> str:
+    """The effective serving space (env pin if set, else the default),
+    validated against the accepted registry.
+
+    An explicitly-set pin that names an unaccepted space raises
+    ManifestError — the pre-K1 behavior silently degraded to
+    sorted(ACCEPTED)[0], which after a rotation serves the PREVIOUS
+    generation: an operator typo of the rotation knob silently undid
+    the rotation (maintenance finding K1, 2026-10-05). Fail loud per
+    error-integrity doctrine. Callers fall back to the documented
+    last-resort lexicographic scan only when the EFFECTIVE space's
+    unit is absent locally (k33), never to swallow a bad pin.
+    """
+    explicit = os.getenv("MEDTERM4DS_EMBEDDING_SPACE")
+    effective = (
+        explicit if explicit is not None
+        else DEFAULT_SERVING_EMBEDDING_SPACE
+    )
+    if effective not in ACCEPTED_EMBEDDING_SPACES:
+        raise ManifestError(
+            f"Serving embedding space {effective!r} is not accepted "
+            "in this medterm4ds release (accepted: "
+            f"{sorted(ACCEPTED_EMBEDDING_SPACES)}). "
+            + (
+                "Fix MEDTERM4DS_EMBEDDING_SPACE or unset it to serve "
+                "the default."
+                if explicit is not None
+                else "The default serving pin must name an accepted "
+                "space — update the release registry."
+            )
+        )
+    return effective
+
 # Accepted manifest schema versions (both model and data manifests).
 ACCEPTED_MANIFEST_SCHEMA_VERSIONS: frozenset[int] = frozenset({1})
 

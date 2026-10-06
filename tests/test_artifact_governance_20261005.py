@@ -96,24 +96,39 @@ def _make_spaces(root: Path, *spaces: str) -> None:
 
 
 class TestK1GarbagePinSilentFallback:
-    """K1 — a set-but-garbage pin silently serves the OLD space."""
+    """K1 — FIXED (this branch): a set-but-garbage pin fails loud.
 
-    def test_k10_garbage_pin_picks_old(self, tmp_path):
-        """MEDTERM4DS_EMBEDDING_SPACE=esp_GARBAGE with both spaces
-        local → serves esp_5a50 (CURRENT, deviation). Flip when
-        fixed: expect a loud failure or warning + pinned-absent
-        fallback only when NO pin is set."""
+    Was: silent degradation to sorted(ACCEPTED)[0] = the OLD space;
+    an operator typo of the rotation knob silently undid the rotation.
+    Now: pinned_embedding_space_or_none() raises ManifestError naming
+    the accepted spaces; the lexicographic fallback applies only when
+    NO pin is explicitly configured.
+    """
+
+    def test_k10_garbage_pin_raises(self, tmp_path):
+        """MEDTERM4DS_EMBEDDING_SPACE=esp_GARBAGE → ManifestError at
+        resolution time (K1 fixed; flipped from the silent-OLD-space
+        pin)."""
+        from medterm4ds.core.artifact_manifest import (
+            ManifestError,
+            effective_embedding_space,
+        )
+
+        os.environ["MEDTERM4DS_EMBEDDING_SPACE"] = "esp_GARBAGE"
+        with pytest.raises(ManifestError, match="esp_GARBAGE"):
+            effective_embedding_space()
+        # and the resolver layer propagates it (no silent fallback):
         _make_spaces(tmp_path, OLD_SPACE, NEW_SPACE)
         mod = _boot(
             tmp_path, MEDTERM4DS_EMBEDDING_SPACE="esp_GARBAGE"
         )
-        picked = mod._local_split_model_dir()
-        assert picked is not None
-        assert picked.name == OLD_SPACE
+        with pytest.raises(Exception, match="esp_GARBAGE"):
+            mod._local_split_model_dir()
 
     def test_k11_unset_pin_picks_new(self, tmp_path):
         """No pin set → default serving space (f6c5) wins over the
-        lexicographic old — the rotation's intended steady state."""
+        lexicographic old — the rotation's intended steady state
+        (unchanged control)."""
         _make_spaces(tmp_path, OLD_SPACE, NEW_SPACE)
         mod = _boot(tmp_path)
         picked = mod._local_split_model_dir()
@@ -122,26 +137,32 @@ class TestK1GarbagePinSilentFallback:
 
 
 class TestK2CacheInfoBlindToPin:
-    """K2 — cache-info summary lacks the serving-space fields."""
+    """K2 — FIXED (this branch): cache-info reports the pin.
 
-    def test_k20_no_serving_space_in_report(self, tmp_path):
-        """The split summary carries mode/models/data_revision but
-        NOT the serving pin or effective space (CURRENT, deviation).
-        Flip when fixed: expect a serving_space field."""
+    Was: split summary carried mode/models/data_revision but not the
+    serving space — the rotation knob's effective value was
+    unobservable. Now: serving_space + serving_space_source fields.
+    """
+
+    def test_k20_serving_space_in_report(self, tmp_path):
+        """cache-info's split summary carries serving_space (the
+        knob's effective value) + serving_space_source (default vs
+        pinned) — K2-class typos become observable."""
         from medterm4ds.core import artifact_cache
 
         _make_spaces(tmp_path, NEW_SPACE)
         _boot(tmp_path)
         report = artifact_cache.cache_info()
-        flat = str(report)
-        assert NEW_SPACE in flat  # models listing shows the unit
-        summary = report.get("split") or report
-        assert "serving_space" not in str(
-            list(summary.keys())
-        ), (
-            "cache-info now reports serving_space — K2 fixed; flip "
-            "this pin to assert the field's presence/value."
-        )
+        split = report.get("split_layout") or {}
+        assert split.get("serving_space") == NEW_SPACE
+        assert "default" in split.get("serving_space_source", "")
+
+        # with an explicit (valid) pin the source flips to pinned
+        os.environ["MEDTERM4DS_EMBEDDING_SPACE"] = OLD_SPACE
+        report = artifact_cache.cache_info()
+        split = report.get("split_layout") or {}
+        assert split.get("serving_space") == OLD_SPACE
+        assert "pinned" in split.get("serving_space_source", "")
 
 
 class TestGovernanceControls:
