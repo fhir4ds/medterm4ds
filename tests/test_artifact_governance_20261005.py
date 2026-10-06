@@ -100,9 +100,9 @@ class TestK1GarbagePinSilentFallback:
 
     Was: silent degradation to sorted(ACCEPTED)[0] = the OLD space;
     an operator typo of the rotation knob silently undid the rotation.
-    Now: pinned_embedding_space_or_none() raises ManifestError naming
-    the accepted spaces; the lexicographic fallback applies only when
-    NO pin is explicitly configured.
+    Now: effective_embedding_space() raises ManifestError naming the
+    accepted values; the lexicographic fallback applies only when the
+    effective space's unit is absent locally.
     """
 
     def test_k10_garbage_pin_raises(self, tmp_path):
