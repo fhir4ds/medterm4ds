@@ -400,6 +400,157 @@ def expand_url_pattern(
     )
 
 
+def resolve_implicit_vs_gate(
+    url: str, engine: LocalDuckDBEngine
+) -> tuple[str, str]:
+    """Resolve a ValueSet url to a membership gate (source, root_code).
+
+    Valid forms are exactly those ``expand_url_pattern`` supports (the
+    SNOMED CT implicit isa sets). The gate is consumed by
+    ValueSet/$validate-code membership scoping (V1 fix): a code is a
+    member iff it IS the root or is a descendant of it (BFS over the
+    same hierarchy $expand walks).
+
+    Raises:
+        ValueError: url is not a resolvable implicit ValueSet form —
+            the caller re-encodes as 400 OperationOutcome (no persisted
+            ValueSets exist; spec-compat acceptance of arbitrary urls
+            was the V1 silent-TRUE gap).
+    """
+    from urllib.parse import parse_qs, urlparse
+
+    from medterm4ds.engines.fhir import SYSTEM_TO_FHIR_URI
+
+    parsed = urlparse(url)
+    base = f"{parsed.scheme}://{parsed.netloc}{parsed.path}"
+    if parsed.scheme not in ("http", "https"):
+        # URN-style references (urn:oid:...) don't reconstruct through
+        # scheme://netloc — use the query-stripped raw url as the
+        # lookup key; the alias registries key on the full URN.
+        base = url.partition("?")[0]
+    path_parts = parsed.path.strip("/").split("/")
+    query_params = parse_qs(parsed.query)
+    fhir_vs_raw = query_params.get("fhir_vs", [""])[0]
+
+    query_code: str | None = None
+    fhir_vs = fhir_vs_raw
+    if "/" in fhir_vs_raw:
+        kind, _, maybe_code = fhir_vs_raw.partition("/")
+        maybe_code = maybe_code.strip()
+        if kind.lower() in ("isa", "refset") and maybe_code:
+            query_code = maybe_code
+            fhir_vs = kind
+
+    snomed_uri = SYSTEM_TO_FHIR_URI["SNOMEDCT_US"]
+    if snomed_uri not in base:
+        # Not a SNOMED implicit set. A bare RECOGNIZED system URI used
+        # as a ValueSet url names the whole code system as the set
+        # (client convention: url=<system> + system=<same system>) —
+        # membership = system presence. Unrecognized/non-bare urls are
+        # unresolvable: 400 rather than the V1 silent unscoped TRUE.
+        if not query_params.get("fhir_vs") and fhir_uri_to_system(base):
+            return fhir_uri_to_system(base), ""
+        raise ValueError(
+            f"Unresolvable ValueSet url: {url!r}. This server resolves "
+            f"SNOMED CT implicit ValueSets ({snomed_uri}/<code>?fhir_vs "
+            f"or {snomed_uri}?fhir_vs=isa/<code>) and whole-system urls "
+            "for recognized systems; no persisted ValueSets exist. "
+            "Membership cannot be scoped — refusing rather than "
+            "validating against the whole code system."
+        )
+    if fhir_vs.lower() == "refset":
+        raise ValueError(
+            f"?fhir_vs=refset is not implemented (no refset data): {url!r}"
+        )
+    if query_code is None and len(path_parts) < 2:
+        # Bare system form: {snomed}?fhir_vs — the WHOLE code system is
+        # the set (R4 snomedct.html Implicit Value Sets). Membership =
+        # any code in the system; no root walk. Returned gate uses the
+        # empty root marker.
+        return "SNOMEDCT_US", ""
+    code = query_code if query_code is not None else path_parts[-1]
+    # Root existence: mirror $expand's QC-247 contract — unknown root is
+    # an error, not an empty set.
+    root_infos = get_code_infos([CodeRef("SNOMEDCT_US", code)], engine=engine)
+    if not root_infos or root_infos[0] is None:
+        raise ValueError(
+            f"Unknown root concept {code!r} in ValueSet url: {url!r}"
+        )
+    return "SNOMEDCT_US", code
+
+
+def vs_membership(
+    engine: LocalDuckDBEngine, gate: tuple[str, str], source: str, code: str
+) -> bool:
+    """Membership test for an implicit ValueSet gate (V1 fix).
+
+    Member iff code == root OR code is a descendant of root. Uses the
+    same BFS machinery as $expand (get_descendants_bfs) so validate and
+    expand cannot disagree on set membership.
+    """
+    gate_source, root_code = gate
+    if source != gate_source:
+        return False
+    if not root_code:
+        # Whole-system implicit set ({snomed}?fhir_vs): membership is
+        # system presence (existence already checked by the caller).
+        return True
+    if code == root_code:
+        return True
+    from medterm4ds.services.hierarchy import is_descendant
+
+    return is_descendant(
+        CodeRef(source=gate_source, code=root_code),
+        CodeRef(source=source, code=code),
+        engine=engine,
+    )
+
+
+# N1/N2 fix (TS-15): the server's translation semantics are a single
+# implicit ConceptMap — the UMLS CUI crosswalk (any admitted system ↔
+# any admitted system, equivalence=equivalent for shared-CUI atoms).
+# The urn below is the advertised canonical identity; $translate url
+# params must match it exactly (version suffixes rejected — the map is
+# unversioned). Previously ANY url was silently ignored and the
+# crosswalk answered under the requested map's name (N1) with zero
+# version semantics (N2).
+IMPLICIT_CONCEPT_MAP_URL = "urn:medterm4ds:crosswalk"
+
+
+def resolve_concept_map_url(
+    url: str | None, concept_map_version: str | None
+) -> None:
+    """Validate $translate map-selection params against the implicit map.
+
+    Raises:
+        ValueError: url does not match the implicit map (after stripping
+            a ``|version`` suffix, which is itself rejected as N2: the
+            map is unversioned), or conceptMapVersion is present.
+    """
+    if concept_map_version:
+        raise ValueError(
+            f"conceptMapVersion is not supported: the implicit ConceptMap "
+            f"{IMPLICIT_CONCEPT_MAP_URL!r} is unversioned. Omit the "
+            "parameter to translate via the crosswalk."
+        )
+    if url is None:
+        return
+    base, sep, _version = url.partition("|")
+    if sep:
+        raise ValueError(
+            f"Versioned ConceptMap references are not supported: the "
+            f"implicit map {IMPLICIT_CONCEPT_MAP_URL!r} is unversioned "
+            f"(got {url!r})."
+        )
+    if url != IMPLICIT_CONCEPT_MAP_URL:
+        raise ValueError(
+            f"Unknown ConceptMap url: {url!r}. This server serves one "
+            f"implicit map, {IMPLICIT_CONCEPT_MAP_URL!r} (UMLS CUI "
+            "crosswalk, any admitted system to any admitted system). "
+            "Omit url to translate via it, or pass the exact urn above."
+        )
+
+
 @dataclass(frozen=True)
 class FhirApiSettings:
     """FHIR facade settings."""
@@ -1827,6 +1978,23 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
                     return _batch_error_entry(
                         400, "system and code are required for $translate."
                     )
+                # N1/N2 fix: map-selection resolution inside $batch —
+                # batch entries must not bypass the direct-route contract
+                # (cross-handler-helper-wiring class).
+                if method == "GET":
+                    batch_url = params.get("url")
+                    batch_ver = params.get("conceptMapVersion")
+                else:
+                    batch_p = (
+                        _parse_parameters(body_resource)
+                        if body_resource else {}
+                    )
+                    batch_url = batch_p.get("url")
+                    batch_ver = batch_p.get("conceptMapVersion")
+                try:
+                    resolve_concept_map_url(batch_url, batch_ver)
+                except ValueError as exc:
+                    return _batch_error_entry(400, str(exc))
                 payload = await _run_db(
                     executor, _do_translate, engine, system, code, targetsystem,
                 )
@@ -2778,14 +2946,25 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
         display: str | None,
         codeable_concept_pairs: list[tuple[str, str]] | None = None,
     ):
-        # Without persisted ValueSets, membership evaluation reduces to "is the code
-        # present in the underlying code system". The url param is accepted for
-        # spec-compatibility but not used to restrict the membership check today.
-        # CodeableConcept multi-coding semantics (VS-05 SKEPTIC QA-069, mirroring
-        # CS-03 SKEPTIC QA-049 on the sibling CodeSystem handler): when a
-        # codeableConcept is supplied, the spec mandates "The server returns true
-        # if one of the coding values is in the code system". The full list MUST
-        # be examined — picking only the first coding silently wrong-answers.
+        # V1 fix (TS-09, registry flip v10): when a ValueSet url is
+        # supplied, membership MUST be scoped to that set. The server has
+        # no persisted ValueSets; the resolvable url forms are SNOMED CT
+        # implicit sets ({snomed}/{code}?fhir_vs[=isa] and the
+        # spec-canonical {snomed}?fhir_vs=isa/{code}). For those, the
+        # membership test is "code == root OR code is a descendant of
+        # root" via the same BFS the $expand surface uses. Any other url
+        # names a ValueSet this server cannot resolve — 400 (was: silent
+        # spec-compat acceptance of ANY url with an unscoped existence
+        # check, which validated out-of-system codes TRUE).
+        vs_gate: tuple[str, str] | None = None  # (source, root_code)
+        if url:
+            try:
+                vs_gate = resolve_implicit_vs_gate(url, engine)
+            except ValueError as exc:
+                # Gate resolution failure is input validation (unknown
+                # ValueSet form / unknown root) — 400, never a silent
+                # unscoped TRUE (the V1 gap) nor a 500.
+                return _fhir_error(400, str(exc))
         if codeable_concept_pairs:
             matched_info: CodeInfo | None = None
             matched_uri: str | None = None
@@ -2796,6 +2975,15 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
                     continue
                 cc_results = get_code_infos([CodeRef(cc_source, cc_code)], engine=engine)
                 if cc_results and cc_results[0] is not None:
+                    # V1 fix (code-review R1): the codeableConcept "any
+                    # coding" contract is "in the VALUE SET", not merely
+                    # in the code system — apply the same membership
+                    # gate as the scalar path; keep scanning on
+                    # non-member codings.
+                    if vs_gate is not None and not vs_membership(
+                        engine, vs_gate, cc_source, cc_code
+                    ):
+                        continue
                     matched_info = cc_results[0]
                     matched_uri = cc_uri
                     matched_code = cc_code
@@ -2893,6 +3081,22 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
                 code_info=None,
                 message=f"Code {code} is not valid in code system {canonical_uri}.",
             )
+        if vs_gate is not None:
+            # V1 fix: url-scoped membership. The code exists in its system,
+            # but the question is membership in the referenced ValueSet.
+            if not vs_membership(engine, vs_gate, source, code):
+                return build_parameters_validate(
+                    False,
+                    system_uri=canonical_uri,
+                    code=code,
+                    display=display,
+                    code_info=code_info,
+                    message=(
+                        f"Code {code} is not in the ValueSet {url} "
+                        "(implicit SNOMED isa set: not the root and not "
+                        "a descendant)."
+                    ),
+                )
         return build_parameters_validate(
             code_info is not None,
             system_uri=canonical_uri,
@@ -2913,6 +3117,29 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
         # exercises the case (the empty-string walk-through to
         # _do_translate would return 200 + result=false).
         system: str = Query(..., min_length=1, description="Source system URI"),
+        # N1/N2 fix (TS-15, registry flips n10-n21): the url parameter
+        # now RESOLVES. The server serves ONE implicit ConceptMap — the
+        # UMLS CUI crosswalk (any admitted system ↔ any admitted system)
+        # — exposed as IMPLICIT_CONCEPT_MAP_URL. A provided url must
+        # match it exactly (any version suffix or conceptMapVersion is
+        # rejected: the implicit map is unversioned); anything else 400s
+        # naming the supported value, instead of silently translating
+        # under the wrong map's name.
+        url: str | None = Query(
+            None,
+            description=(
+                "ConceptMap canonical URL to use. This server serves one "
+                f"implicit map ({IMPLICIT_CONCEPT_MAP_URL}); other urls are "
+                "rejected with 400."
+            ),
+        ),
+        conceptMapVersion: str | None = Query(
+            None,
+            description=(
+                "ConceptMap version. The implicit map is unversioned; any "
+                "value is rejected with 400."
+            ),
+        ),
         # QC finding 2026-08-10: FHIR R4 OperationDefinition names this
         # parameter "sourceCode". Accept BOTH "code" (simplified shorthand)
         # and "sourceCode" (spec name) so EHRs following the R4 spec don't
@@ -2937,6 +3164,10 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
         actual_code = code or sourceCode
         if not actual_code:
             return _fhir_error_response(request, 422, "Either 'code' or 'sourceCode' parameter is required.")
+        try:
+            resolve_concept_map_url(url, conceptMapVersion)
+        except ValueError as exc:
+            return _fhir_error_response(request, 400, str(exc))
         payload = await _run_db(_executor(request), _do_translate, _engine(request), system, actual_code, targetsystem)
         return _respond(request, payload)
 
@@ -2956,6 +3187,16 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
         )
         if not system or not code:
             return _fhir_error_response(request, 400, "system and code are required.")
+        # N1/N2 fix: map-selection params resolve on POST exactly as GET
+        # (url must be the implicit map; version/conceptMapVersion
+        # rejected — the map is unversioned).
+        post_params = _parse_parameters(body)
+        try:
+            resolve_concept_map_url(
+                post_params.get("url"), post_params.get("conceptMapVersion"),
+            )
+        except ValueError as exc:
+            return _fhir_error_response(request, 400, str(exc))
         payload = await _run_db(_executor(request), _do_translate, _engine(request), system, code, targetsystem)
         return _respond(request, payload)
 

@@ -53,7 +53,10 @@ import pytest
 SNOMED_URI = "http://snomed.info/sct"
 T2DM = "44054006"
 VS_ISA_DM = "http://snomed.info/sct/73211009?fhir_vs=isa"
-CM = "urn:medterm4ds:crosswalk:loinc-to-snomed"
+# N1 fix (maint/fix-conformance-20261007): url now resolves — the
+# implicit crosswalk urn is the accepted value (the old loinc-to-snomed
+# urn 400s on both transports, identically).
+CM = "urn:medterm4ds:crosswalk"
 LOINC_URI = "http://loinc.org"
 HBA1C = "4548-4"
 

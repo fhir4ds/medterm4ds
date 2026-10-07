@@ -71,30 +71,111 @@ def _result(client, **params) -> tuple[int, bool | None]:
 
 
 class TestV1MembershipNotUrlScoped:
-    """V1 — url accepted but membership unscoped (documented gap,
-    severity escalated: silent TRUE for out-of-set codes)."""
+    """V1 RESOLVED 2026-10-07 (fix batch maint/fix-conformance-20261007):
+    url-scoped membership enforced for resolvable implicit ValueSets
+    (SNOMED isa sets — root or descendant via the $expand BFS);
+    unresolvable urls 400 instead of silent spec-compat acceptance."""
 
     def test_v10_cross_system_out_of_vs_true(self, fhir_client):
-        """RxNorm metformin validates TRUE against the SNOMED
-        isa-Diabetes value set (CURRENT, documented gap at
-        fhir_api.py:2781). The expansion contains only SNOMED
-        {73211009, 44054006}. Flip when membership evaluation lands:
-        expect False (+ message)."""
+        """FLIPPED: RxNorm metformin validates FALSE against the
+        SNOMED isa-Diabetes set (expansion {73211009, 44054006}) with
+        an explicit not-in-set message."""
         status, out = _result(
             fhir_client,
             url=VS_ISA_DM, code=METFORMIN, system=RXNORM_URI,
         )
-        assert status == 200 and out is True
+        assert status == 200 and out is False
+        r = fhir_client.get(
+            ENDPOINT,
+            params={
+                "url": VS_ISA_DM, "code": METFORMIN,
+                "system": RXNORM_URI,
+            },
+        )
+        msg = next(
+            (p.get("valueString")
+             for p in r.json()["parameter"]
+             if p.get("name") == "message"),
+            None,
+        )
+        assert msg is not None and "not in the ValueSet" in msg
 
     def test_v11_same_system_unknown_false(self, fhir_client):
-        """CONTRAST: same-system unknown code returns False — the
-        existence check is sound; scoping is the gap (also the
-        eventual flip-control for v10)."""
+        """Control (unchanged): same-system unknown code FALSE — the
+        existence check remains sound under the membership gate."""
         status, out = _result(
             fhir_client,
             url=VS_ISA_DM, code="99999999", system=SNOMED_URI,
         )
         assert status == 200 and out is False
+
+    def test_v11b_root_and_descendant_true(self, fhir_client):
+        """Post-fix coverage: the isa root AND a known descendant
+        validate TRUE under the same url (membership gate passes both)
+        — T2DM is a descendant of DM 73211009."""
+        status_root, out_root = _result(
+            fhir_client, url=VS_ISA_DM, code=DM, system=SNOMED_URI,
+        )
+        status_desc, out_desc = _result(
+            fhir_client, url=VS_ISA_DM, code=T2DM, system=SNOMED_URI,
+        )
+        assert (status_root, out_root) == (200, True)
+        assert (status_desc, out_desc) == (200, True)
+
+    def test_v11c_unresolvable_url_400(self, fhir_client):
+        """Post-fix coverage: a url that is not a resolvable implicit
+        ValueSet 400s (OperationOutcome) — no silent unscoped TRUE."""
+        r = fhir_client.get(
+            ENDPOINT,
+            params={
+                "url": "http://example.org/some/arbitrary-vs",
+                "code": T2DM, "system": SNOMED_URI,
+            },
+        )
+        assert r.status_code == 400
+        assert r.json()["resourceType"] == "OperationOutcome"
+
+    def test_v13_codeable_concept_gated(self, fhir_client):
+        """Post-fix coverage (code-review R1): the codeableConcept
+        "any coding in the VALUE SET" contract is membership-gated —
+        an out-of-set coding is skipped (FALSE alone), an in-set
+        coding later in the list still satisfies (TRUE)."""
+        body_out = {
+            "resourceType": "Parameters",
+            "parameter": [
+                {"name": "url", "valueUri": VS_ISA_DM},
+                {"name": "codeableConcept", "valueCodeableConcept": {
+                    "coding": [
+                        {"system": RXNORM_URI, "code": METFORMIN},
+                    ]
+                }},
+            ],
+        }
+        r = fhir_client.post(ENDPOINT, json=body_out)
+        out = next(
+            (p.get("valueBoolean") for p in r.json()["parameter"]
+             if p.get("name") == "result"), None,
+        )
+        assert r.status_code == 200 and out is False
+
+        body_any = {
+            "resourceType": "Parameters",
+            "parameter": [
+                {"name": "url", "valueUri": VS_ISA_DM},
+                {"name": "codeableConcept", "valueCodeableConcept": {
+                    "coding": [
+                        {"system": RXNORM_URI, "code": METFORMIN},
+                        {"system": SNOMED_URI, "code": T2DM},
+                    ]
+                }},
+            ],
+        }
+        r2 = fhir_client.post(ENDPOINT, json=body_any)
+        out2 = next(
+            (p.get("valueBoolean") for p in r2.json()["parameter"]
+             if p.get("name") == "result"), None,
+        )
+        assert r2.status_code == 200 and out2 is True
 
     def test_v12_inline_valueset_ignored(self, fhir_client):
         """POSTed valueSet resource (compose includes ONLY T2DM)

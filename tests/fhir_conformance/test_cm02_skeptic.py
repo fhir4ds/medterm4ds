@@ -86,7 +86,9 @@ ICD10CM_URI = "http://hl7.org/fhir/sid/icd-10-cm"
 RXNORM_URI = "http://www.nlm.nih.gov/research/umls/rxnorm"
 # Plausible ConceptMap canonical URLs (medterm4ds does NOT persist
 # ConceptMaps today — the URL is accepted but not used to select a map).
-CONCEPTMAP_URL = "http://medterm4ds.org/fhir/ConceptMap/snomed-to-icd10"
+# N1 fix (maint/fix-conformance-20261007): url now resolves against the
+# implicit crosswalk map; the old medterm4ds.org url 400s as unknown.
+CONCEPTMAP_URL = "urn:medterm4ds:crosswalk"
 
 
 def _find_param(body: dict[str, Any], name: str) -> dict[str, Any] | None:
@@ -733,10 +735,9 @@ def test_s50_conceptmap_url_param_accepted_current_behavior(fhir_client):
             ("url", CONCEPTMAP_URL),
         ],
     )
-    # The url param is accepted (FastAPI does not reject unknown query
-    # params on a handler). The handler ignores it and proceeds.
+    # N1 fix: url resolves — the implicit crosswalk urn is accepted.
     assert r.status_code == 200, (
-        f"GET $translate with url param — expected 200 (url is ignored); "
+        f"GET $translate with implicit-map url — expected 200; "
         f"got {r.status_code}: {r.text}"
     )
     body = r.json()
@@ -773,7 +774,8 @@ def test_s51_conceptmap_url_param_ignored_results_same_as_without(fhir_client):
         ],
     )
     assert r_with.status_code == r_without.status_code == 200
-    # The implementation ignores the url param; results are identical.
+    # N1 fix: the implicit-map url is a no-op relative to omitting it
+    # (same crosswalk answers either way) — results identical.
     body_with = r_with.json()
     body_without = r_without.json()
     matches_with = [p for p in body_with.get("parameter", []) if p.get("name") == "match"]

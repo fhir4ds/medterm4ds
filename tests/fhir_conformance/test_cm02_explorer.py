@@ -1431,13 +1431,18 @@ def test_e160_translate_all_optional_params_combined(fhir_client):
             ("targetScope", "http://example.org/fhir/ValueSet/test-diabetes"),
             ("sourceScope", "http://example.org/fhir/ValueSet/test-snomed"),
             ("version", "2024-09"),
-            ("url", CONCEPTMAP_URL),
+            ("url", "urn:medterm4ds:crosswalk"),
             ("targetPrune", "false"),
         ],
     )
+    # N1 fix (maint/fix-conformance-20261007): url now RESOLVES. The
+    # implicit crosswalk urn is the one accepted value; the old probe
+    # asserted the silent drop-everything fallback this fix retired.
+    # The 'version' query param (distinct from conceptMapVersion) and
+    # the other non-map params remain accepted-and-ignored.
     assert r.status_code == 200, (
-        f"Combined optional params — expected 200 (spec-compat fallback); "
-        f"got {r.status_code}: {r.text[:300]}"
+        f"Combined optional params — expected 200 (url = implicit "
+        f"crosswalk urn); got {r.status_code}: {r.text[:300]}"
     )
     body = r.json()
     assert body.get("resourceType") == "Parameters"

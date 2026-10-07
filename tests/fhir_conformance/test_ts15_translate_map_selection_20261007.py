@@ -80,29 +80,28 @@ def _match_count(j: dict) -> int:
 
 
 class TestN1UrlIgnored:
-    """N1 — the requested ConceptMap does not scope the translation."""
+    """N1 RESOLVED 2026-10-07 (fix batch maint/fix-conformance-20261007):
+    url now resolves against the single implicit ConceptMap
+    (urn:medterm4ds:crosswalk) — wrong/bogus urls 400 naming the
+    supported value; the correct urn translates as before."""
 
     def test_n10_wrong_map_returns_other_maps_pair(self, fhir_client):
-        """THE FINDING: url selects the LOINC→SNOMED map while the
-        code is an ICD10CM↔SNOMED pair — the pair is returned as
-        result TRUE under the wrong map's name. WHEN map resolution
-        lands, flip to result FALSE / 400 unknown-map."""
+        """FLIPPED: requesting the LOINC→SNOMED map while translating an
+        ICD10CM code is now rejected 400 (unknown map) — no silent
+        crosswalk answer under the wrong map's name."""
         r = _translate(
             fhir_client,
             url=CM_LOINC_TO_SNOMED,
             system=ICD10_URI, code=E11, targetSystem=SNOMED_URI,
         )
-        assert r.status_code == 200
-        j = r.json()
-        assert _result(j) is True, (
-            "url now scopes translation — flip n10/n12 pins."
-        )
-        assert _match_count(j) == 1
+        assert r.status_code == 400
+        assert "urn:medterm4ds:crosswalk" in r.text
+        assert r.json()["resourceType"] == "OperationOutcome"
 
     def test_n11_correct_pair_baseline(self, fhir_client):
-        """Control: the same pair WITHOUT url (server-default) also
-        returns it — the wrongness in n10 is the url being ignored,
-        not the mapping being wrong."""
+        """Control (unchanged): the same pair WITHOUT url (server-default
+        crosswalk) returns it — the fix scopes map selection, not the
+        translation itself."""
         r = _translate(
             fhir_client, system=ICD10_URI, code=E11,
             targetSystem=SNOMED_URI,
@@ -112,54 +111,53 @@ class TestN1UrlIgnored:
         assert _match_count(r.json()) == 1
 
     def test_n12_divergence_pinned(self, fhir_client):
-        """Same code, two different requested maps (one plausible,
-        one nonexistent) — identical results: url has no effect."""
+        """FLIPPED: the implicit-map url succeeds; bogus urls 400 —
+        resolution discriminates instead of treating all urls alike."""
         good = _translate(
-            fhir_client, url=CM_LOINC_TO_SNOMED,
+            fhir_client, url="urn:medterm4ds:crosswalk",
             system=ICD10_URI, code=E11, targetSystem=SNOMED_URI,
         )
         bogus = _translate(
             fhir_client, url="urn:medterm4ds:crosswalk:nonexistent",
             system=ICD10_URI, code=E11, targetSystem=SNOMED_URI,
         )
-        assert good.status_code == bogus.status_code == 200
-        assert _result(good.json()) == _result(bogus.json()) is True, (
-            "bogus map url now behaves differently — resolution "
-            "landed; flip pins."
-        )
+        assert good.status_code == 200
+        assert _result(good.json()) is True
+        assert bogus.status_code == 400
 
 
 class TestN2VersionSemanticsAbsent:
-    """N2 — versioned url / conceptMapVersion have no effect."""
+    """N2 RESOLVED 2026-10-07: the implicit map is unversioned —
+    versioned url forms and conceptMapVersion are explicitly rejected
+    (400) instead of silently accepted."""
 
     @pytest.mark.parametrize(
         "extra",
         [
             {"url": CM_LOINC_TO_SNOMED + "|1.0"},
-            {"url": CM_LOINC_TO_SNOMED + "|9.9"},
+            {"url": "urn:medterm4ds:crosswalk|1.0"},
+            {"url": "urn:medterm4ds:crosswalk|9.9"},
         ],
     )
     def test_n20_versioned_url_accepted(self, fhir_client, extra):
-        """url|version forms accepted with identical semantics to the
-        unversioned url (which itself is ignored — N1). WHEN version
-        handling lands, flip: unknown versions should error or
-        no-match, not silently translate."""
+        """FLIPPED: versioned canonical references 400 (map is
+        unversioned) — no silent version-ignoring translation."""
         r = _translate(
             fhir_client, **extra,
             system=ICD10_URI, code=E11, targetSystem=SNOMED_URI,
         )
-        assert r.status_code == 200
-        assert _result(r.json()) is True
+        assert r.status_code == 400
+        assert "unversioned" in r.text
 
     def test_n21_concept_map_version_param(self, fhir_client):
-        """conceptMapVersion In param accepted, no effect."""
+        """FLIPPED: conceptMapVersion rejected with 400."""
         r = _translate(
-            fhir_client, url=CM_LOINC_TO_SNOMED,
+            fhir_client, url="urn:medterm4ds:crosswalk",
             conceptMapVersion="9.9",
             system=ICD10_URI, code=E11, targetSystem=SNOMED_URI,
         )
-        assert r.status_code == 200
-        assert _result(r.json()) is True
+        assert r.status_code == 400
+        assert "conceptMapVersion" in r.text
 
 
 class TestN3SourceTargetFiltersIgnored:

@@ -277,15 +277,17 @@ class TestL1RequiredParamsHostileInputs:
         )
 
     def test_s14_get_non_existent_url_with_known_code_returns_result(self, fhir_client):
-        """Non-existent url — server falls through to code-system membership
-        (the documented approximate-semantic per ``_do_vs_validate`` docstring).
+        """Non-existent url + known code — V1 fix
+        (maint/fix-conformance-20261007): unresolvable urls are 400
+        OperationOutcome (was: silent fall-through validating the code
+        against its whole code system — the V1 gap).
         """
         r = _validate_vs_get(
             fhir_client, url="http://example.org/nonexistent-vs",
             system=SNOMED_URI, code=SNOMED_T2DM_CODE,
         )
-        assert r.status_code == 200
-        assert _param_value(r.json(), "result") is True
+        assert r.status_code == 400
+        assert r.json()["resourceType"] == "OperationOutcome"
 
     def test_s15_get_very_long_url_handled(self, fhir_client):
         """5K-char url — no DoS, no 5xx."""
@@ -854,14 +856,17 @@ class TestL6ImplicitValueSet:
         )
 
     def test_s63_get_implicit_vs_unknown_url_with_known_code(self, fhir_client):
-        """Unknown url with known code — server falls through to code
-        presence (documented approximate semantic per _do_vs_validate)."""
+        """Unknown url with known code — V1 fix
+        (maint/fix-conformance-20261007): 400 OperationOutcome naming
+        the resolvable forms (was: silent TRUE via code-system
+        fall-through).
+        """
         r = _validate_vs_get(
             fhir_client, url="http://unknown.example/vs",
             system=SNOMED_URI, code=SNOMED_T2DM_CODE,
         )
-        assert r.status_code == 200
-        assert _param_value(r.json(), "result") is True
+        assert r.status_code == 400
+        assert "Unresolvable ValueSet url" in r.text
 
     def test_s64_get_implicit_vs_with_display_mismatch_combined(self, fhir_client):
         """Implicit VS + display mismatch — both semantics fire correctly."""
