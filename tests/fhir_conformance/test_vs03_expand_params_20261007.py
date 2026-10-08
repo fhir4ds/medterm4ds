@@ -83,15 +83,14 @@ class TestEAInParamsSilentlyDropped:
         the un-parameterized baseline — accepted-then-dropped. WHEN the
         param is honored (or 400'd) per §4.9.2, flip: assert the
         honored semantics or the 400."""
-        base = fhir_client.get(
-            "/fhir/ValueSet/$expand", params={"url": DM_ISA_URL}
-        )
         r = fhir_client.get(
             "/fhir/ValueSet/$expand",
             params={"url": DM_ISA_URL, param: value},
         )
-        assert r.status_code == 200
-        assert _codes_of(r.json()) == _codes_of(base.json())
+        # c-fixbatch2 (EA fix): unsupported-but-declared params are 400'd
+        # per R4 §4.9.2 instead of silently ignored.
+        assert r.status_code == 400
+        assert param in str(r.json()["issue"][0]["diagnostics"])
 
     def test_e11_unknown_param_silent(self, fhir_client):
         """Arbitrary garbage params 200 — no unknown-param rejection at
@@ -100,7 +99,9 @@ class TestEAInParamsSilentlyDropped:
             "/fhir/ValueSet/$expand",
             params={"url": DM_ISA_URL, "bogusParam": "1"},
         )
-        assert r.status_code == 200
+        # c-fixbatch2 (EA fix): unknown params 400 naming them.
+        assert r.status_code == 400
+        assert "bogusParam" in str(r.json()["issue"][0]["diagnostics"])
 
     def test_e12_post_body_in_param_no_effect(self, fhir_client):
         """POST Parameters body carries the same silently-dropped set:
@@ -114,8 +115,9 @@ class TestEAInParamsSilentlyDropped:
             ],
         }
         r = fhir_client.post("/fhir/ValueSet/$expand", json=body)
-        assert r.status_code == 200
-        assert "designation" not in r.text  # never emitted
+        # c-fixbatch2 (EA fix): body params 400 with the name.
+        assert r.status_code == 400
+        assert "includeDesignations" in str(r.json()["issue"][0]["diagnostics"])
 
 
 class TestEBDateParam:
@@ -128,7 +130,9 @@ class TestEBDateParam:
             "/fhir/ValueSet/$expand",
             params={"url": DM_ISA_URL, "date": "not-a-date"},
         )
-        assert r.status_code == 200
+        # c-fixbatch2 (EB fix): shape validation rejects non-dateTimes.
+        assert r.status_code == 400
+        assert "dateTime" in str(r.json()["issue"][0]["diagnostics"])
 
     def test_e21_post_bogus_date(self, fhir_client):
         """POST valueDateTime not-a-date → 200. Flip to 400."""
@@ -140,7 +144,8 @@ class TestEBDateParam:
             ],
         }
         r = fhir_client.post("/fhir/ValueSet/$expand", json=body)
-        assert r.status_code == 200
+        # c-fixbatch2 (EB fix): body valueDateTime shape-validated.
+        assert r.status_code == 400
 
 
 class TestECExpansionParamsEcho:
@@ -155,7 +160,9 @@ class TestECExpansionParamsEcho:
             params={"url": DM_ISA_URL, "activeOnly": "true"},
         )
         assert r.status_code == 200
-        assert r.json()["expansion"].get("params") is None
+        # c-fixbatch2 (EC fix): applied params are echoed (R4 SHOULD).
+        assert r.json()["expansion"].get("params") is not None
+        assert "activeOnly=true" in r.json()["expansion"]["params"]
 
 
 class TestExpandControls:

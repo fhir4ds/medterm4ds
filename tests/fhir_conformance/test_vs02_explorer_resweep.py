@@ -645,13 +645,13 @@ class TestLens3CombinedSpecInParameters:
                 "count": 20,
             },
         )
-        assert status in (200, 422), f"status={status}, body={body}"
-        if status == 200:
-            assert body.get("resourceType") == "ValueSet"
-        else:
-            # 422 must produce a FHIR OperationOutcome per the
-            # RequestValidationError exception handler.
-            assert body.get("resourceType") == "OperationOutcome"
+        # c-fixbatch2 (EA): the unsupported params (displayLanguage,
+        # includeDesignations) make the combination a 400 naming them;
+        # date (2024-01-01) is shape-valid so only the unsupported set
+        # fires.
+        assert status == 400, f"status={status}, body={body}"
+        assert body.get("resourceType") == "OperationOutcome"
+        assert "displayLanguage" in str(body["issue"][0]["diagnostics"])
 
     def test_e32_inline_valueset_plus_all_in_params(self, fhir_client):
         """Combined: inline ValueSet (POST) + count + offset + displayLanguage.
@@ -697,9 +697,11 @@ class TestLens3CombinedSpecInParameters:
                 "excludePostCoordinated": "false",
             },
         )
-        assert status in (200, 422), f"status={status}, body={body}"
-        if status == 200:
-            assert body.get("resourceType") == "ValueSet"
+        # c-fixbatch2 (EA): unsupported params in the combination 400
+        # naming them (was silently ignored).
+        assert status == 400, f"status={status}, body={body}"
+        assert body.get("resourceType") == "OperationOutcome"
+        assert "displayLanguage" in str(body["issue"][0]["diagnostics"])
 
     def test_e34_full_in_param_matrix_no_5xx(self, fhir_client):
         """Every In param with a plausible value — never 500."""

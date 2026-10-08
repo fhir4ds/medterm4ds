@@ -213,7 +213,10 @@ def test_e20_validate_get_with_inferSystem_accepted_without_5xx(fhir_client):
             "inferSystem": "true",
         },
     )
-    _assert_validate_200_with_result(r, "GET with inferSystem=true (ignored)")
+    # c-fixbatch2 (H3): off-spec param REJECTED 400 naming the ValueSet
+    # surface (was permissive ignore).
+    assert r.status_code == 400
+    assert "ValueSet" in str(r.json()["issue"][0]["diagnostics"])
 
 
 def test_e21_validate_post_with_inferSystem_accepted_without_5xx(fhir_client):
@@ -229,7 +232,9 @@ def test_e21_validate_post_with_inferSystem_accepted_without_5xx(fhir_client):
         ],
     }
     r = fhir_client.post("/fhir/CodeSystem/$validate-code", json=body)
-    _assert_validate_200_with_result(r, "POST with inferSystem=true (ignored)")
+    # c-fixbatch2 (H3): off-spec param REJECTED 400 (was permissive ignore).
+    assert r.status_code == 400
+    assert "ValueSet" in str(r.json()["issue"][0]["diagnostics"])
 
 
 # ---------------------------------------------------------------------------
@@ -247,10 +252,12 @@ def test_e21_validate_post_with_inferSystem_accepted_without_5xx(fhir_client):
     ],
 )
 def test_e30_validate_date_param_accepted_without_5xx(fhir_client, date_val):
-    """``date`` parameter is 0..1 dateTime. medterm4ds does not version-scope
-    data (NOT A BUG registry entry for ``version``). The param MUST be
-    accepted without 5xx — processing is deferred to a future enhancement.
+    """``date`` parameter is 0..1 dateTime. c-fixbatch2 (EB/H4): dates are
+    now SHAPE-VALIDATED — non-dateTime values 400 instead of silently
+    accepted. Valid partials stay 200.
     """
+    import re as _re
+
     r = fhir_client.get(
         "/fhir/CodeSystem/$validate-code",
         params={
@@ -259,7 +266,18 @@ def test_e30_validate_date_param_accepted_without_5xx(fhir_client, date_val):
             "date": date_val,
         },
     )
-    _assert_validate_200_with_result(r, f"date={date_val!r}")
+    if date_val and not _re.match(
+            r"^\d{4}"
+            r"(-\d{2}"
+            r"(-\d{2}"
+            r"(T\d{2}(:\d{2}(:\d{2}(\.\d+)?)?(Z|[+-]\d{2}:\d{2})?)?"
+            r")?)?)?$", date_val
+    ):
+        assert r.status_code == 400, (
+            f"date={date_val!r}: non-dateTime must 400 (c-fixbatch2)"
+        )
+    else:
+        _assert_validate_200_with_result(r, f"date={date_val!r}")
 
 
 # ---------------------------------------------------------------------------

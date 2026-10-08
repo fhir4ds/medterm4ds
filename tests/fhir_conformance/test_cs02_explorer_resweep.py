@@ -77,6 +77,15 @@ def _params_by_name(body: dict, name: str) -> list[dict]:
     return [p for p in body.get("parameter", []) if p.get("name") == name]
 
 
+def _assert_version_rejected_400(r, label: str):
+    """c-fixbatch2 (H1): version pins rejected — single-version server."""
+    assert r.status_code == 400, (
+        f"{label}: expected 400 (version rejected), got {r.status_code}; "
+        f"body={r.text[:300]!r}"
+    )
+    assert r.json().get("resourceType") == "OperationOutcome"
+
+
 def _assert_lookup_200_with_parameters(r, label: str):
     """Common positive-success-shape assertion for $lookup."""
     assert r.status_code == 200, (
@@ -123,7 +132,7 @@ def test_e10_combined_all_optional_params_at_once(fhir_client):
             ("property.code", "inactive"),
         ],
     )
-    _assert_lookup_200_with_parameters(r, "all-optional-params-at-once")
+    _assert_version_rejected_400(r, "all-optional-params-at-once")
 
 
 def test_e11_combined_property_multi_with_displayLanguage(fhir_client):
@@ -163,7 +172,7 @@ def test_e12_combined_version_and_property_multi(fhir_client):
             ("property", "parent"),
         ],
     )
-    _assert_lookup_200_with_parameters(r, "version + property-multi")
+    _assert_version_rejected_400(r, "version + property-multi")
 
 
 @pytest.mark.parametrize(
@@ -240,7 +249,7 @@ def test_e21_post_coding_body_with_version_and_property(fhir_client):
         ],
     }
     r = fhir_client.post("/fhir/CodeSystem/$lookup", json=body)
-    _assert_lookup_200_with_parameters(r, "POST coding + version + property multi")
+    _assert_version_rejected_400(r, "POST coding + version + property multi")
 
 
 def test_e22_post_coding_body_with_lang_property(fhir_client):
@@ -276,7 +285,7 @@ def test_e23_post_system_code_with_property_multi_and_displayLanguage(fhir_clien
         ],
     }
     r = fhir_client.post("/fhir/CodeSystem/$lookup", json=body)
-    _assert_lookup_200_with_parameters(r, "POST system+code + all optional")
+    _assert_version_rejected_400(r, "POST system+code + all optional")
 
 
 # ---------------------------------------------------------------------------
@@ -832,7 +841,7 @@ def test_e80_version_param_combined_with_property_multi(fhir_client, version):
             ("property", "display"),
         ],
     )
-    _assert_lookup_200_with_parameters(r, f"version={version!r} + property multi")
+    _assert_version_rejected_400(r, f"version={version!r} + property multi")
 
 
 def test_e81_version_param_in_post_body_combined(fhir_client):
@@ -848,7 +857,7 @@ def test_e81_version_param_in_post_body_combined(fhir_client):
         ],
     }
     r = fhir_client.post("/fhir/CodeSystem/$lookup", json=body)
-    _assert_lookup_200_with_parameters(r, "POST version + property multi")
+    _assert_version_rejected_400(r, "POST version + property multi")
 
 
 # ---------------------------------------------------------------------------

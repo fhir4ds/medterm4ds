@@ -406,9 +406,13 @@ def test_s50_lookup_optional_param_accepted_without_500(
         f"GET $lookup with {param_name}={value!r} → {r.status_code}; "
         f"optional param MUST NOT crash server (5xx). Body: {r.text[:200]}"
     )
-    assert r.status_code == 200, (
+    # c-fixbatch2 (H1): version pins are rejected 400 (single-version
+    # server); displayLanguage stays accepted-and-ignored on $lookup
+    # (not part of this batch's $lookup surface changes).
+    expected = 400 if param_name == "version" else 200
+    assert r.status_code == expected, (
         f"GET $lookup with {param_name}={value!r} → {r.status_code}; "
-        f"expected 200 (accepted). Body: {r.text[:200]}"
+        f"expected {expected}. Body: {r.text[:200]}"
     )
 
 

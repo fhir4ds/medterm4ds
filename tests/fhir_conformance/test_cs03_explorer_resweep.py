@@ -926,6 +926,10 @@ class TestL6DateParameterLateralAcceptance:
         ],
     )
     def test_e60_date_param_accepted_without_5xx(self, fhir_client, date_val):
+        # c-fixbatch2 (EB/H4): dates are shape-validated — non-dateTime
+        # 400s; valid partials (and empty = absent) stay 200.
+        import re as _re
+
         r = fhir_client.get(
             "/fhir/CodeSystem/$validate-code",
             params={
@@ -934,7 +938,18 @@ class TestL6DateParameterLateralAcceptance:
                 "date": date_val,
             },
         )
-        _assert_validate_200_with_result(r, f"date={date_val!r}")
+        if date_val and not _re.match(
+            r"^\d{4}"
+            r"(-\d{2}"
+            r"(-\d{2}"
+            r"(T\d{2}(:\d{2}(:\d{2}(\.\d+)?)?(Z|[+-]\d{2}:\d{2})?)?"
+            r")?)?)?$", date_val
+        ):
+            assert r.status_code == 400, (
+                f"date={date_val!r}: non-dateTime must 400 (c-fixbatch2)"
+            )
+        else:
+            _assert_validate_200_with_result(r, f"date={date_val!r}")
 
 
 # ===========================================================================

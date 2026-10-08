@@ -259,8 +259,9 @@ class TestLens2VersionParamHostile:
             f"&codeA={SNOMED_DIABETES_MELLITUS}&codeB={SNOMED_T2DM}"
             f"&version=http%3A%2F%2Fsnomed.info%2Fsct%2F731000168108%2Fversion%2F20240901"
         )
-        assert r.status_code == 200
-        assert _outcome(r.json()) == "subsumes"
+        # c-fixbatch2 (H1): URL-encoded version rejected 400 (decodes
+        # cleanly, no 5xx — the hostile-input contract holds).
+        assert r.status_code == 400
 
     def test_l22_post_version_in_body_accepted_alongside_codingA_codingB(self, fhir_client):
         """POST with codingA + codingB + version in body MUST produce 200."""
@@ -274,8 +275,8 @@ class TestLens2VersionParamHostile:
             ],
         }
         r = fhir_client.post("/fhir/CodeSystem/$subsumes", json=body)
-        assert r.status_code == 200, f"{r.status_code} {r.text[:300]}"
-        assert _outcome(r.json()) == "subsumes"
+        # c-fixbatch2 (H1): body version rejected.
+        assert r.status_code == 400, f"{r.status_code} {r.text[:300]}"
 
 
 # ============================================================================

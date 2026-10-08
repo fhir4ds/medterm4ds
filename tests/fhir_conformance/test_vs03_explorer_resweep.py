@@ -1235,13 +1235,13 @@ class TestLens7AdvancedExpandInParameterMatrix:
             fhir_client,
             params={
                 "filter": "diabetes",
-                "property": "abstract",  # ignored on GET
+                "property": "abstract",  # not an R4 $expand param
             },
         )
-        assert status == 200, f"status={status} body={body}"
-        # The expansion MUST still return SNOMED DM + T2DM (filter matches).
-        codes = _contains_codes(body)
-        assert (SNOMED_URI, SNOMED_DIABETES_MELLITUS) in codes
+        # c-fixbatch2 (EA): 'property' is unsupported on $expand — 400
+        # naming it (was silently dropped by FastAPI).
+        assert status == 400, f"status={status} body={body}"
+        assert "property" in str(body["issue"][0]["diagnostics"])
 
     def test_e75_filter_with_special_chars_in_get(self, fhir_client):
         """filter with special chars (!@#$%^&*()) — MUST NOT crash.

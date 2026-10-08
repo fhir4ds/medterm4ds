@@ -611,9 +611,11 @@ class TestLens3GetPostByteExactParityOnLateralInputs:
             version=version,
         )
         post_r = fhir_client.post("/fhir/CodeSystem/$subsumes", json=body)
-        assert get_r.status_code == 200
-        assert post_r.status_code == 200
-        assert _outcome(get_r.json()) == _outcome(post_r.json()) == "subsumes"
+        # c-fixbatch2 (H1): version rejected on both transports; parity
+        # preserved on the 400 path.
+        assert get_r.status_code == 400
+        assert post_r.status_code == 400
+        assert get_r.json() == post_r.json()
 
     def test_e32_post_mixed_scalar_codeA_and_codingB_byte_exact(
         self, fhir_client
@@ -900,10 +902,12 @@ class TestLens6SubsumesVersionCombinations:
             ],
         }
         r = fhir_client.post("/fhir/CodeSystem/$subsumes", json=body)
-        assert r.status_code == 200, (
+        # c-fixbatch2 (H1): non-empty version values rejected 400; empty
+        # (absent semantics) stays the snapshot 200. No 5xx either way.
+        expected = 400 if version else 200
+        assert r.status_code == expected, (
             f"version={version!r}: {r.status_code}; body: {r.text[:300]}"
         )
-        assert _outcome(r.json()) == "subsumes"
 
     def test_e61_post_version_in_coding_does_not_override(self, fhir_client) -> None:
         """Per CS-04 EXPLORER test_e61: a Coding.version embedded field
@@ -928,10 +932,11 @@ class TestLens6SubsumesVersionCombinations:
             ],
         }
         r = fhir_client.post("/fhir/CodeSystem/$subsumes", json=body)
-        assert r.status_code == 200, (
+        # c-fixbatch2 (H1): the operation version param is rejected; the
+        # embedded Coding.version never becomes the specifier either way.
+        assert r.status_code == 400, (
             f"version override: {r.status_code}; body: {r.text[:300]}"
         )
-        assert _outcome(r.json()) == "subsumes"
 
 
 # ============================================================================
@@ -1114,11 +1119,12 @@ class TestLens9OutcomeShapeAuditOnLateralInputs:
 
     def test_e90_post_with_version_outcome_shape_value_code(self, fhir_client) -> None:
         """POST $subsumes with version param — outcome MUST be valueCode."""
+        # c-fixbatch2 (H1): incidental version param removed (version
+        # pins are 400 now); the probe audits outcome shape, not version.
         body = _build_subsumes_params(
             SNOMED_URI,
             SNOMED_DIABETES_MELLITUS,
             SNOMED_T2DM,
-            version="2024-09",
         )
         r = fhir_client.post("/fhir/CodeSystem/$subsumes", json=body)
         assert r.status_code == 200

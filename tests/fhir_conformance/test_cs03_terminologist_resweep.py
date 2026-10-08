@@ -851,7 +851,8 @@ def test_t60_inferSystem_not_accepted_on_codesystem_validate_code(fhir_client):
     param and verify result depends ONLY on the canonical (system, code)
     pair, NOT on inferSystem.
     """
-    # With inferSystem=true on a KNOWN (system, code) -> still result=true.
+    # c-fixbatch2 (H3): inferSystem is rejected on the CodeSystem
+    # surface EVEN WITH system present (off-spec parameter, R4 §4.8.21.2).
     resp1 = fhir_client.get(
         "/fhir/CodeSystem/$validate-code",
         params={
@@ -860,26 +861,21 @@ def test_t60_inferSystem_not_accepted_on_codesystem_validate_code(fhir_client):
             "inferSystem": "true",
         },
     )
-    assert resp1.status_code == 200
-    assert _param_value(resp1.json(), "result") is True
+    assert resp1.status_code == 400
+    assert "ValueSet" in str(resp1.json()["issue"][0]["diagnostics"])
 
-    # With inferSystem=true on a KNOWN code WITHOUT system -> result depends
-    # on whether the engine knows the code. CodeSystem/$validate-code REQUIRES
-    # system (per spec In parameter ``code`` cardinality depends on ``system``).
-    # We're testing that inferSystem doesn't magically make the server "guess"
-    # the system. The server should reject (missing system) OR return false.
+    # With inferSystem=true on a KNOWN code WITHOUT system: c-fixbatch2
+    # (H3) — the off-spec param is REJECTED 400 naming the ValueSet
+    # surface (R4 §4.8.21.2 declares inferSystem only on
+    # ValueSet/$validate-code, where this server now honors it).
     resp2 = fhir_client.get(
         "/fhir/CodeSystem/$validate-code",
         params={"code": SNOMED_DM_CODE, "inferSystem": "true"},
     )
-    # Either 400 (missing system) OR 200 with result=false — but NOT 200 with
-    # result=true (the engine must NOT silently infer a system on the
-    # CodeSystem surface).
-    if resp2.status_code == 200:
-        assert _param_value(resp2.json(), "result") is False, (
-            "Server must not silently infer system on CodeSystem/$validate-code"
-        )
-    # Else: 400/422 is acceptable.
+    assert resp2.status_code == 400, (
+        "inferSystem on CodeSystem/$validate-code must 400 (c-fixbatch2)"
+    )
+    assert "ValueSet" in str(resp2.json()["issue"][0]["diagnostics"])
 
 
 def test_t61_spec_in_parameters_parametrized(fhir_client):

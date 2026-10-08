@@ -1186,8 +1186,10 @@ class TestExpandActiveFlag:
             fhir_client,
             params={"filter": "diabetes", "active": "true"},
         )
-        assert status == 200, f"status={status} body={body}"
-        assert body["resourceType"] == "ValueSet"
+        # c-fixbatch2 (EA): 'active' is not an R4 $expand param —
+        # unknown params now 400 naming them.
+        assert status == 400, f"status={status} body={body}"
+        assert body["resourceType"] == "OperationOutcome"
 
     def test_e141_active_false_accepted_on_get(self, fhir_client):
         """``active=false`` on GET — accepted without crash."""
@@ -1195,7 +1197,8 @@ class TestExpandActiveFlag:
             fhir_client,
             params={"filter": "diabetes", "active": "false"},
         )
-        assert status == 200, f"status={status} body={body}"
+        # c-fixbatch2 (EA): 'active' is not an R4 $expand param — 400.
+        assert status == 400, f"status={status} body={body}"
 
     def test_e142_active_in_post_parameters_body(self, fhir_client):
         """``active`` in POST Parameters body — accepted without crash."""
@@ -1207,8 +1210,11 @@ class TestExpandActiveFlag:
             ],
         }
         status, body, _ = _post_expand(fhir_client, params_body)
-        assert status == 200, f"status={status} body={body}"
-        assert body["resourceType"] == "ValueSet"
+        # c-fixbatch2 (EA): 'active' is not an R4 $expand param —
+        # body unknown params now 400 naming them.
+        assert status == 400, f"status={status} body={body}"
+        assert body["resourceType"] == "OperationOutcome"
+        assert "active" in str(body["issue"][0]["diagnostics"])
 
 
 # =============================================================================

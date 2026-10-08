@@ -21,13 +21,7 @@ SUITES themselves are committed and are the load-bearing contracts.
 | F2 | LOW | 2026-10-02 | VS-01/VS-03 $expand | vsd-3 (concept+filter coexistence) accepted, not 400 | test_vs01_filter_semantics_20261002.py (f20) |
 | P1 | LOW | 2026-10-03 | TS-04/VS-04 $expand paging | `expansion.offset` never echoed under paging | test_ts04_paging_semantics_20261003.py (p10/p11) |
 | T2 | LOW | 2026-10-03 | TS-02/CM-02 $translate | "one (and only one)" input contract unenforced; silent scalar precedence | test_ts02_translate_semantics_20261003.py (t20) |
-| H1 | MEDIUM | 2026-10-07 | CS-06 $validate-code | version/systemVersion silently ignored — version=9.9 byte-identical TRUE verdicts; client pinning historical version gets today's answer (N2/EA family) | test_cs06_validate_params_20261007.py (h10-h12) |
 | H2 | LOW-MED | 2026-10-07 | CS-06 $validate-code | abstract=true on CONCRETE code returns TRUE — R4 §4.8.18 abstract-use validation absent (CS-05 a30 family, reversed polarity) | test_cs06_validate_params_20261007.py (h20) |
-| H3 | LOW | 2026-10-07 | CS-06 $validate-code | inferSystem ignored: GET 422 undeclared (M1 family), POST parsed-then-dropped → 400 missing-system | test_cs06_validate_params_20261007.py (h30/h31) |
-| H4 | LOW | 2026-10-07 | CS-06 $validate-code | date=garbage accepted 200 both transports, no dateTime validation (EB family) | test_cs06_validate_params_20261007.py (h40/h41) |
-| EA | MEDIUM | 2026-10-07 | VS-03 $expand | R4 §4.9.12 In-param matrix mostly unbound: includeDesignations/designation/includeDefinition/excludeNested/excludeNotForUI/excludePostCoordinated/displayLanguage/property/context/contextTac all 200-ignored on BOTH transports + arbitrary unknown params accepted; §4.9.2 'must work or error' | test_vs03_expand_params_20261007.py (e10-e12) |
-| EB | LOW-MED | 2026-10-07 | VS-03 $expand | `date` param accepts non-dates (200 both transports, no dateTime validation) on a param whose purpose is historical-version selection | test_vs03_expand_params_20261007.py (e20/e21) |
-| EC | LOW | 2026-10-07 | VS-03 $expand | `expansion.params` never echoed (R4 SHOULD — applied-filters self-description; the observability gap hiding EA) | test_vs03_expand_params_20261007.py (e30) |
 | X1 | LOW | 2026-10-04 | TS-01 XML surface | cross-format CONTENT divergence: QC-300 XML control-char sanitizer alters message content vs JSON path for identical requests (JSON 'The display "w\x08rong"…' vs XML 'The display "wrong"…'); neither side spec-illegal; asymmetry undocumented. Fix: sanitize at message-building layer (both formats agree) OR document as intended | test_ts01_xml_parity_20261004.py (x10-x12) |
 | M1 | MEDIUM | 2026-10-06 | TS-10 transport parity | GET $lookup rejects `coding` (422, unknown FastAPI Query param) while POST accepts it (derives system/code, QA-022); R4 declares coding for BOTH transports. Client porting transports silently loses a spec-declared capability. Fix: accept coding on GET OR declare the gap in TerminologyCapabilities | test_ts10_transport_parity_20261006.py (m10-m12) |
 | S1 | MEDIUM | 2026-10-04 | TS-03 $subsumes | unknown codeA/codeB (either or both) → confident 200 not-subsumed; R4 §4.8.21.3: "If the server is unable to determine the relationship… returns an error response with an OperationOutcome" — silent wrong answer, inverse of C1 | test_ts03_subsumes_semantics_20261004.py (s10-s12) |
@@ -69,6 +63,13 @@ SUITES themselves are committed and are the load-bearing contracts.
 | CF-HISTORIAN-CM03-02 | LOW | sweep | CM-03 | incomplete_since not surfaced | (sweep suites) |
 
 ## Resolved during maintenance program
+
+| H1 | RESOLVED 2026-10-08 (c-fixbatch2) | reject_unsupported_version_params raises → 400 'single-version server'; uniform across $lookup/$validate-code/$subsumes GET+POST+$batch (cross-op consistency per cs05 e40); ~40 collateral accept-version probes flipped to the 400 contract; empty '' = absent |
+| H3 | RESOLVED 2026-10-08 (c-fixbatch2) | spec-corrected: inferSystem is ValueSet-only (R4 §4.8.21.2) — REJECTED 400 on CodeSystem surface naming the ValueSet op; HONORED on ValueSet/$validate-code GET+POST via SCTID-shape inference (6-18 digit → SNOMED CT); new pin h32 |
+| H4 | RESOLVED 2026-10-08 (c-fixbatch2) | validate_fhir_date (FHIR dateTime partials regex) on GET+POST+$batch; '' = absent; mid-fix defect caught+fixed: first draft honored inferSystem on the WRONG surface (terminologist t60 pin + live R4 spec read corrected it) |
+| EA | RESOLVED 2026-10-08 (c-fixbatch2) | 10 unsupported In-params + arbitrary unknowns → 400 naming them (reject_unknown_query_params + _parameter_names_present; boolean/date-typed params invisible to _parse_parameters per QC-245 — raw readers added); GET+POST; ~10 collateral permissive probes flipped |
+| EB | RESOLVED 2026-10-08 (c-fixbatch2) | date shape-validated (validate_fhir_date) on $expand GET+POST; valid partials 200; versioned expansion stays unsupported → date echoed via EC instead of silently ignored |
+| EC | RESOLVED 2026-10-08 (c-fixbatch2) | _expand_with_params_echo wrapper emits expansion.params = applied subset (activeOnly/url/filter/offset/date); _do_expand body UNTOUCHED (vs02/vs03/vs04 source-read structural suites depend on its source — first draft's rename broke 30 probes, reverted) |
 
 - CF-HISTORIAN-VS02-02 (implicit-VS canonical system) — fix had landed via TS-03 QA-001; registry corrected 2026-10-02.
 - "exclude[].filter ignored" — stale; QC-242/QC-244 landed it; corrected 2026-10-02 with probes r10/r11.

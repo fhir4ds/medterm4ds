@@ -332,11 +332,10 @@ def test_s60_get_subsumes_with_version_param_accepted(fhir_client):
         f"&codeA={SNOMED_DIABETES_MELLITUS}&codeB={SNOMED_T2DM}"
         f"&version=http%3A%2F%2Fsnomed.info%2Fsct%2F32506021000036107%2Fversion%2F20240901"
     )
-    assert r.status_code == 200, (
+    # c-fixbatch2 (H1): version rejected — single-version server.
+    assert r.status_code == 400, (
         f"version param supplied: {r.status_code} {r.text[:200]}"
     )
-    body = r.json()
-    assert _outcome(body) == "subsumes"
 
 
 def test_s61_get_subsumes_omitted_version_uses_current(fhir_client):
@@ -667,8 +666,8 @@ def test_s113_post_subsumes_with_version_in_body_accepted(fhir_client):
         ],
     }
     r = fhir_client.post("/fhir/CodeSystem/$subsumes", json=body)
-    assert r.status_code == 200, f"{r.status_code} {r.text[:300]}"
-    assert _outcome(r.json()) == "subsumes"
+    # c-fixbatch2 (H1): body version rejected.
+    assert r.status_code == 400, f"{r.status_code} {r.text[:300]}"
 
 
 # ---------------------------------------------------------------------------

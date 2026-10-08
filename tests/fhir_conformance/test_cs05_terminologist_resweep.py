@@ -1486,9 +1486,9 @@ class TestLens9VersionSpecificClinicalCorrectness:
             "/fhir/CodeSystem/$lookup",
             params={"system": system, "code": code},
         )
-        assert r_with.status_code == 200 and r_without.status_code == 200
-        # Canonical display MUST be byte-exact identical
-        assert _param_value(r_with.json(), "display") == expected_display
+        # c-fixbatch2 (H1): version pins rejected; the no-version
+        # display stays canonical.
+        assert r_with.status_code == 400 and r_without.status_code == 200
         assert _param_value(r_without.json(), "display") == expected_display
 
     def test_t91_validate_code_with_version_clinically_consistent(self, fhir_client):
@@ -1511,9 +1511,10 @@ class TestLens9VersionSpecificClinicalCorrectness:
             "/fhir/CodeSystem/$validate-code",
             params={"system": SNOMED_URI, "code": SNOMED_T2DM},
         )
-        assert r_with.status_code == 200 and r_without.status_code == 200
-        assert _param_value(r_with.json(), "result") == \
-               _param_value(r_without.json(), "result") is True
+        # c-fixbatch2 (H1): version pins rejected; the no-version result
+        # stays clinically correct.
+        assert r_with.status_code == 400 and r_without.status_code == 200
+        assert _param_value(r_without.json(), "result") is True
 
 
 # ===========================================================================

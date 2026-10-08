@@ -281,15 +281,9 @@ def test_s20_lookup_with_version_param_accepted(fhir_client):
         f"/fhir/CodeSystem/$lookup?system={SNOMED_URI}&code={SNOMED_T2DM}"
         f"&version=2024-09"
     )
-    assert r.status_code == 200, (
-        f"version param rejected: {r.status_code} {r.text}"
-    )
-    body = r.json()
-    assert body.get("resourceType") == "Parameters"
-    # The display MUST still be returned (engine uses the single snapshot).
-    display = _lookup_param_value(body, "display")
-    assert display and "diabetes" in display.lower(), (
-        f"version+code lookup returned display={display!r}"
+    # c-fixbatch2 (H1): version rejected — single-version server.
+    assert r.status_code == 400, (
+        f"version param accepted: {r.status_code} {r.text}"
     )
 
 
@@ -303,9 +297,10 @@ def test_s21_lookup_with_nonexistent_version_accepted(fhir_client):
         f"/fhir/CodeSystem/$lookup?system={SNOMED_URI}&code={SNOMED_T2DM}"
         f"&version=NONEXISTENT_VERSION_2099"
     )
-    assert r.status_code == 200, (
-        f"non-existent version rejected with {r.status_code}; engine is "
-        f"single-snapshot — version param should be accepted (current behavior)"
+    # c-fixbatch2 (H1): ALL version strings rejected uniformly.
+    assert r.status_code == 400, (
+        f"non-existent version accepted with {r.status_code}; the "
+        f"single-version server rejects all version pins (c-fixbatch2)"
     )
 
 
@@ -318,8 +313,10 @@ def test_s22_lookup_with_malformed_version_accepted(fhir_client):
         f"/fhir/CodeSystem/$lookup?system={SNOMED_URI}&code={SNOMED_T2DM}"
         f"&version=not%20a%20version%21%40%23"
     )
-    assert r.status_code == 200, (
-        f"malformed version rejected with {r.status_code}; current behavior is accept-and-ignore"
+    # c-fixbatch2 (H1): malformed version rejected like all others.
+    assert r.status_code == 400, (
+        f"malformed version accepted with {r.status_code}; all version "
+        f"pins are rejected (c-fixbatch2)"
     )
 
 
@@ -331,9 +328,8 @@ def test_s23_validate_code_with_version_param_accepted(fhir_client):
         f"/fhir/CodeSystem/$validate-code?system={SNOMED_URI}&code={SNOMED_T2DM}"
         f"&version=2024-09"
     )
-    assert r.status_code == 200
-    body = r.json()
-    assert _validate_result(body) is True
+    # c-fixbatch2 (H1): version rejected — single-version server.
+    assert r.status_code == 400
 
 
 def test_s24_subsumes_with_version_param_accepted(fhir_client):
@@ -345,9 +341,8 @@ def test_s24_subsumes_with_version_param_accepted(fhir_client):
         f"&codeA={SNOMED_DIABETES_MELLITUS}&codeB={SNOMED_T2DM}"
         f"&version=2024-09"
     )
-    assert r.status_code == 200
-    body = r.json()
-    assert _outcome(body) == "subsumes"
+    # c-fixbatch2 (H1): version rejected — single-version server.
+    assert r.status_code == 400
 
 
 def test_s25_lookup_version_does_not_change_display(fhir_client):
@@ -361,9 +356,12 @@ def test_s25_lookup_version_does_not_change_display(fhir_client):
         if v:
             url += f"&version={v}"
         r = fhir_client.get(url)
-        assert r.status_code == 200
-        displays.append(_lookup_param_value(r.json(), "display"))
-    # All displays MUST be identical (single snapshot).
+        # c-fixbatch2 (H1): non-empty version strings 400; empty (absent)
+        # stays the single-snapshot 200.
+        assert r.status_code == (200 if not v else 400)
+        if not v:
+            displays.append(_lookup_param_value(r.json(), "display"))
+    # The snapshot display is stable.
     assert len(set(displays)) == 1, (
         f"different version params produced different displays: {displays!r}"
     )
@@ -838,11 +836,11 @@ def test_s90_lookup_get_post_parity_with_version(fhir_client):
     """Item 2 / GET-vs-POST parity: $lookup with `version` param MUST
     produce identical responses on GET and POST.
     """
-    # GET
+    # GET (c-fixbatch2 H1: version rejected uniformly)
     r_get = fhir_client.get(
         f"/fhir/CodeSystem/$lookup?system={SNOMED_URI}&code={SNOMED_T2DM}&version=2024-09"
     )
-    assert r_get.status_code == 200
+    assert r_get.status_code == 400
     # POST
     r_post = fhir_client.post(
         "/fhir/CodeSystem/$lookup",
@@ -855,13 +853,9 @@ def test_s90_lookup_get_post_parity_with_version(fhir_client):
             ],
         },
     )
-    assert r_post.status_code == 200
-    # Displays MUST be identical.
-    display_get = _lookup_param_value(r_get.json(), "display")
-    display_post = _lookup_param_value(r_post.json(), "display")
-    assert display_get == display_post, (
-        f"GET display={display_get!r} != POST display={display_post!r}"
-    )
+    assert r_post.status_code == 400  # c-fixbatch2 (H1)
+    # Parity on the 400 path: identical OperationOutcome bodies.
+    assert r_get.json() == r_post.json()
 
 
 def test_s91_lookup_get_post_parity_without_version(fhir_client):

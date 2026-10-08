@@ -95,8 +95,10 @@ class TestH1VersionParamsIgnored:
                 "system": SNOMED_URI, "code": T2DM, param: value,
             },
         )
-        assert r.status_code == 200
-        assert _param(r.json(), "result") is True
+        # c-fixbatch2 (H1 fix): version-selection params rejected —
+        # single-version server, no silent historical-pin.
+        assert r.status_code == 400
+        assert param in str(r.json()["issue"][0]["diagnostics"])
 
     def test_h11_version_values_indistinguishable(self, fhir_client):
         """version=2024 vs version=9.9: byte-identical verdicts — the
@@ -110,7 +112,10 @@ class TestH1VersionParamsIgnored:
             "/fhir/CodeSystem/$validate-code",
             params={"system": SNOMED_URI, "code": T2DM, "version": "9.9"},
         )
-        assert r1.content == r2.content
+        # c-fixbatch2 (H1 fix): both versions now fail loudly and
+        # identically (single-version server).
+        assert r1.status_code == 400
+        assert r2.status_code == 400
 
     def test_h12_post_version_body_silent(self, fhir_client):
         """POST Parameters version=9.9 body — same silent acceptance.
@@ -127,8 +132,8 @@ class TestH1VersionParamsIgnored:
         r = fhir_client.post(
             "/fhir/CodeSystem/$validate-code", json=body
         )
-        assert r.status_code == 200
-        assert _param(r.json(), "result") is True
+        # c-fixbatch2 (H1 fix): body version rejected with parity.
+        assert r.status_code == 400
 
 
 class TestH2AbstractUse:
@@ -152,21 +157,25 @@ class TestH2AbstractUse:
 class TestH3InferSystem:
     """H3 — inferSystem ignored; transport-asymmetric failure."""
 
-    def test_h30_get_infer_system_422(self, fhir_client):
-        """GET: code+inferSystem=true without system → 422 (param
-        undeclared; unknown-Query drop). Flip when declared + honored
-        (or 400 not-supported)."""
+    def test_h30_get_infer_system_rejected(self, fhir_client):
+        """GET: inferSystem is NOT a CodeSystem/$validate-code param
+        (R4 §4.8.21.2 declares it only on ValueSet) — presence is
+        rejected 400 naming the ValueSet surface (was 422 unknown-Query
+        drop)."""
         r = fhir_client.get(
             "/fhir/CodeSystem/$validate-code",
-            params={"code": T2DM, "inferSystem": "true"},
+            params={
+                "system": SNOMED_URI, "code": T2DM,
+                "inferSystem": "true",
+            },
         )
-        assert r.status_code == 422
+        assert r.status_code == 400
+        assert "ValueSet" in str(r.json()["issue"][0]["diagnostics"])
 
-    def test_h31_post_infer_system_dropped(self, fhir_client):
-        """POST: inferSystem parsed from the body then dropped; the
-        request fails on the missing system anyway (400 'system and
-        code are required'). Flip when inference (or explicit 400
-        not-supported) lands."""
+    def test_h31_post_infer_system_rejected(self, fhir_client):
+        """POST: inferSystem presence rejected 400 on the CodeSystem
+        surface (was parsed-then-dropped → misleading 'system and code
+        are required')."""
         body = {
             "resourceType": "Parameters",
             "parameter": [
@@ -178,6 +187,21 @@ class TestH3InferSystem:
             "/fhir/CodeSystem/$validate-code", json=body
         )
         assert r.status_code == 400
+        assert "ValueSet" in str(r.json()["issue"][0]["diagnostics"])
+
+    def test_h32_vs_infer_system_honored(self, fhir_client):
+        """H3 positive side: inferSystem IS declared on
+        ValueSet/$validate-code (R4 §4.9.18) — SCTID-shape inference
+        fills a missing system there."""
+        r = fhir_client.get(
+            "/fhir/ValueSet/$validate-code",
+            params={
+                "url": f"{SNOMED_URI}/73211009?fhir_vs=isa",
+                "code": T2DM, "inferSystem": "true",
+            },
+        )
+        assert r.status_code == 200
+        assert _param(r.json(), "result") is True
 
 
 class TestH4DateUnvalidated:
@@ -190,7 +214,8 @@ class TestH4DateUnvalidated:
                 "system": SNOMED_URI, "code": T2DM, "date": "garbage",
             },
         )
-        assert r.status_code == 200
+        # c-fixbatch2 (H4 fix): dateTime shape validation.
+        assert r.status_code == 400
 
     def test_h41_post_bogus_date(self, fhir_client):
         body = {
@@ -205,7 +230,8 @@ class TestH4DateUnvalidated:
         r = fhir_client.post(
             "/fhir/CodeSystem/$validate-code", json=body
         )
-        assert r.status_code == 200
+        # c-fixbatch2 (H4 fix): body valueDateTime shape validation.
+        assert r.status_code == 400
 
 
 class TestCS06Controls:

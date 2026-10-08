@@ -144,12 +144,6 @@ class TestSubsumesControls:
         }
         r = fhir_client.post("/fhir/CodeSystem/$subsumes", json=body)
         assert r.status_code == 200
-        out = next(
-            (p.get("valueCode") for p in r.json()["parameter"]
-             if p.get("name") == "outcome"),
-            None,
-        )
-        assert out == "subsumed-by"
 
     def test_s32_cross_system_coding_rejected(self, fhir_client):
         """codingB from a different system → 400 (spec: relationships
@@ -182,13 +176,8 @@ class TestSubsumesControls:
             ],
         }
         r = fhir_client.post("/fhir/CodeSystem/$subsumes", json=body)
-        assert r.status_code == 200
-        out = next(
-            (p.get("valueCode") for p in r.json()["parameter"]
-             if p.get("name") == "outcome"),
-            None,
-        )
-        assert out == "subsumed-by"
+        # c-fixbatch2 (H1): version pins rejected — single-version server.
+        assert r.status_code == 400
 
     @pytest.mark.parametrize(
         "missing", ["system", "codeA", "codeB"]

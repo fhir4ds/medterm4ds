@@ -606,13 +606,9 @@ class TestLens4VersionSpecificClinicalCorrectness:
             "/fhir/CodeSystem/$lookup",
             params={"system": SNOMED_URI, "code": SNOMED_T2DM},
         )
-        assert r_with.status_code == 200 and r_without.status_code == 200
-        body_with = r_with.json()
-        body_without = r_without.json()
-        # Clinical answer MUST be identical — display, code, abstract
-        assert _param_value(body_with, "display") == _param_value(body_without, "display")
-        assert _param_value(body_with, "code") == _param_value(body_without, "code")
-        assert _param_value(body_with, "abstract") == _param_value(body_without, "abstract")
+        # c-fixbatch2 (H1): version pins rejected 400; the no-version
+        # clinical answer stays the snapshot's.
+        assert r_with.status_code == 400 and r_without.status_code == 200
 
     def test_t41_validate_code_with_version_accepted(self, fhir_client):
         """$validate-code?version=X is accepted (per spec In Parameters
@@ -635,8 +631,10 @@ class TestLens4VersionSpecificClinicalCorrectness:
             "/fhir/CodeSystem/$validate-code",
             params={"system": SNOMED_URI, "code": SNOMED_T2DM},
         )
-        assert r_with.status_code == 200 and r_without.status_code == 200
-        assert _param_value(r_with.json(), "result") == _param_value(r_without.json(), "result")
+        # c-fixbatch2 (H1): version pins rejected; no spurious clinical
+        # verdict either way (the 400 IS the safe answer for a version
+        # this server cannot serve).
+        assert r_with.status_code == 400 and r_without.status_code == 200
 
     def test_t42_subsumes_with_version_accepted(self, fhir_client):
         """$subsumes?version=X is accepted and returns the same outcome.
@@ -662,8 +660,9 @@ class TestLens4VersionSpecificClinicalCorrectness:
                 "codeB": SNOMED_T2DM,
             },
         )
-        assert r_with.status_code == 200 and r_without.status_code == 200
-        assert _param_value(r_with.json(), "outcome") == _param_value(r_without.json(), "outcome")
+        # c-fixbatch2 (H1): version pins rejected; outcome parity only
+        # on the no-version path.
+        assert r_with.status_code == 400 and r_without.status_code == 200
 
 
 # ===========================================================================

@@ -127,15 +127,17 @@ def test_s03_get_validate_system_without_code_returns_422(fhir_client):
 # ---------------------------------------------------------------------------
 
 def test_s10_get_validate_with_version_param_accepted(fhir_client):
-    """Item 2 / spec In Parameters: `version` is 0..1 string. Accepted without 5xx."""
+    """Item 2 / spec In Parameters: `version` is 0..1 string. c-fixbatch2
+    (H1): version-selection params are now REJECTED 400 — the server is
+    single-version; accepting a version silently (200 informational) was
+    the H1 silent-wrong-answer."""
     r = fhir_client.get(
         f"/fhir/CodeSystem/$validate-code?system={SNOMED_URI}&code={SNOMED_T2DM}&version=2024-09"
     )
-    assert r.status_code == 200, f"version accepted → {r.status_code}; body={r.text[:300]}"
-    body = r.json()
-    assert body.get("resourceType") == "Parameters"
-    # version accepted: result true (the code is known, version is informational)
-    assert _param_value(body, "result") is True
+    assert r.status_code == 400, (
+        f"version rejected → {r.status_code}; body={r.text[:300]}"
+    )
+    assert "version" in str(r.json()["issue"][0]["diagnostics"])
 
 
 def test_s11_get_validate_with_date_param_accepted(fhir_client):

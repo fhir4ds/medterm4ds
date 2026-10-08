@@ -229,15 +229,15 @@ def test_e12_post_subsumes_version_included_body_emits_fhir_mimetype(fhir_client
         ],
     }
     r = fhir_client.post("/fhir/CodeSystem/$subsumes", json=body)
-    assert r.status_code == 200, f"body={r.text[:300]!r}"
+    # c-fixbatch2 (H1): version rejected; the fhir+json Content-Type
+    # contract holds on the 400 path.
+    assert r.status_code == 400, f"body={r.text[:300]!r}"
     ct = r.headers.get("content-type", "")
     assert "application/fhir+json" in ct, (
         f"POST $subsumes (version-included) Content-Type is {ct!r}; spec "
         f"mandates application/fhir+json."
     )
-    body_json = r.json()
-    assert body_json.get("resourceType") == "Parameters"
-    assert _outcome(body_json) == "subsumes"
+    assert r.json().get("resourceType") == "OperationOutcome"
 
 
 def test_e13_post_subsumes_mixed_system_error_emits_fhir_mimetype(fhir_client):
@@ -568,12 +568,11 @@ def test_e60_get_subsumes_unusual_version_accepted(fhir_client, version_val):
             "version": version_val,
         },
     )
-    assert r.status_code == 200, (
+    # c-fixbatch2 (H1): version params rejected — single-version server.
+    assert r.status_code == 400, (
         f"version={version_val!r}: {r.status_code} {r.text[:300]!r}"
     )
-    body_json = r.json()
-    assert body_json.get("resourceType") == "Parameters"
-    assert _outcome(body_json) in VALID_OUTCOMES
+    assert r.json().get("resourceType") == "OperationOutcome"
 
 
 def test_e61_post_subsumes_coding_with_embedded_version_not_overriding(fhir_client):
@@ -615,12 +614,9 @@ def test_e61_post_subsumes_coding_with_embedded_version_not_overriding(fhir_clie
         ],
     }
     r = fhir_client.post("/fhir/CodeSystem/$subsumes", json=body)
-    assert r.status_code == 200, f"body={r.text[:300]!r}"
-    body_json = r.json()
-    assert body_json.get("resourceType") == "Parameters"
-    # The operation should still resolve correctly; embedded version is
-    # metadata, not the operation's version specifier.
-    assert _outcome(body_json) in VALID_OUTCOMES
+    # c-fixbatch2 (H1): the In `version` param is rejected; embedded
+    # Coding.version never became the specifier either way.
+    assert r.status_code == 400, f"body={r.text[:300]!r}"
 
 
 # ---------------------------------------------------------------------------
@@ -994,7 +990,6 @@ def test_e140_post_subsumes_all_encodings_present_uses_scalar(fhir_client):
         "resourceType": "Parameters",
         "parameter": [
             {"name": "system", "valueUri": SNOMED_URI},
-            {"name": "version", "valueString": "2024"},
             {"name": "codeA", "valueCode": SNOMED_DIABETES_MELLITUS},  # parent
             {"name": "codeB", "valueCode": SNOMED_T2DM},               # child
             # codings would produce subsumed-by (swapped)
@@ -1002,6 +997,8 @@ def test_e140_post_subsumes_all_encodings_present_uses_scalar(fhir_client):
             {"name": "codingB", "valueCoding": {"system": SNOMED_URI, "code": SNOMED_DIABETES_MELLITUS}},
         ],
     }
+    # c-fixbatch2 (H1): the incidental version param was dropped from
+    # this precedence probe (version pins are 400 now).
     r = fhir_client.post("/fhir/CodeSystem/$subsumes", json=body)
     assert r.status_code == 200
     outcome = _outcome(r.json())

@@ -460,11 +460,14 @@ def test_e40_version_param_consistent_across_operations(fhir_client, version):
         f"&codeA={SNOMED_DIABETES_MELLITUS}&codeB={SNOMED_T2DM}"
         f"&version={version}"
     )
-    assert r_lookup.status_code == 200, (
-        f"$lookup with version={version!r} rejected: {r_lookup.status_code}"
+    # c-fixbatch2 (H1): version params uniformly rejected across all
+    # three operations (single-version server) — cross-op consistency
+    # preserved at 400.
+    assert r_lookup.status_code == 400, (
+        f"$lookup with version={version!r}: expected 400, got {r_lookup.status_code}"
     )
-    assert r_validate.status_code == 200
-    assert r_subsumes.status_code == 200
+    assert r_validate.status_code == 400
+    assert r_subsumes.status_code == 400
 
 
 def test_e41_version_param_does_not_change_outcome_across_operations(fhir_client):
@@ -490,12 +493,19 @@ def test_e41_version_param_does_not_change_outcome_across_operations(fhir_client
             f"&codeA={SNOMED_DIABETES_MELLITUS}&codeB={SNOMED_T2DM}"
             + (f"&version={v}" if v else "")
         )
-        assert r_lookup.status_code == r_validate.status_code == r_subsumes.status_code == 200
+        # c-fixbatch2 (H1): empty version (absent) stays 200; any actual
+        # version string is uniformly 400 across all three operations.
+        expected = 200 if not v else 400
+        assert r_lookup.status_code == expected
+        assert r_validate.status_code == expected
+        assert r_subsumes.status_code == expected
+        if v:
+            continue
         displays.append(_lookup_param_value(r_lookup.json(), "display"))
         results.append(_validate_result(r_validate.json()))
         outcomes.append(_outcome(r_subsumes.json()))
     assert len(set(displays)) == 1, (
-        f"different version params changed display: {displays!r}"
+        f"absent-version display unstable: {displays!r}"
     )
     assert len(set(results)) == 1
     assert len(set(outcomes)) == 1
@@ -743,7 +753,9 @@ def test_e82_lookup_post_version_included_body_content_type(fhir_client):
             ],
         },
     )
-    assert r.status_code == 200
+    # c-fixbatch2 (H1): version rejected; the FHIR content-type contract
+    # still holds on the error path.
+    assert r.status_code == 400
     ct = r.headers.get("content-type", "")
     assert "application/fhir+json" in ct
 
@@ -843,10 +855,9 @@ def test_e91_validate_code_xml_accept_header_negotiation(fhir_client):
 
 def test_e100_expand_no_abstract_filter_param(fhir_client):
     """Lens 10 / spec $expand: there is NO `abstract` or
-    `includeAllAbstract` In parameter on $expand. Clients requesting
-    one get permissive behavior (FastAPI accepts unknown query params).
-    EXPLORER documents the absence — adding such a parameter would be
-    a future enhancement.
+    `includeAllAbstract` In parameter on $expand. c-fixbatch2 (EA):
+    unknown $expand params are rejected 400 naming them (was permissive
+    accept-and-ignore via FastAPI's unknown-Query drop).
 
     Spec: https://hl7.org/fhir/R4/valueset-operation-expand.html In
     Parameters (no `abstract` parameter listed).
@@ -854,21 +865,12 @@ def test_e100_expand_no_abstract_filter_param(fhir_client):
     r = fhir_client.get(
         "/fhir/ValueSet/$expand?filter=diabetes&count=10&includeAllAbstract=true"
     )
-    # The implementation is permissive — the unknown param is accepted.
-    assert r.status_code == 200, (
+    assert r.status_code == 400, (
         f"unknown $expand param rejected: {r.status_code} {r.text}"
     )
     body = r.json()
-    assert body.get("resourceType") == "ValueSet"
-    # The contains[] list MAY be present; today it has no abstract
-    # field per CF-SKEPTIC-CS05-01.
-    contains = body.get("expansion", {}).get("contains", [])
-    # The seeded diabetes codes MUST be present (filter=diabetes).
-    codes = [c.get("code") for c in contains]
-    assert SNOMED_DIABETES_MELLITUS in codes or SNOMED_T2DM in codes, (
-        f"diabetes filter did not return seeded codes: {codes!r}"
-    )
-
+    assert body.get("resourceType") == "OperationOutcome"
+    assert "includeAllAbstract" in str(body["issue"][0]["diagnostics"])
 
 def test_e101_expand_filter_inactive_does_not_filter_active(fhir_client):
     """Lens 10 / spec $expand: there is no In parameter to query

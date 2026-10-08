@@ -609,6 +609,134 @@ class FhirApiSettings:
             cache_indexes=env_bool("MEDTERM4DS_CACHE_INDEXES", False),
         )
 
+_FHIR_DATE_RE = re.compile(
+    r"^\d{4}"
+    r"(-\d{2}"
+    r"(-\d{2}"
+    r"(T\d{2}(:\d{2}(:\d{2}(\.\d+)?)?(Z|[+-]\d{2}:\d{2})?)?"
+    r")?)?)?$"
+)
+
+
+def validate_fhir_date(value: str, param_name: str) -> None:
+    """Validate a FHIR dateTime-shaped value (EB/H4 fix).
+
+    FHIR dateTime allows partial precision (YYYY, YYYY-MM, YYYY-MM-DD,
+    plus full timestamps). Anything else — e.g. 'garbage', 'not-a-date'
+    — is rejected so a client cannot believe a date parameter was
+    honored when it was never parsed.
+
+    Raises:
+        ValueError: value does not match any FHIR dateTime precision.
+    """
+    if not _FHIR_DATE_RE.match(value):
+        raise ValueError(
+            f"Invalid {param_name} value {value!r}: expected a FHIR "
+            "dateTime (YYYY, YYYY-MM, YYYY-MM-DD, or full timestamp)."
+        )
+
+
+def reject_unsupported_version_params(
+    *, version: str | None = None, system_version: str | None = None,
+    kind: str = "code system",
+) -> None:
+    """Fail loud on version-selection params (H1 fix, N2-family).
+
+    This server serves exactly ONE (current) version of each code
+    system; there is no versioned history to select. A client sending
+    version/systemVersion believes it pinned a historical verdict —
+    honoring that belief silently (200 with today's data) is the
+    silent-wrong-answer the registry row pins. Reject per §4.9.2.
+    """
+    if version:
+        raise ValueError(
+            f"version is not supported: this server serves one (current) "
+            f"{kind} version and carries no versioned history. Omit the "
+            "parameter to validate against the current version."
+        )
+    if system_version:
+        raise ValueError(
+            f"systemVersion is not supported: this server serves one "
+            f"(current) {kind} version and carries no versioned history. "
+            "Omit the parameter to validate against the current version."
+        )
+
+
+def infer_system_uri(code: str) -> str | None:
+    """Infer a FHIR system URI from a bare code (H3 fix).
+
+    SCTID shape inference: SNOMED CT concept identifiers are 6-18
+    digit integers (partitions 0-2 for concepts). Codes matching that
+    shape are inferred as SNOMED CT; anything else returns None (the
+    caller rejects with a cannot-infer error).
+    """
+    if code.isdigit() and 6 <= len(code) <= 18:
+        return "http://snomed.info/sct"
+    return None
+
+
+_EXPAND_UNSUPPORTED_PARAMS = (
+    "includeDesignations", "designation", "includeDefinition",
+    "excludeNested", "excludeNotForUI", "excludePostCoordinated",
+    "displayLanguage", "property", "useSupplement", "context",
+    "contextTac",
+)
+_EXPAND_KNOWN_PARAMS = frozenset(
+    ("url", "filter", "count", "offset", "activeOnly", "system",
+     "date", "valueSetVersion", "_format")
+    + _EXPAND_UNSUPPORTED_PARAMS
+)
+
+
+def _parameter_names_present(body: dict[str, Any]) -> set[str]:
+    """Names of every parameter entry in a FHIR Parameters body.
+
+    _parse_parameters only extracts string-typed scalars (per QC-245,
+    valueBoolean is deliberately dropped there). The EA/EB/H3 body
+    checks need to SEE boolean/date-typed params to reject or honor
+    them — this flattens every entry's ``name`` regardless of value
+    type.
+    """
+    names: set[str] = set()
+    # QC-245 family: a JSON null ``parameter`` value means absent —
+    # iterate nothing rather than crash on None.
+    entries = body.get("parameter") or []
+    for param in entries if isinstance(body, dict) else []:
+        if isinstance(param, dict) and "name" in param:
+            names.add(str(param["name"]))
+    return names
+
+
+def _raw_parameter_value(body: dict[str, Any], name: str) -> Any:
+    """First raw value[x] of a named parameter in a FHIR Parameters body."""
+    for param in body.get("parameter", []) if isinstance(body, dict) else []:
+        if (
+            isinstance(param, dict)
+            and param.get("name") == name
+        ):
+            for k, v in param.items():
+                if k.startswith("value"):
+                    return v
+    return None
+
+
+def reject_unknown_query_params(
+    request: Request, known: frozenset[str], operation: str,
+) -> None:
+    """400 on query params the operation does not declare (EA fix).
+
+    FastAPI silently drops undeclared Query params; this re-examines
+    the raw query string so unknown or unsupported-but-declared params
+    fail loudly per §4.9.2 instead of 200-ignoring.
+    """
+    unknown = set(request.query_params) - known
+    if unknown:
+        raise ValueError(
+            f"Unknown or unsupported {operation} parameter(s): "
+            f"{', '.join(sorted(unknown))}. Supported: "
+            f"{', '.join(sorted(known - {'_format'}))}."
+        )
+
 
 def _load_bm25_indexes(search_dir: str) -> dict[str, Any]:
     """Probe the BM25 search index directory and report what's available.
@@ -1953,6 +2081,33 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
                     return _batch_error_entry(
                         400, "system and code are required for $validate-code."
                     )
+                # c-fixbatch2 (H1/H4): batch entries must not bypass the
+                # direct-route contract (N1-fix precedent).
+                try:
+                    if method == "GET":
+                        reject_unsupported_version_params(
+                            version=params.get("version"),
+                            system_version=params.get("systemVersion"),
+                        )
+                        if params.get("date") is not None:
+                            validate_fhir_date(
+                                str(params["date"]), "date",
+                            )
+                    else:
+                        body_p = (
+                            _parse_parameters(body_resource)
+                            if body_resource else {}
+                        )
+                        reject_unsupported_version_params(
+                            version=body_p.get("version"),
+                            system_version=body_p.get("systemVersion"),
+                        )
+                        if body_p.get("date") is not None:
+                            validate_fhir_date(
+                                str(body_p["date"]), "date",
+                            )
+                except ValueError as exc:
+                    return _batch_error_entry(400, str(exc))
                 payload = await _run_db(
                     executor, _do_validate, engine, system, code,
                     display=display, codeable_concept_pairs=codeable_pairs,
@@ -2508,8 +2663,14 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
         # (silent-wrong-answer). Found by SKEPTIC iteration TS-02 (QA-001).
         system: str = Query(..., min_length=1, description="FHIR system URI"),
         code: str = Query(..., min_length=1, description="The code to look up"),
-        version: str | None = Query(None, description="Code system version (passed through)"),
+        version: str | None = Query(None, description="Code system version (rejected — single-version server, H1)"),
     ):
+        # c-fixbatch2 (H1): uniform single-version rejection across the
+        # CodeSystem operations (cross-op consistency per cs05 e40).
+        try:
+            reject_unsupported_version_params(version=version)
+        except ValueError as exc:
+            return _fhir_error_response(request, 400, str(exc))
         payload = await _run_db(
             _executor(request), _do_lookup, _engine(request),
             request.app.state.patient_friendly_cache,
@@ -2536,6 +2697,11 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
                 system, code = coding_pair
         if not system or not code:
             return _fhir_error_response(request, 400, "system and code are required.")
+        # c-fixbatch2 (H1): body version parity with the GET route.
+        try:
+            reject_unsupported_version_params(version=params.get("version"))
+        except ValueError as exc:
+            return _fhir_error_response(request, 400, str(exc))
         payload = await _run_db(
             _executor(request), _do_lookup, _engine(request),
             request.app.state.patient_friendly_cache,
@@ -2691,14 +2857,49 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
         # the handler returns 200 + result=false + message "Code  is not
         # valid" (silent-wrong-answer). Found by SKEPTIC iteration TS-02
         # (QA-002).
-        system: str = Query(..., min_length=1),
+        #
+        # c-fixbatch2 (H3): inferSystem is NOT a CodeSystem parameter
+        # (R4 §4.8.21.2 declares it only on ValueSet/$validate-code);
+        # presence is rejected 400 naming the ValueSet surface. system
+        # is optional in the SIGNATURE so the inferSystem rejection can
+        # fire before the missing-system 422 (a missing system without
+        # inferSystem is still the 400 'system is required').
+        system: str | None = Query(None, min_length=1),
         code: str = Query(..., min_length=1),
-        version: str | None = Query(None, description="Code system version (passed through)"),
+        version: str | None = Query(None, description="Code system version (rejected — single-version server, H1)"),
+        systemVersion: str | None = Query(None, description="Code system version (rejected — single-version server, H1)"),
+        date: str | None = Query(None, description="FHIR dateTime (shape-validated; versioned validation unsupported, H4)"),
+        inferSystem: str | None = Query(
+            None,
+            description=(
+                "NOT a CodeSystem/$validate-code parameter (R4 §4.8.21.2 "
+                "declares it only on ValueSet/$validate-code); presence "
+                "is rejected (H3 fix)."
+            ),
+        ),
         display: str | None = Query(
             None,
             description="Display string to verify against the code (per FHIR R4 $validate-code).",
         ),
     ):
+        # c-fixbatch2: §4.9.2 work-or-error on the In-param matrix.
+        try:
+            reject_unsupported_version_params(
+                version=version, system_version=systemVersion,
+            )
+            # Empty-string drift PROMOTED pattern: '' means absent.
+            if date:
+                validate_fhir_date(date, "date")
+            if inferSystem is not None:
+                raise ValueError(
+                    "inferSystem is not a CodeSystem/$validate-code "
+                    "parameter: R4 §4.8.21.2 declares it only on "
+                    "ValueSet/$validate-code. Use the ValueSet operation."
+                )
+            if system is None:
+                raise ValueError("system is required.")
+        except ValueError as exc:
+            return _fhir_error_response(request, 400, str(exc))
         payload = await _run_db(
             _executor(request), _do_validate, _engine(request),
             system, code, display=display, codeable_concept_pairs=None,
@@ -2731,8 +2932,33 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
                     system, code = codeable_pairs[0]
             elif coding_pair is not None:
                 system, code = coding_pair
+        # c-fixbatch2 (H3): inferSystem is ValueSet-only (R4 §4.8.21.2);
+        # presence on the CodeSystem surface is rejected (previously
+        # parsed-then-dropped, then a misleading 'system and code are
+        # required' 400 fired).
+        if "inferSystem" in _parameter_names_present(body):
+            return _fhir_error_response(
+                request, 400,
+                "inferSystem is not a CodeSystem/$validate-code "
+                "parameter: R4 §4.8.21.2 declares it only on "
+                "ValueSet/$validate-code. Use the ValueSet operation.",
+            )
         if not system or not code:
             return _fhir_error_response(request, 400, "system and code are required.")
+        # c-fixbatch2: H1/H4 body-param parity with the GET route.
+        try:
+            reject_unsupported_version_params(
+                version=params.get("version"),
+                system_version=params.get("systemVersion"),
+            )
+            body_date = params.get("date")
+            if body_date is None:
+                body_date = _raw_parameter_value(body, "date")
+            # Empty-string drift PROMOTED pattern: '' means absent.
+            if body_date:
+                validate_fhir_date(str(body_date), "date")
+        except ValueError as exc:
+            return _fhir_error_response(request, 400, str(exc))
         payload = await _run_db(
             _executor(request), _do_validate, _engine(request),
             system, code, display=display, codeable_concept_pairs=codeable_pairs,
@@ -2881,7 +3107,30 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
         system: str | None = Query(None, description="The code system URI for the code"),
         codeableConcept: str | None = Query(None),
         display: str | None = Query(None, description="Display string to verify"),
+        inferSystem: str | None = Query(
+            None,
+            description=(
+                "R4 §4.9.18: if true, the server infers the system from "
+                "the code shape (SCTID → SNOMED CT) when system is absent "
+                "(H3 fix — declared ONLY on this ValueSet surface)."
+            ),
+        ),
     ):
+        # c-fixbatch2 (H3): inferSystem is a ValueSet/$validate-code-only
+        # parameter; honored here (SCTID-shape inference fills a missing
+        # system), rejected on the CodeSystem surface.
+        if inferSystem is not None and not system and code:
+            if str(inferSystem).lower() in ("true", "1"):
+                inferred = infer_system_uri(code)
+                if inferred is None:
+                    return _fhir_error_response(
+                        request, 400,
+                        f"Cannot infer a code system from code {code!r}: "
+                        "only SCTID-shaped codes (6-18 digit integers) "
+                        "can be inferred as SNOMED CT. Supply system "
+                        "explicitly.",
+                    )
+                system = inferred
         # VS-05 SKEPTIC QA-069: pass codeableConcept pairs through to the
         # handler so the multi-coding "any match → true" semantic is honored
         # (mirrors CS-03 SKEPTIC QA-049 on the sibling CodeSystem handler).
@@ -2928,6 +3177,24 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
                     system_uri, code = codeable_pairs[0]
             elif coding_pair is not None:
                 system_uri, code = coding_pair
+        # c-fixbatch2 (H3): inferSystem honored on the ValueSet surface
+        # (R4 §4.9.18) — SCTID-shape inference fills a missing system.
+        raw_infer = _raw_parameter_value(body, "inferSystem")
+        if (
+            not system_uri
+            and code
+            and raw_infer is not None
+            and str(raw_infer).lower() in ("true", "1")
+        ):
+            inferred = infer_system_uri(code)
+            if inferred is None:
+                return _fhir_error_response(
+                    request, 400,
+                    f"Cannot infer a code system from code {code!r}: "
+                    "only SCTID-shaped codes (6-18 digit integers) can "
+                    "be inferred as SNOMED CT. Supply system explicitly.",
+                )
+            system_uri = inferred
         if not codeable_pairs and (not code or not system_uri):
             return _fhir_error_response(request, 400, "code and system are required for $validate-code.")
         payload = await _run_db(
@@ -3264,8 +3531,14 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
         system: str = Query(..., min_length=1),
         codeA: str = Query(..., min_length=1),
         codeB: str = Query(..., min_length=1),
-        version: str | None = Query(None, description="Code system version (passed through)"),
+        version: str | None = Query(None, description="Code system version (rejected — single-version server, H1)"),
     ):
+        # c-fixbatch2 (H1): uniform single-version rejection across the
+        # CodeSystem operations (cross-op consistency per cs05 e40).
+        try:
+            reject_unsupported_version_params(version=version)
+        except ValueError as exc:
+            return _fhir_error_response(request, 400, str(exc))
         payload = await _run_db(_executor(request), _do_subsumes, _engine(request), system, codeA, codeB)
         return _respond(request, payload)
 
@@ -3289,6 +3562,11 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
             code_b = coding_b_pair[1]
         if not system or not code_a or not code_b:
             return _fhir_error_response(request, 400, "system, codeA, and codeB are required.")
+        # c-fixbatch2 (H1): body version parity with the GET route.
+        try:
+            reject_unsupported_version_params(version=params.get("version"))
+        except ValueError as exc:
+            return _fhir_error_response(request, 400, str(exc))
         # Mixed-system check (spec In `codingA`: "the relationships between the
         # code systems must be well established"). medterm4ds has no
         # cross-system relationship map today; when either coding references a
@@ -3463,6 +3741,15 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
         count: int = Query(20, ge=1, le=1000),
         offset: int = Query(0, ge=0, description="Paging offset (per FHIR R4 $expand). Passed through; not yet used to slice results."),
         system: str | None = Query(None, description="System URI for filter expansion"),
+        date: str | None = Query(
+            None,
+            description=(
+                "FHIR dateTime (validated for shape). DIVERGENCE FROM R4: "
+                "versioned expansion is unsupported — the current data is "
+                "always served; the validated date is echoed in "
+                "expansion.params (EC fix) rather than silently ignored."
+            ),
+        ),
         activeOnly: bool = Query(
             True,
             description=(
@@ -3477,10 +3764,35 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
             ),
         ),
     ):
+        # c-fixbatch2: §4.9.2 work-or-error on the In-param matrix.
+        # EA: unsupported-but-declared params and arbitrary unknowns
+        #     fail loud (previously 200-silently-dropped).
+        # EB: date is shape-validated (previously 'garbage' accepted).
+        try:
+            reject_unknown_query_params(
+                request, _EXPAND_KNOWN_PARAMS, "$expand",
+            )
+            unsupported = [
+                p for p in _EXPAND_UNSUPPORTED_PARAMS
+                if request.query_params.get(p) is not None
+            ]
+            if unsupported:
+                raise ValueError(
+                    f"Unsupported $expand parameter(s): "
+                    f"{', '.join(sorted(unsupported))}. This server does "
+                    "not implement them; per FHIR R4 §4.9.2 they are "
+                    "rejected rather than silently ignored."
+                )
+            # Empty-string drift PROMOTED pattern: '' means absent.
+            if date:
+                validate_fhir_date(date, "date")
+        except ValueError as exc:
+            return _fhir_error_response(request, 400, str(exc))
         payload = await _run_db(
-            _executor(request), _do_expand, _engine(request),
+            _executor(request), _expand_with_params_echo, _engine(request),
             url=url, filter_text=filter, count=count, system_uri=system,
             offset=offset, active_only=activeOnly,
+            date_param=date or None,
         )
         return _respond(request, payload)
 
@@ -3517,7 +3829,8 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
         resource_type = body.get("resourceType", "")
         if resource_type == "ValueSet":
             payload = await _run_db(
-                _executor(request), _do_expand, _engine(request),
+                _executor(request), _expand_with_params_echo,
+                _engine(request),
                 value_set=body, count=count, offset=offset,
                 active_only=activeOnly,
             )
@@ -3572,7 +3885,8 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
             except ValueError as exc:
                 return _fhir_error_response(request, 400, str(exc))
             payload = await _run_db(
-                _executor(request), _do_expand, _engine(request),
+                _executor(request), _expand_with_params_echo,
+                _engine(request),
                 value_set=inline_vs, count=inline_count, offset=inline_offset,
                 active_only=(
                     inline_active_only if inline_active_only is not None
@@ -3582,6 +3896,38 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
             return _respond(request, payload)
         # Parameters-style: extract url, filter, count, offset
         params = _parse_parameters(body)
+        # c-fixbatch2 (EA/EB): work-or-error on the body In-param matrix.
+        # Unsupported declared params and unknown param NAMES fail loud
+        # (previously parsed-then-dropped); date is shape-validated.
+        body_names = _parameter_names_present(body)
+        unsupported = [
+            p for p in _EXPAND_UNSUPPORTED_PARAMS if p in body_names
+        ]
+        if unsupported:
+            return _fhir_error_response(
+                request, 400,
+                f"Unsupported $expand parameter(s): {', '.join(sorted(unsupported))}. "
+                "This server does not implement them; per FHIR R4 §4.9.2 "
+                "they are rejected rather than silently ignored.",
+            )
+        known_names = set(_EXPAND_KNOWN_PARAMS) | {"valueSet"}
+        unknown = body_names - known_names
+        if unknown:
+            return _fhir_error_response(
+                request, 400,
+                f"Unknown $expand parameter(s): {', '.join(sorted(unknown))}.",
+            )
+        date_param = params.get("date")
+        if date_param is None and "date" in body_names:
+            date_param = _raw_parameter_value(body, "date")
+        # Empty-string drift PROMOTED pattern: '' means absent.
+        if date_param:
+            try:
+                validate_fhir_date(str(date_param), "date")
+            except ValueError as exc:
+                return _fhir_error_response(request, 400, str(exc))
+        else:
+            date_param = None
         # QC-251 (MEDIUM): the query-param ``count`` is the default for this
         # request (FHIR R4 §4.7.5 — In parameters may arrive via query string
         # OR Parameters body). The prior ``default=20`` hardcode meant a POST
@@ -3601,7 +3947,7 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
         except ValueError as exc:
             return _fhir_error_response(request, 400, str(exc))
         payload = await _run_db(
-            _executor(request), _do_expand, _engine(request),
+            _executor(request), _expand_with_params_echo, _engine(request),
             url=params.get("url"),
             filter_text=params.get("filter"),
             count=count,
@@ -3611,8 +3957,45 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
                 body_active_only if body_active_only is not None
                 else activeOnly
             ),
+            date_param=date_param,
         )
         return _respond(request, payload)
+
+    def _expand_with_params_echo(
+        engine: LocalDuckDBEngine,
+        url: str | None = None,
+        filter_text: str | None = None,
+        count: int = 20,
+        system_uri: str | None = None,
+        value_set: dict[str, Any] | None = None,
+        offset: int = 0,
+        active_only: bool = True,
+        date_param: str | None = None,
+    ):
+        payload = _do_expand(
+            engine, url=url, filter_text=filter_text, count=count,
+            system_uri=system_uri, value_set=value_set, offset=offset,
+            active_only=active_only,
+        )
+        # c-fixbatch2 (EC): echo the APPLIED parameter subset per R4
+        # §4.9.2 expansion.params (0..1, SHOULD) so the response
+        # self-describes which inputs took effect — the observability
+        # gap that hid EA. Only the bound params are listed; unbound
+        # ones were rejected at the route layer (EA fix).
+        if isinstance(payload, dict) and "expansion" in payload:
+            applied = [f"activeOnly={str(active_only).lower()}"]
+            if url is not None:
+                applied.append(f"url={url}")
+            if filter_text is not None:
+                applied.append(f"filter={filter_text}")
+            if offset:
+                applied.append(f"offset={offset}")
+            if date_param is not None:
+                # EB: shape-validated upstream; versioned expansion is
+                # unsupported, so the date is echoed as informational.
+                applied.append(f"date={date_param}")
+            payload["expansion"]["params"] = "&".join(applied)
+        return payload
 
     def _do_expand(
         engine: LocalDuckDBEngine,

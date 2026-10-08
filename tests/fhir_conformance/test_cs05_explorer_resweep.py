@@ -534,12 +534,13 @@ def test_e20_hostile_version_plus_display_on_validate(
         f"&code={SNOMED_T2DM}&version={hostile_version}"
         f"&display={canonical_display}"
     )
-    assert r.status_code == 200, (
+    # c-fixbatch2 (H1): hostile version strings are rejected 400 (no
+    # 5xx) — the single-version server refuses version pins outright.
+    assert r.status_code == 400, (
         f"version+display hostile combination produced "
         f"{r.status_code}: {r.text[:200]}"
     )
-    body = r.json()
-    assert _lookup_param_value(body, "result") is True
+    assert "version" in str(r.json()["issue"][0]["diagnostics"]).lower()
 
 
 @pytest.mark.parametrize("hostile_version", HOSTILE_VERSIONS)
@@ -560,13 +561,9 @@ def test_e21_hostile_version_plus_display_mismatch_on_validate(
         f"&code={SNOMED_T2DM}&version={hostile_version}"
         f"&display=WRONG_DISPLAY_VALUE"
     )
-    assert r.status_code == 200
-    body = r.json()
-    assert _lookup_param_value(body, "result") is False
-    msg = _lookup_param_value(body, "message") or ""
-    assert "incorrect" in msg.lower(), (
-        f"display mismatch message should explain the mismatch; got {msg!r}"
-    )
+    # c-fixbatch2 (H1): version rejected 400 before display semantics;
+    # the no-5xx hostile-input contract is preserved.
+    assert r.status_code == 400
 
 
 @pytest.mark.parametrize("hostile_version", HOSTILE_VERSIONS)
@@ -588,17 +585,11 @@ def test_e22_hostile_version_plus_property_multi_on_lookup(
         f"&property=cui&property=tty&property=aui&property=abstract"
         f"&property=inactive"
     )
-    assert r.status_code == 200, (
+    # c-fixbatch2 (H1): hostile version strings rejected 400 (no 5xx).
+    assert r.status_code == 400, (
         f"version+property-multi hostile combination produced "
         f"{r.status_code}: {r.text[:200]}"
     )
-    body = r.json()
-    # The property filter is ignored; server still returns its standard
-    # property set including abstract.
-    assert _lookup_param_value(body, "code") == SNOMED_T2DM
-    abstract = _lookup_param(body, "abstract")
-    assert abstract is not None
-    assert abstract.get("valueBoolean") is False  # CF-SKEPTIC-CS05-01
 
 
 @pytest.mark.parametrize("hostile_version", HOSTILE_VERSIONS)
@@ -616,13 +607,11 @@ def test_e23_hostile_version_plus_xml_format_on_lookup(fhir_client, hostile_vers
         f"&code={SNOMED_T2DM}&version={hostile_version}"
         f"&_format=xml"
     )
-    assert r.status_code == 200
+    # c-fixbatch2 (H1): version rejected; error rendered in XML (the
+    # negotiated format contract still honored on the 400 path).
+    assert r.status_code == 400
     assert r.headers["content-type"].startswith("application/fhir+xml")
-    body = r.text
-    assert "<valueBoolean value=\"false\"/>" in body, (
-        "XML wire-format MUST render lowercase boolean per CR-002"
-    )
-    assert "<valueBoolean value=\"False\"/>" not in body
+    assert "OperationOutcome" in r.text
 
 
 @pytest.mark.parametrize("hostile_version", HOSTILE_VERSIONS)
@@ -636,23 +625,22 @@ def test_e24_hostile_version_on_subsumes(fhir_client, hostile_version):
     on $subsumes) extended to verify the 4-outcome directionality matrix
     is unchanged under hostile version input.
     """
-    # Case 1: equivalent
+    # c-fixbatch2 (H1): hostile versions rejected uniformly (no 5xx).
+    # Case 1: equivalent request shape
     r = fhir_client.get(
         f"/fhir/CodeSystem/$subsumes?system={SNOMED_URI}"
         f"&codeA={SNOMED_T2DM}&codeB={SNOMED_T2DM}"
         f"&version={hostile_version}"
     )
-    assert r.status_code == 200
-    assert _lookup_param_value(r.json(), "outcome") == "equivalent"
+    assert r.status_code == 400
 
-    # Case 2: subsumes (DM subsumes T2DM)
+    # Case 2: subsumes request shape
     r = fhir_client.get(
         f"/fhir/CodeSystem/$subsumes?system={SNOMED_URI}"
         f"&codeA={SNOMED_DIABETES_MELLITUS}&codeB={SNOMED_T2DM}"
         f"&version={hostile_version}"
     )
-    assert r.status_code == 200
-    assert _lookup_param_value(r.json(), "outcome") == "subsumes"
+    assert r.status_code == 400
 
 
 # Hostile version inputs that httpx rejects on the URL path (null bytes,
@@ -672,7 +660,8 @@ def test_e25_hostile_version_post_path_on_lookup(fhir_client, hostile_version):
     """
     body = _parameters_body(SNOMED_URI, SNOMED_T2DM, version=hostile_version)
     r = fhir_client.post("/fhir/CodeSystem/$lookup", json=body)
-    assert r.status_code == 200, (
+    # c-fixbatch2 (H1): body version rejected (no 5xx).
+    assert r.status_code == 400, (
         f"POST with hostile version {hostile_version!r} produced "
         f"{r.status_code}: {r.text[:200]}"
     )
@@ -683,7 +672,8 @@ def test_e26_hostile_version_post_path_on_validate(fhir_client, hostile_version)
     """Lens 2 / Hostile version via POST body on $validate-code."""
     body = _parameters_body(SNOMED_URI, SNOMED_T2DM, version=hostile_version)
     r = fhir_client.post("/fhir/CodeSystem/$validate-code", json=body)
-    assert r.status_code == 200
+    # c-fixbatch2 (H1): body version rejected.
+    assert r.status_code == 400
 
 
 @pytest.mark.parametrize("hostile_version", HOSTILE_VERSIONS_POST_ONLY)
@@ -699,8 +689,8 @@ def test_e27_hostile_version_post_path_on_subsumes(fhir_client, hostile_version)
         ],
     }
     r = fhir_client.post("/fhir/CodeSystem/$subsumes", json=body)
-    assert r.status_code == 200
-    assert _lookup_param_value(r.json(), "outcome") == "subsumes"
+    # c-fixbatch2 (H1): body version rejected.
+    assert r.status_code == 400
 
 
 # ---------------------------------------------------------------------------
@@ -887,7 +877,7 @@ def test_e37_subsumes_get_post_byte_exact_parity_with_version(fhir_client):
         f"&codeA={SNOMED_DIABETES_MELLITUS}&codeB={SNOMED_T2DM}"
         f"&version={version}"
     )
-    assert r_get.status_code == 200
+    assert r_get.status_code == 400  # c-fixbatch2 (H1)
 
     body = {
         "resourceType": "Parameters",
@@ -899,8 +889,9 @@ def test_e37_subsumes_get_post_byte_exact_parity_with_version(fhir_client):
         ],
     }
     r_post = fhir_client.post("/fhir/CodeSystem/$subsumes", json=body)
-    assert r_post.status_code == 200
+    assert r_post.status_code == 400  # c-fixbatch2 (H1)
 
+    # GET ↔ POST parity preserved on the 400 path.
     assert r_get.json() == r_post.json()
 
 
@@ -936,12 +927,13 @@ def test_e39_lookup_get_post_byte_exact_parity_with_version(fhir_client):
         f"/fhir/CodeSystem/$lookup?system={RXNORM_URI}"
         f"&code={RXNORM_METFORMIN}&version={version}"
     )
-    assert r_get.status_code == 200
+    assert r_get.status_code == 400  # c-fixbatch2 (H1)
 
     body = _parameters_body(RXNORM_URI, RXNORM_METFORMIN, version=version)
     r_post = fhir_client.post("/fhir/CodeSystem/$lookup", json=body)
-    assert r_post.status_code == 200
+    assert r_post.status_code == 400  # c-fixbatch2 (H1)
 
+    # GET ↔ POST parity preserved on the 400 path.
     assert r_get.json() == r_post.json()
 
 
@@ -1209,12 +1201,8 @@ def test_e70_display_mismatch_under_hostile_version_and_property(fhir_client):
         f"&display=WRONG&display=IGNORED"
         f"&property=cui&property=tty"
     )
-    assert r.status_code == 200
-    body = r.json()
-    # Display mismatch MUST still fire.
-    assert _lookup_param_value(body, "result") is False
-    msg = _lookup_param_value(body, "message") or ""
-    assert "incorrect" in msg.lower()
+    # c-fixbatch2 (H1): version rejected before display semantics.
+    assert r.status_code == 400
 
 
 def test_e71_display_mismatch_under_unicode_version(fhir_client):
@@ -1225,9 +1213,8 @@ def test_e71_display_mismatch_under_unicode_version(fhir_client):
         f"&code={RXNORM_METFORMIN}&version=v测试版本"
         f"&display=WRONG_DISPLAY"
     )
-    assert r.status_code == 200
-    body = r.json()
-    assert _lookup_param_value(body, "result") is False
+    # c-fixbatch2 (H1): unicode version rejected 400 (no 5xx).
+    assert r.status_code == 400
 
 
 # ---------------------------------------------------------------------------
@@ -1342,10 +1329,9 @@ def test_e92_xml_lookup_with_hostile_version_renders_lowercase_abstract(fhir_cli
         f"/fhir/CodeSystem/$lookup?system={SNOMED_URI}&code={SNOMED_T2DM}"
         f"&version=v1' OR '1'='1&_format=xml"
     )
-    assert r.status_code == 200
-    body = r.text
-    assert "<valueBoolean value=\"false\"/>" in body
-    assert "<valueBoolean value=\"False\"/>" not in body
+    # c-fixbatch2 (H1): version rejected; XML error path honored.
+    assert r.status_code == 400
+    assert "OperationOutcome" in r.text
 
 
 def test_e93_xml_subsumes_outcome_renders_hyphenated(fhir_client):

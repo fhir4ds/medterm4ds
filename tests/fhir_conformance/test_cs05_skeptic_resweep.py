@@ -297,15 +297,11 @@ class TestLens2VersionSpecificBehavior:
         (SNOMED_URI, SNOMED_DIABETES_MELLITUS),
     ])
     def test_s20_lookup_with_version_param_accepted(self, fhir_client, system_uri, code):
-        # Spec: $lookup In version 0..1 string — accepted, no 5xx.
+        # c-fixbatch2 (H1): version rejected — single-version server.
         r = fhir_client.get("/fhir/CodeSystem/$lookup", params={
             "system": system_uri, "code": code, "version": "2024-09",
         })
-        assert r.status_code == 200
-        body = r.json()
-        assert body["resourceType"] == "Parameters"
-        # Display is byte-exact the same regardless of version (single-snapshot).
-        assert _param_value(body, "display") is not None
+        assert r.status_code == 400
 
     @pytest.mark.parametrize("version", [
         "",                          # empty string — empty-string drift count=5 PROMOTED
@@ -340,16 +336,21 @@ class TestLens2VersionSpecificBehavior:
         r = fhir_client.get("/fhir/CodeSystem/$lookup", params={
             "system": SNOMED_URI, "code": SNOMED_T2DM, "version": version,
         })
-        assert r.status_code == 200
-        assert _param_value(r.json(), "display") == "Type 2 diabetes mellitus"
+        # c-fixbatch2 (H1): non-empty version strings 400; empty (absent
+        # semantics) keeps the single-snapshot 200 + canonical display.
+        if version:
+            assert r.status_code == 400
+        else:
+            assert r.status_code == 200
+            assert _param_value(r.json(), "display") == "Type 2 diabetes mellitus"
 
     def test_s23_validate_code_with_version_accepted(self, fhir_client):
         # Spec: $validate-code In version 0..1 string.
         r = fhir_client.get("/fhir/CodeSystem/$validate-code", params={
             "system": SNOMED_URI, "code": SNOMED_T2DM, "version": "2024-09",
         })
-        assert r.status_code == 200
-        assert _param_value(r.json(), "result") is True
+        # c-fixbatch2 (H1): version rejected — single-version server.
+        assert r.status_code == 400
 
     def test_s24_subsumes_with_version_accepted(self, fhir_client):
         # Spec: $subsumes In version 0..1 string.
@@ -357,8 +358,8 @@ class TestLens2VersionSpecificBehavior:
             "system": SNOMED_URI, "codeA": SNOMED_DIABETES_MELLITUS,
             "codeB": SNOMED_T2DM, "version": "2024-09",
         })
-        assert r.status_code == 200
-        assert _param_value(r.json(), "outcome") in VALID_OUTCOMES
+        # c-fixbatch2 (H1): version rejected — single-version server.
+        assert r.status_code == 400
 
     def test_s25_version_consistent_across_lookup_validate_subsumes(self, fhir_client):
         # CS-04/TERMINOLOGIST tip extension: canonical-DISPLAY invariant +
@@ -375,7 +376,9 @@ class TestLens2VersionSpecificBehavior:
             "system": SNOMED_URI, "codeA": SNOMED_DIABETES_MELLITUS,
             "codeB": SNOMED_T2DM, "version": version,
         })
-        assert r_lookup.status_code == r_validate.status_code == r_subsumes.status_code == 200
+        # c-fixbatch2 (H1): uniform 400 across all three operations —
+        # cross-op consistency preserved at the rejection contract.
+        assert r_lookup.status_code == r_validate.status_code == r_subsumes.status_code == 400
 
 
 # ===========================================================================
@@ -964,11 +967,11 @@ class TestLens9SourceReadContracts:
                 {"name": "version", "valueString": "2024-09"},
             ]},
         )
-        assert r_get.status_code == 200
-        assert r_post.status_code == 200
-        # Displays match (canonical-DISPLAY invariant on POST surface too).
-        assert _param_value(r_get.json(), "display") == \
-               _param_value(r_post.json(), "display")
+        # c-fixbatch2 (H1): version rejected on both transports.
+        assert r_get.status_code == 400
+        assert r_post.status_code == 400
+        # Parity on the 400 path.
+        assert r_get.json() == r_post.json()
 
 
 # ===========================================================================

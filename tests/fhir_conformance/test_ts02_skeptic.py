@@ -171,8 +171,9 @@ def test_s05_lookup_version_param_accepted(fhir_client):
         },
     )
     pytest.current_report_extra = f"status={r.status_code} body[:80]={r.text[:80]!r}"
-    assert r.status_code == 200, (
-        f"$lookup with version param returned {r.status_code} (expected 200). "
+    # c-fixbatch2 (H1): version pins rejected — single-version server.
+    assert r.status_code == 400, (
+        f"$lookup with version param returned {r.status_code} (expected 400). "
         f"Body: {r.text[:200]}"
     )
 
@@ -313,7 +314,8 @@ def test_s13_validate_code_version_param_accepted(fhir_client):
         },
     )
     pytest.current_report_extra = f"status={r.status_code}"
-    assert r.status_code == 200
+    # c-fixbatch2 (H1): version pins rejected.
+    assert r.status_code == 400
 
 
 def test_s14_validate_code_response_includes_display_param(fhir_client):
@@ -382,7 +384,8 @@ def test_s18_subsumes_version_param_accepted(fhir_client):
         },
     )
     pytest.current_report_extra = f"status={r.status_code}"
-    assert r.status_code == 200
+    # c-fixbatch2 (H1): version pins rejected.
+    assert r.status_code == 400
 
 
 def test_s19_subsumes_response_outcome_value_set(fhir_client):
