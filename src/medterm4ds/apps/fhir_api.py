@@ -687,6 +687,26 @@ _EXPAND_KNOWN_PARAMS = frozenset(
     + _EXPAND_UNSUPPORTED_PARAMS
 )
 
+# U3 fix (TS-17): unknown-query-param rejection extended from $expand to
+# the other CodeSystem operations (the EA family was op-scoped — FastAPI
+# silently drops undeclared params, so bogusParam=1 200'd everywhere).
+# Each set = declared params + spec-declared-but-unsupported ones (which
+# fail loudly via their own checks) + _format.
+_LOOKUP_KNOWN_PARAMS = frozenset(
+    ("system", "code", "version", "systemVersion", "_format",
+     # Unsupported-but-R4-declared: rejected via the checks below.
+     "coding", "property", "date", "displayLanguage"),
+)
+_CS_VALIDATE_KNOWN_PARAMS = frozenset(
+    ("system", "code", "version", "systemVersion", "date", "inferSystem",
+     "abstract", "display", "displayLanguage", "coding", "codeableConcept",
+     "property", "_format"),
+)
+_SUBSUMES_KNOWN_PARAMS = frozenset(
+    ("system", "codeA", "codeB", "version", "systemVersion",
+     "codingA", "codingB", "_format"),
+)
+
 
 def _parameter_names_present(body: dict[str, Any]) -> set[str]:
     """Names of every parameter entry in a FHIR Parameters body.
@@ -722,14 +742,21 @@ def _raw_parameter_value(body: dict[str, Any], name: str) -> Any:
 
 def reject_unknown_query_params(
     request: Request, known: frozenset[str], operation: str,
+    *, known_prefixes: tuple[str, ...] = (),
 ) -> None:
     """400 on query params the operation does not declare (EA fix).
 
     FastAPI silently drops undeclared Query params; this re-examines
     the raw query string so unknown or unsupported-but-declared params
     fail loudly per §4.9.2 instead of 200-ignoring.
+
+    ``known_prefixes`` admits token-valued sub-forms (e.g. R4 $lookup
+    ``property`` accepts dotted sub-selectors like ``property.code``).
     """
-    unknown = set(request.query_params) - known
+    unknown = {
+        name for name in set(request.query_params) - known
+        if not any(name.startswith(pfx) for pfx in known_prefixes)
+    }
     if unknown:
         raise ValueError(
             f"Unknown or unsupported {operation} parameter(s): "
@@ -2405,7 +2432,9 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
             code = params.get("code") or params.get("sourceCode")
             return (
                 params.get("system"), code,
-                params.get("targetsystem"),
+                # V2/V3 fix: accept BOTH spellings — the R4 name is
+                # targetSystem; lowercase predates the fix.
+                params.get("targetSystem") or params.get("targetsystem"),
             )
         if body_resource is None:
             return None, None, None
@@ -2414,7 +2443,7 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
         # QC-289: sourceCode alias on the POST branch too (the direct POST
         # route uses this same extractor).
         code = p.get("code") or p.get("sourceCode")
-        targetsystem = p.get("targetsystem")
+        targetsystem = p.get("targetSystem") or p.get("targetsystem")
         if not system or not code:
             coding_pair = _extract_named_coding_from_parameters(body_resource, "coding")
             if coding_pair is not None:
@@ -2669,6 +2698,18 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
         # CodeSystem operations (cross-op consistency per cs05 e40).
         try:
             reject_unsupported_version_params(version=version)
+            # U4 fix (TS-17): systemVersion joins the rejection family
+            # uniformly (was $validate-code-only).
+            reject_unsupported_version_params(
+                system_version=request.query_params.get("systemVersion"),
+            )
+            # U3 fix (TS-17): unknown-param rejection (EA family,
+            # op-scoped no more). The `property.` prefix admits R4's
+            # dotted sub-selectors (property.code, property.display).
+            reject_unknown_query_params(
+                request, _LOOKUP_KNOWN_PARAMS, "$lookup",
+                known_prefixes=("property.",),
+            )
         except ValueError as exc:
             return _fhir_error_response(request, 400, str(exc))
         payload = await _run_db(
@@ -2698,8 +2739,12 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
         if not system or not code:
             return _fhir_error_response(request, 400, "system and code are required.")
         # c-fixbatch2 (H1): body version parity with the GET route.
+        # U4 fix (TS-17): systemVersion joins uniformly on POST bodies.
         try:
-            reject_unsupported_version_params(version=params.get("version"))
+            reject_unsupported_version_params(
+                version=params.get("version"),
+                system_version=_raw_parameter_value(body, "systemVersion"),
+            )
         except ValueError as exc:
             return _fhir_error_response(request, 400, str(exc))
         payload = await _run_db(
@@ -2886,6 +2931,10 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
         try:
             reject_unsupported_version_params(
                 version=version, system_version=systemVersion,
+            )
+            # U3 fix (TS-17): unknown-param rejection on this op too.
+            reject_unknown_query_params(
+                request, _CS_VALIDATE_KNOWN_PARAMS, "$validate-code",
             )
             # Empty-string drift PROMOTED pattern: '' means absent.
             if date:
@@ -3418,7 +3467,21 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
         # fell through the `if target_uri:` truthiness check in _do_translate
         # and WIDENED to all targets, identical to omitting the parameter
         # (the sibling CLI/Python/MCP surfaces reject the same input).
-        targetsystem: str | None = Query(None, min_length=1, description="Target system URI"),
+        # V2/V3 fix (TS-18): the declared name was `targetsystem`
+        # (all-lowercase) while the R4 §4.9.13.1 OperationDefinition names
+        # it `targetSystem` — FastAPI query matching is case-sensitive, so
+        # every spec-conformant client's camelCase param was silently
+        # dropped as unknown and the request WIDENED to all target systems
+        # (LOINC-targeted translate returned ICD-10-CM matches at 200).
+        # The declared name is now the spec's; the lowercase spelling is
+        # retained as an alias for backwards compatibility.
+        targetSystem: str | None = Query(
+            None, min_length=1, alias="targetSystem",
+            description="Target system URI (R4 §4.9.13.1 name; 'targetsystem' accepted as legacy alias)",
+        ),
+        targetsystem: str | None = Query(
+            None, min_length=1, description="Legacy lowercase alias for targetSystem",
+        ),
         source: str | None = Query(
             None,
             description="Canonical ConceptMap URL to use (per FHIR R4 $translate). Passed through; not yet used to select a named ConceptMap.",
@@ -3435,7 +3498,21 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
             resolve_concept_map_url(url, conceptMapVersion)
         except ValueError as exc:
             return _fhir_error_response(request, 400, str(exc))
-        payload = await _run_db(_executor(request), _do_translate, _engine(request), system, actual_code, targetsystem)
+        # V3 fix (TS-18): R4 §4.9.13.1 declares targetSystem 1..1 — a
+        # translation without a declared target silently widens to every
+        # system the engine has a crosswalk for (200 + cross-system
+        # matches). Require it, mirroring the system/code enforcement on
+        # the same op.
+        effective_target = targetSystem or targetsystem
+        if not effective_target:
+            return _fhir_error_response(
+                request, 400,
+                "targetSystem is required: this server translates only "
+                "against an explicit target system (R4 §4.9.13.1 declares "
+                "it 1..1). Omitting it previously widened results to every "
+                "system silently.",
+            )
+        payload = await _run_db(_executor(request), _do_translate, _engine(request), system, actual_code, effective_target)
         return _respond(request, payload)
 
     @app.post("/fhir/ConceptMap/$translate")
@@ -3454,6 +3531,14 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
         )
         if not system or not code:
             return _fhir_error_response(request, 400, "system and code are required.")
+        # V3 fix (TS-18): targetSystem required on POST exactly as GET.
+        if not targetsystem:
+            return _fhir_error_response(
+                request, 400,
+                "targetSystem is required: this server translates only "
+                "against an explicit target system (R4 §4.9.13.1 declares "
+                "it 1..1).",
+            )
         # N1/N2 fix: map-selection params resolve on POST exactly as GET
         # (url must be the implicit map; version/conceptMapVersion
         # rejected — the map is unversioned).
@@ -3537,6 +3622,14 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
         # CodeSystem operations (cross-op consistency per cs05 e40).
         try:
             reject_unsupported_version_params(version=version)
+            # U4 fix (TS-17): systemVersion uniform (was $validate-code-only).
+            reject_unsupported_version_params(
+                system_version=request.query_params.get("systemVersion"),
+            )
+            # U3 fix (TS-17): unknown-param rejection on this op too.
+            reject_unknown_query_params(
+                request, _SUBSUMES_KNOWN_PARAMS, "$subsumes",
+            )
         except ValueError as exc:
             return _fhir_error_response(request, 400, str(exc))
         payload = await _run_db(_executor(request), _do_subsumes, _engine(request), system, codeA, codeB)
@@ -3560,11 +3653,34 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
             code_a = coding_a_pair[1]
         if not code_b and coding_b_pair is not None:
             code_b = coding_b_pair[1]
+        # U1 fix (TS-17): R4 §4.8.21.2 — the coding forms are
+        # SELF-IDENTIFYING: system is 0..1 when the codings carry it. A
+        # coding-only body previously 400'd demanding the scalars; derive
+        # the system from the codings instead (they must agree — the
+        # mixed-system check below still enforces a single system).
+        if not system:
+            derived = None
+            if coding_a_pair is not None:
+                derived = coding_a_pair[0]
+            if coding_b_pair is not None:
+                if derived is not None and canonical_system_uri(derived) != canonical_system_uri(coding_b_pair[0]):
+                    return _fhir_error_response(
+                        request, 400,
+                        f"codingA system {coding_a_pair[0]!r} and codingB "
+                        f"system {coding_b_pair[0]!r} differ; subsumption "
+                        "requires a single code system.",
+                    )
+                derived = derived or coding_b_pair[0]
+            system = derived
         if not system or not code_a or not code_b:
             return _fhir_error_response(request, 400, "system, codeA, and codeB are required.")
         # c-fixbatch2 (H1): body version parity with the GET route.
+        # U4 fix (TS-17): systemVersion joins uniformly on POST bodies.
         try:
-            reject_unsupported_version_params(version=params.get("version"))
+            reject_unsupported_version_params(
+                version=params.get("version"),
+                system_version=_raw_parameter_value(body, "systemVersion"),
+            )
         except ValueError as exc:
             return _fhir_error_response(request, 400, str(exc))
         # Mixed-system check (spec In `codingA`: "the relationships between the
@@ -3597,8 +3713,32 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
         source = fhir_uri_to_system(system_uri)
         if source is None:
             return _fhir_error(400, f"Unrecognized system URI: {system_uri}")
+        # U2 fix (TS-17): the coding form rejects codes from other systems
+        # (mixed-system check, spec: "relationships between the code systems
+        # must be well established") but the SCALAR form returned a
+        # confident `not-subsumed` for a codeB that exists only in another
+        # system — identical clinical question, opposite verdict by
+        # encoding. Validate both codes exist in the queried system so the
+        # scalar form cannot assert a definitive negative about a code the
+        # system does not carry (S1's unknown-code shape, applied at the
+        # system boundary). EQUIVALENCE COMES FIRST: identical codes are
+        # equal regardless of whether the server knows them (identity needs
+        # no system knowledge — R4 outcome 'equivalent: the two codes are
+        # the same').
         if code_a == code_b:
             return build_parameters_subsumes("equivalent")
+        infos = get_code_infos(
+            [CodeRef(source=source, code=c) for c in (code_a, code_b)],
+            engine=engine,
+        )
+        for ref, info in zip((code_a, code_b), infos, strict=True):
+            if not info:
+                return _fhir_error(
+                    400,
+                    f"Code {ref!r} is not known in code system {system_uri}; "
+                    "subsumption between different code systems is not "
+                    "defined (use $translate for cross-system mappings).",
+                )
         # Use BFS with early-exit (stop_at) so the typical case (1 hop) is one
         # SQL query. The previous recursive get_descendants(max_depth=20) walked
         # the entire A subtree and timed out for wide SNOMED roots.

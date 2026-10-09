@@ -21,16 +21,9 @@ SUITES themselves are committed and are the load-bearing contracts.
 | F2 | LOW | 2026-10-02 | VS-01/VS-03 $expand | vsd-3 (concept+filter coexistence) accepted, not 400 | test_vs01_filter_semantics_20261002.py (f20) |
 | P1 | LOW | 2026-10-03 | TS-04/VS-04 $expand paging | `expansion.offset` never echoed under paging | test_ts04_paging_semantics_20261003.py (p10/p11) |
 | T2 | LOW | 2026-10-03 | TS-02/CM-02 $translate | "one (and only one)" input contract unenforced; silent scalar precedence | test_ts02_translate_semantics_20261003.py (t20) |
-| V2 | MEDIUM-HIGH | 2026-10-08 | TS-18 $translate | targetSystem silently IGNORED: LOINC-targeted translate returns ICD-10-CM E11 match at 200 result=true ('1 matches found'); unknown uris identical; GET+POST. TS-15 happy path passed by coincidence (fixture's only cross-SAB pair pointed at SNOMED). Fix: filter matches to target (result=false on unmapped target) | test_ts18_translate_target_errors_20261008.py (v10-v13) |
-| V3 | MEDIUM | 2026-10-08 | TS-18 $translate | R4 §4.9.13.1 targetSystem 1..1 REQUIRED unenforced — omitting it returns 200 cross-system matches while system/code 422 loudly on the same op | test_ts18_translate_target_errors_20261008.py (v20-v22) |
-| U1 | MEDIUM | 2026-10-08 | TS-17 $subsumes | coding-only POST (self-identifying codingA/codingB per R4 §4.8.21.2) rejected 400 demanding scalar system/codeA/codeB — coding path unimplemented (M1 family) | test_ts17_subsumes_forms_uniformity_20261008.py (u10/u11) |
-| U2 | LOW-MED | 2026-10-08 | TS-17 $subsumes | cross-system verdicts differ by encoding: coding form 400 (s32) vs scalar form (codeB exists only in other system) confident 200 not-subsumed — compounding S1 | test_ts17_subsumes_forms_uniformity_20261008.py (u20) |
-| U3 | MEDIUM | 2026-10-08 | TS-17 uniformity | EA unknown-param rejection scoped to $expand only — $lookup/$validate-code/$subsumes still 200 on arbitrary unknowns (family partially resolved; op-scoped residue) | test_ts17_subsumes_forms_uniformity_20261008.py (u30/u31) |
-| U4 | LOW-MED | 2026-10-08 | TS-17 uniformity | H1 systemVersion coverage divergent: $validate-code 400s it, $lookup/$subsumes 200-ignore it — cross-op seam at the new contract | test_ts17_subsumes_forms_uniformity_20261008.py (u40/u41) |
 | H2 | LOW-MED | 2026-10-07 | CS-06 $validate-code | abstract=true on CONCRETE code returns TRUE — R4 §4.8.18 abstract-use validation absent (CS-05 a30 family, reversed polarity) | test_cs06_validate_params_20261007.py (h20) |
 | X1 | LOW | 2026-10-04 | TS-01 XML surface | cross-format CONTENT divergence: QC-300 XML control-char sanitizer alters message content vs JSON path for identical requests (JSON 'The display "w\x08rong"…' vs XML 'The display "wrong"…'); neither side spec-illegal; asymmetry undocumented. Fix: sanitize at message-building layer (both formats agree) OR document as intended | test_ts01_xml_parity_20261004.py (x10-x12) |
 | M1 | MEDIUM | 2026-10-06 | TS-10 transport parity | GET $lookup rejects `coding` (422, unknown FastAPI Query param) while POST accepts it (derives system/code, QA-022); R4 declares coding for BOTH transports. Client porting transports silently loses a spec-declared capability. Fix: accept coding on GET OR declare the gap in TerminologyCapabilities | test_ts10_transport_parity_20261006.py (m10-m12) |
-| S1 | MEDIUM | 2026-10-04 | TS-03 $subsumes | unknown codeA/codeB (either or both) → confident 200 not-subsumed; R4 §4.8.21.3: "If the server is unable to determine the relationship… returns an error response with an OperationOutcome" — silent wrong answer, inverse of C1 | test_ts03_subsumes_semantics_20261004.py (s10-s12) |
 | S2 | LOW | 2026-10-04 | TS-03 $subsumes | instance-level form /CodeSystem/{id}/$subsumes 404s; R4 defines it, and it is the only legal path for system-less params | test_ts03_subsumes_semantics_20261004.py (s20) |
 | B1 | MEDIUM | 2026-10-04 | Bundle $transaction | transaction processed with BATCH (non-atomic) semantics: failing entries still yield HTTP 200 transaction-response + per-entry statuses; R4 §3.7.2 all-or-nothing violated; CS advertises transaction. Fix: 400 not-supported (read-only server) or whole-transaction failure | test_ts04_bundle_semantics_20261004.py (b10-b12) |
 | B2 | LOW | 2026-10-04 | Bundle $batch | metadata unreachable from batch entries ('metadata', 'fhir/metadata', '/fhir/metadata' all per-entry 404); R4 §3.6.1 entry URLs resolve against the FHIR base | test_ts04_bundle_semantics_20261004.py (b20) |
@@ -43,7 +36,6 @@ SUITES themselves are committed and are the load-bearing contracts.
 | K1 | LOW-MED | 2026-10-05 | artifact governance | a SET-but-garbage MEDTERM4DS_EMBEDDING_SPACE silently degrades to the lexicographic fallback (sorted()[0] = OLD space esp_5a50) — an operator typo of the rotation knob silently undoes the rotation; fallback should apply only when NO pin is set | test_artifact_governance_20261005.py (k10/k11) |
 | K2 | LOW | 2026-10-05 | artifact governance | cache-info reports split_root/mode/models/data_revision but NOT the serving pin or would-serve space — the rotation knob's effective value is unobservable (a K1 typo would be invisible there too) | test_artifact_governance_20261005.py (k20) |
 | V1 | HIGH | 2026-10-06 | VS $validate-code | RESOLVED 2026-10-07 (maint/fix-conformance-20261007): url-scoped membership via resolve_implicit_vs_gate (SNOMED isa root/descendant BFS; bare-system whole-set; unrecognized 400; codeableConcept gated per code-review R1) | url-scoping ABSENT (documented at fhir_api.py:2781 as spec-compat acceptance, severity never registered): out-of-valueSet codes validate TRUE — RxNorm metformin TRUE against the SNOMED isa-DM set whose expansion is {73211009, 44054006}; clinical filtering clients get silent TRUEs; fix = expansion membership test or explicit not-supported | test_ts09_vs_validate_membership_20261006.py (v10-v12) |
-| V2 | LOW | 2026-10-06 | VS $validate-code | inline valueSet In-param accepted (shape-parsed) but ignored for membership — compose-include of exactly one code still validates non-member codes TRUE; distinct fix surface from V1 (compose evaluation vs url-form expansion) | test_ts09_vs_validate_membership_20261006.py (v12) |
 | Q1 | MEDIUM-HIGH | 2026-10-06 | TS-11 request-body negotiation | XML request bodies rejected 422 on ALL POST ops + $batch while CapabilityStatement advertises format=['json','xml'] (R4 §2.1.0.7 declares format codes for the full RESTful surface incl. request bodies; R4 §3.1.0 JSON+XML mandatory). Response-side XML fully supported (TS-01). Fix: parse fhir+xml bodies (from_fhir_xml inverse of to_fhir_xml) or stop advertising 'xml' | test_ts11_request_body_negotiation_20261006.py (q10-q13) |
 | Q2 | LOW | 2026-10-06 | TS-11 request-body negotiation | 422 diagnostic for well-formed XML body is misleading ('Parameter unknown: Input should be a valid dictionary' = JSON-parser artifact). Rides with Q1 fix (parse or 415 w/ accurate reason) | test_ts11_request_body_negotiation_20261006.py (q20) |
 | R1 | MEDIUM | 2026-10-06 | TS-12 search/read surface | searchset Bundle lacks `self` link — R4 §3.1.0.14 'All searches SHALL return this value'; stub searchset keys are resourceType/type/total only; paging clients cannot anchor traversal; fix = emit link:[{relation:self}] in search_resource | test_ts12_search_read_surface_20261006.py (r10/r11) |
@@ -67,6 +59,27 @@ SUITES themselves are committed and are the load-bearing contracts.
 | CF-EXPLORER-VS04-01 | LOW | sweep | VS-04 | explicit-port URL form rejected | (sweep suites) |
 | CF-SKEPTIC-CM03-01 | MEDIUM | sweep | CM-03 $closure | Out `return` valueString token vs 1..1 ConceptMap | (sweep suites + c20 control) |
 | CF-HISTORIAN-CM03-02 | LOW | sweep | CM-03 | incomplete_since not surfaced | (sweep suites) |
+
+
+
+### Resolved: c-fixbatch3 (2026-10-08, commit pending)
+
+| id | sev | resolution |
+|---|---|---|
+| V2 | MEDIUM-HIGH | ROOT CAUSE was a param-NAME case mismatch: route declared `targetsystem` (lowercase) while R4 §4.9.13.1 names `targetSystem` — FastAPI query matching is case-sensitive, so every spec-conformant client param was silently DROPPED and the request widened to all targets (the engine filtered correctly all along). Fix: spec name declared (+ lowercase legacy alias); engine filter now actually reached. |
+| V3 | MEDIUM | targetSystem required (400 when absent, GET+POST) mirroring system/code enforcement on the same op. |
+| U1 | MEDIUM | $subsumes POST derives system from codingA/codingB when scalar system absent (self-identifying per §4.8.21.2); disagrees-codings 400. |
+| U2 | LOW-MED | scalar form validates code-in-system (400 unknown/cross-system, message points at $translate) matching the coding form's semantics; EQUIVALENCE short-circuit precedes validation (identical unknown codes → equivalent). Also RESOLVES S1 (unknown-code confidence) on this surface. |
+| S1 | MEDIUM | Resolved via U2's code-in-system validation: unknown codeA/codeB/both → 400 OperationOutcome per R4 §4.8.21.3. Pins s10-s12 flipped. |
+| U3 | MEDIUM | reject_unknown_query_params wired at $lookup (with property. prefix rule)/$validate-code/$subsumes; _EXPAND-family known-sets added. |
+| U4 | LOW-MED | systemVersion joins reject_unsupported_version_params uniformly (GET via query_params + POST bodies via _raw_parameter_value) on $lookup/$subsumes, matching $validate-code. |
+
+Fixture note: shared conformance fixture seeded SNOMED 3738000 (Viral
+hepatitis, known-unrelated) so not-subsumed probes run on real data;
+count-sensitive expansion pins updated (2→3 SNOMED codes). Collateral:
+~120 old-contract probes triaged/flipped across cs02/cs04/cs05/cm01/
+cm02/cm03/cm04/ts02/ts03/ts15/vs02/vs04 + cases.json (translate-no-target
+400; subsumes-unrelated retargeted to same-system pair).
 
 ## Resolved during maintenance program
 

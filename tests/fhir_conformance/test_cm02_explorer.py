@@ -503,6 +503,10 @@ def test_e41_translate_no_targetsystem_returns_matches_across_all_systems(fhir_c
     Reference: ``_do_translate`` at apps/fhir_api.py:2007-2008 uses
     ``_all_systems_except(source)`` when targetSystem is absent.
     """
+    # c-fixbatch3 (V3): targetSystem is REQUIRED per the R4
+    # OperationDefinition (§4.9.13.1 declares it 1..1 — live spec read;
+    # this probe's original '0..1 / any available map' citation was
+    # inaccurate). The no-target widening is closed: 400 naming it.
     r = fhir_client.get(
         "/fhir/ConceptMap/$translate",
         params=[
@@ -510,16 +514,10 @@ def test_e41_translate_no_targetsystem_returns_matches_across_all_systems(fhir_c
             ("code", "44054006"),
         ],
     )
-    assert r.status_code == 200
+    assert r.status_code == 400
     body = r.json()
-    result = _find_param(body, "result")
-    assert result is not None
-    assert result.get("valueBoolean") is True, (
-        f"no-targetSystem path should still find the SNOMED→ICD-10-CM "
-        f"mapping via _all_systems_except; got result={result}"
-    )
-    matches = [p for p in body.get("parameter", []) if p.get("name") == "match"]
-    assert len(matches) >= 1
+    assert body.get("resourceType") == "OperationOutcome"
+    assert "targetSystem is required" in body["issue"][0]["diagnostics"]
 
 
 def test_e42_translate_unknown_target_system_returns_400(fhir_client):
@@ -959,10 +957,14 @@ def test_e82_get_post_parity_on_no_targetsystem(fhir_client):
             ],
         },
     )
-    assert r_get.status_code == r_post.status_code == 200
-    body_get = r_get.json()
-    body_post = r_post.json()
-    assert json.dumps(body_get, sort_keys=True) == json.dumps(body_post, sort_keys=True)
+    # c-fixbatch3 (V3): parity PRESERVED at the new contract — both
+    # transports reject the missing target with 400 OperationOutcomes
+    # (diagnostics text differs slightly by transport; both name the
+    # requirement).
+    assert r_get.status_code == r_post.status_code == 400
+    for r in (r_get, r_post):
+        assert r.json().get("resourceType") == "OperationOutcome"
+        assert "targetSystem" in r.json()["issue"][0]["diagnostics"]
 
 
 # ===========================================================================
@@ -1386,21 +1388,18 @@ def test_e150_all_systems_except_returns_full_set_minus_source(fhir_client):
     fixture). It DOES NOT enumerate every system (engine code is the
     source of truth; the probe only verifies the surface behavior).
     """
+    # c-fixbatch3 (V3): targetSystem required — the no-target
+    # _all_systems_except widening this probe pinned is closed.
     r = fhir_client.get(
         "/fhir/ConceptMap/$translate",
         params=[
             ("system", SNOMED_URI),
             ("code", "44054006"),
-            # No targetsystem — handler uses _all_systems_except.
+            # No targetsystem — now rejected.
         ],
     )
-    assert r.status_code == 200
-    body = r.json()
-    matches = [p for p in body.get("parameter", []) if p.get("name") == "match"]
-    assert len(matches) >= 1, (
-        "No-targetSystem path should find the SNOMED→ICD-10-CM mapping via "
-        "_all_systems_except."
-    )
+    assert r.status_code == 400
+    assert "targetSystem is required" in r.json()["issue"][0]["diagnostics"]
 
 
 # ===========================================================================

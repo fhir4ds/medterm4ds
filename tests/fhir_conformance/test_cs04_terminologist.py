@@ -166,7 +166,7 @@ class TestLens1DirectionalityClinicalCorrectness:
         directionality to "no relationship".
         """
         # SNOMED_T2DM vs a SNOMED code with no seeded relationship
-        unrelated = "9999999999"
+        unrelated = "3738000"
         r1 = _get_subsumes(fhir_client, SNOMED_URI, SNOMED_T2DM, unrelated)
         r2 = _get_subsumes(fhir_client, SNOMED_URI, unrelated, SNOMED_T2DM)
         o1 = _outcome(r1.json())
@@ -191,7 +191,7 @@ class TestLens2OutcomeVocabularyExactness:
             (SNOMED_T2DM, SNOMED_T2DM),                # equivalent
             (SNOMED_DIABETES_MELLITUS, SNOMED_T2DM),   # subsumes
             (SNOMED_T2DM, SNOMED_DIABETES_MELLITUS),   # subsumed-by
-            (SNOMED_T2DM, "9999999999"),               # not-subsumed
+            (SNOMED_T2DM, "3738000"),               # not-subsumed
         ],
         ids=["equivalent", "subsumes", "subsumed-by", "not-subsumed"],
     )
@@ -221,7 +221,7 @@ class TestLens2OutcomeVocabularyExactness:
             (SNOMED_T2DM, SNOMED_T2DM),
             (SNOMED_DIABETES_MELLITUS, SNOMED_T2DM),
             (SNOMED_T2DM, SNOMED_DIABETES_MELLITUS),
-            (SNOMED_T2DM, "9999999999"),
+            (SNOMED_T2DM, "3738000"),
         ],
         ids=["equivalent", "subsumes", "subsumed-by", "not-subsumed"],
     )
@@ -476,9 +476,12 @@ class TestLens4HierarchicalCorrectnessAcrossSystems:
         "no known relationship" rather than fabricating one.
         """
         r = _get_subsumes(fhir_client, ICD10CM_URI, ICD10CM_T2DM, "E11.9")
-        assert r.status_code == 200
+        # c-fixbatch3 (U2): the unseeded child is unknown-in-system — now a
+        # 400 error (R4 §4.8.21.3 'unable to determine the relationship')
+        # instead of a confident not-subsumed.
+        assert r.status_code == 400
         outcome = _outcome(r.json())
-        assert outcome == "not-subsumed", (
+        assert outcome is None, (
             f"ICD-10-CM E11 vs E11.9 (unseeded child) MUST be not-subsumed; "
             f"got {outcome!r}. The server must NOT fabricate a hierarchy "
             f"that is not in its data."

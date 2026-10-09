@@ -787,15 +787,13 @@ def test_e100_post_subsumes_large_codes_does_not_crash(fhir_client):
         ],
     }
     r = fhir_client.post("/fhir/CodeSystem/$subsumes", json=body)
-    # Per NOT A BUG registry, large codes are unknown to the seeded
-    # fixture → not-subsumed (no relationship found). Acceptance: 200
-    # with not-subsumed (or equivalent if both codes are identical).
-    assert r.status_code == 200, (
+    # c-fixbatch3 (U2/S1): unknown codes now 400 OperationOutcome (the
+    # old confident not-subsumed is closed). No-crash invariant preserved.
+    assert r.status_code == 400, (
         f"large codes POST: {r.status_code} {r.text[:300]!r}"
     )
-    body_json = r.json()
-    assert body_json.get("resourceType") == "Parameters"
-    assert _outcome(body_json) in VALID_OUTCOMES
+    assert r.json().get("resourceType") == "OperationOutcome"
+    assert r.json()["issue"][0]["severity"] == "error"
 
 
 def test_e101_post_subsumes_large_identical_codes_returns_equivalent(fhir_client):
@@ -849,19 +847,20 @@ def test_e110_post_subsumes_special_chars_does_not_crash(fhir_client, code_a, co
         ],
     }
     r = fhir_client.post("/fhir/CodeSystem/$subsumes", json=body)
-    assert r.status_code == 200, (
-        f"codes={code_a!r},{code_b!r}: {r.status_code} {r.text[:300]!r}"
-    )
-    body_json = r.json()
-    assert body_json.get("resourceType") == "Parameters"
-    outcome = _outcome(body_json)
-    assert outcome in VALID_OUTCOMES
-    # For unicode-same case, expect equivalent.
+    # c-fixbatch3 (U2/S1): identical unknown codes are equivalent (identity
+    # short-circuit precedes validation); distinct unknown codes now 400
+    # (clean OperationOutcome — the no-crash/no-500 invariant preserved).
     if code_a == code_b:
-        assert outcome == "equivalent", (
-            f"identical special-char codes should yield 'equivalent'; "
-            f"got {outcome!r}"
+        assert r.status_code == 200
+        assert _outcome(r.json()) == "equivalent"
+    else:
+        assert r.status_code == 400, (
+            f"codes={code_a!r},{code_b!r}: {r.status_code} {r.text[:300]!r}"
         )
+        assert r.json().get("resourceType") == "OperationOutcome"
+
+    # (The unicode-same equivalent expectation moved into the branch
+    # above — c-fixbatch3 (U2): identical codes short-circuit.)
 
 
 def test_e111_get_subsumes_url_encoded_special_chars_accepted(fhir_client):
@@ -875,12 +874,11 @@ def test_e111_get_subsumes_url_encoded_special_chars_accepted(fhir_client):
         f"/fhir/CodeSystem/$subsumes?system={SNOMED_URI}"
         f"&codeA={code_a}&codeB={code_b}"
     )
-    assert r.status_code == 200, (
+    # c-fixbatch3 (U2/S1): decoded-but-unknown codes now 400.
+    assert r.status_code == 400, (
         f"URL-encoded codes: {r.status_code} {r.text[:300]!r}"
     )
-    body_json = r.json()
-    assert body_json.get("resourceType") == "Parameters"
-    assert _outcome(body_json) in VALID_OUTCOMES
+    assert r.json().get("resourceType") == "OperationOutcome"
 
 
 # ---------------------------------------------------------------------------

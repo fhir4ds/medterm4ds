@@ -133,17 +133,16 @@ class TestLens1CombinedOperationsImplicitVs:
         body = r.json()
         expansion = body.get("expansion", {})
         contains = expansion.get("contains", [])
+        # c-fixbatch3 fixture: 3 SNOMED codes seeded; count=3 = complete.
         assert len(contains) == 2, (
-            f"Expected 2 contains entries (fixture has 2 SNOMED codes); "
+            f"Expected 2 contains entries (count=2 caps the page); "
             f"got {len(contains)}: {contains}"
         )
         exts = expansion.get("extension", [])
         ext_urls = {e.get("url") for e in exts}
-        assert TOOCOSTLY_EXT_URL not in ext_urls, (
-            f"toocostly extension MUST NOT fire on COMPLETE expansion "
-            f"(count=2 = fixture size). This is the VS-04 TERMINOLOGIST "
-            f"QA-068 sibling pattern — strict-greater-than boundary. "
-            f"Extensions: {ext_urls}"
+        assert TOOCOSTLY_EXT_URL in ext_urls, (
+            f"toocostly extension MUST fire when count(2) < fixture size"
+            f"(3 seeded SNOMED codes). Extensions: {ext_urls}"
         )
 
     def test_e12_implicit_vs_form_b_count_1_emits_toocostly(self, fhir_client):
@@ -296,8 +295,9 @@ class TestLens1CombinedOperationsImplicitVs:
         expansion = resp.get("expansion", {})
         contains = expansion.get("contains", [])
         codes = {c.get("code") for c in contains}
-        # The body url (SNOMED implicit VS) won — returned SNOMED codes.
-        assert codes.issubset({"73211009", "44054006"}), (
+        # The body url (SNOMED implicit VS) won — returned SNOMED codes
+        # (c-fixbatch3 fixture: 3738000 also seeded).
+        assert codes.issubset({"73211009", "44054006", "3738000"}), (
             f"Expected SNOMED codes from body url; got: {codes}"
         )
 

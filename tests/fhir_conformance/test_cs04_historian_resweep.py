@@ -674,7 +674,7 @@ class TestLens3CodingAlternativeEncodingSilentDrop:
             "parameter": [
                 {"name": "system", "valueUri": SNOMED_URI},
                 {"name": "codingA", "valueCoding": {
-                    "system": SNOMED_URI, "code": "9999999999",
+                    "system": SNOMED_URI, "code": "3738000",
                 }},
                 {"name": "codingB", "valueCoding": {
                     "system": SNOMED_URI, "code": SNOMED_T2DM,
@@ -684,8 +684,10 @@ class TestLens3CodingAlternativeEncodingSilentDrop:
         r = fhir_client.post("/fhir/CodeSystem/$subsumes", json=body)
         assert r.status_code == 200
         out = _outcome(r.json())
+        # c-fixbatch3: 3738000 (seeded known-unrelated) replaces the unknown
+        # trigger — the coding form exercises REAL not-subsumed data.
         assert out == "not-subsumed", (
-            f"unknown code → not-subsumed per fixture; got {out!r}"
+            f"known-unrelated codes → not-subsumed; got {out!r}"
         )
 
     def test_h34_post_coding_a_partial_value_coding_falls_through(self, fhir_client) -> None:
@@ -890,7 +892,7 @@ class TestLens5HyphenatedXmlOutcomeRendering:
             (SNOMED_DIABETES_MELLITUS, SNOMED_T2DM, "subsumes"),
             (SNOMED_T2DM, SNOMED_DIABETES_MELLITUS, "subsumed-by"),
             (SNOMED_T2DM, SNOMED_T2DM, "equivalent"),
-            ("9999999999", SNOMED_T2DM, "not-subsumed"),
+            ("3738000", SNOMED_T2DM, "not-subsumed"),
         ],
     )
     def test_h50_xml_outcome_hyphenated_correct(
@@ -941,7 +943,7 @@ class TestLens6ValueCodeNotValueStringWireType:
             (SNOMED_DIABETES_MELLITUS, SNOMED_T2DM),    # subsumes
             (SNOMED_T2DM, SNOMED_DIABETES_MELLITUS),    # subsumed-by
             (SNOMED_T2DM, SNOMED_T2DM),                  # equivalent
-            ("9999999999", SNOMED_T2DM),                 # not-subsumed
+            ("3738000", SNOMED_T2DM),                 # not-subsumed
         ],
     )
     def test_h60_outcome_wire_type_is_value_code(
@@ -1121,7 +1123,7 @@ class TestLens9ClosedEnumR5R4BContamination:
             (SNOMED_DIABETES_MELLITUS, SNOMED_T2DM),  # subsumes
             (SNOMED_T2DM, SNOMED_DIABETES_MELLITUS),  # subsumed-by
             (SNOMED_T2DM, SNOMED_T2DM),               # equivalent
-            ("9999999999", SNOMED_T2DM),               # not-subsumed
+            ("3738000", SNOMED_T2DM),               # not-subsumed
         ]
         for code_a, code_b in cases:
             r = fhir_client.get(
@@ -1306,7 +1308,7 @@ class TestLens12DirectionalityMirrorAndEquivalentOutcome:
         r1 = fhir_client.get(
             "/fhir/CodeSystem/$subsumes",
             params=[
-                ("codeA", "9999999999"),
+                ("codeA", "3738000"),
                 ("codeB", SNOMED_T2DM),
                 ("system", SNOMED_URI),
             ],
@@ -1315,7 +1317,7 @@ class TestLens12DirectionalityMirrorAndEquivalentOutcome:
             "/fhir/CodeSystem/$subsumes",
             params=[
                 ("codeA", SNOMED_T2DM),
-                ("codeB", "9999999999"),
+                ("codeB", "3738000"),
                 ("system", SNOMED_URI),
             ],
         )
@@ -1328,7 +1330,7 @@ class TestLens12DirectionalityMirrorAndEquivalentOutcome:
             (SNOMED_DIABETES_MELLITUS, SNOMED_T2DM),
             (SNOMED_T2DM, SNOMED_DIABETES_MELLITUS),
             (SNOMED_T2DM, SNOMED_T2DM),
-            ("9999999999", SNOMED_T2DM),
+            ("3738000", SNOMED_T2DM),
         ]
         for code_a, code_b in cases:
             r = fhir_client.get(

@@ -307,8 +307,9 @@ class TestLens1DisplayClinicalCorrectness:
         )
         assert status == 200, resp
         contains = resp.get("expansion", {}).get("contains", [])
-        # Both seeded SNOMED codes
-        assert len(contains) == 2, contains
+        # c-fixbatch3 fixture: three seeded SNOMED codes (3738000 added as
+        # the known-unrelated subsumption probe code — expansions include it).
+        assert len(contains) == 3, contains
         for entry in contains:
             # Display MUST NOT be the raw code (clinical safety)
             assert entry["display"] != entry["code"], entry
@@ -807,7 +808,7 @@ class TestLens5CrossSourceConsistency:
         assert status == 200, resp
         contains = resp.get("expansion", {}).get("contains", [])
         codes = {c["code"] for c in contains}
-        assert codes == {SNOMED_DIABETES_MELLITUS, SNOMED_T2DM}, codes
+        assert codes == {SNOMED_DIABETES_MELLITUS, SNOMED_T2DM, "3738000"}, codes
         for entry in contains:
             assert entry["system"] == SNOMED_URI, entry
 

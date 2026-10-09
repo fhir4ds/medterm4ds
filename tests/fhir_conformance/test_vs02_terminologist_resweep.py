@@ -431,8 +431,10 @@ class TestLens1CanonicalDisplayInvariant:
             fhir_client, params={"url": f"{SNOMED_URI}?fhir_vs"}
         )
         assert status == 200, expand_resp
-        contains = expand_resp.get("expansion", {}).get("contains", [])
-        assert len(contains) == 2, contains
+        contains = expand_resp.get("expansion", {}).get("contains", []
+        )
+        # c-fixbatch3 fixture: three seeded SNOMED codes (3738000 added).
+        assert len(contains) == 3, contains
 
         for entry in contains:
             code = entry["code"]

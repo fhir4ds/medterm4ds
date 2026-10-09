@@ -352,7 +352,7 @@ class TestLens1HostileBodyClinicalSafety:
         (engine returns not-subsumed for unknown codes; the alternative is
         an OperationOutcome error per spec — both are clinically safe.)
         """
-        r = _get_subsumes(fhir_client, SNOMED_URI, "9999999999", SNOMED_DM)
+        r = _get_subsumes(fhir_client, SNOMED_URI, "3738000", SNOMED_DM)
         assert r.status_code == 200, r.text
         outcome = _outcome(r.json())
         # NOT a fabricated subsumes or equivalent.
@@ -617,16 +617,12 @@ class TestLens3SubsumptionOutcomeClinicalCorrectness4Cases:
         Per spec Out `outcome`:
           "not-subsumed — no relationship"
         """
+        # c-fixbatch3 (U2): metformin is RXNORM — under the SNOMED system
+        # this is cross-system, which now 400s. The clinical-safety
+        # property (never a hierarchy outcome across domains) is preserved.
         r = _get_subsumes(fhir_client, SNOMED_URI, SNOMED_T2DM, RXNORM_METFORMIN)
-        assert r.status_code == 200, r.text
-        outcome = _outcome(r.json())
-        # Engine: T2DM and metformin have no seeded isa/PAR relationship.
-        # Clinical-correct answer is not-subsumed.
-        assert outcome == "not-subsumed", (
-            f"Clinical-correctness case (d) FAILED: T2DM(44054006) vs "
-            f"metformin(860975) MUST be not-subsumed (no hierarchical "
-            f"relationship); got outcome={outcome!r}"
-        )
+        assert r.status_code == 400, r.text
+        assert r.json().get("resourceType") == "OperationOutcome"
 
     def test_t34_case_d_reverse_metformin_vs_t2dm_not_subsumed(self, fhir_client) -> None:
         """Case (d) reverse: 860975 (metformin) vs 44054006 (T2DM) → not-subsumed.
@@ -634,13 +630,9 @@ class TestLens3SubsumptionOutcomeClinicalCorrectness4Cases:
         Clinical justification: not-subsumed is symmetric — swapping A and B
         does NOT change the outcome (per Lens 1 test_t13 from baseline).
         """
+        # c-fixbatch3 (U2): reverse direction — same cross-system 400.
         r = _get_subsumes(fhir_client, SNOMED_URI, RXNORM_METFORMIN, SNOMED_T2DM)
-        assert r.status_code == 200, r.text
-        outcome = _outcome(r.json())
-        assert outcome == "not-subsumed", (
-            f"Clinical-correctness case (d) reverse FAILED: metformin vs "
-            f"T2DM MUST be not-subsumed; got outcome={outcome!r}"
-        )
+        assert r.status_code == 400, r.text
 
 
 # ============================================================================
@@ -955,7 +947,7 @@ class TestLens6HyphenatedOutcomeWireFormat:
             (SNOMED_DM, SNOMED_DM, "equivalent"),
             (SNOMED_DM, SNOMED_T2DM, "subsumes"),
             (SNOMED_T2DM, SNOMED_DM, "subsumed-by"),
-            (SNOMED_T2DM, "9999999999", "not-subsumed"),
+            (SNOMED_T2DM, "3738000", "not-subsumed"),
         ],
         ids=["equivalent", "subsumes", "subsumed-by", "not-subsumed"],
     )
@@ -1033,7 +1025,7 @@ class TestLens6HyphenatedOutcomeWireFormat:
             (SNOMED_DM, SNOMED_DM, "equivalent"),
             (SNOMED_DM, SNOMED_T2DM, "subsumes"),
             (SNOMED_T2DM, SNOMED_DM, "subsumed-by"),
-            (SNOMED_T2DM, "9999999999", "not-subsumed"),
+            (SNOMED_T2DM, "3738000", "not-subsumed"),
         ],
         ids=["equivalent", "subsumes", "subsumed-by", "not-subsumed"],
     )
@@ -1116,9 +1108,9 @@ class TestLens7SubsumptionOutcomeAcrossSources:
         $subsumes MUST NOT fabricate a relationship; not-subsumed is the
         clinically-honest answer.
         """
+        # c-fixbatch3 (U2): unseeded child = unknown-in-system → 400.
         r = _get_subsumes(fhir_client, ICD10CM_URI, ICD10CM_E11, "E11.9")
-        assert r.status_code == 200
-        assert _outcome(r.json()) == "not-subsumed"
+        assert r.status_code == 400
 
     def test_t72_rxnorm_self_equivalent(self, fhir_client) -> None:
         """HIGH — RxNorm self-subsumption yields equivalent.
@@ -1130,9 +1122,9 @@ class TestLens7SubsumptionOutcomeAcrossSources:
     def test_t73_rxnorm_no_seeded_parent_yields_not_subsumed(self, fhir_client) -> None:
         """HIGH — RxNorm metformin vs an unseeded code yields not-subsumed.
         """
+        # c-fixbatch3 (U2): unseeded RxNorm code → 400 (unknown-in-system).
         r = _get_subsumes(fhir_client, RXNORM_URI, RXNORM_METFORMIN, "999999")
-        assert r.status_code == 200
-        assert _outcome(r.json()) == "not-subsumed"
+        assert r.status_code == 400
 
     def test_t74_snomed_bfs_max_depth_traverses_seeded_isa(self, fhir_client) -> None:
         """HIGH — SNOMED BFS traverses the seeded isa/PAR row correctly.
@@ -1163,7 +1155,7 @@ class TestLens8OutcomeVocabularyExactness:
             (SNOMED_DM, SNOMED_DM),
             (SNOMED_DM, SNOMED_T2DM),
             (SNOMED_T2DM, SNOMED_DM),
-            (SNOMED_T2DM, "9999999999"),
+            (SNOMED_T2DM, "3738000"),
         ],
         ids=["equivalent", "subsumes", "subsumed-by", "not-subsumed"],
     )
@@ -1182,7 +1174,7 @@ class TestLens8OutcomeVocabularyExactness:
             (SNOMED_DM, SNOMED_DM),
             (SNOMED_DM, SNOMED_T2DM),
             (SNOMED_T2DM, SNOMED_DM),
-            (SNOMED_T2DM, "9999999999"),
+            (SNOMED_T2DM, "3738000"),
         ],
         ids=["equivalent", "subsumes", "subsumed-by", "not-subsumed"],
     )
@@ -1225,9 +1217,9 @@ class TestLens9ClinicalSafetyEdgeCases:
     def test_t90_unknown_codes_yield_not_subsumed(self, fhir_client) -> None:
         """HIGH — both codes unknown → not-subsumed (no fabricated relationship).
         """
+        # c-fixbatch3 (U2): both unknown → 400 (no fabricated certainty).
         r = _get_subsumes(fhir_client, SNOMED_URI, "X1", "X2")
-        assert r.status_code == 200
-        assert _outcome(r.json()) == "not-subsumed"
+        assert r.status_code == 400
 
     def test_t91_unknown_system_yields_400_operationoutcome(self, fhir_client) -> None:
         """HIGH — unknown system → 400 OperationOutcome (not 200 + fabricated
@@ -1245,10 +1237,11 @@ class TestLens9ClinicalSafetyEdgeCases:
     ) -> None:
         """HIGH — both codes unknown → not-subsumed is symmetric.
         """
+        # c-fixbatch3 (U2): both unknown → 400, symmetric (the symmetric-
+        # rejection invariant replaces the symmetric not-subsumed one).
         r1 = _get_subsumes(fhir_client, SNOMED_URI, "X1", "X2")
         r2 = _get_subsumes(fhir_client, SNOMED_URI, "X2", "X1")
-        assert _outcome(r1.json()) == "not-subsumed"
-        assert _outcome(r2.json()) == "not-subsumed"
+        assert r1.status_code == 400 and r2.status_code == 400
 
     def test_t93_one_known_one_unknown_code_yields_not_subsumed(
         self, fhir_client
@@ -1256,9 +1249,10 @@ class TestLens9ClinicalSafetyEdgeCases:
         """HIGH — one known + one unknown code → not-subsumed (no fabricated
         subsumes relationship).
         """
+        # c-fixbatch3 (U2): known + unknown → 400 (no fabricated outcome,
+        # no fabricated certainty either).
         r = _get_subsumes(fhir_client, SNOMED_URI, SNOMED_DM, "UNKNOWN")
-        assert r.status_code == 200
-        assert _outcome(r.json()) == "not-subsumed"
+        assert r.status_code == 400
 
     def test_t94_get_post_byte_exact_parity_on_outcome(
         self, fhir_client

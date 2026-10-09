@@ -30,6 +30,10 @@ def _make_conformance_db(path: Path) -> None:
         [
             ("73211009", "PT", "Diabetes mellitus", "A73211009", "N", "SNOMEDCT_US", "C0011849"),
             ("44054006", "PT", "Type 2 diabetes mellitus", "A44054006", "N", "SNOMEDCT_US", "C0011847"),
+            # c-fixbatch3 (U2): known-UNRELATED SNOMED code so cross-axis
+            # not-subsumed probes exercise real hierarchy data (the code
+            # exists; no mrrel row links it to the diabetes branch).
+            ("3738000", "PT", "Viral hepatitis", "A3738000", "N", "SNOMEDCT_US", "C0019125"),
             ("E11", "HT", "Type 2 diabetes mellitus", "AE11", "N", "ICD10CM", "C0011847"),
             ("860975", "SCD", "24 HR metformin 500 MG Oral Tablet", "A860975", "N", "RXNORM", "C0978484"),
             # Rows for every remaining advertised system (SYSTEM_TO_FHIR_URI

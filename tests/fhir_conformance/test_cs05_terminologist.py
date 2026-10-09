@@ -534,6 +534,10 @@ class TestLens3MultiHierarchyClinicalCorrectness:
         # Since E11 is NOT seeded in SNOMED, the engine returns
         # not-subsumed. This is the clinically-correct answer for a
         # cross-system probe on a within-system operation.
+        # c-fixbatch3 (U2): E11 under the SNOMED system is cross-system —
+        # now 400 (the clinical-safety property this probe guards — never
+        # a misleading hierarchy outcome cross-system — is preserved and
+        # strengthened: no outcome at all without a defined relationship).
         r = fhir_client.get(
             "/fhir/CodeSystem/$subsumes",
             params={
@@ -542,13 +546,9 @@ class TestLens3MultiHierarchyClinicalCorrectness:
                 "codeB": ICD10CM_T2DM,
             },
         )
-        assert r.status_code == 200, r.text
-        body = r.json()
-        outcome = _param_value(body, "outcome")
-        assert outcome == "not-subsumed", (
-            f"Cross-system codes (SNOMED T2DM vs ICD-10-CM E11) MUST "
-            f"return not-subsumed. Got outcome={outcome!r}."
-        )
+        assert r.status_code == 400, r.text
+        assert r.json().get("resourceType") == "OperationOutcome"
+        assert "not known in code system" in r.json()["issue"][0]["diagnostics"]
 
 
 # ===========================================================================

@@ -324,22 +324,14 @@ def test_h22_translate_get_targetsystem_no_min_length():
     """
     src = _get_func_source(_FHIR_API_PATH, "translate_get")
     assert src, "translate_get not found"
-    # The targetsystem line MUST use Query(None, ...) NOT Query(..., min_length=1).
-    # Find the targetsystem declaration.
-    assert "targetsystem" in src
-    # Locate the targetsystem Query declaration
-    targetsystem_idx = src.find("targetsystem:")
-    assert targetsystem_idx != -1
-    targetsystem_line_end = src.find("\n", targetsystem_idx)
-    targetsystem_decl = src[targetsystem_idx:targetsystem_line_end]
-    assert "Query(None" in targetsystem_decl, (
-        f"targetsystem Query MUST be optional (Query(None, ...)); got: "
-        f"{targetsystem_decl!r}"
-    )
-    assert "min_length=1" in targetsystem_decl, (
-        f"targetsystem MUST carry min_length=1 (QC-423 empty-is-not-absent). Got: "
-        f"{targetsystem_decl!r}"
-    )
+    # c-fixbatch3 (V2/V3): the declaration set is now BOTH spellings —
+    # targetSystem (R4 name) and the legacy lowercase alias — each
+    # optional with min_length=1 (QC-423 empty-is-not-absent).
+    for decl_name in ("targetSystem:", "targetsystem:"):
+        idx = src.find(decl_name)
+        assert idx != -1, f"{decl_name} declaration missing"
+    assert "Query(None" in src, "target decls must stay optional"
+    assert "min_length=1" in src, "min_length=1 absent from target decls"
 
 
 # ===========================================================================

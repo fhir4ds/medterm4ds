@@ -443,13 +443,16 @@ _XML_ACCEPT = "application/fhir+xml"
              {"name": "code", "valueCode": "73211009"},
          ]}, None),
         # 7. GET /fhir/ConceptMap/$translate
+        # c-fixbatch3 (V3): targetSystem required — supplied.
         ("GET", "/fhir/ConceptMap/$translate", None,
-         {"system": "http://snomed.info/sct", "code": "73211009"}),
+         {"system": "http://snomed.info/sct", "code": "73211009",
+          "targetsystem": "http://hl7.org/fhir/sid/icd-10-cm"}),
         # 8. POST /fhir/ConceptMap/$translate
         ("POST", "/fhir/ConceptMap/$translate",
          {"resourceType": "Parameters", "parameter": [
              {"name": "system", "valueUri": "http://snomed.info/sct"},
              {"name": "code", "valueCode": "73211009"},
+             {"name": "targetsystem", "valueUri": "http://hl7.org/fhir/sid/icd-10-cm"},
          ]}, None),
         # 9. GET /fhir/CodeSystem/$subsumes
         ("GET", "/fhir/CodeSystem/$subsumes", None,

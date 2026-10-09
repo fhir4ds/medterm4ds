@@ -428,12 +428,12 @@ class TestLens3SubsumesOutcomeClinicalCorrectness:
                 "codeB": CODE_METFORMIN_RXNORM,
             },
         )
-        body = resp.json()
-        params = _params_by_name(body)
-        assert params["outcome"].get("valueCode") == "not-subsumed", (
-            f"Expected outcome='not-subsumed' for clinically unrelated "
-            f"codes (T2DM vs metformin); got "
-            f"{params['outcome'].get('valueCode')!r}."
+        # c-fixbatch3 (U2): metformin is an RXNORM code — under the
+        # SNOMED system this is cross-system, which now 400s (the old
+        # confident not-subsumed for an out-of-system code is closed).
+        assert resp.status_code == 400, (
+            f"Cross-system subsumption (SNOMED system, RXNORM code) must "
+            f"error; got {resp.status_code}: {resp.text}"
         )
 
     def test_t34_outcome_value_set_membership(self, fhir_client):
@@ -443,21 +443,22 @@ class TestLens3SubsumesOutcomeClinicalCorrectness:
         the closed enum is {equivalent, subsumes, subsumed-by, not-subsumed}.
         Hyphenated values MUST render verbatim — 'subsumed-by' not 'subsumedby'.
         """
-        # Trigger all 4 outcomes.
+        # Trigger the 3 same-system outcomes reachable on the shared
+        # fixture (c-fixbatch3/U2: the 4th, not-subsumed, was only
+        # reachable via cross-system/unknown codes, which now 400).
         outcomes = set()
         for a, b in [
             (CODE_DM_SNOMED, CODE_T2DM_SNOMED),     # subsumes
             (CODE_T2DM_SNOMED, CODE_DM_SNOMED),     # subsumed-by
             (CODE_T2DM_SNOMED, CODE_T2DM_SNOMED),   # equivalent
-            (CODE_T2DM_SNOMED, CODE_METFORMIN_RXNORM),  # not-subsumed
         ]:
             resp = fhir_client.get(
                 "/fhir/CodeSystem/$subsumes",
                 params={"system": SNOMED_URI, "codeA": a, "codeB": b},
             )
             outcomes.add(_params_by_name(resp.json())["outcome"].get("valueCode"))
-        assert outcomes == {"equivalent", "subsumes", "subsumed-by", "not-subsumed"}, (
-            f"$subsumes outcome drift: expected the 4-value R4 enum; got "
+        assert outcomes == {"equivalent", "subsumes", "subsumed-by"}, (
+            f"$subsumes outcome drift: expected the 3 same-system-reachable values; got "
             f"{outcomes!r}. Hyphenated 'subsumed-by' MUST be verbatim."
         )
 
@@ -1438,17 +1439,14 @@ class TestLens10ClinicalSafetyNoSilentWrongAnswer:
                 "codeB": CODE_T2DM_SNOMED,
             },
         )
-        # Unknown codeA has no parent/child relationship → not-subsumed.
-        # The engine MUST NOT raise 500 — the response is semantically
-        # "no relationship" rather than an error.
-        assert resp.status_code == 200, (
+        # c-fixbatch3 (U2/S1): unknown codes now 400 with an
+        # OperationOutcome (code-in-system validation) — the no-500
+        # invariant this probe guards is preserved; the semantic is an
+        # explicit error rather than "no relationship".
+        assert resp.status_code == 400, (
             f"$subsumes with unknown code returned {resp.status_code}; "
-            f"expected 200 with outcome='not-subsumed'."
+            f"expected 400 OperationOutcome (unknown-in-system)."
         )
         body = resp.json()
-        params = _params_by_name(body)
-        outcome = params.get("outcome", {}).get("valueCode")
-        assert outcome in ("not-subsumed", "equivalent", "subsumes", "subsumed-by"), (
-            f"$subsumes outcome drift: got {outcome!r}, expected a value in "
-            f"the R4 closed enum."
-        )
+        assert body.get("resourceType") == "OperationOutcome"
+        assert body["issue"][0]["severity"] == "error"

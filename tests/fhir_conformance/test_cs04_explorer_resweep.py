@@ -526,10 +526,10 @@ class TestLens2SubsumesToLookupCrossOperationConsistency:
         unknown_code = "9999999999UNKNOWN"
         body = _build_subsumes_params(SNOMED_URI, unknown_code, SNOMED_T2DM)
         sub_r = fhir_client.post("/fhir/CodeSystem/$subsumes", json=body)
-        assert sub_r.status_code == 200
-        # Unknown codes return not-subsumed per current engine semantic
-        # (no relationship found; not an error).
-        assert _outcome(sub_r.json()) == "not-subsumed"
+        # c-fixbatch3 (U2/S1): unknown code now 400 OperationOutcome (the
+        # no-5xx invariant this probe guards is preserved on both ops).
+        assert sub_r.status_code == 400
+        assert sub_r.json().get("resourceType") == "OperationOutcome"
 
         lookup_r = fhir_client.get(
             "/fhir/CodeSystem/$lookup",

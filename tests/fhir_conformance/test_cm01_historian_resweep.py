@@ -579,9 +579,15 @@ def test_h32_translate_out_source_system_canonical_for_every_alias(
     # T2DM has a same-CUI mapping to ICD10CM E11 (seeded). DM and metformin
     # may not produce matches, but the source.system MUST be canonical whenever
     # a match is returned.
+    # c-fixbatch3 (V3): targetSystem required — supplied (canonical
+    # ICD10CM; T2DM's same-CUI target) so the alias-canonicalization
+    # contract under test is exercised in isolation.
     r = fhir_client.get(
         "/fhir/ConceptMap/$translate",
-        params={"system": alias_uri, "code": code},
+        params={
+            "system": alias_uri, "code": code,
+            "targetsystem": "http://hl7.org/fhir/sid/icd-10-cm",
+        },
     )
     # $translate returns 200 even with 0 matches.
     assert r.status_code == 200, f"$translate failed on alias {alias_label}: {r.status_code} {r.text}"

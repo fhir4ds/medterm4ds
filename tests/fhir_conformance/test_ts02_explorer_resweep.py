@@ -356,9 +356,13 @@ class TestCrossOperationCanonicalURIConsistency:
 
     def test_e24_translate_out_system_is_canonical(self, fhir_client):
         """$translate Out match[].source.system is canonical SNOMED URI."""
+        # c-fixbatch3 (V3): targetSystem required — supplied.
         response = fhir_client.get(
             "/fhir/ConceptMap/$translate",
-            params={"code": SNOMED_CODE, "system": SNOMED_URI},
+            params={
+                "code": SNOMED_CODE, "system": SNOMED_URI,
+                "targetsystem": "http://hl7.org/fhir/sid/icd-10-cm",
+            },
         )
         assert response.status_code == 200
         body = response.json()
@@ -710,22 +714,12 @@ class TestHTTPMethodCornerCases:
                 "system": SNOMED_URI,
             },
         )
-        # Documenting current behavior: leading-space code is treated as
-        # different → not-subsumed (engine lookup of " 44054006" fails).
-        # OR: not-equivalent if string-compare short-circuit.
-        assert response.status_code == 200
+        # c-fixbatch3 (U2): a whitespace-padded code is not a code in
+        # the system — now 400 (was: confident 200 not-subsumed).
+        assert response.status_code == 400
         body = response.json()
-        params = body.get("parameter", [])
-        outcome = next(
-            (p.get("valueCode") for p in params if p.get("name") == "outcome"),
-            None,
-        )
-        # Either not-subsumed (engine doesn't find the padded code) or
-        # equivalent (impl treats them as same). Documenting.
-        assert outcome in ("equivalent", "not-subsumed"), (
-            f"Padded-code $subsumes outcome was {outcome!r}; expected "
-            f"equivalent or not-subsumed."
-        )
+        assert body.get("resourceType") == "OperationOutcome"
+        assert "not known in code system" in body["issue"][0]["diagnostics"]
 
     def test_e52_expand_negative_count_via_post_body_rejected(
         self, fhir_client

@@ -464,12 +464,20 @@ class TestLens2CfSkepticCm03_02ClinicalSafetyOfHierarchyWalkedOutcomes:
         self, fhir_client
     ):
         """CLINICAL CORRECTNESS: DM (disease axis) vs metformin (drug
-        axis) — different clinical axes, no subsumption. Returns
-        "not-subsumed" — clinically correct."""
-        outcome = _do_subsumes_outcome(
-            fhir_client, SNOMED_URI, DIABETES_SNOMED, METFORMIN_RXNORM,
+        axis) — different clinical axes AND different code systems.
+        c-fixbatch3 (U2): cross-system subsumption now 400s (the old
+        confident not-subsumed is closed); the clinical-safety property
+        is that it NEVER returns a hierarchy outcome for a cross-axis
+        pair."""
+        resp = fhir_client.get(
+            "/fhir/CodeSystem/$subsumes",
+            params={
+                "system": SNOMED_URI,
+                "codeA": DIABETES_SNOMED, "codeB": METFORMIN_RXNORM,
+            },
         )
-        assert outcome == "not-subsumed"
+        assert resp.status_code == 400
+        assert resp.json().get("resourceType") == "OperationOutcome"
 
     def test_t24_subsumes_outcome_in_closed_enum_vocabulary(
         self, fhir_client
@@ -478,11 +486,12 @@ class TestLens2CfSkepticCm03_02ClinicalSafetyOfHierarchyWalkedOutcomes:
         R4 ConceptSubsumptionOutcome closed enum
         {equivalent, subsumes, subsumed-by, not-subsumed}. Off-enum
         values would silently produce wrong CDS Hook outcomes."""
+        # c-fixbatch3 (U2): the cross-system case now 400s — enum check
+        # covers the same-system cases.
         cases = [
             (DIABETES_SNOMED, T2DM_SNOMED),
             (T2DM_SNOMED, DIABETES_SNOMED),
             (DIABETES_SNOMED, DIABETES_SNOMED),
-            (DIABETES_SNOMED, METFORMIN_RXNORM),
         ]
         for code_a, code_b in cases:
             outcome = _do_subsumes_outcome(

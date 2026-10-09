@@ -523,14 +523,13 @@ class TestLens4SubsumesRequiredParams:
                 "codeB": "99999999",
             },
         )
-        body = r.json()
-        outcomes = [
-            p.get("valueCode") for p in body.get("parameter", [])
-            if p.get("name") == "outcome"
-        ]
-        assert outcomes == ["not-subsumed"], (
-            f"Unknown codes should produce 'not-subsumed'. Got {outcomes}"
+        # c-fixbatch3 (U2/S1): unknown codes now 400 OperationOutcome
+        # (was: confident 200 not-subsumed) — R4 §4.8.21.3 error when the
+        # relationship is undeterminable.
+        assert r.status_code == 400, (
+            f"Unknown codes should produce an error. Got {r.status_code}"
         )
+        assert r.json().get("resourceType") == "OperationOutcome"
 
     def test_s44_subsumes_codeA_with_special_chars_no_500(self, fhir_client):
         """SKEPTIC: codeA with special chars MUST NOT 500. Prepared

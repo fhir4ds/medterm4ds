@@ -691,14 +691,14 @@ def test_s53_subsumes_unrelated_at_any_depth(fhir_client):
     # parent (73211009) ARE related. The fixture doesn't seed a same-
     # source unrelated pair. Probe cross-source instead — the engine
     # returns not-subsumed for codes where no mrrel path exists.
+    # c-fixbatch3: seeded known-unrelated pair (the unknown-code shape
+    # moved to explicit 400; REAL unrelated data exercises this intent).
     r = fhir_client.get(
         f"/fhir/CodeSystem/$subsumes?system={SNOMED_URI}"
-        f"&codeA={SNOMED_T2DM}&codeB=9999999999"
+        f"&codeA={SNOMED_T2DM}&codeB=3738000"
     )
     assert r.status_code == 200
     body = r.json()
-    # Unknown code in source: no mrrel path → not-subsumed (INTENDED today,
-    # documented in CS-04 SKEPTIC test_s120).
     assert _outcome(body) == "not-subsumed"
 
 

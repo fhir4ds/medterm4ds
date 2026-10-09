@@ -71,29 +71,30 @@ class TestS1UnknownCodesSilentNotSubsumed:
     """S1 — unknown codes yield confident not-subsumed (spec: error)."""
 
     def test_s10_unknown_code_b(self, fhir_client):
-        """Unknown codeB → 200 not-subsumed (CURRENT, deviation).
-        Flip when fix lands: expect OperationOutcome error."""
+        """S1 RESOLVED (c-fixbatch3, U2 fix): unknown codeB now 400s with
+        an OperationOutcome (code-in-system validation at the subsumption
+        boundary) instead of a confident 200 not-subsumed."""
         status, out = _outcome(
             fhir_client,
             system=SNOMED_URI, codeA=T2DM, codeB="99999999",
         )
-        assert status == 200 and out == "not-subsumed"
+        assert status == 400 and out is None
 
     def test_s11_unknown_code_a(self, fhir_client):
-        """Unknown codeA → 200 not-subsumed (CURRENT, deviation)."""
+        """S1 RESOLVED (c-fixbatch3): unknown codeA 400s."""
         status, out = _outcome(
             fhir_client,
             system=SNOMED_URI, codeA="99999999", codeB=T2DM,
         )
-        assert status == 200 and out == "not-subsumed"
+        assert status == 400 and out is None
 
     def test_s12_both_unknown(self, fhir_client):
-        """Both unknown → 200 not-subsumed (CURRENT, deviation)."""
+        """S1 RESOLVED (c-fixbatch3): both unknown 400s (first reported)."""
         status, out = _outcome(
             fhir_client,
             system=SNOMED_URI, codeA="11111111", codeB="99999999",
         )
-        assert status == 200 and out == "not-subsumed"
+        assert status == 400 and out is None
 
 
 class TestS2InstanceLevelInvocation:

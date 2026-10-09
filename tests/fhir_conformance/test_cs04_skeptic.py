@@ -263,16 +263,14 @@ def test_s41_get_subsumes_unknown_codes_returns_not_subsumed(fhir_client):
     The implementation falls through to not-subsumed after the BFS
     descendant check finds nothing.
     """
+    # c-fixbatch3 (U2/S1): both unknown → 400 OperationOutcome.
     r = fhir_client.get(
         f"/fhir/CodeSystem/$subsumes?system={SNOMED_URI}"
         f"&codeA=UNKNOWN_A&codeB=UNKNOWN_B"
     )
-    assert r.status_code == 200
+    assert r.status_code == 400
     body = r.json()
-    outcome = _outcome(body)
-    assert outcome == "not-subsumed", (
-        f"unknown codes: outcome={outcome!r}, expected 'not-subsumed'"
-    )
+    assert body.get("resourceType") == "OperationOutcome"
 
 
 # ---------------------------------------------------------------------------
@@ -693,12 +691,12 @@ def test_s120_get_subsumes_code_not_in_system_returns_not_subsumed(fhir_client):
     no path and returns not-subsumed rather than erroring on unknown
     codes.
     """
+    # c-fixbatch3 (U2): cross-system code now 400 — the spec's own
+    # 'unable to determine the relationship' error this probe's docstring
+    # cited has landed.
     r = fhir_client.get(
         f"/fhir/CodeSystem/$subsumes?system={SNOMED_URI}"
         f"&codeA={SNOMED_T2DM}&codeB=E11"
     )
-    assert r.status_code == 200
-    outcome = _outcome(r.json())
-    assert outcome == "not-subsumed", (
-        f"cross-source code: outcome={outcome!r}, expected 'not-subsumed'"
-    )
+    assert r.status_code == 400
+    assert r.json().get("resourceType") == "OperationOutcome"

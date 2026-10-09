@@ -354,14 +354,14 @@ def test_h60_outcome_never_leaks_internal_vocab_on_all_paths(fhir_client):
     forbidden = {"broader", "narrower", "parent", "child", "ancestor",
                  "descendant", "relatedto", "same", "equivalent-to",
                  "subsumedBy", "not-subsumed-by"}
+    # c-fixbatch3 (U2): unknown/cross-source codes now 400 OperationOutcome
+    # (no emitted outcome at all) — the leak-probe runs on the 200 paths.
     test_vectors = [
         # (system, codeA, codeB, description)
         (SNOMED_URI, SNOMED_T2DM, SNOMED_T2DM, "equivalent"),
         (SNOMED_URI, SNOMED_DIABETES_MELLITUS, SNOMED_T2DM, "subsumes"),
         (SNOMED_URI, SNOMED_T2DM, SNOMED_DIABETES_MELLITUS, "subsumed-by"),
         (SNOMED_URI, SNOMED_T2DM, SNOMED_VIRAL_HEPATITIS, "not-subsumed"),
-        (SNOMED_URI, "UNKNOWN_A", "UNKNOWN_B", "unknown-not-subsumed"),
-        (SNOMED_URI, SNOMED_T2DM, "E11", "cross-source-not-subsumed"),
     ]
     for system, code_a, code_b, desc in test_vectors:
         r = fhir_client.get(
@@ -373,6 +373,17 @@ def test_h60_outcome_never_leaks_internal_vocab_on_all_paths(fhir_client):
         assert outcome in VALID_OUTCOMES, (
             f"{desc}: outcome={outcome!r} not in closed enum {VALID_OUTCOMES}"
         )
+    # The 400 paths must carry NO outcome parameter at all.
+    for code_a, code_b, desc in [
+        ("UNKNOWN_A", "UNKNOWN_B", "unknown"),
+        (SNOMED_T2DM, "E11", "cross-source"),
+    ]:
+        r = fhir_client.get(
+            f"/fhir/CodeSystem/$subsumes?system={SNOMED_URI}"
+            f"&codeA={code_a}&codeB={code_b}"
+        )
+        assert r.status_code == 400, desc
+        assert _outcome(r.json()) is None
         assert outcome not in forbidden, (
             f"{desc}: outcome={outcome!r} leaked internal vocabulary"
         )

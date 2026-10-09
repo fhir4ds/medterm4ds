@@ -1047,9 +1047,9 @@ class TestLens5XmlRenderingSubsumesOutcomes:
             ),
             (
                 SNOMED_T2DM,
-                RXNORM_METFORMIN,
+                "3738000",
                 "not-subsumed",
-                "T2DM (SNOMED-supplied) vs metformin (cross-code, not seeded in SNOMED)",
+                "T2DM vs seeded known-unrelated viral hepatitis (c-fixbatch3: real data)",
             ),
         ],
         ids=["subsumes", "subsumed-by", "equivalent", "not-subsumed"],

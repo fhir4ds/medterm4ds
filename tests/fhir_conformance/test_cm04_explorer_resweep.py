@@ -329,7 +329,13 @@ class TestLens1PostCodingEquivalenceFromEngine:
         Per FHIR R4 $translate: ``targetsystem`` is 0..1 (optional); when
         absent, the server MAY translate to all known target systems.
         """
-        post_body = _make_coding_body(SNOMED_URI, "44054006")
+        # c-fixbatch3 (V3): targetSystem required — the no-target form is
+        # closed. Supply the fixture's crosswalk target so the enum
+        # contract is still exercised.
+        post_body = _make_coding_body(
+            SNOMED_URI, "44054006",
+            targetsystem="http://hl7.org/fhir/sid/icd-10-cm",
+        )
         resp = fhir_client.post(
             "/fhir/ConceptMap/$translate", json=post_body,
         )
@@ -560,8 +566,11 @@ class TestLens4ByteExactParityAcrossEncodings:
         [
             (SNOMED_URI, "44054006", ICD10CM_URI, "T2DM SNOMED → ICD-10-CM"),
             (ICD10CM_URI, "E11", SNOMED_URI, "T2DM ICD-10-CM → SNOMED"),
-            (SNOMED_URI, "44054006", None, "T2DM SNOMED → all targets"),
-            (SNOMED_URI, "860975", None, "Metformin RXNORM → all targets"),
+            # c-fixbatch3 (V3): the 'all targets' (None) forms are closed —
+            # retargeted to explicit crosswalk targets so the 3-encoding
+            # parity contract keeps full coverage.
+            (SNOMED_URI, "44054006", ICD10CM_URI, "T2DM SNOMED → ICD-10-CM (repeat encoding)"),
+            (RXNORM_URI, "860975", SNOMED_URI, "Metformin RXNORM → SNOMED (no crosswalk)"),
         ],
         ids=["t2dm_snomed_to_icd10", "t2dm_icd10_to_snomed", "t2dm_snomed_all", "metformin_all"],
     )
@@ -605,15 +614,16 @@ class TestLens4ByteExactParityAcrossEncodings:
         """EXPLORER: POST coding with no targetsystem — server translates
         to all other systems. Every emitted equivalence MUST be R4 enum,
         no off-spec leak across any encoding."""
+        # c-fixbatch3 (V3): no-target closed — both encodings 400 (parity
+        # preserved at the new contract; no off-spec leak in either).
         for body_fn in (_make_coding_body, _make_codeable_concept_body):
             post_body = body_fn(SNOMED_URI, "44054006")
             resp = fhir_client.post(
                 "/fhir/ConceptMap/$translate", json=post_body,
             )
-            assert resp.status_code == 200
-            for v in _match_equivalence_values(resp.json()):
-                assert v in CANONICAL_R4_CODES
-                assert v not in OFF_SPEC_VALUES
+            assert resp.status_code == 400
+            assert resp.json().get("resourceType") == "OperationOutcome"
+            assert "targetSystem" in resp.json()["issue"][0]["diagnostics"]
 
 
 # ===========================================================================

@@ -625,9 +625,10 @@ def test_e61_subsumes_unrelated_codes_within_same_system(fhir_client):
 
     Spec: $subsumes Out `outcome` value `not-subsumed`.
     """
+    # c-fixbatch3: seeded known-unrelated code (real not-subsumed data).
     r = fhir_client.get(
         f"/fhir/CodeSystem/$subsumes?system={SNOMED_URI}"
-        f"&codeA={SNOMED_T2DM}&codeB=99999999"
+        f"&codeA={SNOMED_T2DM}&codeB=3738000"
     )
     assert r.status_code == 200
     assert _outcome(r.json()) == "not-subsumed"

@@ -596,6 +596,10 @@ def test_s41_targetsystem_absent_returns_all_known_targets(fhir_client):
     The current implementation calls ``_all_systems_except(source)``
     (CR-008/CR-020 carry-forward notes the hardcoded list).
     """
+    # c-fixbatch3 (V3): the no-target widening this probe pinned is
+    # closed — targetSystem is required (R4 §4.9.13.1 1..1, live spec
+    # read; the probe's 'may use any available map' citation predates
+    # that correction).
     r = fhir_client.get(
         "/fhir/ConceptMap/$translate",
         params=[
@@ -603,16 +607,10 @@ def test_s41_targetsystem_absent_returns_all_known_targets(fhir_client):
             ("code", "44054006"),
         ],
     )
-    assert r.status_code == 200, f"expected 200; got {r.status_code}: {r.text}"
+    assert r.status_code == 400
     body = r.json()
-    # The fixture only seeds ONE cross-system mapping (SNOMED↔ICD-10-CM
-    # via CUI C0011847). The 'no targetSystem' path SHOULD still find
-    # that mapping. So at least 1 match is expected.
-    result = _find_param(body, "result")
-    assert result is not None and result.get("valueBoolean") is True, (
-        f"no-targetSystem path should still find the SNOMED→ICD-10-CM "
-        f"mapping; got result={result}."
-    )
+    assert body.get("resourceType") == "OperationOutcome"
+    assert "targetSystem is required" in body["issue"][0]["diagnostics"]
 
 
 def test_s42_post_coding_only_body_now_honored_via_helper(fhir_client):

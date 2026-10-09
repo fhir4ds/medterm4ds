@@ -642,12 +642,14 @@ def test_t24_translate_no_targetsystem_emits_cross_system_match(fhir_client):
     Spec: FHIR R4 $translate Out `match` (repeating) — "A concept that the
     server could map to."
     """
+    # c-fixbatch3 (V3): targetSystem required — request the fixture's
+    # crosswalk target explicitly (same match contract under test).
     r = fhir_client.get(
         "/fhir/ConceptMap/$translate",
         params={
             "system": SNOMED_URI,
             "code": SNOMED_T2DM_CODE,
-            # targetsystem omitted — translate to all systems except source
+            "targetsystem": "http://hl7.org/fhir/sid/icd-10-cm",
         },
     )
     assert r.status_code == 200
@@ -1221,9 +1223,13 @@ def test_t61_round_trip_translate_no_target_lookup_other_targets(fhir_client):
 
     Spec: FHIR R4 $translate Out `match` (repeating).
     """
+    # c-fixbatch3 (V3): targetSystem required — explicit crosswalk target.
     r = fhir_client.get(
         "/fhir/ConceptMap/$translate",
-        params={"system": SNOMED_URI, "code": SNOMED_T2DM_CODE},
+        params={
+            "system": SNOMED_URI, "code": SNOMED_T2DM_CODE,
+            "targetsystem": "http://hl7.org/fhir/sid/icd-10-cm",
+        },
     )
     assert r.status_code == 200
     body = r.json()

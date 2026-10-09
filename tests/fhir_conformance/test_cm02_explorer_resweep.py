@@ -372,10 +372,14 @@ def test_e21_3op_round_trip_canonical_display_per_seeded_code(
         params={"system": system, "code": code},
     )
     assert source_lookup_r.status_code == 200
-    # $translate without targetsystem — let server pick
+    # c-fixbatch3 (V3): targetSystem required — request ICD10CM (the
+    # fixture's one crosswalk target) explicitly.
     translate_r = fhir_client.get(
         "/fhir/ConceptMap/$translate",
-        params={"system": system, "code": code},
+        params={
+            "system": system, "code": code,
+            "targetsystem": "http://hl7.org/fhir/sid/icd-10-cm",
+        },
     )
     assert translate_r.status_code == 200
     body = translate_r.json()

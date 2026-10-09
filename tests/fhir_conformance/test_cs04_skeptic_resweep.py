@@ -1044,8 +1044,9 @@ class TestLens8SelfSubsumptionDirectionality:
             f"&codeA=UNKNOWN_X&codeB=UNKNOWN_Y"
         )
         elapsed = time.monotonic() - start
-        assert r.status_code == 200
-        assert _outcome(r.json()) == "not-subsumed"
+        # c-fixbatch3 (U2): unknown → 400 fast; termination invariant held.
+        assert r.status_code == 400
+        assert r.json().get("resourceType") == "OperationOutcome"
         # Sanity bound: should complete in under 5 seconds
         assert elapsed < 5.0, f"unknown-code subsumes took {elapsed:.2f}s"
 

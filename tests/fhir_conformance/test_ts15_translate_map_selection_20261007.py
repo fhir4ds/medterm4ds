@@ -169,13 +169,14 @@ class TestN3SourceTargetFiltersIgnored:
         WHEN the filter is honored, the pin compares against the
         filtered result instead."""
         r_filtered = _translate(
-            fhir_client, system=ICD10_URI, code=E11, target=SNOMED_URI,
+            fhir_client, system=ICD10_URI, code=E11, targetSystem=SNOMED_URI,
         )
+        # c-fixbatch3 (V3): the unfiltered (no-target) form is closed —
+        # 400. N3's 'widening equals filtered' comparison is vacuous now;
+        # pin the closed form directly.
         r_wide = _translate(fhir_client, system=ICD10_URI, code=E11)
         assert r_filtered.status_code == 200
-        assert r_filtered.json() == r_wide.json(), (
-            "target filter now narrows results — flip this pin."
-        )
+        assert r_wide.status_code == 400
 
     def test_n31_source_alongside_system_ignored(self, fhir_client):
         """source=<uri> alongside system is accepted and ignored
@@ -213,11 +214,11 @@ class TestTranslateSelectionControls:
         assert src["code"] == E11
 
     def test_s11_no_target_system_widens(self, fhir_client):
-        """No targetSystem → all systems except source (documented
-        widening)."""
+        """No targetSystem → closed: 400 (c-fixbatch3 V3; the widening
+        this control pinned is closed)."""
+        # c-fixbatch3 (V3): no-target widening closed — 400.
         r = _translate(fhir_client, system=ICD10_URI, code=E11)
-        assert r.status_code == 200
-        assert _match_count(r.json()) >= 1
+        assert r.status_code == 400
 
     def test_s12_unknown_system_400(self, fhir_client):
         r = _translate(

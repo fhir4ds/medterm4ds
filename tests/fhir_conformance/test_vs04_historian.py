@@ -402,9 +402,9 @@ class TestHistorianDispatchPatternSiblings:
         ``propertyDisplayLanguage``, ``useSupplement``). No ``url`` param.
         The server MUST NOT silently accept and process it.
         """
-        # ``url`` is NOT in the spec — FastAPI's permissive default may accept
-        # it as an extra query param and ignore. The handler MUST NOT change
-        # behavior based on the intensional url.
+        # ``url`` is NOT in the spec. c-fixbatch3 (U3): unknown params on
+        # $lookup now 400 — the silent accept-and-ignore this probe
+        # documented is closed (fail-loud satisfies the intent better).
         resp = fhir_client.get(
             "/fhir/CodeSystem/$lookup",
             params=[
@@ -413,17 +413,12 @@ class TestHistorianDispatchPatternSiblings:
                 ("url", f"http://snomed.info/sct/{SNOMED_DIABETES_MELLITUS}?fhir_vs=isa"),
             ],
         )
-        assert resp.status_code == 200
+        assert resp.status_code == 400
         body = resp.json()
-        assert body.get("resourceType") == "Parameters"
-        # The display MUST be the canonical name, regardless of the extra
-        # ``url`` query param.
-        display_param = next(
-            (p for p in body.get("parameter", []) if p.get("name") == "display"),
-            None,
-        )
-        assert display_param is not None
-        assert display_param.get("valueString") == "Diabetes mellitus"
+        # c-fixbatch3 (U3): the rejection names url as unsupported — the
+        # intensional dispatch concern is closed by fail-loud.
+        assert body.get("resourceType") == "OperationOutcome"
+        assert "url" in body["issue"][0]["diagnostics"]
 
 
 # =============================================================================

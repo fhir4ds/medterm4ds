@@ -1,5 +1,13 @@
 """TS-18 $translate targetSystem + error-shape matrix (2026-10-08).
 
+V2/V3 RESOLVED (c-fixbatch3): root cause was a case-mismatch — the GET
+route declared `targetsystem` (lowercase) while R4 §4.9.13.1 names
+`targetSystem`; FastAPI query matching is case-sensitive so every
+spec-conformant client param was silently DROPPED and the request
+widened to all target systems. The engine filtered correctly all
+along. Fix: spec name declared (lowercase kept as alias); required-
+enforcement added. Pins flipped; also updated the pin docstrings.
+
 Maintenance spec-comp iteration (worktree maint/spec-comp-20261008c).
 FRESH EVIDENCE — live probes executed this run; no prior-run results
 cited.
@@ -84,8 +92,13 @@ class TestV2TargetSystemIgnored:
             },
         )
         assert r.status_code == 200
-        assert _result(r.json()) is True
-        assert _match_concept(r.json())["system"] == ICD10CM_URI
+        # V2 FIXED: the target now filters — no LOINC crosswalk exists, so
+        # result=false with zero matches (was: TRUE + ICD-10-CM match under
+        # a LOINC-targeted request; root cause was the route declaring
+        # `targetsystem` while R4 names `targetSystem`, so the camelCase
+        # param was silently dropped and the request widened to all).
+        assert _result(r.json()) is False
+        assert _match_concept(r.json()) is None
 
     def test_v11_unknown_target_same_match(self, fhir_client):
         """targetSystem=http://nowhere.org — identical TRUE + ICD-10-CM
@@ -97,9 +110,9 @@ class TestV2TargetSystemIgnored:
                 "targetSystem": "http://nowhere.org",
             },
         )
-        assert r.status_code == 200
-        assert _result(r.json()) is True
-        assert _match_concept(r.json())["system"] == ICD10CM_URI
+        # V2 FIXED side effect: an unresolvable target system uri is now
+        # seen by the handler (was dropped) and rejected 400.
+        assert r.status_code == 400
 
     def test_v12_post_body_target_ignored(self, fhir_client):
         """POST Parameters targetSystem=LOINC — same ignore. Flip with
@@ -114,7 +127,8 @@ class TestV2TargetSystemIgnored:
         }
         r = fhir_client.post("/fhir/ConceptMap/$translate", json=body)
         assert r.status_code == 200
-        assert _match_concept(r.json())["system"] == ICD10CM_URI
+        # V2 FIXED: body targetSystem binds and filters.
+        assert _match_concept(r.json()) is None
 
     def test_v13_coincidental_happy_path_still_true(self, fhir_client):
         """Control-within-finding: the TS-15 happy path (targetSystem
@@ -143,8 +157,8 @@ class TestV3RequiredTargetSystem:
             "/fhir/ConceptMap/$translate",
             params={"system": SNOMED_URI, "code": T2DM},
         )
-        assert r.status_code == 200
-        assert _result(r.json()) is True
+        # V3 FIXED: targetSystem is required (R4 1..1) — 400 naming it.
+        assert r.status_code == 400
 
     def test_v21_post_missing_target_200(self, fhir_client):
         body = {
@@ -155,8 +169,8 @@ class TestV3RequiredTargetSystem:
             ],
         }
         r = fhir_client.post("/fhir/ConceptMap/$translate", json=body)
-        assert r.status_code == 200
-        assert _result(r.json()) is True
+        # V3 FIXED: required on POST too.
+        assert r.status_code == 400
 
     def test_v22_sibling_requireds_enforced(self, fhir_client):
         """Premise control: system and code ARE enforced on the same

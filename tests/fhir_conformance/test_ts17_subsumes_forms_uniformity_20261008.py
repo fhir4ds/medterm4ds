@@ -1,5 +1,11 @@
 """TS-17 $subsumes transport forms + fixbatch2 cross-op uniformity (2026-10-08).
 
+U1-U4 RESOLVED (c-fixbatch3): coding-only POST derives system from the
+codings; scalar cross-system errors like the coding form (code-in-system
+validation); unknown-param rejection extended to lookup/validate-code/
+subsumes; systemVersion joins the version-rejection family uniformly.
+Pins flipped.
+
 Maintenance spec-comp iteration (worktree maint/spec-comp-20261008b).
 FRESH EVIDENCE — live probes executed this run; no prior-run results
 cited.
@@ -88,23 +94,24 @@ class TestU1CodingOnlyPost:
             ],
         }
         r = fhir_client.post("/fhir/CodeSystem/$subsumes", json=body)
-        assert r.status_code == 400
+        # U1 FIXED: the coding form is self-identifying (R4 §4.8.21.2) —
+        # system derived from the codings; outcome subsumes (DM subsumes
+        # T2DM).
+        assert r.status_code == 200
+        assert _outcome(r.json()) == "subsumes"
 
     def test_u11_error_names_scalars(self, fhir_client):
-        """The 400 diagnostic demands the scalar forms — evidence the
-        coding path is unimplemented rather than partially wired."""
+        """With NO codings and no system the 400 still names the
+        required params (coding-only no longer hits this path)."""
         body = {
             "resourceType": "Parameters",
             "parameter": [
-                {"name": "codingA", "valueCoding": {
-                    "system": SNOMED_URI, "code": DM,
-                }},
-                {"name": "codingB", "valueCoding": {
-                    "system": SNOMED_URI, "code": T2DM,
-                }},
+                {"name": "codeA", "valueCode": DM},
+                {"name": "codeB", "valueCode": T2DM},
             ],
         }
         r = fhir_client.post("/fhir/CodeSystem/$subsumes", json=body)
+        assert r.status_code == 400
         assert "system" in r.json()["issue"][0]["diagnostics"]
 
 
@@ -123,8 +130,10 @@ class TestU2CrossSystemByEncoding:
                 "codeA": DM, "codeB": ICD10CM_ONLY,
             },
         )
-        assert r.status_code == 200
-        assert _outcome(r.json()) == "not-subsumed"
+        # U2 FIXED: the scalar form now validates code-in-system and errors
+        # like the coding form (was: confident 200 not-subsumed for a code
+        # the queried system does not carry).
+        assert r.status_code == 400
 
 
 class TestU3UnknownParamsBeyondExpand:
@@ -145,7 +154,8 @@ class TestU3UnknownParamsBeyondExpand:
             f"/fhir/CodeSystem/{op}",
             params={"system": SNOMED_URI, **extra, "bogusParam": "1"},
         )
-        assert r.status_code == 200
+        # U3 FIXED: unknown-param rejection extended beyond $expand.
+        assert r.status_code == 400
 
     def test_u31_expand_rejects(self, fhir_client):
         """Control: $expand DOES reject (fixbatch2 contract held —
@@ -167,8 +177,8 @@ class TestU4SystemVersionCoverage:
         "op,extra,expected",
         [
             ("$validate-code", {"code": T2DM}, 400),
-            ("$lookup", {"code": T2DM}, 200),
-            ("$subsumes", {"codeA": DM, "codeB": T2DM}, 200),
+            ("$lookup", {"code": T2DM}, 400),
+            ("$subsumes", {"codeA": DM, "codeB": T2DM}, 400),
         ],
     )
     def test_u40_system_version_divergent(

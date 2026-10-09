@@ -824,6 +824,8 @@ def test_s60_get_translate_no_targetsystem_returns_200(fhir_client):
     ``targetsystem`` MUST return 200 (the handler falls back to
     ``_all_systems_except(source)`` per fhir_api.py:2164-2165).
     """
+    # c-fixbatch3 (V3): no-target form closed — 400 OperationOutcome
+    # (still a FHIR response).
     r = fhir_client.get(
         "/fhir/ConceptMap/$translate",
         params=[
@@ -831,10 +833,7 @@ def test_s60_get_translate_no_targetsystem_returns_200(fhir_client):
             ("code", "44054006"),
         ],
     )
-    assert r.status_code == 200, (
-        f"GET $translate without targetsystem returned non-200; "
-        f"got {r.status_code}: {r.text}"
-    )
+    assert r.status_code == 400
     assert _is_fhir_response(r)
 
 
@@ -949,11 +948,13 @@ def test_s72_translate_get_handler_does_NOT_use_targetCode_or_source():
     )
     # The handler invokes _do_translate with only (engine, system, code, targetsystem).
     # targetCode and source are NOT in the call signature.
+    # c-fixbatch3: the call passes the effective target (either
+    # spelling); targetCode/source still not passed through.
     assert (
-        "_do_translate, _engine(request), system, actual_code, targetsystem" in src
+        "_do_translate, _engine(request), system, actual_code, effective_target" in src
     ), (
-        f"_do_translate call does NOT pass targetCode/source through; "
-        f"expected (engine, system, actual_code, targetsystem). Source:\n{src}"
+        f"_do_translate call does NOT pass the effective target; "
+        f"expected (engine, system, actual_code, effective_target). Source:\n{src}"
     )
 
 
@@ -1264,12 +1265,15 @@ def test_s110_translate_emitted_equivalence_in_r4_enum_on_no_target(fhir_client)
     relationship; the engine's INTERNAL_REL_TO_FHIR_EQUIVALENCE maps it
     to a specific R4 value.
     """
+    # c-fixbatch3 (V3): no-target path closed — exercise the same
+    # internal-relationship enum mapping WITH the fixture's crosswalk
+    # target.
     r = fhir_client.get(
         "/fhir/ConceptMap/$translate",
         params=[
             ("system", SNOMED_URI),
             ("code", "44054006"),
-            # No targetsystem — _all_systems_except path.
+            ("targetsystem", "http://hl7.org/fhir/sid/icd-10-cm"),
         ],
     )
     assert r.status_code == 200, f"expected 200; got {r.status_code}: {r.text}"

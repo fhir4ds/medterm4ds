@@ -197,6 +197,13 @@ def test_e12_translate_post_coding_body_content_type(fhir_client):
                         "code": "44054006",
                     },
                 },
+                # c-fixbatch3 (V3): targetSystem required — supplied so the
+                # coding-binding contract under test is exercised in
+                # isolation.
+                {
+                    "name": "targetSystem",
+                    "valueUri": "http://hl7.org/fhir/sid/icd-10-cm",
+                },
             ],
         },
     )
@@ -753,6 +760,8 @@ def test_e60_translate_no_targetsystem_returns_matches_across_systems(fhir_clien
     translating SNOMED T2DM with no targetsystem SHOULD return at
     least one match (the same-CUI ICD10CM mapping).
     """
+    # c-fixbatch3 (V3): targetSystem is now REQUIRED (R4 §4.9.13.1 1..1) —
+    # the no-target widening this probe pinned is closed.
     r = fhir_client.get(
         "/fhir/ConceptMap/$translate",
         params=[
@@ -760,17 +769,11 @@ def test_e60_translate_no_targetsystem_returns_matches_across_systems(fhir_clien
             ("code", "44054006"),
         ],
     )
-    assert r.status_code == 200, f"expected 200; got {r.status_code}: {r.text}"
+    assert r.status_code == 400
     body = r.json()
-    assert body.get("resourceType") == "Parameters"
-    # Result parameter MUST be present.
-    result_param = next(
-        (p for p in body["parameter"] if p.get("name") == "result"), None
-    )
-    assert result_param is not None, "missing 'result' parameter"
-    assert result_param.get("valueBoolean") is True, (
-        f"result drift: {result_param}; expected True (fixture has same-CUI match)."
-    )
+    # The 400 is an OperationOutcome naming the required target.
+    assert body.get("resourceType") == "OperationOutcome"
+    assert "targetSystem is required" in body["issue"][0]["diagnostics"]
 
 
 def test_e61_translate_with_targetsystem_filters_to_one_system(fhir_client):
@@ -894,6 +897,9 @@ def test_e65_translate_message_includes_match_count(fhir_client):
         params=[
             ("system", "http://snomed.info/sct"),
             ("code", "NONEXISTENT_999999"),
+            # c-fixbatch3 (V3): targetSystem required — supplied so the
+            # message-format contract under test is exercised in isolation.
+            ("targetsystem", "http://hl7.org/fhir/sid/icd-10-cm"),
         ],
     )
     assert r.status_code == 200
