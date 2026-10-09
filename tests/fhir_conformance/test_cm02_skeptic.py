@@ -812,9 +812,13 @@ def test_s60_targetscope_param_accepted_current_behavior(fhir_client):
             ("targetScope", "http://example.org/fhir/ValueSet/test-diabetes"),
         ],
     )
-    assert r.status_code == 200, (
-        f"GET $translate with targetScope — expected 200 (param accepted "
-        f"but ignored); got {r.status_code}: {r.text}"
+    # c-fixbatch4 (W4): unknown-param rejection — targetScope (not a
+    # declared In param of this server) now 400s per R4 §4.9.2. The
+    # DEFERRED scope-constraint note remains for the day it is
+    # implemented (then: declare it and return 200-scoped).
+    assert r.status_code == 400, (
+        f"GET $translate with targetScope — expected 400 (unknown-param "
+        f"rejection, W4); got {r.status_code}: {r.text}"
     )
 
 
@@ -832,9 +836,10 @@ def test_s61_sourcescope_param_accepted_current_behavior(fhir_client):
             ("sourceScope", "http://example.org/fhir/ValueSet/test-snomed"),
         ],
     )
-    assert r.status_code == 200, (
-        f"GET $translate with sourceScope — expected 200 (param accepted "
-        f"but ignored); got {r.status_code}: {r.text}"
+    # c-fixbatch4 (W4): sourceScope now 400s (unknown-param rejection).
+    assert r.status_code == 400, (
+        f"GET $translate with sourceScope — expected 400 (W4); got "
+        f"{r.status_code}: {r.text}"
     )
 
 
@@ -858,12 +863,11 @@ def test_s62_reverse_param_accepted_current_behavior(fhir_client):
             ("reverse", "true"),
         ],
     )
-    # Current behavior: reverse param is silently dropped; the handler
-    # does a forward translation. The request should succeed.
+    # T1 FIXED (c-fixbatch4): reverse is consulted — 200 with the
+    # reversed match presentation (message names the reverse direction).
     assert r.status_code == 200, (
-        f"GET $translate with reverse=true — expected 200 (reverse mode "
-        f"silently dropped per AGENTS.md NOT A BUG registry); got "
-        f"{r.status_code}: {r.text}"
+        f"GET $translate with reverse=true — expected 200 (reverse "
+        f"consulted, T1 fix); got {r.status_code}: {r.text}"
     )
 
 
@@ -886,11 +890,12 @@ def test_s63_targetprune_param_accepted_current_behavior(fhir_client):
             ("targetPrune", "true"),
         ],
     )
-    # targetPrune is silently dropped (not a R4 param). The handler
-    # should proceed normally.
-    assert r.status_code == 200, (
-        f"GET $translate with targetPrune=true — expected 200 (param "
-        f"silently dropped, not a R4 param); got {r.status_code}: {r.text}"
+    # c-fixbatch4 (W4): targetPrune (an R5 param, not R4) now 400s —
+    # this server rejects non-declared params per §4.9.2 rather than
+    # silently ignoring them.
+    assert r.status_code == 400, (
+        f"GET $translate with targetPrune=true — expected 400 (W4); got "
+        f"{r.status_code}: {r.text}"
     )
 
 
@@ -912,9 +917,12 @@ def test_s64_version_param_accepted_current_behavior(fhir_client):
             ("version", "2024-09"),
         ],
     )
-    assert r.status_code == 200, (
-        f"GET $translate with version — expected 200 (param accepted but "
-        f"ignored, single-snapshot engine); got {r.status_code}: {r.text}"
+    # c-fixbatch4 (W4): 'version' is not a declared $translate In
+    # param (R4 names conceptMapVersion, which the unversioned-map
+    # check rejects) — now 400s with the rest of the EA family.
+    assert r.status_code == 400, (
+        f"GET $translate with version — expected 400 (W4 unknown-param "
+        f"rejection); got {r.status_code}: {r.text}"
     )
 
 

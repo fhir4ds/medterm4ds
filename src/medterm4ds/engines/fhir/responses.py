@@ -172,6 +172,7 @@ def build_parameters_translate(
     *,
     source_system_uri: str,
     source_code: str,
+    reverse: bool = False,
 ) -> dict[str, Any]:
     """Build a FHIR Parameters resource for ConceptMap $translate.
 
@@ -182,25 +183,44 @@ def build_parameters_translate(
     and ancestor/descendant mappings (which are `subsumes`/`specializes`).
     Found by TERMINOLOGIST iteration TS-02 (QA-030). CF-HISTORIAN-VS01-01
     (milestone-2 review) fixed the map to emit R4 spec-correct values.
+
+    ``reverse=True`` (T1 fix): per R4 §4.9.13.1 the operation returns
+    "concepts that map TO this code, not concepts that this code maps
+    to." The same-CUI crosswalk is symmetric, so the matched codes are
+    the same set — the presentation flips: match.concept carries the
+    DECLARED input (the code others map to) and match.source carries
+    the found mapping partner, and the message names the reverse
+    direction. This makes reverse observable rather than a
+    byte-identical no-op (registered 20261003b, resharpened 20261009).
     """
     matches: list[dict[str, Any]] = []
     translated_count = 0
     for m in mappings:
         equivalence = _fhir_equivalence_from_relationship(m.relationship)
         target_uri = system_to_fhir_uri(m.target.source) or m.target.source
+        found_coding = {
+            "system": target_uri,
+            "code": m.target.code,
+            "display": m.target_display or "",
+        }
+        declared_coding = {
+            "system": source_system_uri,
+            "code": source_code,
+        }
+        if reverse:
+            # Reverse presentation: the declared code is what others
+            # map TO (concept); the found partner is the source.
+            concept_part, source_part = declared_coding, found_coding
+        else:
+            # Forward presentation (unchanged contract): concept =
+            # the found translation target; source = the declared.
+            concept_part, source_part = found_coding, declared_coding
         match_entry: dict[str, Any] = {
             "name": "match",
             "part": [
                 {"name": "equivalence", "valueCode": equivalence},
-                {"name": "concept", "valueCoding": {
-                    "system": target_uri,
-                    "code": m.target.code,
-                    "display": m.target_display or "",
-                }},
-                {"name": "source", "valueCoding": {
-                    "system": source_system_uri,
-                    "code": source_code,
-                }},
+                {"name": "concept", "valueCoding": concept_part},
+                {"name": "source", "valueCoding": source_part},
             ],
         }
         # QC-365 (MEDIUM): per R4 $translate, result is "True if the concept
@@ -215,7 +235,10 @@ def build_parameters_translate(
         "resourceType": "Parameters",
         "parameter": [
             {"name": "result", "valueBoolean": result_val},
-            {"name": "message", "valueString": f"{translated_count} matches found"},
+            {"name": "message", "valueString": (
+                f"{translated_count} matches found"
+                + (" (reverse: codes mapping to the input)" if reverse else "")
+            )},
             *matches,
         ],
     }

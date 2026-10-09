@@ -266,20 +266,12 @@ class TestLens1PostCodingEquivalenceFromEngine:
         resp = fhir_client.post(
             "/fhir/ConceptMap/$translate", json=post_body,
         )
-        assert resp.status_code == 200
-        equiv_values = _match_equivalence_values(resp.json())
-        # Injected values MUST NOT appear — the engine drives the value.
-        assert "equal" not in equiv_values or equiv_values == [], (
-            f"Client-injected 'equal' equivalence appeared on the wire: "
-            f"{equiv_values!r}. Client cannot inject equivalence."
-        )
-        assert "wider" not in equiv_values or equiv_values == [], (
-            f"Client-injected 'wider' equivalence appeared on the wire: "
-            f"{equiv_values!r}. Client cannot inject equivalence."
-        )
-        # Whatever the engine emits MUST be R4 enum.
-        for v in equiv_values:
-            assert v in CANONICAL_R4_CODES
+        # c-fixbatch4 (W4): Out-param names in the request body are
+        # rejected at the boundary (400) — a STRONGER contract than
+        # silently accepting and ignoring the injection.
+        assert resp.status_code == 400
+        # No Parameters body is returned on 400 — nothing to inject.
+        assert resp.json().get("resourceType") == "OperationOutcome"
 
     def test_e12_post_coding_with_hostile_relationship_in_body(
         self, fhir_client,
@@ -310,14 +302,10 @@ class TestLens1PostCodingEquivalenceFromEngine:
         resp = fhir_client.post(
             "/fhir/ConceptMap/$translate", json=post_body,
         )
-        assert resp.status_code == 200
-        equiv_values = _match_equivalence_values(resp.json())
-        for v in equiv_values:
-            assert v not in OFF_SPEC_VALUES, (
-                f"Off-spec value {v!r} leaked to wire via hostile body "
-                f"injection."
-            )
-            assert v in CANONICAL_R4_CODES
+        # c-fixbatch4 (W4): 'relationship' is not a declared In param —
+        # the hostile injection now 400s at the boundary (stronger than
+        # accept-and-ignore).
+        assert resp.status_code == 400
 
     def test_e13_post_coding_with_no_targetsystem_returns_200(
         self, fhir_client,
@@ -456,11 +444,9 @@ class TestLens2PostCodeableConceptEquivalenceFromEngine:
         resp = fhir_client.post(
             "/fhir/ConceptMap/$translate", json=post_body,
         )
-        assert resp.status_code == 200
-        equiv_values = _match_equivalence_values(resp.json())
-        for v in equiv_values:
-            assert v not in OFF_SPEC_VALUES
-            assert v in CANONICAL_R4_CODES
+        # c-fixbatch4 (W4): Out-param names in the body rejected at the
+        # boundary (400) — stronger than accept-and-ignore.
+        assert resp.status_code == 400
 
 
 # ===========================================================================

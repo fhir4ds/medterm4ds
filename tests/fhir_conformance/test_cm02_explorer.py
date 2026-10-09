@@ -1434,14 +1434,13 @@ def test_e160_translate_all_optional_params_combined(fhir_client):
             ("targetPrune", "false"),
         ],
     )
-    # N1 fix (maint/fix-conformance-20261007): url now RESOLVES. The
-    # implicit crosswalk urn is the one accepted value; the old probe
-    # asserted the silent drop-everything fallback this fix retired.
-    # The 'version' query param (distinct from conceptMapVersion) and
-    # the other non-map params remain accepted-and-ignored.
-    assert r.status_code == 200, (
-        f"Combined optional params — expected 200 (url = implicit "
-        f"crosswalk urn); got {r.status_code}: {r.text[:300]}"
+    # c-fixbatch4 (W4): the accepted-and-ignored era ended — GET
+    # $translate rejects unknown/non-declared params (targetScope,
+    # sourceScope, version, targetPrune are not declared In params of
+    # this server). The combined request now 400s naming them; the
+    # MUST-NOT-500 contract is preserved by the 400 shape itself.
+    assert r.status_code == 400, (
+        f"Combined optional params — expected 400 (unknown-param "
+        f"rejection, W4); got {r.status_code}: {r.text[:300]}"
     )
-    body = r.json()
-    assert body.get("resourceType") == "Parameters"
+    assert r.json().get("resourceType") == "OperationOutcome"

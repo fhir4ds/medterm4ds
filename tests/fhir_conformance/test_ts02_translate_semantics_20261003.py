@@ -53,6 +53,14 @@ def _result(body: dict) -> bool | None:
     )
 
 
+def _message(body: dict) -> str:
+    return next(
+        (p.get("valueString") for p in body.get("parameter", [])
+         if p.get("name") == "message"),
+        "",
+    )
+
+
 def _match_target(body: dict) -> str | None:
     for p in body.get("parameter", []):
         if p.get("name") == "match":
@@ -85,13 +93,12 @@ class TestT1ReverseSilentlyForward:
         )
         assert r.status_code == 200
         body = r.json()
-        # Current pinned behavior: forward-mode answer comes back.
+        # T1 FIXED (c-fixbatch4): reverse is consulted — the match
+        # orientation flips (concept carries the declared code, source
+        # carries the found partner) and the message names the reverse
+        # direction. The symmetric same-CUI pair still matches.
         assert _result(body) is True
-        assert _match_target(body) == E11, (
-            "reverse=true no longer returns the forward match — the "
-            "reverse implementation (or explicit rejection) appears to "
-            "have landed; update this pin per the fix shape."
-        )
+        assert "reverse" in _message(body)
 
     def test_t11_reverse_on_target_side_also_forward(self, fhir_client):
         """Asking from the ICD10CM side with reverse=true (the natural
@@ -107,8 +114,10 @@ class TestT1ReverseSilentlyForward:
         )
         assert r.status_code == 200
         body = r.json()
+        # T1 FIXED (c-fixbatch4): reverse consulted from the target
+        # side too — message names reverse; the symmetric pair matches.
         assert _result(body) is True
-        assert _match_target(body) == T2DM
+        assert "reverse" in _message(body)
 
     def test_t12_forward_baseline_unchanged(self, fhir_client):
         """Control: without reverse, the forward translation is the

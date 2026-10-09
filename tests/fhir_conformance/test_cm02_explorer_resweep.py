@@ -162,8 +162,9 @@ def test_e10_all_optional_params_at_once_get(fhir_client):
             ("targetsystem", ICD10CM_URI),
             ("source", CONCEPTMAP_URL),  # ConceptMap URL (passed through)
             ("targetCode", ICD10CM_T2DM_CODE),  # declared but unused
-            ("reverse", "true"),  # R4 spec removed; accepted gracefully
-            ("version", "2024-09"),  # passed through
+            ("reverse", "true"),  # T1 fix: consulted (orientation flip)
+            # 'version' removed c-fixbatch4 (W4): not a declared In
+            # param of $translate — now 400s instead of passing through.
         ],
     )
     assert r.status_code < 500, f"5xx on lateral optional params: {r.status_code} {r.text}"
@@ -186,7 +187,8 @@ def test_e11_all_optional_params_at_once_post(fhir_client):
             {"name": "source", "valueUri": CONCEPTMAP_URL},
             {"name": "targetCode", "valueCode": ICD10CM_T2DM_CODE},
             {"name": "reverse", "valueBoolean": True},
-            {"name": "version", "valueString": "2024-09"},
+            # 'version' removed c-fixbatch4 (W4): body-side unknown
+            # params now 400.
         ],
     }
     r = fhir_client.post(
@@ -218,13 +220,19 @@ def test_e12_optional_params_at_once_alias_input_uri(fhir_client):
     )
     assert r.status_code < 500
     body = r.json()
-    # CR-012 RESOLVED: match.source.system MUST be canonical, not the alias.
-    for source_part in [p for p in _find_match_parts(body) if p.get("name") == "source"]:
-        sc = source_part.get("valueCoding", {})
-        assert sc.get("system") == SNOMED_URI, (
-            f"match.source.system should be canonical URI even with alias input; "
-            f"got {sc.get('system')!r}"
-        )
+    # CR-012 RESOLVED + T1 fix (c-fixbatch4): under reverse=true the
+    # match orientation flips — the DECLARED code (alias input, SNOMED)
+    # rides in match.concept and the found partner in match.source.
+    # Both parts MUST carry canonical URIs (never the trailing-slash
+    # alias input).
+    canonical = {SNOMED_URI, ICD10CM_URI}
+    for part in _find_match_parts(body):
+        if part.get("name") in ("source", "concept"):
+            sc = part.get("valueCoding", {})
+            assert sc.get("system") in canonical, (
+                f"match.{part['name']}.system should be canonical even "
+                f"with alias input; got {sc.get('system')!r}"
+            )
 
 
 def test_e13_optional_params_at_once_get_post_byte_exact_parity(fhir_client):
@@ -1532,7 +1540,7 @@ def test_e120_content_type_on_all_optional_params_at_once_get(fhir_client):
             ("source", CONCEPTMAP_URL),
             ("targetCode", ICD10CM_T2DM_CODE),
             ("reverse", "true"),
-            ("version", "2024-09"),
+            # 'version' removed c-fixbatch4 (W4)
         ],
     )
     assert r.headers["content-type"].startswith("application/fhir+json")

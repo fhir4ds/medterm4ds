@@ -889,6 +889,10 @@ def test_e51_translate_with_targetcode_combined(fhir_client):
 
     Spec: https://hl7.org/fhir/R4/conceptmap-operation-translate.html.
     """
+    # c-fixbatch4 (W4): unknown-param rejection landed on $translate.
+    # 'targetcode' (lowercase) was never a wired alias — it was always
+    # silently dropped; it now 400s per R4 §4.9.2. The R4-cased
+    # 'targetCode' remains declared (reverse-lookup usage).
     r = fhir_client.get(
         "/fhir/ConceptMap/$translate",
         params={
@@ -898,9 +902,7 @@ def test_e51_translate_with_targetcode_combined(fhir_client):
             "targetcode": ICD10CM_T2DM,
         },
     )
-    assert r.status_code == 200
-    body = r.json()
-    assert body.get("resourceType") == "Parameters"
+    assert r.status_code == 400
 
 
 def test_e52_translate_with_dependencies_and_product_combined_safe(fhir_client):
@@ -912,6 +914,8 @@ def test_e52_translate_with_dependencies_and_product_combined_safe(fhir_client):
     Spec: https://hl7.org/fhir/R4/conceptmap-operation-translate.html —
     In: ``dependency`` (renamed to ``dependsOn`` in R4 — per spec).
     """
+    # c-fixbatch4 (W4): body-side unknown-param rejection —
+    # 'sourcecode' (lowercase, never a wired alias) now 400s.
     body = {
         "resourceType": "Parameters",
         "parameter": [
@@ -923,9 +927,7 @@ def test_e52_translate_with_dependencies_and_product_combined_safe(fhir_client):
         ],
     }
     r = fhir_client.post("/fhir/ConceptMap/$translate", json=body)
-    assert r.status_code == 200
-    response_body = r.json()
-    assert response_body.get("resourceType") == "Parameters"
+    assert r.status_code == 400
 
 
 # =============================================================================

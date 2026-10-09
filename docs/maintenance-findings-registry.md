@@ -16,12 +16,10 @@ SUITES themselves are committed and are the load-bearing contracts.
 | F1 | HIGH | 2026-10-02 | VS-01/VS-03 $expand | multiple compose.include.filters OR-composed; R4 4.9.12 says "SHALL all be true" (AND) | test_vs01_filter_semantics_20261002.py (f10) |
 | CF-HISTORIAN-VS02-01 | HIGH | 2026-08 (sweep) | VS-02 $expand | exact un-truncated `total` under BFS caps deferred; observability landed 2026-10-02 | test_vs02_vs0201_observable_20261002.py (d10-d50) |
 | P2 | MEDIUM | 2026-10-03 | TS-04/VS-04 $expand paging | `expansion.total` page-dependent on same expansion (+1-probe window) — paging clients silently drop concepts; fix together with VS02-01 | test_ts04_paging_semantics_20261003.py (p20/p21) |
-| T1 | MEDIUM | 2026-10-03 (resharpened 2026-10-09) | TS-02 $translate | `reverse=true` is a BYTE-IDENTICAL no-op (E11 forward vs reverse byte-equal; post-fixbatch3 cleanly isolated: accepted, changes nothing) | test_ts19_unknown_param_tail_20261009.py (t10/t11) |
 | C1 | MEDIUM | 2026-10-03 | CM-03 $closure | one unknown code poisons whole request; spec's `unmatched` equivalence unused; first-only diagnostic | test_cm03_closure_semantics_20261003.py (c10/c12) |
 | F2 | LOW | 2026-10-02 | VS-01/VS-03 $expand | vsd-3 (concept+filter coexistence) accepted, not 400 | test_vs01_filter_semantics_20261002.py (f20) |
 | P1 | LOW | 2026-10-03 | TS-04/VS-04 $expand paging | `expansion.offset` never echoed under paging | test_ts04_paging_semantics_20261003.py (p10/p11) |
 | T2 | LOW | 2026-10-03 | TS-02/CM-02 $translate | "one (and only one)" input contract unenforced; silent scalar precedence | test_ts02_translate_semantics_20261003.py (t20) |
-| W4 | MEDIUM | 2026-10-09 | TS-19 EA-family tail | unknown-param rejection still absent at $translate (GET+POST) and $closure POST — fixbatch3 covered lookup/validate-code/subsumes only; closure variant is L1's destructive typo-wipe | test_ts19_unknown_param_tail_20261009.py (w10-w13) |
 | H2 | LOW-MED | 2026-10-07 | CS-06 $validate-code | abstract=true on CONCRETE code returns TRUE — R4 §4.8.18 abstract-use validation absent (CS-05 a30 family, reversed polarity) | test_cs06_validate_params_20261007.py (h20) |
 | X1 | LOW | 2026-10-04 | TS-01 XML surface | cross-format CONTENT divergence: QC-300 XML control-char sanitizer alters message content vs JSON path for identical requests (JSON 'The display "w\x08rong"…' vs XML 'The display "wrong"…'); neither side spec-illegal; asymmetry undocumented. Fix: sanitize at message-building layer (both formats agree) OR document as intended | test_ts01_xml_parity_20261004.py (x10-x12) |
 | M1 | MEDIUM | 2026-10-06 | TS-10 transport parity | GET $lookup rejects `coding` (422, unknown FastAPI Query param) while POST accepts it (derives system/code, QA-022); R4 declares coding for BOTH transports. Client porting transports silently loses a spec-declared capability. Fix: accept coding on GET OR declare the gap in TerminologyCapabilities | test_ts10_transport_parity_20261006.py (m10-m12) |
@@ -45,7 +43,6 @@ SUITES themselves are committed and are the load-bearing contracts.
 | W1 | MEDIUM | 2026-10-06 | TS-13 $extract input | over-limit text (50k cap): GET → 422 (FastAPI Query max_length) vs POST → 400 (handler check) — same violation, different status+diagnostic per transport (TS-10 family, reversed polarity); fix = normalize via $search's ValueError→400 wrapper pattern (QA-005) | test_ts13_extract_input_surface_20261006.py (w10-w12) |
 | W2 | LOW | 2026-10-06 | TS-13 $extract input | whitespace-only text runs the FULL NLP pipeline (79s cold) for a guaranteed-zero result — trivially scriptable exhaustion surface; fix = strip() pre-check → 400 or pipeline short-circuit | test_ts13_extract_input_surface_20261006.py (w20) |
 | W3 | LOW | 2026-10-06 | TS-13 $extract input | $extract/$search OperationDefinitions advertised at medterm4ds.org URLs that are DNS-unresolvable + no local OperationDefinition route — custom-op contracts unintrospectable anywhere (advertised-capability family, cf. Q1); fix = host OperationDefinition resources locally | test_ts13_extract_input_surface_20261006.py (w30-w32) |
-| L1 | MEDIUM | 2026-10-07 | TS-14 $closure input | unknown In-param (e.g. 'entities', not an R4 param) silently falls to the RESET branch — a typo'd add-request WIPES the closure at 200 (token reverts to empty-table hash); QC-264 guarded all-malformed-concept but not wrong-param-name; fix = 400 on unknown params or never reset when other params present | test_ts14_closure_params_20261007.py (l10-l12) |
 | L2 | LOW-MED | 2026-10-07 | TS-14 $closure mounting | R4 mounts $closure at [base]/$closure (ConceptMap-level); server serves only /fhir/CodeSystem/$closure ([base]/$closure and /fhir/ConceptMap/$closure both 405) and declares it under CodeSystem ops in CapabilityStatement; fix = mount spec aliases + correct the declaration | test_ts14_closure_params_20261007.py (l20/l21) |
 | L3 | MEDIUM | 2026-10-07 | TS-14 $closure input | version-resync request (In 'version' = send-entries-since, no concept entries) WIPEs the closure via the same over-broad reset branch — resync against old token after growth returned the EMPTY-TABLE hash, destroying state at 200; fix = honor version as resync or 501, never reset | test_ts14_closure_params_20261007.py (l30) |
 | N1 | MEDIUM-HIGH | 2026-10-07 | TS-15 $translate map selection | RESOLVED 2026-10-07 (maint/fix-conformance-20261007): url resolves against the implicit map urn:medterm4ds:crosswalk; others 400 | the `url` In-param is silently IGNORED — requesting the LOINC→SNOMED map while translating an ICD10CM code returns the ICD10CM↔SNOMED pair as result TRUE under the wrong map's name; no ConceptMap registry exists server-side (engine crosswalk always answers); silent wrong provenance, same family as T1; fix = resolve url against advertised maps (400 unknown / route by url) or document single-crosswalk design | test_ts15_translate_map_selection_20261007.py (n10-n12) |
@@ -62,6 +59,14 @@ SUITES themselves are committed and are the load-bearing contracts.
 | CF-HISTORIAN-CM03-02 | LOW | sweep | CM-03 | incomplete_since not surfaced | (sweep suites) |
 
 
+
+### Resolved: c-fixbatch4 (2026-10-09, commit pending)
+
+| id | mechanism |
+|---|---|
+| T1 | reverse CONSULTED on GET/POST/$batch: build_parameters_translate(reverse=True) flips match orientation (concept=declared input, source=found partner) + message names the reverse direction; same-CUI crosswalk makes the match set symmetric — orientation + message are the observable contract. Pins t10/t11 (ts02+ts19) flipped. |
+| W4 | _TRANSLATE_KNOWN_PARAMS + _CLOSURE_KNOWN_PARAMS via reject_unknown_query_params (GET) + _parameter_names_present body checks (POST). Collateral: cm01 e51/e52, cm02 e10/e11/e120/e12/e160 + s60/s61/s63/s64 flipped to 400 (or de-versioned); cm04 e11/e12/e22 hostile-injection probes flipped to boundary-400 (stronger contract). |
+| L1 | Destructive variant closed by W4's $closure boundary rejection — typo'd param names 400 before reaching the reset branch; l11 flipped to 400 + closure-state-survives assertion. |
 
 ### Resolved: c-fixbatch3 (2026-10-08, commit pending)
 

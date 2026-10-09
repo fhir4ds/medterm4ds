@@ -63,9 +63,8 @@ class TestW4TranslateClosureUnknownParams:
     """W4 — EA-family rejection still absent at $translate/$closure."""
 
     def test_w10_translate_get_unknown_param(self, fhir_client):
-        """GET bogusParam on $translate → 200 (U3's tail: fixbatch3
-        covered lookup/validate-code/subsumes only). Flip when
-        _TRANSLATE_KNOWN_PARAMS rejection lands."""
+        """W4 FIXED (c-fixbatch4): GET bogusParam on $translate → 400
+        (_TRANSLATE_KNOWN_PARAMS landed; was the U3 tail)."""
         r = fhir_client.get(
             "/fhir/ConceptMap/$translate",
             params={
@@ -73,21 +72,22 @@ class TestW4TranslateClosureUnknownParams:
                 "targetSystem": ICD10CM_URI, "bogusParam": "1",
             },
         )
-        assert r.status_code == 200
+        assert r.status_code == 400
 
     def test_w11_translate_post_unknown_param(self, fhir_client):
-        """POST body parameter zzz → 200. Flip with the same known-set
-        (body-side name check)."""
+        """W4 FIXED (c-fixbatch4): POST body parameter zzz → 400
+        (body-side name check landed)."""
         body = _translate_body(SNOMED_URI, T2DM, ICD10CM_URI)
         body["parameter"].append(
             {"name": "zzz", "valueString": "x"}
         )
         r = fhir_client.post("/fhir/ConceptMap/$translate", json=body)
-        assert r.status_code == 200
+        assert r.status_code == 400
 
     def test_w12_closure_post_unknown_param(self, fhir_client):
-        """$closure POST zzz → 200 (non-destructive variant of L1's
-        typo-wipe). Flip when _CLOSURE_KNOWN_PARAMS lands."""
+        """W4 FIXED (c-fixbatch4): $closure POST zzz → 400
+        (_CLOSURE_KNOWN_PARAMS landed; closes L1's destructive
+        typo-wipe variant at the boundary)."""
         body = {
             "resourceType": "Parameters",
             "parameter": [
@@ -96,7 +96,7 @@ class TestW4TranslateClosureUnknownParams:
             ],
         }
         r = fhir_client.post("/fhir/CodeSystem/$closure", json=body)
-        assert r.status_code == 200
+        assert r.status_code == 400
 
     def test_w13_siblings_reject(self, fhir_client):
         """Premise control: the fixbatch3 ops DO reject (the family
@@ -115,9 +115,10 @@ class TestT1ReverseNoOp:
     """T1 resharpened — reverse=true changes nothing, byte-level."""
 
     def test_t10_forward_reverse_identical(self, fhir_client):
-        """E11→SNOMED: forward vs reverse=true responses byte-equal —
-        the param is accepted and ignored. Flip when reverse is wired
-        (direction swapped) or rejected (400)."""
+        """T1 FIXED (c-fixbatch4): reverse=true is now CONSULTED —
+        forward and reverse differ (match orientation flips + message
+        names the reverse direction). Byte-identity was the old no-op
+        contract (registered 20261003b, resharpened 20261009)."""
         fwd = fhir_client.get(
             "/fhir/ConceptMap/$translate",
             params={
@@ -133,14 +134,26 @@ class TestT1ReverseNoOp:
             },
         )
         assert fwd.status_code == rev.status_code == 200
-        assert fwd.content == rev.content
+        # T1 FIXED: reverse is consulted — responses differ (match
+        # orientation flips, message names the reverse direction).
+        assert fwd.content != rev.content
+        fwd_msg = next(
+            p.get("valueString")
+            for p in fwd.json()["parameter"]
+            if p.get("name") == "message"
+        )
+        rev_msg = next(
+            p.get("valueString")
+            for p in rev.json()["parameter"]
+            if p.get("name") == "message"
+        )
+        assert "reverse" not in fwd_msg
+        assert "reverse" in rev_msg
 
     def test_t11_reverse_direction_also_true(self, fhir_client):
-        """T2DM system + ICD10CM target + reverse=true (the
-        consult-as-target direction) → TRUE 1 match: identical to its
-        forward form; a true reverse would still match here via the
-        symmetric pair — this pin guards that SOME semantics arrive
-        (flip expectations when reverse is wired)."""
+        """T1 FIXED: reverse=true on (SNOMED T2DM → ICD10CM target)
+        still finds the symmetric pair — result TRUE with 1 match, and
+        the reverse orientation is observable in the message."""
         r = fhir_client.get(
             "/fhir/ConceptMap/$translate",
             params={
@@ -155,6 +168,12 @@ class TestT1ReverseNoOp:
             if p.get("name") == "result"
         )
         assert result is True
+        message = next(
+            p.get("valueString")
+            for p in r.json()["parameter"]
+            if p.get("name") == "message"
+        )
+        assert "reverse" in message
 
 
 class TestJSONToleranceControls:

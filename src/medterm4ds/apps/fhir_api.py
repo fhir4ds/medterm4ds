@@ -706,6 +706,18 @@ _SUBSUMES_KNOWN_PARAMS = frozenset(
     ("system", "codeA", "codeB", "version", "systemVersion",
      "codingA", "codingB", "_format"),
 )
+# W4 fix (TS-19): the EA family's last two ops. $translate's declared
+# params (R4 §4.9.13.1) + the aliases this server accepts (sourceCode,
+# lowercase targetsystem) + reverse (T1). $closure (§4.9.16.1): name,
+# concept, version. Both include _format.
+_TRANSLATE_KNOWN_PARAMS = frozenset(
+    ("url", "conceptMapVersion", "system", "code", "sourceCode",
+     "targetSystem", "targetsystem", "source", "targetCode", "reverse",
+     "coding", "codeableConcept", "_format"),
+)
+_CLOSURE_KNOWN_PARAMS = frozenset(
+    ("name", "concept", "version", "_format"),
+)
 
 
 def _parameter_names_present(body: dict[str, Any]) -> set[str]:
@@ -2177,8 +2189,24 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
                     resolve_concept_map_url(batch_url, batch_ver)
                 except ValueError as exc:
                     return _batch_error_entry(400, str(exc))
+                # T1 fix: reverse honored in $batch entries too — GET
+                # params carry it; POST body carries valueBoolean (read
+                # raw; the scalar parse drops booleans).
+                if method == "GET":
+                    batch_reverse = (
+                        params.get("reverse", "").lower() == "true"
+                    )
+                else:
+                    _rv = (
+                        _raw_parameter_value(body_resource, "reverse")
+                        if body_resource else None
+                    )
+                    batch_reverse = _rv is True or (
+                        isinstance(_rv, str) and _rv.lower() == "true"
+                    )
                 payload = await _run_db(
-                    executor, _do_translate, engine, system, code, targetsystem,
+                    executor, _do_translate, engine, system, code,
+                    targetsystem, batch_reverse,
                 )
             elif path == "/CodeSystem/$lookup":
                 system, code = _extract_lookup_params(method, params, body_resource)
@@ -3512,7 +3540,17 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
                 "it 1..1). Omitting it previously widened results to every "
                 "system silently.",
             )
-        payload = await _run_db(_executor(request), _do_translate, _engine(request), system, actual_code, effective_target)
+        # W4 fix (TS-19): the EA family's last GET op — reject unknown
+        # query params (FastAPI drops undeclared ones silently).
+        try:
+            reject_unknown_query_params(
+                request, _TRANSLATE_KNOWN_PARAMS, "$translate",
+            )
+        except ValueError as exc:
+            return _fhir_error_response(request, 400, str(exc))
+        # T1 fix: reverse=true consults the map from the target side.
+        reverse = request.query_params.get("reverse", "").lower() == "true"
+        payload = await _run_db(_executor(request), _do_translate, _engine(request), system, actual_code, effective_target, reverse)
         return _respond(request, payload)
 
     @app.post("/fhir/ConceptMap/$translate")
@@ -3549,10 +3587,41 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
             )
         except ValueError as exc:
             return _fhir_error_response(request, 400, str(exc))
-        payload = await _run_db(_executor(request), _do_translate, _engine(request), system, code, targetsystem)
+        # W4 fix (TS-19): body-side unknown-param rejection — the POST
+        # Parameters body may carry entries the op does not declare;
+        # _parse_parameters drops non-scalar types silently, so check
+        # names directly (same helper the EA fix uses).
+        unknown_body = _parameter_names_present(body) - _TRANSLATE_KNOWN_PARAMS
+        if unknown_body:
+            return _fhir_error_response(
+                request, 400,
+                f"Unsupported $translate parameter(s): "
+                f"{', '.join(sorted(unknown_body))}. This server declares "
+                "url, conceptMapVersion, system, code/sourceCode, "
+                "targetSystem, source, targetCode, reverse, coding, "
+                "codeableConcept.",
+            )
+        # T1 fix: reverse via body valueBoolean (scalar parse drops
+        # booleans — read raw).
+        reverse_raw = _raw_parameter_value(body, "reverse")
+        reverse = reverse_raw is True or (
+            isinstance(reverse_raw, str) and reverse_raw.lower() == "true"
+        )
+        payload = await _run_db(_executor(request), _do_translate, _engine(request), system, code, targetsystem, reverse)
         return _respond(request, payload)
 
-    def _do_translate(engine: LocalDuckDBEngine, source_uri: str, code: str, target_uri: str | None):
+    def _do_translate(engine: LocalDuckDBEngine, source_uri: str, code: str, target_uri: str | None, reverse: bool = False):
+        # T1 fix (TS-02/TS-19): reverse=true asks "which codes map TO
+        # this code?" instead of "what does this code map to?" The
+        # engine's crosswalk is same-CUI (symmetric), so the match SET
+        # is the same either way — the observable contract is that
+        # reverse is CONSULTED: build_parameters_translate flips the
+        # match orientation (concept carries the DECLARED input, source
+        # carries the found partner) and the Out message names the
+        # reverse direction. Previously the param was declared and
+        # accepted but never consulted: forward and reverse responses
+        # were byte-identical (registered 20261003b, resharpened
+        # 20261009).
         source = fhir_uri_to_system(source_uri)
         if source is None:
             return _fhir_error(400, f"Unrecognized source system URI: {source_uri}")
@@ -3602,6 +3671,7 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
             mappings,
             source_system_uri=canonical_source_uri,
             source_code=code,
+            reverse=reverse,
         )
 
     # -- CodeSystem $subsumes --
@@ -3771,6 +3841,25 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
         name = params.get("name") or request.query_params.get("name")
         if not name:
             return _fhir_error_response(request, 400, "name parameter is required for $closure.")
+        # W4 fix (TS-19): the EA family's last op. Unknown params on
+        # $closure are not merely cosmetic — L1 (TS-14) showed a typo'd
+        # param name (e.g. 'entities') silently falls into the RESET
+        # branch and WIPES the closure. Rejecting unknown names closes
+        # the destructive variant at the boundary.
+        try:
+            reject_unknown_query_params(
+                request, _CLOSURE_KNOWN_PARAMS, "$closure",
+            )
+        except ValueError as exc:
+            return _fhir_error_response(request, 400, str(exc))
+        unknown_body = _parameter_names_present(body) - _CLOSURE_KNOWN_PARAMS
+        if unknown_body:
+            return _fhir_error_response(
+                request, 400,
+                f"Unsupported $closure parameter(s): "
+                f"{', '.join(sorted(unknown_body))}. This server declares "
+                "name, concept, version.",
+            )
         payload = await _run_db(_executor(request), _do_closure, _engine(request), body, name)
         return _respond(request, payload)
 

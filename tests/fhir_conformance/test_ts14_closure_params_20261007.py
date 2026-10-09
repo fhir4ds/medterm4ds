@@ -118,20 +118,25 @@ class TestL1UnknownParamResets:
             {"name": "entities",
              "valueString": '[{"code": "44054006"}]'},
         ])
-        assert typo.status_code == 200, (
+        # c-fixbatch4 (W4): unknown body params on $closure now 400 at
+        # the boundary — the typo'd add-request can no longer reach the
+        # reset branch. L1 RESOLVED (destructive variant closed here;
+        # the reset-branch breadth note remains for any future param).
+        assert typo.status_code == 400, (
             f"unknown-param request now {typo.status_code} — flip "
             "this pin to 400."
         )
-        t_after = _token(typo.json())
-        concepts_after = [
-            q for q in typo.json()["parameter"]
-            if q.get("name") == "concept"
-        ]
-        assert t_after.startswith(EMPTY_HASH_PREFIX), (
-            "closure SURVIVED the unknown-param request — reset "
-            "protection landed; flip this pin."
+        # The wipe never happened: the closure still holds its concepts.
+        state = _closure(fhir_client, [
+            {"name": "name", "valueString": "l1b"},
+            {"name": "concept",
+             "valueCoding": {"system": SNOMED_URI, "code": T2DM}},
+        ])
+        t_state = _token(state.json())
+        assert not t_state.startswith(EMPTY_HASH_PREFIX), (
+            "closure was wiped despite the 400 — state must survive "
+            "a rejected request."
         )
-        assert concepts_after == []
 
     def test_l12_empty_body_reset_control(self, fhir_client):
         """Control: a name-only request IS the documented init/reset
