@@ -1738,7 +1738,12 @@ class TestFhirEndpoints:
             # test_apply_preferred_display_qc400 below against the fixture DB.
             received_engine = None
 
-            def search(self, query, mode, sources, count, engine=None):
+            def search(
+                self, query, mode, sources, count, engine=None,
+                result_types=None,
+            ):
+                # c-fixbatch6 (G1): the endpoint now forwards result_types
+                # on the legacy modes too.
                 _FakeService.received_engine = engine
                 return [
                     _Row("SNOMEDCT_US", "73211009", "Diabetes"),

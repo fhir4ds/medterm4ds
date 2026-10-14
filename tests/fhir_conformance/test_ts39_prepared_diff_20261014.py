@@ -101,22 +101,20 @@ class TestPD1MissEncodingDiverges:
     """PD1 — pf miss shape differs by engine path."""
 
     def test_d10_prepared_miss_original(self, prod_rest):
-        """Production (prepared path): unknown code →
-        match_type='original' + name=<code echo> — 'original'
-        implies a successful original-name match; a downstream
-        keep-originals filter retains void concepts. Flip when
-        unknown-detection lands upstream (both paths → 'none')."""
+        """PD1 FIXED (c-fixbatch6): unknown-code detection upstream
+        of strategy dispatch — the prepared path now emits the
+        UNIFORM miss shape (match_type='none', name=null), identical
+        to the raw path. The divergence is closed."""
         rec = _pf(prod_rest, "99999999")
-        assert rec["match_type"] == "original"
-        assert rec["name"] == "99999999"
+        assert rec["match_type"] == "none"
+        assert rec["name"] is None
 
     def test_d11_raw_miss_none(self, raw_rest):
-        """Raw path (fixture): the SAME request → match_type='none'
-        (RS2's registered shape). The divergence — not the shape —
-        is the finding."""
+        """Raw path: match_type='none' (RS2's shape) — now with
+        name=null too (the uniform miss lands on both paths)."""
         rec = _pf(raw_rest, "99999999")
         assert rec["match_type"] == "none"
-        assert rec["name"] == "99999999"
+        assert rec["name"] is None
 
     def test_d12_prepared_happy_provenance(self, prod_rest):
         """The prepared path's richer resolution works: T2DM

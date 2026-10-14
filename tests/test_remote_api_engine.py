@@ -165,6 +165,23 @@ def test_remote_api_engine_implements_service_protocols():
 
     def transport(path, payload):
         calls.append((path, dict(payload)))
+        # c-fixbatch6 (RS2/PD1): get_patient_friendly_names now issues a
+        # get_code_infos pre-check, so /lookup is called for the pf batch
+        # too — make the stub request-aware (per-code responses keyed by
+        # the request's codes; the remote contract serves per-request).
+        if path == "/lookup":
+            asked = payload.get("codes", [])
+            by_code = {
+                r["code"]: r
+                for r in responses["/lookup"]["results"]
+                if r
+            }
+            return {
+                "results": [
+                    by_code.get(c.get("code"))
+                    for c in asked
+                ]
+            }
         return responses[path]
 
     engine = RemoteApiEngine("http://terminology.example", transport=transport)
@@ -207,7 +224,14 @@ def test_remote_api_engine_implements_service_protocols():
     assert optimized.rules[0].include == CodeRef("ICD10CM", "E11")
     assert health["status"] == "ok"
     assert calls[1][1]["target_sources"] == ["SNOMEDCT_US"]
-    assert calls[4][1]["sources"] == ["ICD10CM"]
+    # c-fixbatch6 (RS2/PD1): get_patient_friendly_names now issues a
+    # get_code_infos pre-check (unknown-code detection upstream of the
+    # strategy dispatch) — the remote call sequence gained one entry
+    # after /hierarchy: [3] pf's /code-infos, [4] /patient-friendly,
+    # …, [8] /search-names.
+    assert calls[3][0] == "/lookup"
+    assert calls[4][0] == "/patient-friendly"
+    assert calls[8][1]["sources"] == ["ICD10CM"]
 
 
 # QC-481 (LOW): garbage constructor inputs must fail at construction with a

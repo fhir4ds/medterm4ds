@@ -96,7 +96,11 @@ def test_bulk_iterators_reuse_service_contracts():
     )
     friendly_rows = list(iter_patient_friendly_bulk(codes, engine=engine, batch_size=2))
 
-    assert [len(batch) for batch in engine.lookup_batches] == [2, 1]
+    # c-fixbatch6 (RS2/PD1): get_patient_friendly_names now issues a
+    # get_code_infos unknown-pre-check, so the pf bulk iterator ALSO
+    # records its batches through the lookup protocol — the pf
+    # pre-check batch sizes appear here after the lookup's own.
+    assert [len(batch) for batch in engine.lookup_batches] == [2, 1, 2, 1]
     assert lookup_rows[1] == {
         "source": "ICD10CM",
         "code": "NOPE",

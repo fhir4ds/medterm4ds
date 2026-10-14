@@ -99,9 +99,12 @@ class TestG1SemanticResultTypesIgnored:
     """G1 — resultTypes is a silent no-op on the semantic path."""
 
     def test_g10_get_unfiltered(self, search_client):
-        """semantic + resultTypes=lab returns ICD-10-CM condition
-        codes (CURRENT, deviation). Flip when the filter is wired:
-        expect only lab-system entries (LOINC)."""
+        """G1 FIXED (c-fixbatch6): the endpoint forwards result_types
+        on the legacy modes — semantic + resultTypes=lab returns only
+        lab-CATEGORY entries (LOINC system; SNOMED lab-categorized
+        concepts may also appear — the filter is category-based, not
+        system-based). The pre-fix deviation (ICD-10-CM condition
+        codes) is gone."""
         systems = _systems(
             search_client,
             query="diabetes",
@@ -109,7 +112,9 @@ class TestG1SemanticResultTypesIgnored:
             resultTypes="lab",
             count=50,
         )
-        assert "http://hl7.org/fhir/sid/icd-10-cm" in systems
+        assert systems
+        assert "http://hl7.org/fhir/sid/icd-10-cm" not in systems
+        assert systems <= {"http://loinc.org", "http://snomed.info/sct"}
 
     def test_g11_post_unfiltered(self, search_client):
         """POST form identical — the parameter never reaches the
@@ -129,7 +134,8 @@ class TestG1SemanticResultTypesIgnored:
             e["resource"]["system"]
             for e in r.json().get("entry", [])
         }
-        assert "http://hl7.org/fhir/sid/icd-10-cm" in systems
+        # G1 FIXED (c-fixbatch6): POST filters too.
+        assert systems and systems == {"http://loinc.org"}
 
     def test_g12_canonical_validates(self, search_client):
         """CONTRAST: canonical mode validates resultTypes and 400s

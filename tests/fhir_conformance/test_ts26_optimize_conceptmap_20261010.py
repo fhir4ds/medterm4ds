@@ -150,18 +150,18 @@ class TestOP3ConceptMapLabelsSuccessNotTranslated:
     def test_o30_relationship_not_translated_on_success(
         self, rest_client
     ):
-        """A fully-successful crosswalk (target_display carries the
-        friendly name; matched_via shows the friendly atom) is labeled
-        relationship='not-translated'. Flip when translated rows
-        carry equivalent/relatedto."""
+        """OP3-relationship FIXED (c-fixbatch6/PR1): a crosswalk
+        success (friendly name from a foreign vocabulary) now emits
+        relationship='equivalent' — matching the prepared path's
+        semantics; 'not-translated' is reserved for actual
+        translation failures."""
         r = rest_client.post(
             "/conceptmap/patient-friendly",
             json={"codes": [_code(T2DM)]},
         )
         rec = r.json()["results"][0]
         assert rec["target_display"] == "Type 2 Diabetes Mellitus"
-        assert rec["match_type"] == "original"
-        assert rec["relationship"] == "not-translated"
+        assert rec["relationship"] == "equivalent"
 
     def test_o31_target_code_composite_form(self, rest_client):
         """target_code is the composite 'SNOMEDCT_US:44054006' (the

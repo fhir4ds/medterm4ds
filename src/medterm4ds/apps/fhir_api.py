@@ -5127,6 +5127,14 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
 
             results = service.search(
                 query_text, mode=search_mode, sources=sources, count=count,
+                # G1 fix (TS-07/TS-41): result_types is passed on the
+                # legacy modes too — the canonical branch always forwarded
+                # it, but the legacy service.search() call omitted it, so
+                # $search?searchMode=semantic&resultTypes=lab silently
+                # returned unfiltered condition codes while the SAME
+                # service call filtered correctly (the defect was
+                # endpoint-layer; root-caused in TS-41 g10s/g11s).
+                result_types=result_types,
                 # QC-400: display canonicalization moved INTO the service so
                 # Python/CLI/MCP/FHIR share one display convention; this was
                 # previously an FHIR-only post-step (the QC-317 fix).

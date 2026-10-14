@@ -118,10 +118,12 @@ class TestPR1RelationshipDiverges:
         assert ops == ["input", "snomed_to_target", "same_cui"]
 
     def test_r11_raw_not_translated(self, raw_rest):
-        """Raw path: the SAME export emits 'not-translated' (OP3's
-        registered shape) — the contradiction is the finding."""
+        """PR1 FIXED (c-fixbatch6): the raw-path export now emits
+        'equivalent' for crosswalk successes — matching the prepared
+        path; the path-divergence is closed (OP3's relationship
+        half resolved)."""
         rec = _cm_pf(raw_rest, T2DM)
-        assert rec["relationship"] == "not-translated"
+        assert rec["relationship"] == "equivalent"
 
     def test_r12_composite_target_path_independent(self, prod_rest):
         """OP3's other half stands on BOTH paths: target_code is the

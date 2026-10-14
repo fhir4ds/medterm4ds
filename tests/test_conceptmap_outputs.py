@@ -106,7 +106,10 @@ def test_get_concept_map_batches_patient_friendly_rows():
     assert rows[0].target == CodeRef("PATIENT_FRIENDLY", "ICD10CM:E11.9")
     assert rows[0].relationship == "equivalent"
     assert rows[1].relationship == "source-is-narrower-than-target"
-    assert rows[2].relationship == "not-translated"
+    # c-fixbatch6 (PR1/OP3): an 'original' row whose friendly name came
+    # from a foreign vocabulary (CHV for this CVX stub) is a crosswalk
+    # success — 'equivalent', not 'not-translated'.
+    assert rows[2].relationship == "equivalent"
     assert rows[1].matched_via.to_dict()["steps"][1]["op"] == "friendly_atom"
 
 

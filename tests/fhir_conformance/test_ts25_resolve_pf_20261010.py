@@ -125,16 +125,17 @@ class TestRS2MissEncodesIdentifierAsName:
     """RS2 — /patient-friendly unknown-code shape."""
 
     def test_r20_unknown_code_name_echo(self, rest_client):
-        """match_type='none' carries name=<the code> and
-        friendly_source=<input source> — the identifier posing as a
-        display. Flip when name=null on miss."""
+        """RS2 FIXED (c-fixbatch6): the miss row carries
+        match_type='none' with name=None — the identifier no longer
+        poses as a display (unknown-code detection upstream of
+        strategy dispatch; uniform on both engine paths per PD1)."""
         r = rest_client.post(
             "/patient-friendly", json={"codes": [_code("99999999")]}
         )
         assert r.status_code == 200
         rec = r.json()["results"][0]
         assert rec["match_type"] == "none"
-        assert rec["name"] == "99999999"
+        assert rec["name"] is None
         assert rec["friendly_source"] == SNOMED
 
     def test_r21_resolve_miss_shape_contrast(self, rest_client):

@@ -315,7 +315,10 @@ class FriendlyNameResult:
         data = {
             "code": self.code.code,
             "source": self.code.source,
-            "name": self.name,
+            # RS2 fix (TS-25): an empty name (the synthesized unknown-code
+            # miss row) renders as null — the identifier never poses as a
+            # display on the wire.
+            "name": self.name or None,
             "friendly_source": self.friendly_source,
             "match_type": self.match_type,
             "match_depth": self.match_depth,
@@ -366,14 +369,30 @@ class ConceptMapRow:
             source=target_source,
             code=f"{result.code.source}:{result.code.code}",
         )
+        # PR1/OP3 fix (TS-40): the raw-path resolver labels its
+        # crosswalk successes 'original' (the prepared path labels the
+        # same clinical event 'same_cui'), so the shared mapper turned
+        # them into 'not-translated' — the R4 FAILURE value on a working
+        # crosswalk, while production emitted 'equivalent'. Discriminate
+        # on the row's own structured fields: an 'original' row whose
+        # friendly name came from a DIFFERENT vocabulary than the input
+        # is a translation that happened, not a failure to translate.
+        if (
+            result.match_type == "original"
+            and result.friendly_source
+            and result.friendly_source != result.code.source
+        ):
+            relationship = "equivalent"
+        else:
+            relationship = conceptmap_relationship(
+                result.match_type, match_depth=result.match_depth
+            )
         return cls(
             source=result.code,
             source_display=result.technical_name,
             target=target,
             target_display=result.name,
-            relationship=conceptmap_relationship(
-                result.match_type, match_depth=result.match_depth
-            ),
+            relationship=relationship,
             friendly_source=result.friendly_source,
             match_type=result.match_type,
             match_depth=result.match_depth,

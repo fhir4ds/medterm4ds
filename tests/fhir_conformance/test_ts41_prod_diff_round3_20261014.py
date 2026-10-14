@@ -96,6 +96,9 @@ class TestG1SharpEndpointLayer:
                 prepare_cache=False,
             )
         )
+        # G1 FIXED (c-fixbatch6): the endpoint now forwards
+        # result_types on the legacy modes — the semantic result set
+        # is lab-only.
         with TestClient(app, raise_server_exceptions=False) as client:
             r = client.get(
                 "/fhir/CodeSystem/$search",
@@ -112,11 +115,7 @@ class TestG1SharpEndpointLayer:
             systems = {
                 e["resource"]["system"] for e in entries
             }
-            # Unfiltered: condition-family systems appear alongside
-            # (or instead of) lab systems — the filter was dropped.
-            assert any(
-                "icd-10" in s or "ICD10" in s for s in systems
-            ) or not any("loinc" in s.lower() for s in systems)
+            assert systems == {"http://loinc.org"}
 
 
 class TestPD3McpProductionParity:
