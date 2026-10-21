@@ -7,6 +7,75 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.5] - 2026-10-21
+
+### Added
+
+- **Embedding-space admission + serving pin** (SapBERT v2 rotation,
+  `esp_f6c5c18d5f3ee3b5`): `ACCEPTED_EMBEDDING_SPACES` admits the v2
+  space; the serving pin is per-call env-overridable
+  (`MEDTERM4DS_EMBEDDING_SPACE`) and a SET-but-unknown pin now fails
+  loud (`ManifestError` naming the accepted values) instead of
+  silently falling back — with digit-sorting polarity, the old
+  lexicographic fallback would have kept serving the OLD space after a
+  rotation. `cache-info` reports `serving_space` +
+  `serving_space_source` (default vs pinned).
+- **Name-basis serving stack** (model team v2026-10-13.0746): display
+  names carry per-entry `match_type` provenance (code_name /
+  card_overlay / cvx_group); wire md5s `e277ffc9` (associations) and
+  `60bb0e8e` (display_names v2), provenance chaining the C1+C2
+  `code_names` layers. B-prime hybrid encoder + mixed-pool indexes
+  now serve: condition exact 0.733 vs 0.39 on the prior serving stack
+  (per the fleet CAMPAIGN_RECORD).
+
+### Fixed
+
+- **Six fail-loud conformance batches** from the nightly spec-comp
+  program (iterations 55-82, 28 merged iterations; ~120 findings
+  registered, 15 resolved in-batch):
+  - `$validate-code` ValueSet url now SCOPES membership (out-of-set
+    codes no longer validate TRUE); unresolvable ValueSet urls 400.
+  - `$translate` `targetSystem` binds (was a case-mismatch silently
+    dropped — every spec-conformant client's target filter ignored)
+    and is required per R4 §4.9.13.1; `reverse=true` is consulted
+    (match orientation flips, message names the direction; was a
+    byte-identical no-op); url/version params resolve against the
+    implicit crosswalk map or 400.
+  - `$subsumes` coding-only POST is self-identifying; unknown or
+    cross-system codes 400 with a $translate pointer (was a confident
+    200 not-subsumed).
+  - Unknown/unsupported parameters now 400 across `$expand`,
+    `$lookup`, `$validate-code`, `$subsumes`, `$translate`,
+    `$closure` (GET query + POST bodies) instead of silent drops;
+    `version`/`systemVersion` uniformly rejected (single-version
+    server); `date` params validated as FHIR dateTime; `$expand`
+    echoes `expansion.params` (the applied subset).
+  - `$search` `resultTypes` filters on ALL modes (was canonical-only)
+    and patient-friendly miss rows are uniform (`match_type="none"`)
+    across raw and prepared engine paths.
+  - `$closure` typo'd parameter names 400 at the boundary (the
+    destructive wipe variant is closed).
+- **Serving-pin fail-loud + observability** (K1/K2): garbage
+  `MEDTERM4DS_EMBEDDING_SPACE` raises instead of degrading to the old
+  space; cache-info exposes the serving space.
+
+### Known Issues
+
+- Open spec-comp findings are tracked in
+  `docs/maintenance-findings-registry.md` (severity-ordered, pin
+  suites committed): highlights include exact expansion totals under
+  BFS caps (`CF-HISTORIAN-VS02-01`), transaction atomicity — a failed
+  transaction still commits sibling `$closure` mutations (`B1`/TX1),
+  and `$search` `resultTypes` validation differing by mode (`RQ1`).
+- The `scripts/` directory remains gitignored operator-local tooling
+  (v0.0.3 QA-001): sdist installs skip those tests via skipif guards.
+
+### Benchmarks (fresh, this release)
+
+Steady-state search ladder on the serving stack (5 queries x 3 reps,
+count=5): lexical median ~1ms; semantic ~67ms; hybrid ~76ms; canonical
+~30ms. One-time cold model load ~54-63s (SapBERT split fetch + load).
+
 ## [0.0.4] - 2026-09-08
 
 ### Added

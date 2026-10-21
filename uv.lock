@@ -1792,7 +1792,7 @@ wheels = [
 
 [[package]]
 name = "medterm4ds"
-version = "0.0.4"
+version = "0.0.5"
 source = { editable = "." }
 dependencies = [
     { name = "duckdb" },
@@ -1825,16 +1825,23 @@ dataframe = [
 ]
 dev = [
     { name = "build" },
+    { name = "faiss-cpu" },
     { name = "fastapi" },
     { name = "fastmcp" },
+    { name = "fhir-resources" },
+    { name = "gliner" },
     { name = "hatch" },
     { name = "httpx" },
+    { name = "loguru" },
+    { name = "medspacy" },
     { name = "pandas", version = "2.3.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
     { name = "pandas", version = "3.0.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
     { name = "polars" },
     { name = "pytest" },
     { name = "pytest-asyncio" },
     { name = "ruff" },
+    { name = "torch" },
+    { name = "transformers" },
     { name = "twine" },
     { name = "uvicorn" },
 ]
@@ -1862,6 +1869,7 @@ requires-dist = [
     { name = "build", marker = "extra == 'dev'", specifier = ">=1.2.0" },
     { name = "duckdb", specifier = ">=0.9.0" },
     { name = "faiss-cpu", marker = "extra == 'all'", specifier = ">=1.7.0" },
+    { name = "faiss-cpu", marker = "extra == 'dev'", specifier = ">=1.7.0" },
     { name = "faiss-cpu", marker = "extra == 'search'", specifier = ">=1.7.0" },
     { name = "fastapi", marker = "extra == 'all'", specifier = ">=0.110.0" },
     { name = "fastapi", marker = "extra == 'api'", specifier = ">=0.110.0" },
@@ -1871,13 +1879,17 @@ requires-dist = [
     { name = "fastmcp", marker = "extra == 'dev'", specifier = ">=2.0.0" },
     { name = "fastmcp", marker = "extra == 'mcp'", specifier = ">=2.0.0" },
     { name = "fhir-resources", marker = "extra == 'all'", specifier = ">=7.0.0" },
+    { name = "fhir-resources", marker = "extra == 'dev'", specifier = ">=7.0.0" },
     { name = "fhir-resources", marker = "extra == 'fhir'", specifier = ">=7.0.0" },
     { name = "gliner", marker = "extra == 'all'", specifier = ">=0.2.28" },
+    { name = "gliner", marker = "extra == 'dev'", specifier = ">=0.2.28" },
     { name = "gliner", marker = "extra == 'extraction'", specifier = ">=0.2.28" },
     { name = "hatch", marker = "extra == 'dev'", specifier = ">=1.14.0" },
     { name = "httpx", marker = "extra == 'dev'", specifier = ">=0.27.0" },
     { name = "huggingface-hub", specifier = ">=0.20.0" },
+    { name = "loguru", marker = "extra == 'dev'", specifier = ">=0.7.0" },
     { name = "medspacy", marker = "extra == 'all'", specifier = ">=1.0.0" },
+    { name = "medspacy", marker = "extra == 'dev'", specifier = ">=1.0.0" },
     { name = "medspacy", marker = "extra == 'extraction'", specifier = ">=1.0.0" },
     { name = "pandas", marker = "extra == 'all'", specifier = ">=2.0.0" },
     { name = "pandas", marker = "extra == 'dataframe'", specifier = ">=2.0.0" },
@@ -1889,8 +1901,10 @@ requires-dist = [
     { name = "pytest-asyncio", marker = "extra == 'dev'", specifier = ">=0.21.0" },
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.5.0" },
     { name = "torch", marker = "extra == 'all'", specifier = ">=2.0.0" },
+    { name = "torch", marker = "extra == 'dev'", specifier = ">=2.0.0" },
     { name = "torch", marker = "extra == 'search'", specifier = ">=2.0.0" },
     { name = "transformers", marker = "extra == 'all'", specifier = ">=4.30.0,<5" },
+    { name = "transformers", marker = "extra == 'dev'", specifier = ">=4.30.0,<5" },
     { name = "transformers", marker = "extra == 'extraction'", specifier = ">=4.30.0,<5" },
     { name = "transformers", marker = "extra == 'search'", specifier = ">=4.30.0,<5" },
     { name = "twine", marker = "extra == 'dev'", specifier = ">=5.0.0" },
