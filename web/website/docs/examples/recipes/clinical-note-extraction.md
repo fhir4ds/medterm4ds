@@ -78,7 +78,7 @@ medterm4ds extract "65yo M with T2DM on metformin" --format terms
 |---|---|
 | medspaCy pipeline | ~30ms |
 | NER model | ~150ms |
-| SapBERT search (per span) | ~100ms |
+| SapBERT search (per span) | ~70ms warm (v0.0.5) |
 | **Total (typical note)** | **~250ms** |
 
 No GPU required.

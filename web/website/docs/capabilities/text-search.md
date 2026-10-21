@@ -33,8 +33,12 @@ results = mt.search("metformin pill", mode="hybrid")
 | Mode | Engine | Latency | Best for |
 |---|---|---|---|
 | **`lexical`** (default) | BM25 inverted index | ~1ms | Known medical terms ("diabetes", "metformin") |
-| **`semantic`** | SapBERT embeddings + FAISS | ~100ms | Novel phrasings ("high blood sugar" → Hyperglycemia) |
-| **`hybrid`** | BM25 retrieve → SapBERT re-rank | ~110ms | Best accuracy (default for extraction) |
+| **`semantic`** | SapBERT embeddings + FAISS | ~70ms warm | Novel phrasings ("high blood sugar" → Hyperglycemia) |
+| **`hybrid`** | BM25 retrieve → SapBERT re-rank | ~80ms warm | Best accuracy (default for extraction) |
+
+First semantic call in a process pays a one-time model load (~1 min
+cold, including the split-layout fetch). Numbers are v0.0.5
+steady-state medians (see the releases page benchmark section).
 
 ### Why three modes?
 
@@ -63,9 +67,9 @@ The search service lazy-loads pre-built indexes on first use:
 
 | Index | Size | Source |
 |---|---|---|
-| BM25 JSONs (6 categories) | 192 MB | HF dataset `joelmontavon/medterm4ds-data` |
-| SapBERT model | 438 MB | Same dataset |
-| FAISS indexes (6 categories) | 2.0 GB | Same dataset |
+| BM25 JSONs (6 categories) | ~159 MB | HF model repo `fhir4ds/medterm4ds` (split layout, `v0.0.5`+; overridable via `MEDTERM4DS_HF_REPO_ID`) |
+| SapBERT model | ~440 MB | Same repo (content-addressed per embedding space) |
+| FAISS indexes (6 categories) | ~2 GB | Same repo (data units float to the latest published revision) |
 
 No GPU required. All search runs on CPU.
 

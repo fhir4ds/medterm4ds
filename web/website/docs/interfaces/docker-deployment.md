@@ -55,6 +55,7 @@ Optional (search + extraction assets):
 | `MEDTERM4DS_EMBEDDING_MODEL_DIR` | (built-in default) | SapBERT model dir. `$search` semantic/hybrid returns 503 if missing. |
 | `MEDTERM4DS_LAYOUT` | `auto` | Artifact cache layout: `auto` prefers the split layout (`models/<space>/` + `data/<revision>/`, validated manifests); `legacy` forces the flat legacy layout (kill-switch). |
 | `MEDTERM4DS_DATA_REVISION` | latest | Pin the split-layout data revision (e.g. `cdb_2026_09_07`) instead of floating to the latest publish. |
+| `MEDTERM4DS_EMBEDDING_SPACE` | latest accepted | Pin the SERVING embedding space (e.g. `esp_f6c5c18d5f3ee3b5`). A set-but-unknown value FAILS LOUD at load naming the accepted values (no silent fallback — rotation-safe); unset = the default serving space. `cache-info` reports `serving_space` + `serving_space_source`. |
 | `MEDTERM4DS_SEMANTIC_INDEX_DIR` | md5 bridge | Override the per-category FAISS index dir. Default reuses the legacy `semantic/` indexes when weights + tokenizer are byte-identical to the split model. |
 | `MEDTERM4DS_FHIR4PX_BASELINE` | (built-in default) | Directory with `patient_friendly_<source>.json`. `$lookup` skips patient-friendly properties if missing. |
 

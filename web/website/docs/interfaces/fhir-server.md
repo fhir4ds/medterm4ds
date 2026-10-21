@@ -163,11 +163,11 @@ Text-to-code search with three modes:
 # Lexical (BM25, ~1ms) — default
 curl "http://127.0.0.1:8001/fhir/CodeSystem/\$search?query=diabetes&searchMode=lexical"
 
-# Semantic (SapBERT + FAISS, ~100ms) — catches novel phrasings
+# Semantic (SapBERT + FAISS, ~70ms warm) — catches novel phrasings
 curl "http://127.0.0.1:8001/fhir/CodeSystem/\$search?query=high+blood+sugar&searchMode=semantic"
 # → Hyperglycemia (0.80), Elevated Blood Glucose Level (0.80)
 
-# Hybrid (BM25 + SapBERT re-rank, ~110ms)
+# Hybrid (BM25 + SapBERT re-rank, ~80ms warm)
 curl "http://127.0.0.1:8001/fhir/CodeSystem/\$search?query=metformin+pill&searchMode=hybrid"
 # → Metformin Pill (1.00, certain)
 ```
@@ -294,6 +294,7 @@ Set at container start. All optional unless noted.
 | `MEDTERM4DS_FHIR_API_PORT` | `8001` (local) / `7860` (HF Spaces) | Bind port. HF Spaces requires 7860. |
 | `MEDTERM4DS_SEARCH_INDEX_DIR` | (built-in default) | Directory containing `<category>_bm25.json` (6 categories). `$search` lexical/hybrid returns 503 if missing. |
 | `MEDTERM4DS_EMBEDDING_MODEL_DIR` | (built-in default) | SapBERT model dir (must contain `model.safetensors` + `config.json`). `$search` semantic/hybrid returns 503 if missing. |
+| `MEDTERM4DS_EMBEDDING_SPACE` | latest accepted | Pin the SERVING embedding space (e.g. `esp_f6c5c18d5f3ee3b5`). A set-but-unknown value FAILS LOUD at load naming the accepted values (no silent fallback — rotation-safe); unset = the default serving space. `cache-info` reports `serving_space` + `serving_space_source`. |
 | `MEDTERM4DS_FHIR4PX_BASELINE` | (built-in default) | Directory containing `patient_friendly_<source>.json` (5 sources). `$lookup` skips patient-friendly properties if missing. |
 | `FHIR_VS_MAX_DEPTH` | `5` | Max depth for `$expand?fhir_vs=isa` descendant walk. Covers clinical value-set definitions; deeper needs pre-computed closure (planned). |
 | `MEDTERM4DS_MAX_EXTRACT_TEXT_CHARS` | `100000` | Max chars for `$extract` input text. Caps NER executor starvation from megabyte-text inputs. |

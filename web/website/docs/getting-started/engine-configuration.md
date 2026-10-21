@@ -58,6 +58,13 @@ served when present, with a deprecation notice pointing at
 
 - `MEDTERM4DS_LAYOUT=legacy` forces the legacy layout (kill-switch /
   instant rollback); default `auto` prefers split.
+- `MEDTERM4DS_EMBEDDING_SPACE` pins the SERVING embedding space (the
+  default is the latest accepted space; the acceptance registry lives
+  in code). A set-but-unknown value fails loud at load naming the
+  accepted values — after a space rotation the old lexicographic
+  fallback would have kept serving the OLD space, so the pin is
+  load-bearing. `cache-info` surfaces `serving_space` and
+  `serving_space_source` (`default` vs `pinned`).
 - `MEDTERM4DS_DATA_REVISION` pins a specific data revision (e.g.
   `cdb_2026_09_07`) instead of floating to latest.
 - `MEDTERM4DS_SEMANTIC_INDEX_DIR` overrides the per-category FAISS index

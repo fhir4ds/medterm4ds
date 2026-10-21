@@ -4,6 +4,62 @@ title: Releases
 
 This page tracks Medical Terminology for Data Science package releases.
 
+## 0.0.5
+
+Serving-stack and conformance-hardening release. No breaking API
+changes; no DB rebuild required.
+
+Serving stack (semantic + canonical search):
+
+- The semantic path now serves the B-prime hybrid encoder with
+  mixed-pool indexes (rotated via the split layout's
+  `MEDTERM4DS_EMBEDDING_MODEL_DIR` / accepted-space registry).
+  Condition-domain exact-match quality rises to 0.733 from 0.39 on
+  the prior serving stack (fleet campaign record); lexical BM25 is
+  unchanged.
+- Display names carry per-entry `match_type` provenance
+  (`code_name` / `card_overlay` / `cvx_group`) from the names-basis
+  fold (associations `e277ffc9`, display_names v2 `60bb0e8e`,
+  chaining the C1+C2 code-names layers).
+- Embedding-space serving pin: `MEDTERM4DS_EMBEDDING_SPACE` is
+  per-call overridable; a set-but-unknown pin now fails loud naming
+  the accepted values (previously a silent lexicographic fallback
+  that would have kept serving the OLD space after a rotation).
+  `cache-info` reports `serving_space` + `serving_space_source`.
+- Steady-state benchmarks (5 queries x 3 reps, count=5): lexical
+  ~1 ms, semantic ~67 ms, hybrid ~76 ms, canonical ~30 ms; one-time
+  cold SapBERT load ~1 min.
+
+Conformance hardening (six fail-loud batches from the nightly
+spec-comp program — iterations 55-82, ~120 findings registered, 15
+resolved in-batch; full registry in
+`docs/maintenance-findings-registry.md`):
+
+- `$validate-code` ValueSet `url` now SCOPES membership; unresolvable
+  ValueSet urls 400.
+- `$translate`: `targetSystem` binds and is required (R4 §4.9.13.1;
+  a param-name case mismatch previously dropped every conformant
+  client's target filter); `reverse=true` is consulted (orientation
+  flip + named message); url/version resolve against the implicit
+  crosswalk map or 400.
+- `$subsumes`: coding-only POST self-identifying; unknown/cross-system
+  codes 400 with a `$translate` pointer.
+- Unknown/unsupported parameters 400 across `$expand`, `$lookup`,
+  `$validate-code`, `$subsumes`, `$translate`, `$closure` (GET query
+  + POST bodies); `version`/`systemVersion` uniformly rejected
+  (single-version server); `date` validated as FHIR dateTime;
+  `$expand` echoes `expansion.params`.
+- `$search` `resultTypes` filters on ALL modes (was canonical-only);
+  patient-friendly miss rows uniform (`match_type="none"`) across
+  engine paths.
+- `$closure`: typo'd parameter names 400 at the boundary (the
+  destructive wipe variant is closed).
+
+Distribution note: serving models and indexes ship via the
+`fhir4ds/medterm4ds` HF split layout and fetch through the artifact
+cache at first use (operator caches grow to GB scale); the wheel
+stays lean (~485 KB) and carries code only.
+
 ## 0.0.4
 
 Artifact-governance and cross-surface parity release. No breaking API

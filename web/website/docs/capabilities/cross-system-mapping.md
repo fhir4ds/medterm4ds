@@ -65,5 +65,6 @@ Most cross-system mappings go through SNOMED CT as the common hub via shared CUI
 ## FHIR $translate
 
 ```bash
-curl "http://127.0.0.1:8001/fhir/ConceptMap/\$translate?system=http://snomed.info/sct&code=44054006&targetsystem=http://hl7.org/fhir/sid/icd-10-cm"
+curl "http://127.0.0.1:8001/fhir/ConceptMap/\$translate?system=http://snomed.info/sct&code=44054006&targetSystem=http://hl7.org/fhir/sid/icd-10-cm"
+<!-- R4 param name is targetSystem (v0.0.5+); the lowercase spelling still works as a legacy alias -->
 ```

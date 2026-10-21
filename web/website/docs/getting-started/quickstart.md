@@ -52,11 +52,11 @@ mappings = terms.map("SNOMEDCT_US", "44054006", target_sources=["ICD10CM"])
 # Lexical: fast BM25 token matching (~1ms)
 results = mt.search("diabetes", mode="lexical")
 
-# Semantic: catches novel phrasings (~100ms)
+# Semantic: catches novel phrasings (~70ms warm)
 results = mt.search("high blood sugar", mode="semantic")
 # → Hyperglycemia (0.80, probable)
 
-# Hybrid: best accuracy (~110ms)
+# Hybrid: best accuracy (~80ms warm)
 results = mt.search("metformin pill", mode="hybrid")
 # → Metformin Pill (1.00, certain)
 ```

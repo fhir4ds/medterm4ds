@@ -201,5 +201,5 @@ pip install medterm4ds[extraction]  # adds gliner + medspacy + transformers
 ```
 
 CPU is sufficient — ~250ms/note (medspaCy ~30ms + GLiNER ~120ms + search
-~100ms); optional GPU acceleration via
+~70ms warm, v0.0.5); optional GPU acceleration via
 [Engine Configuration](../getting-started/engine-configuration.md).
