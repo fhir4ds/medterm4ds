@@ -93,8 +93,6 @@ SUITES themselves are committed and are the load-bearing contracts.
 | G2 | LOW | 2026-10-05 | $search | availability gate (503) precedes input validation — invalid engine/resultTypes under hybrid returns 503 (index missing), masking malformed requests until the index exists; enum params not route-guarded unlike $extract's mode/minGrade | test_ts07_search_contract_20261005.py (g20/g21) |
 | K1 | LOW-MED | 2026-10-05 | artifact governance | RESOLVED 2026-10-05 (maint/fix-serving-pin-20261005): effective_embedding_space() raises ManifestError on a set-but-unaccepted pin (naming accepted values); lexicographic scan now applies only when the effective space's unit is absent locally — never as a typo swallower | test_artifact_governance_20261005.py (k10 flipped/k11) |
 | K2 | LOW | 2026-10-05 | artifact governance | RESOLVED 2026-10-05 (maint/fix-serving-pin-20261005): cache-info split summary carries serving_space + serving_space_source (default vs pinned) — rotation state observable, K1-class typos visible | test_artifact_governance_20261005.py (k20 flipped) |
-| K1 | LOW-MED | 2026-10-05 | artifact governance | a SET-but-garbage MEDTERM4DS_EMBEDDING_SPACE silently degrades to the lexicographic fallback (sorted()[0] = OLD space esp_5a50) — an operator typo of the rotation knob silently undoes the rotation; fallback should apply only when NO pin is set | test_artifact_governance_20261005.py (k10/k11) |
-| K2 | LOW | 2026-10-05 | artifact governance | cache-info reports split_root/mode/models/data_revision but NOT the serving pin or would-serve space — the rotation knob's effective value is unobservable (a K1 typo would be invisible there too) | test_artifact_governance_20261005.py (k20) |
 | V1 | HIGH | 2026-10-06 | VS $validate-code | RESOLVED 2026-10-07 (maint/fix-conformance-20261007): url-scoped membership via resolve_implicit_vs_gate (SNOMED isa root/descendant BFS; bare-system whole-set; unrecognized 400; codeableConcept gated per code-review R1) | url-scoping ABSENT (documented at fhir_api.py:2781 as spec-compat acceptance, severity never registered): out-of-valueSet codes validate TRUE — RxNorm metformin TRUE against the SNOMED isa-DM set whose expansion is {73211009, 44054006}; clinical filtering clients get silent TRUEs; fix = expansion membership test or explicit not-supported | test_ts09_vs_validate_membership_20261006.py (v10-v12) |
 | Q1 | MEDIUM-HIGH | 2026-10-06 | TS-11 request-body negotiation | XML request bodies rejected 422 on ALL POST ops + $batch while CapabilityStatement advertises format=['json','xml'] (R4 §2.1.0.7 declares format codes for the full RESTful surface incl. request bodies; R4 §3.1.0 JSON+XML mandatory). Response-side XML fully supported (TS-01). Fix: parse fhir+xml bodies (from_fhir_xml inverse of to_fhir_xml) or stop advertising 'xml' | test_ts11_request_body_negotiation_20261006.py (q10-q13) |
 | Q2 | LOW | 2026-10-06 | TS-11 request-body negotiation | 422 diagnostic for well-formed XML body is misleading ('Parameter unknown: Input should be a valid dictionary' = JSON-parser artifact). Rides with Q1 fix (parse or 415 w/ accurate reason) | test_ts11_request_body_negotiation_20261006.py (q20) |
@@ -170,9 +168,36 @@ cm02/cm03/cm04/ts02/ts03/ts15/vs02/vs04 + cases.json (translate-no-target
 
 ## Program ledger
 
-See docs/.ai_loop/spec_comp/MAINTENANCE_PROGRAM_LEDGER.md (gitignored;
-worktree-local) — iterations 1-7 summarized. Committed equivalents:
-the maintenance suites themselves + this registry.
+90 iterations (2026-10-01 → 2026-10-23). Committed evidence: 77
+maintenance-era pin suites under tests/fhir_conformance/ plus this
+registry. Six fix-batches (fixbatch2/3/4/6 + serving-pin + V1/N1/N2)
+resolved 24 findings; 102 rows remain open (severity-ordered above;
+round-3 audit removed 2 stale duplicate K1/K2 open rows).
+
+Surface coverage map (TS-01 … TS-80): FHIR ops (lookup/
+validate-code/subsumes/expand/translate/closure/search/extract),
+XML parity, transport parity (GET/POST/batch ×query/body), error
+shapes, CapabilityStatement truth, paging matrices, retired codes,
+concurrency, conditional requests, MCP (38 tools runtime + schema
+layer + runtime health), REST facade, RemoteApiEngine end-to-end,
+CLI (17 commands incl. discovery/hierarchy/data families), Terminology
+client, registry structure + live re-sweep. 11 controls-clean
+surfaces: TS-28/33/36/42/43/61/63/74/76/77/79.
+
+Family census (open rows by root pattern):
+- silent-drop / accepted-and-ignored params — 13 open (the largest
+  family; anchored by EA's matrix and the per-op tails W4 closed)
+- advertisement / discovery gaps — 7 open (P1/W3/Q1/Y1/BC1/L2/HM1)
+- truncation-unobservable — 5 open (VS02-01 anchor + SC1/MC1/SN1/HQ2
+  across search/MCP/REST/CLI)
+- validation-by-mode — 4 open (RQ1/RQ2 anchored; G2/EM1 siblings)
+- miss-encoding conventions — 3 open after the matrix closed PD1/RS2
+  (documented per-surface doctrine; PC1 records the final quadrant)
+
+Resolution doctrine: fix-batches land families (not rows); the
+flip-on-fix pins travel with each batch; the live re-sweep (TS-77)
+guards unpinned rows against silent drift.
+
 
 ## Rules
 
