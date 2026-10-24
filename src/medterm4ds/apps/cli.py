@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import argparse
 import functools
+import json
 import os
 import sys
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 
 from medterm4ds.core.config import (
@@ -28,6 +30,7 @@ from medterm4ds.outputs import (
     write_fhir_concept_map,
     write_jsonl,
 )
+from medterm4ds.services.athena import DEFAULT_VOCABULARIES
 from medterm4ds.services.bulk import (
     iter_hierarchy_bulk,
     iter_lookup_bulk,
@@ -341,6 +344,58 @@ def build_parser() -> argparse.ArgumentParser:
     data_cache_list = data_subparsers.add_parser(
         "cache-list", help="List artifact-repo tags and branches (network call).")
     data_cache_list.set_defaults(func=run_data_cache_list)
+
+    # Athena vocabulary ingestion (design note
+    # docs/plans/athena-vocabulary-support-design.md, approved 2026-10-23).
+    data_ingest_athena = data_subparsers.add_parser(
+        "ingest-athena",
+        help="Load OHDSI Athena vocabulary CSVs into athena_* tables.",
+    )
+    data_ingest_athena.add_argument(
+        "--db", required=True,
+        help="Existing (or new) DuckDB database path for the athena_* tables.",
+    )
+    data_ingest_athena.add_argument(
+        "--athena-dir", required=True,
+        help="Athena download directory (CONCEPT.csv and friends).",
+    )
+    data_ingest_athena.add_argument(
+        "--vocabularies", default=",".join(DEFAULT_VOCABULARIES),
+        help="Comma-separated vocabulary_id filter (default: %(default)s).",
+    )
+    data_ingest_athena.add_argument(
+        "--accept-licenses", action="store_true",
+        help="Confirm the printed licensing notice (recorded in athena_meta).",
+    )
+    data_ingest_athena.set_defaults(func=run_data_ingest_athena)
+
+    data_export_conceptmap = data_subparsers.add_parser(
+        "export-conceptmap",
+        help="Export the ingested Athena CONCEPT table as a FHIR "
+             "ConceptMap resource (the OMOP VD join source).",
+    )
+    data_export_conceptmap.add_argument(
+        "--db", required=True,
+        help="DuckDB database path with ingested athena_* tables.",
+    )
+    data_export_conceptmap.add_argument(
+        "--out", required=True, help="Output path (.json or .ndjson).",
+    )
+    data_export_conceptmap.add_argument(
+        "--vocabularies", default=",".join(DEFAULT_VOCABULARIES),
+        help="Comma-separated vocabulary_id filter.",
+    )
+    data_export_conceptmap.add_argument(
+        "--include-internal", action="store_true",
+        help="Emit vocabs without a FHIR system under urn:athena:* groups.",
+    )
+    data_export_conceptmap.add_argument(
+        "--form", choices=("thin", "monolithic"), default="thin",
+        help="thin = one ConceptMap per mapping row (NDJSON; the OMOP VD "
+             "join contract — scalar code+system ON pairs). monolithic = "
+             "one resource with nested groups. Default: %(default)s.",
+    )
+    data_export_conceptmap.set_defaults(func=run_data_export_conceptmap)
 
     return parser
 
@@ -1996,6 +2051,115 @@ def run_data_cache_list(args: argparse.Namespace) -> int:
     from medterm4ds.core.artifact_cache import cache_list_remote
 
     sys.stdout.write(_json_dumps(cache_list_remote()))
+    return 0
+
+
+def run_data_ingest_athena(args: argparse.Namespace) -> int:
+    """Athena ingestion CLI (design note §1): licensing notice first,
+    then the staging-swap load with a provenance block."""
+    import duckdb
+
+    from medterm4ds.services.athena import (
+        ingest_athena,
+        licensing_notice,
+    )
+
+    vocabs = tuple(
+        v.strip()
+        for v in args.vocabularies.split(",") if v.strip()
+    )
+    sys.stderr.write(licensing_notice(vocabs) + "\n")
+    if not args.accept_licenses:
+        sys.stderr.write(
+            "Not ingesting: pass --accept-licenses to confirm.\n"
+        )
+        return 2
+    con = duckdb.connect(args.db)
+    try:
+        result = ingest_athena(
+            con,
+            args.athena_dir,
+            vocabularies=vocabs,
+            accept_licenses=True,
+            licenses_accepted_at=datetime.now(timezone.utc).isoformat(),
+        )
+    finally:
+        con.close()
+    sys.stdout.write(_json_dumps({
+        "row_counts": result.row_counts,
+        "vocabularies": list(result.vocabularies),
+    }))
+    return 0
+
+
+def run_data_export_conceptmap(args: argparse.Namespace) -> int:
+    """Athena → FHIR ConceptMap converter CLI (design note §3; the
+    fhir4ds OMOP VD join source)."""
+    import duckdb
+
+    from medterm4ds.services.athena import build_concept_map
+
+    vocabs = tuple(
+        v.strip()
+        for v in args.vocabularies.split(",") if v.strip()
+    )
+    out = Path(args.out)
+    from medterm4ds.services.athena import (
+        iter_thin_concept_map_rows,
+    )
+
+    con = duckdb.connect(args.db, read_only=True)
+    try:
+        if args.form == "thin":
+            n = 0
+            with out.open("w", encoding="utf-8") as fh:
+                for row in iter_thin_concept_map_rows(
+                    con,
+                    vocabularies=vocabs,
+                    include_internal=args.include_internal,
+                ):
+                    fh.write(
+                        json.dumps(row, ensure_ascii=False) + "\n"
+                    )
+                    n += 1
+            url = row["url"] if n else (
+                "urn:medterm4ds:athena-conceptmap"
+            )
+            sys.stdout.write(_json_dumps({
+                "url": url, "form": "thin", "rows": n,
+                "out": str(out),
+            }))
+            return 0
+        resource = build_concept_map(
+            con,
+            vocabularies=vocabs,
+            include_internal=args.include_internal,
+        )
+    finally:
+        con.close()
+    if out.suffix == ".ndjson":
+        with out.open("w", encoding="utf-8") as fh:
+            for group in resource["group"]:
+                line = {
+                    k: v for k, v in resource.items() if k != "group"
+                }
+                line["group"] = [group]
+                fh.write(json.dumps(line, ensure_ascii=False) + "\n")
+    else:
+        out.write_text(
+            json.dumps(resource, ensure_ascii=False) + "\n",
+            encoding="utf-8",
+        )
+    n_elements = sum(
+        len(g["element"]) for g in resource["group"]
+    )
+    sys.stdout.write(_json_dumps({
+        "url": resource["url"],
+        "form": "monolithic",
+        "groups": len(resource["group"]),
+        "elements": n_elements,
+        "out": str(out),
+    }))
     return 0
 
 
