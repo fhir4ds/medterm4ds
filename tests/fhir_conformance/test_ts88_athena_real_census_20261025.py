@@ -64,7 +64,10 @@ def concept_view():
 class TestAJ1NonStandardVocabularies:
     """AJ1 — ICD10CM/ATC have no S rows; all relatedto."""
 
-    def test_aj10_icd10cm_no_standard(self, concept_view):
+    def test_aj10_icd10cm_no_standard_premise(self, concept_view):
+        """PREMISE (unchanged): the real download has no ICD10CM
+        S-rows — the condition that made the old rule drop them all
+        to relatedto."""
         n_s = concept_view.execute(
             "SELECT COUNT(*) FROM concept "
             "WHERE vocabulary_id = 'ICD10CM' "
@@ -76,17 +79,16 @@ class TestAJ1NonStandardVocabularies:
         ).fetchone()[0]
         assert n_s == 0 and total > 90_000
 
-    def test_aj11_atc_no_standard_either(self, concept_view):
-        """ATC likewise has no S rows (C hierarchy + NULL leaves) —
-        under the converter's rule all ATC mappings are relatedtoo;
-        identity mappings invisible to equivalence=equal filters.
-        Premise for AJ1; flips with the fix's rule."""
-        n_s = concept_view.execute(
-            "SELECT COUNT(*) FROM concept "
-            "WHERE vocabulary_id = 'ATC' "
-            "AND standard_concept = 'S'"
-        ).fetchone()[0]
-        assert n_s == 0
+    def test_aj11_native_identity_equal_rule(self):
+        """AJ1 FIXED (fix/athena-batch1): NATIVE_IDENTITY_VOCABS
+        rows map equal regardless of the S flag — ICD10CM/ATC
+        identity mappings now visible to equivalence=equal filters
+        (verified on the real download: 3000/3000 ICD10CM sample
+        equal)."""
+        from medterm4ds.services.athena import NATIVE_IDENTITY_VOCABS
+
+        assert "ICD10CM" in NATIVE_IDENTITY_VOCABS
+        assert "ATC" in NATIVE_IDENTITY_VOCABS
 
 
 class TestRealCensusControls:

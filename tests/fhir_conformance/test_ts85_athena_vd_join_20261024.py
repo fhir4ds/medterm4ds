@@ -129,3 +129,56 @@ class TestVDJoinContract:
             "ON cm.system_uri = r.system_uri AND cm.code = r.code"
         ).fetchall()
         assert joined == []
+
+
+class TestMonolithicVDJoin:
+    """Rev-2 contract re-pin: the MONOLITHIC artifact is also
+    scalar-joinable (same staged list_extract flatten, one extra
+    level over the groups list)."""
+
+    @pytest.fixture(scope="class")
+    def mono_view(self, ndjson):
+        # Reuse the thin rows to build a monolithic resource, then
+        # flatten it the way a VD would.
+        import json as _json
+
+        rows = [
+            _json.loads(line)
+            for line in ndjson.read_text().splitlines()
+        ]
+        mono = dict(rows[0])
+        groups = []
+        for r in rows:
+            groups.extend(r["group"])
+        mono["group"] = groups
+        out = ndjson.parent / "mono.json"
+        out.write_text(_json.dumps(mono))
+        con = duckdb.connect()
+        con.execute(
+            f"CREATE VIEW mg AS SELECT unnest(r.\"group\") AS g "
+            f"FROM read_json_auto('{out}') r"
+        )
+        con.execute(
+            "CREATE VIEW mflat AS SELECT "
+            "list_extract(g.element, 1) AS e, g.source AS system_uri "
+            "FROM mg"
+        )
+        con.execute(
+            "CREATE VIEW mscalar AS SELECT system_uri, e.code AS code, "
+            "list_extract(e.target, 1) AS t FROM mflat"
+        )
+        yield con
+        con.close()
+
+    def test_m10_scalar_join_monolithic(self, mono_view):
+        mono_view.execute(
+            "CREATE OR REPLACE TEMP TABLE res AS SELECT * FROM "
+            "(VALUES ('http://snomed.info/sct','44054006','obs1')) "
+            "t(system_uri, code, res_id)"
+        )
+        joined = mono_view.execute(
+            "SELECT r.res_id, s.t.code AS concept_id, s.t.equivalence "
+            "FROM res r JOIN mscalar s "
+            "ON s.system_uri = r.system_uri AND s.code = r.code"
+        ).fetchall()
+        assert joined == [("obs1", "21602787", "equal")]

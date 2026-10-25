@@ -43,6 +43,17 @@ ATHENA_VOCAB_TO_FHIR: dict[str, str] = {
 # concept_ids; it maps to the SAME FHIR system as RxNorm but with
 # equivalence=relatedto (non-standard source codes).
 
+# AJ1 fix (TS-88): vocabularies whose concept_code IS the native
+# coding — code → own-concept_id is an IDENTITY map, not a
+# crosswalk. The real download carries no standard_concept='S' rows
+# for these (ICD10CM all-NULL; ATC C-hierarchy + NULL leaves), so
+# the S-based rule mapped every such row to relatedto and VD
+# consumers filtering equivalence=equal silently dropped the entire
+# vocabulary. Identity rows are equal regardless of the S flag.
+NATIVE_IDENTITY_VOCABS = frozenset({
+    "ICD10CM", "ICD10PCS", "ATC", "HCPCS", "NDC", "ICD10", "ICD9CM",
+})
+
 DEFAULT_VOCABULARIES = (
     "SNOMED", "RxNorm", "RxNorm Extension", "LOINC",
     "ICD10CM", "ICD10PCS", "CPT4", "HCPCS", "ATC",
@@ -134,12 +145,34 @@ def ingest_athena(
                 """
             )
         elif table == "concept_ancestor":
+            # AR1 fix (TS-87): the REAL Athena download ships
+            # ancestor_concept_id / descendant_concept_id (the
+            # official OMOP CDM v5 names); the original loader
+            # guessed ancestor_id/descendant_id and could not ingest
+            # a real download at all (the mini fixture shared the
+            # wrong assumption). Detect the header shape and select
+            # the actual names; athena_* output columns keep the
+            # CDM-official names either way.
+            with open(src, encoding="utf-8") as fh:
+                header = fh.readline().strip().split("\t")
+            anc_col = (
+                "ancestor_concept_id"
+                if "ancestor_concept_id" in header
+                else "ancestor_id"
+            )
+            desc_col = (
+                "descendant_concept_id"
+                if "descendant_concept_id" in header
+                else "descendant_id"
+            )
             con.execute(
                 f"""
                 CREATE TABLE {staging} AS
                 SELECT
-                    CAST(ancestor_id AS BIGINT) AS ancestor_id,
-                    CAST(descendant_id AS BIGINT) AS descendant_id,
+                    CAST({anc_col} AS BIGINT)
+                        AS ancestor_concept_id,
+                    CAST({desc_col} AS BIGINT)
+                        AS descendant_concept_id,
                     CAST(min_levels_of_separation AS INTEGER)
                         AS min_levels_of_separation,
                     CAST(max_levels_of_separation AS INTEGER)
@@ -188,6 +221,36 @@ def ingest_athena(
         counts[table] = con.execute(
             f"SELECT COUNT(*) FROM {target}"
         ).fetchone()[0]
+
+    # AG1 fix (TS-84): the vocabulary filter previously applied only
+    # to CONCEPT — ancestry and relationship tables loaded in FULL,
+    # leaving orphan rows referencing absent concept_ids (millions
+    # on real downloads: bloat + silent join-integrity gaps). Semi-
+    # join both endpoints against the loaded concept set; the counts
+    # below reflect the FILTERED tables.
+    for edge_sql in (
+        """
+        DELETE FROM athena_concept_ancestor
+        WHERE ancestor_concept_id NOT IN
+              (SELECT concept_id FROM athena_concept)
+           OR descendant_concept_id NOT IN
+              (SELECT concept_id FROM athena_concept)
+        """,
+        """
+        DELETE FROM athena_concept_relationship
+        WHERE concept_id_1 NOT IN
+              (SELECT concept_id FROM athena_concept)
+           OR concept_id_2 NOT IN
+              (SELECT concept_id FROM athena_concept)
+        """,
+    ):
+        con.execute(edge_sql)
+    counts["concept_ancestor"] = con.execute(
+        "SELECT COUNT(*) FROM athena_concept_ancestor"
+    ).fetchone()[0]
+    counts["concept_relationship"] = con.execute(
+        "SELECT COUNT(*) FROM athena_concept_relationship"
+    ).fetchone()[0]
 
     versions = con.execute(
         "SELECT vocabulary_id, vocabulary_version FROM athena_vocabulary"
@@ -289,6 +352,8 @@ def build_concept_map(
         ) in by_vocab[vocab]:
             if invalid and standard == "S":
                 equivalence = "unmatched"
+            elif vocab in NATIVE_IDENTITY_VOCABS:
+                equivalence = "equal"
             elif standard == "S" and vocab != "RxNorm Extension":
                 equivalence = "equal"
             else:
@@ -397,6 +462,8 @@ def iter_thin_concept_map_rows(
             source_uri = f"urn:athena:{vocab.lower().replace(' ', '-')}"
         if invalid and standard == "S":
             equivalence = "unmatched"
+        elif vocab in NATIVE_IDENTITY_VOCABS:
+            equivalence = "equal"
         elif standard == "S" and vocab != "RxNorm Extension":
             equivalence = "equal"
         else:

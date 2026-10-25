@@ -55,30 +55,33 @@ class TestAR1AncestorColumnDrift:
         ).read_text().splitlines()[0]
         assert header.startswith(REAL_HEADER)
 
-    def test_ar11_loader_fails_on_real_download(self, tmp_path):
-        """THE BUG: ingest against the real dir raises
-        duckdb.BinderException (ancestor_id does not exist). Flip
-        when the loader reads/aliases the real column names."""
+    def test_ar11_loader_ingests_real_download(self, tmp_path):
+        """AR1 FIXED (fix/athena-batch1): the loader detects the
+        real header (ancestor_concept_id/descendant_concept_id) and
+        ingests the actual download — 4,088,225 concept rows at the
+        default vocab set (the TS-88 baseline)."""
         import duckdb
 
         from medterm4ds.services.athena import ingest_athena
 
         con = duckdb.connect(str(tmp_path / "real.duckdb"))
-        with pytest.raises(Exception, match="ancestor"):
-            ingest_athena(
-                con, REAL_DIR,
-                vocabularies=("SNOMED", "RxNorm"),
-                accept_licenses=True,
-                licenses_accepted_at="ts87",
-            )
+        result = ingest_athena(
+            con, REAL_DIR,
+            vocabularies=("SNOMED", "RxNorm"),
+            accept_licenses=True,
+            licenses_accepted_at="ts87-fixed",
+        )
+        assert result.row_counts["concept"] == 1_361_562  # SNOMED+RxNorm real
         con.close()
 
-    def test_ar12_loader_source_assumption(self):
-        """Premise: the loader SELECTs the WRONG names (source-level
-        control so the fix flips BOTH pins together)."""
+    def test_ar12_loader_header_detect(self):
+        """AR1 FIXED: the loader detects the header shape
+        (source-level control — header-detect present, no hardcoded
+        wrong names)."""
         import inspect
 
         from medterm4ds.services import athena
 
         src = inspect.getsource(athena.ingest_athena)
-        assert "CAST(ancestor_id AS BIGINT)" in src
+        assert "ancestor_concept_id" in src
+        assert "\"ancestor_concept_id\" in header" in src

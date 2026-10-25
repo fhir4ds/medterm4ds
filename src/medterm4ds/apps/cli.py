@@ -390,10 +390,13 @@ def build_parser() -> argparse.ArgumentParser:
         help="Emit vocabs without a FHIR system under urn:athena:* groups.",
     )
     data_export_conceptmap.add_argument(
-        "--form", choices=("thin", "monolithic"), default="thin",
+        "--form", choices=("thin", "monolithic", "auto"), default="auto",
         help="thin = one ConceptMap per mapping row (NDJSON; the OMOP VD "
              "join contract — scalar code+system ON pairs). monolithic = "
-             "one resource with nested groups. Default: %(default)s.",
+             "one resource with nested groups. auto (default) derives "
+             "from --out's extension (.ndjson → thin, .json → "
+             "monolithic); an explicit form that mismatches the "
+             "extension warns.",
     )
     data_export_conceptmap.set_defaults(func=run_data_export_conceptmap)
 
@@ -2085,6 +2088,28 @@ def run_data_ingest_athena(args: argparse.Namespace) -> int:
         )
     finally:
         con.close()
+    # AF3 fix (TS-83): unknown vocabularies were silently dropped —
+    # loud per the HQ1 doctrine. The VOCABULARY.csv from the download
+    # tells us what exists; reopen read-only to check.
+    con = duckdb.connect(args.db, read_only=True)
+    try:
+        known = {
+            r[0]
+            for r in con.execute(
+                "SELECT vocabulary_id FROM athena_vocabulary"
+            ).fetchall()
+        }
+    finally:
+        con.close()
+    unknown = [v for v in vocabs if v not in known]
+    if unknown:
+        print(
+            f"Error: unknown vocabulary_id(s): "
+            f"{', '.join(unknown)} — the download's VOCABULARY.csv "
+            f"lists: {', '.join(sorted(known))}.",
+            file=sys.stderr,
+        )
+        return 2
     sys.stdout.write(_json_dumps({
         "row_counts": result.row_counts,
         "vocabularies": list(result.vocabularies),
@@ -2108,9 +2133,47 @@ def run_data_export_conceptmap(args: argparse.Namespace) -> int:
         iter_thin_concept_map_rows,
     )
 
+    # AF1 fix (TS-83): a missing database dies with a raw duckdb
+    # IOException traceback — actionable Error naming the path per
+    # the BL2/HT2 config-boundary doctrine.
+    if not Path(args.db).exists():
+        print(
+            f"Error: database not found: {args.db} — pass the path "
+            "produced by 'medterm4ds data build-duckdb' (or an "
+            "existing umls duckdb).",
+            file=sys.stderr,
+        )
+        return 2
     con = duckdb.connect(args.db, read_only=True)
+    # AF2 fix (TS-83): pointing at a DB that never ran ingest-athena
+    # died with a raw CatalogException; name the remedy instead.
+    present = {r[0] for r in con.execute("SHOW TABLES").fetchall()}
+    missing = {"athena_concept", "athena_vocabulary"} - present
+    if missing:
+        con.close()
+        print(
+            "Error: no athena_* tables in this database — run "
+            "'medterm4ds data ingest-athena' first "
+            "(missing: " + ", ".join(sorted(missing)) + ").",
+            file=sys.stderr,
+        )
+        return 2
+    # AF4 fix (TS-83): the form was invisible in the filename —
+    # derive from the extension unless explicitly chosen, and warn
+    # on explicit mismatch.
+    if args.form == "auto":
+        form = "monolithic" if out.suffix == ".json" else "thin"
+    else:
+        form = args.form
+        natural = "monolithic" if out.suffix == ".json" else "thin"
+        if form != natural:
+            sys.stderr.write(
+                f"Warning: --form {form} but --out {out.suffix} "
+                f"naturally carries {natural} content; writing "
+                f"{form} anyway.\n"
+            )
     try:
-        if args.form == "thin":
+        if form == "thin":
             n = 0
             with out.open("w", encoding="utf-8") as fh:
                 for row in iter_thin_concept_map_rows(

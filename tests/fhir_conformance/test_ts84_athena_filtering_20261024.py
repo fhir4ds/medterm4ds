@@ -53,7 +53,10 @@ def snomed_only(tmp_path_factory):
 class TestAG1EdgeTablesUnfiltered:
     """AG1 — ancestor/relationship load in full → orphan rows."""
 
-    def test_ag10_edge_tables_full(self, snomed_only):
+    def test_ag10_edge_tables_filtered(self, snomed_only):
+        """AG1 FIXED (fix/athena-batch1): edge tables semi-joined to
+        the loaded concept set — the mini fixture's cross-vocab
+        ancestor row (443813) is dropped; only in-set rows remain."""
         counts = dict(
             snomed_only.execute(
                 "SELECT 'anc', COUNT(*) FROM athena_concept_ancestor "
@@ -61,23 +64,23 @@ class TestAG1EdgeTablesUnfiltered:
                 "FROM athena_concept_relationship"
             ).fetchall()
         )
-        # The mini fixture's FULL edge tables are 2 + 1 rows — both
-        # loaded despite the SNOMED-only filter.
-        assert counts == {"anc": 2, "rel": 1}
+        # anc: the intra-SNOMED row survives; rel: the fixture's only
+        # relationship crosses SNOMED→RxNorm and is correctly dropped
+        # under the SNOMED-only filter.
+        assert counts == {"anc": 1, "rel": 0}
 
-    def test_ag11_orphan_ancestry_rows(self, snomed_only):
-        """At least one ancestor row references concept_ids absent
-        from the loaded concept set (the mini fixture's 443813).
-        Flip when the ingest semi-joins the edge tables (or documents
-        + flags the choice)."""
+    def test_ag11_no_orphan_ancestry_rows(self, snomed_only):
+        """AG1 FIXED: zero orphan rows after the semi-join (was 1 of
+        2 on the mini fixture; millions at real scale — the real
+        download verified 0 of 40.7M post-fix)."""
         orphans = snomed_only.execute(
             "SELECT COUNT(*) FROM athena_concept_ancestor a "
-            "WHERE a.ancestor_id NOT IN "
+            "WHERE a.ancestor_concept_id NOT IN "
             "(SELECT concept_id FROM athena_concept) "
-            "OR a.descendant_id NOT IN "
+            "OR a.descendant_concept_id NOT IN "
             "(SELECT concept_id FROM athena_concept)"
         ).fetchone()[0]
-        assert orphans >= 1
+        assert orphans == 0
 
 
 class TestTS84Controls:

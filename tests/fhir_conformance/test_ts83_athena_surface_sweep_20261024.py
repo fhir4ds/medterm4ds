@@ -69,10 +69,13 @@ def _cli(*args: str) -> subprocess.CompletedProcess:
 @pytest.fixture(scope="module")
 def ingested_db(tmp_path_factory):
     db = str(tmp_path_factory.mktemp("ts83") / "m.duckdb")
+    # AF3 (fixbatch): the default vocabulary list would error
+    # against the mini fixture's two-vocab VOCABULARY.csv; the
+    # fixture legitimately ingests just the vocabs it has.
     proc = _cli(
         "data", "ingest-athena",
         "--db", db, "--athena-dir", str(MINI),
-        "--accept-licenses",
+        "--accept-licenses", "--vocabularies", "SNOMED,RxNorm",
     )
     assert proc.returncode == 0
     return db
@@ -81,20 +84,25 @@ def ingested_db(tmp_path_factory):
 class TestAF1MissingDB:
     """AF1 — raw IOException at the config boundary."""
 
-    def test_af10_missing_db_traceback(self, tmp_path):
+    def test_af10_missing_db_actionable(self, tmp_path):
+        """AF1 FIXED: actionable Error naming the path (was raw
+        IOException traceback)."""
         proc = _cli(
             "data", "export-conceptmap",
             "--db", str(tmp_path / "missing.duckdb"),
             "--out", str(tmp_path / "x.json"),
         )
-        assert proc.returncode != 0
-        assert "IOException" in proc.stderr  # raw, not actionable
+        assert proc.returncode == 2
+        assert "database not found" in proc.stderr
+        assert "missing.duckdb" in proc.stderr
 
 
 class TestAF2NoAthenaTables:
     """AF2 — CatalogException without ingest."""
 
-    def test_af20_valid_db_no_tables(self, tmp_path):
+    def test_af20_valid_db_no_tables_actionable(self, tmp_path):
+        """AF2 FIXED: 'run ingest-athena first' names the remedy
+        (was raw CatalogException)."""
         import duckdb
 
         db = str(tmp_path / "empty.duckdb")
@@ -103,48 +111,63 @@ class TestAF2NoAthenaTables:
             "data", "export-conceptmap",
             "--db", db, "--out", str(tmp_path / "x.json"),
         )
-        assert proc.returncode != 0
-        assert "CatalogException" in proc.stderr
+        assert proc.returncode == 2
+        assert "ingest-athena" in proc.stderr
 
 
 class TestAF3UnknownVocabularies:
     """AF3 — silent drop from --vocabularies."""
 
-    def test_af30_export_bogus_vocab_silent(self, ingested_db, tmp_path):
+    def test_af30_ingest_bogus_vocab_loud(self, tmp_path):
+        """AF3 FIXED (ingest side): unknown vocabulary_id errors
+        listing the download's actual vocabularies (was silent 0
+        rows exit 0)."""
         proc = _cli(
-            "data", "export-conceptmap",
-            "--db", ingested_db,
-            "--out", str(tmp_path / "x.json"),
-            "--vocabularies", "SNOMED,BOGUS",
+            "data", "ingest-athena",
+            "--db", str(tmp_path / "b.duckdb"),
+            "--athena-dir", str(MINI),
+            "--accept-licenses", "--vocabularies", "SNOMED,BOGUS",
         )
-        assert proc.returncode == 0
-        body = json.loads(proc.stdout)
-        assert body["rows"] > 0  # BOGUS contributed nothing, no signal
+        assert proc.returncode == 2
+        assert "BOGUS" in proc.stderr
+        assert "unknown vocabulary" in proc.stderr
 
-    def test_af31_ingest_bogus_only_zero_rows(self, tmp_path):
+    def test_af31_ingest_bogus_only_errors(self, tmp_path):
+        """AF3 FIXED: BOGUS-only errors with the known list."""
         proc = _cli(
             "data", "ingest-athena",
             "--db", str(tmp_path / "b.duckdb"),
             "--athena-dir", str(MINI),
             "--accept-licenses", "--vocabularies", "BOGUS",
         )
-        assert proc.returncode == 0
-        assert json.loads(proc.stdout)["row_counts"]["concept"] == 0
+        assert proc.returncode == 2
+        assert "SNOMED" in proc.stderr  # the remedy lists the known
 
 
 class TestAF4ExtensionFormMismatch:
     """AF4 — thin NDJSON content under a .json name."""
 
-    def test_af40_thin_content_in_json_file(self, ingested_db, tmp_path):
-        out = tmp_path / "x.json"
+    def test_af40_form_derived_from_extension(self, ingested_db, tmp_path):
+        """AF4 FIXED: auto (default) derives the form from the
+        extension — .json gets monolithic (one JSON doc), .ndjson
+        gets thin; explicit mismatch warns."""
+        out_json = tmp_path / "x.json"
         proc = _cli(
             "data", "export-conceptmap",
-            "--db", ingested_db, "--out", str(out),
+            "--db", ingested_db, "--out", str(out_json),
         )
         assert proc.returncode == 0
-        assert json.loads(proc.stdout)["form"] == "thin"
-        lines = out.read_text().strip().splitlines()
-        assert len(lines) > 1  # NDJSON content in a .json filename
+        assert json.loads(proc.stdout)["form"] == "monolithic"
+        # one JSON document, not NDJSON lines
+        json.loads(out_json.read_text())
+        # explicit mismatch warns:
+        proc2 = _cli(
+            "data", "export-conceptmap",
+            "--db", ingested_db, "--out", str(tmp_path / "y.json"),
+            "--form", "thin",
+        )
+        assert proc2.returncode == 0
+        assert "Warning" in proc2.stderr
 
 
 class TestTS83Controls:

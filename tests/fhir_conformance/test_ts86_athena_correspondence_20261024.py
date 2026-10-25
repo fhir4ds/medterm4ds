@@ -55,12 +55,14 @@ class TestAC1UnresolvableEntries:
             ("NDC", "http://hl7.org/fhir/sid/ndc"),
         ],
     )
-    def test_ac10_engine_cannot_resolve(self, vocab, uri):
-        """The bridge emits URIs the engine's system map returns None
-        for — VD-joinable but $validate-code-400. Flip when AL2's
-        OID-map extension lands (engine resolves both)."""
+    def test_ac10_engine_resolves(self, vocab, uri):
+        """AC1 FIXED (fix/athena-batch1): the engine's alias map
+        now resolves the bridge's HCPCS urn:oid and NDC forms —
+        bridge-joinable AND $validate-code-resolvable on the same
+        server (closes AL2's OID-gap rows with it)."""
         assert ATHENA_VOCAB_TO_FHIR[vocab] == uri
-        assert fhir_uri_to_system(uri) is None
+        sab = fhir_uri_to_system(uri)
+        assert sab == vocab
 
 
 class TestTS86Controls:
