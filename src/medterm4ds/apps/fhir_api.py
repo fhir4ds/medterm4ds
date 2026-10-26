@@ -3812,6 +3812,20 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
         # Use BFS with early-exit (stop_at) so the typical case (1 hop) is one
         # SQL query. The previous recursive get_descendants(max_depth=20) walked
         # the entire A subtree and timed out for wide SNOMED roots.
+        # Design §2 (Athena stage 2): when the opt-in flag is set AND the
+        # engine's DB carries athena_* tables AND both codes resolve to
+        # Athena concept_ids via the code-identity bridge, answer from the
+        # PRECOMPUTED closure — exact, no caps (AN2: the VS02-01 family's
+        # answer). UMLS codes are still validated above; the flag only
+        # changes the RELATIONSHIP evidence source, never the input
+        # contract. Off by default; parity must be measured before any
+        # default change (the design's explicit instruction).
+        if os.getenv("MEDTERM4DS_ATHENA_SUBSUMES", "") == "1":
+            athena_outcome = _athena_subsumes_fast_path(
+                engine, system_uri, code_a, code_b
+            )
+            if athena_outcome is not None:
+                return build_parameters_subsumes(athena_outcome)
         a_ref = CodeRef(source=source, code=code_a)
         b_ref = CodeRef(source=source, code=code_b)
         if is_descendant(a_ref, b_ref, engine=engine, max_depth=20):
@@ -3819,6 +3833,51 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
         if is_descendant(b_ref, a_ref, engine=engine, max_depth=20):
             return build_parameters_subsumes("subsumed-by")
         return build_parameters_subsumes("not-subsumed")
+
+    def _athena_subsumes_fast_path(
+        engine: LocalDuckDBEngine,
+        system_uri: str,
+        code_a: str,
+        code_b: str,
+    ) -> str | None:
+        """Athena closure fast path; None = fall back to the UMLS walk.
+
+        Both codes must resolve to Athena concepts under the SAME
+        vocabulary implied by the FHIR system (code-identity bridge);
+        anything else falls through unchanged.
+        """
+        from medterm4ds.engines.fhir import fhir_uri_to_system
+        from medterm4ds.services.athena import (
+            ATHENA_VOCAB_TO_FHIR,
+            athena_subsumes,
+        )
+
+        source = fhir_uri_to_system(system_uri)
+        if source is None:
+            return None
+        vocabs = [
+            v
+            for v, uri in ATHENA_VOCAB_TO_FHIR.items()
+            if uri == system_uri
+            and v != "RxNorm Extension"
+        ]
+        if not vocabs:
+            return None
+        try:
+            ids = {}
+            for code in (code_a, code_b):
+                row = engine.con.execute(
+                    "SELECT concept_id FROM athena_concept "
+                    "WHERE concept_code = ? "
+                    f"AND vocabulary_id IN ({','.join('?' * len(vocabs))})",
+                    [code, *vocabs],
+                ).fetchone()
+                if row is None:
+                    return None  # not Athena-resolvable — fall through
+                ids[code] = row[0]
+        except Exception:
+            return None  # no athena tables — fall through
+        return athena_subsumes(engine.con, ids[code_a], ids[code_b])
 
     # -- CodeSystem $closure --
     @app.post("/fhir/CodeSystem/$closure")

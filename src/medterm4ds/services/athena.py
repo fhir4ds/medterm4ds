@@ -494,3 +494,188 @@ def iter_thin_concept_map_rows(
                 }],
             }],
         }
+
+
+# -- Stage 2: query surfaces (design note §2) -------------------------------
+
+
+def get_athena_ancestors(
+    con, concept_id: int, *, max_depth: int | None = None
+) -> list[dict[str, object]]:
+    """Exact ancestry via the precomputed closure (design §2).
+
+    Returns ancestor rows (concept_id, name, domain, vocabulary,
+    min/max separation) ordered farthest-first. `max_depth` filters
+    on min_levels_of_separation. The closure answers the VS02-01
+    family exactly (TS-90/AN2): one indexed scan, no BFS caps.
+    """
+    if not _athena_tables_present(con):
+        raise RuntimeError(
+            "no athena_* tables — run 'medterm4ds data "
+            "ingest-athena' first."
+        )
+    sql = """
+        SELECT a.ancestor_concept_id, c.concept_name, c.domain_id,
+               c.vocabulary_id,
+               CAST(a.min_levels_of_separation AS INTEGER) AS min_d,
+               CAST(a.max_levels_of_separation AS INTEGER) AS max_d
+        FROM athena_concept_ancestor a
+        JOIN athena_concept c
+          ON c.concept_id = a.ancestor_concept_id
+        WHERE a.descendant_concept_id = ?
+    """
+    params: list[object] = [concept_id]
+    if max_depth is not None:
+        sql += " AND CAST(a.min_levels_of_separation AS INTEGER) <= ?"
+        params.append(max_depth)
+    sql += " ORDER BY min_d DESC, a.ancestor_concept_id"
+    return [
+        {
+            "concept_id": r[0], "name": r[1], "domain": r[2],
+            "vocabulary": r[3], "min_levels": r[4], "max_levels": r[5],
+        }
+        for r in con.execute(sql, params).fetchall()
+    ]
+
+
+def get_athena_descendants(
+    con, concept_id: int, *, max_depth: int | None = None,
+    limit: int = 20,
+) -> list[dict[str, object]]:
+    """Exact descendants via the closure, nearest-first."""
+    if not _athena_tables_present(con):
+        raise RuntimeError(
+            "no athena_* tables — run 'medterm4ds data "
+            "ingest-athena' first."
+        )
+    sql = """
+        SELECT a.descendant_concept_id, c.concept_name, c.domain_id,
+               c.vocabulary_id,
+               CAST(a.min_levels_of_separation AS INTEGER) AS min_d,
+               CAST(a.max_levels_of_separation AS INTEGER) AS max_d
+        FROM athena_concept_ancestor a
+        JOIN athena_concept c
+          ON c.concept_id = a.descendant_concept_id
+        WHERE a.ancestor_concept_id = ?
+    """
+    params: list[object] = [concept_id]
+    if max_depth is not None:
+        sql += " AND CAST(a.min_levels_of_separation AS INTEGER) <= ?"
+        params.append(max_depth)
+    sql += " ORDER BY min_d ASC, a.descendant_concept_id LIMIT ?"
+    params.append(limit)
+    return [
+        {
+            "concept_id": r[0], "name": r[1], "domain": r[2],
+            "vocabulary": r[3], "min_levels": r[4], "max_levels": r[5],
+        }
+        for r in con.execute(sql, params).fetchall()
+    ]
+
+
+def count_athena_ancestors(con, concept_id: int) -> int:
+    """EXACT ancestor count — the VS02-01 family's answer (AN2)."""
+    return con.execute(
+        "SELECT COUNT(*) FROM athena_concept_ancestor "
+        "WHERE descendant_concept_id = ?",
+        [concept_id],
+    ).fetchone()[0]
+
+
+def athena_subsumes(
+    con, ancestor_id: int, descendant_id: int
+) -> str:
+    """$subsumes-style outcome via the closure (design §2's flagged
+    opt-in; exact — no caps).
+
+    Returns 'equivalent' | 'subsumes' | 'subsumed-by' |
+    'not-subsumed'.
+    """
+    if ancestor_id == descendant_id:
+        return "equivalent"
+    row = con.execute(
+        "SELECT 1 FROM athena_concept_ancestor "
+        "WHERE ancestor_concept_id = ? AND descendant_concept_id = ?",
+        [ancestor_id, descendant_id],
+    ).fetchone()
+    if row:
+        return "subsumes"
+    row = con.execute(
+        "SELECT 1 FROM athena_concept_ancestor "
+        "WHERE ancestor_concept_id = ? AND descendant_concept_id = ?",
+        [descendant_id, ancestor_id],
+    ).fetchone()
+    if row:
+        return "subsumed-by"
+    return "not-subsumed"
+
+
+def search_athena_concepts(
+    con,
+    query: str,
+    *,
+    domain_id: str | None = None,
+    vocabulary_id: str | None = None,
+    include_deprecated: bool = False,
+    limit: int = 20,
+) -> list[dict[str, object]]:
+    """Search athena_concept names with Athena-native filters
+    (design §2): domain_id, vocabulary_id, invalid_reason."""
+    if not str(query).strip():
+        raise ValueError("query must be a non-empty string")
+    if limit < 1:
+        raise ValueError("limit must be at least 1")
+    sql = """
+        SELECT concept_id, concept_name, domain_id, vocabulary_id,
+               concept_class_id, standard_concept, concept_code,
+               invalid_reason
+        FROM athena_concept
+        WHERE concept_name ILIKE ?
+    """
+    params: list[object] = [f"%{query}%"]
+    if domain_id is not None:
+        sql += " AND domain_id = ?"
+        params.append(domain_id)
+    if vocabulary_id is not None:
+        sql += " AND vocabulary_id = ?"
+        params.append(vocabulary_id)
+    if not include_deprecated:
+        sql += " AND (invalid_reason IS NULL OR invalid_reason = '')"
+    sql += " ORDER BY concept_id LIMIT ?"
+    params.append(limit)
+    return [
+        {
+            "concept_id": r[0], "name": r[1], "domain": r[2],
+            "vocabulary": r[3], "concept_class": r[4],
+            "standard": r[5], "code": r[6],
+            "invalid_reason": r[7] or None,
+        }
+        for r in con.execute(sql, params).fetchall()
+    ]
+
+
+def athena_health(con) -> dict[str, object]:
+    """Health block for the athena store (design §2): live-table
+    facts, NOT configured values (the HH1 doctrine)."""
+    if not _athena_tables_present(con):
+        return {"present": False}
+    vocabs = [
+        r[0]
+        for r in con.execute(
+            "SELECT DISTINCT vocabulary_id FROM athena_concept "
+            "ORDER BY vocabulary_id"
+        ).fetchall()
+    ]
+    meta = con.execute(
+        "SELECT loaded_at, vocabularies FROM athena_meta"
+    ).fetchone()
+    return {
+        "present": True,
+        "vocabularies": vocabs,
+        "loaded_at": meta[0] if meta else None,
+    }
+
+
+def _athena_tables_present(con) -> bool:
+    names = {r[0] for r in con.execute("SHOW TABLES").fetchall()}
+    return {"athena_concept", "athena_concept_ancestor"} <= names
