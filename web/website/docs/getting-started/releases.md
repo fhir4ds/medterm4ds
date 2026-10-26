@@ -4,6 +4,54 @@ title: Releases
 
 This page tracks Medical Terminology for Data Science package releases.
 
+## 0.0.6
+
+Athena vocabulary support release — the fhir4ds OMOP VD campaign's
+join source. No breaking API changes.
+
+Athena ingestion and the ConceptMap bridge:
+
+- `medterm4ds data ingest-athena --athena-dir <download>` loads
+  CONCEPT / CONCEPT_ANCESTOR / CONCEPT_RELATIONSHIP / VOCABULARY
+  into `athena_*` tables in an existing UMLS DuckDB (same-DB
+  namespaced; `--vocabularies` filters; a per-vocabulary licensing
+  notice prints first and `--accept-licenses` records the
+  acceptance in `athena_meta`). Real-data verified: 4,088,225
+  default-vocabulary rows in 16-39s, 40.7M ancestry rows
+  semi-joined to the loaded set (zero orphans), zero duplicate
+  `(vocabulary_id, concept_code)` pairs.
+- `medterm4ds data export-conceptmap --out <path>` emits the
+  ConceptMap artifact in TWO forms: **monolithic** (one resource,
+  nested groups per vocabulary — the standard artifact; the default
+  for `.json`) and **thin** (one ConceptMap per mapping row, NDJSON
+  — the scalar ON-pair join contract; the default for `.ndjson`).
+  `--form` overrides with a mismatch warning. Identity
+  vocabularies (ICD-10-CM, ICD-10-PCS, ATC, HCPCS, NDC) map
+  `equal` regardless of the standard_concept flag; deprecated
+  standard concepts carry `unmatched`; each group carries its
+  `vocabulary_version` provenance. Export at scale: thin 4.1M rows
+  in ~18s (~228k rows/s).
+- Engine alias extensions: the HCPCS `urn:oid:2.16.840.1.113883.6.14`
+  and `http://hl7.org/fhir/sid/ndc` forms now resolve —
+  Athena-bridge system URIs are `$validate-code`-clean.
+
+Licensing note: Athena downloads bundle vocabularies under terms
+that differ from the UMLS Metathesaurus license (SNOMED CT use is
+governed by the SNOMED Affiliates license; CPT requires the
+UMLS/AMA agreement even via Athena). The loader surfaces the notice
+table and requires explicit acceptance; redistribution of exported
+artifacts follows the strictest source vocabulary.
+
+Robustness (athena-batch1, from the nightly spec-comp program):
+real-schema header detection, edge-table semi-joins, actionable
+CLI boundary errors, loud unknown-vocabulary validation, and
+form-from-extension exports. Full registry in
+`docs/maintenance-findings-registry.md`.
+
+Benchmarks: Athena ingest 4.09M rows in 16-39s; export ~228k
+rows/s; search ladder unchanged (lexical ~1ms, semantic ~68ms,
+hybrid ~81ms, canonical ~32ms warm).
+
 ## 0.0.5
 
 Serving-stack and conformance-hardening release. No breaking API

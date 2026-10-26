@@ -51,6 +51,12 @@ FHIR_URI_ALIASES: dict[str, str] = {
     "urn:oid:2.16.840.1.113883.6.4": "ICD10PCS",
     "urn:oid:2.16.840.1.113883.6.59": "CVX",
     "urn:oid:2.16.840.1.113883.6.12": "CPT",
+    # AC1 fix (TS-86, closes AL2's OID gap): the urn:oid and NDC
+    # forms the Athena bridge emits for HCPCS/NDC were unresolvable
+    # (fhir_uri_to_system → None) — bridge-joinable codes that
+    # $validate-code 400'd on the same server.
+    "urn:oid:2.16.840.1.113883.6.14": "HCPCS",
+    "http://hl7.org/fhir/sid/ndc": "NDC",
     # Backwards-compat: the prior (incorrect) HCPCS URI was the THO
     # CodeSystem resource URL rather than the canonical system URI. Keep
     # it as an alias so existing clients that learned the wrong URI still

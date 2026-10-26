@@ -100,3 +100,38 @@ python3 scripts/download_umls_release.py \
   --output-db data/umls_2026aa.duckdb \
   --replace
 ```
+
+## OHDSI Athena vocabularies (v0.0.6+)
+
+medterm4ds can ingest an [Athena](https://athena.ohdsi.org) vocabulary
+download alongside the UMLS database — the source for OMOP/CDM
+workflows and the ConceptMap bridge the fhir4ds OMOP views consume.
+
+```bash
+# 1. Download vocabularies from Athena (choose your license set),
+#    then ingest into the SAME DuckDB as your UMLS data:
+medterm4ds data ingest-athena \
+  --db data/umls_current.duckdb \
+  --athena-dir ~/Downloads/vocabulary_download_v5_... \
+  --accept-licenses
+
+# 2. Export the ConceptMap artifact (OMOP concept_id join source):
+medterm4ds data export-conceptmap \
+  --db data/umls_current.duckdb \
+  --out data/athena_conceptmap.ndjson   # thin NDJSON (scalar joins)
+# --out data/athena_conceptmap.json     # monolithic (one resource)
+```
+
+- `--vocabularies` filters the load (default: SNOMED, RxNorm, RxNorm
+  Extension, LOINC, ICD-10-CM/PCS, CPT4, HCPCS, ATC); unknown ids
+  error loudly with the download's actual vocabulary list.
+- The licensing notice prints BEFORE any load and `--accept-licenses`
+  records acceptance in the `athena_meta` provenance table. SNOMED CT
+  use follows the SNOMED Affiliates license; CPT requires the
+  UMLS/AMA agreement even when bundled by Athena.
+- Edge tables (ancestry, relationships) are semi-joined to the loaded
+  vocabulary set — no orphan rows.
+- The two export forms: **monolithic** (standard artifact, `.json`)
+  and **thin** (one ConceptMap per mapping row, `.ndjson` — scalar
+  `(code, system)` ON pairs for SQL view-decomposition joins);
+  `--form` overrides with a mismatch warning.

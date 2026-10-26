@@ -33,6 +33,7 @@ SUITES themselves are committed and are the load-bearing contracts.
 | LK2 | LOW | 2026-10-16 | TS-50 $lookup OUT | version Out param never emitted (R4 §4.4.18.1 0..1) — clinical client cannot record which terminology version answered its lookup | test_ts50_lookup_out_params_20261016.py (k20) |
 | EP1 | LOW-MED | 2026-10-16 | TS-52 $expand output | mode-dependent envelope: url-mode wrapper carries url+status while filter/compose modes carry status only — filter-mode results are UNIDENTIFIED ValueSets (no url, no identifier); same op, three wrapper shapes (X1 content-varies-by-request family) | test_ts52_expand_output_shape_20261016.py (p10-p12) |
 | T2 | LOW | 2026-10-03 | TS-02/CM-02 $translate | "one (and only one)" input contract unenforced; silent scalar precedence | test_ts02_translate_semantics_20261003.py (t20) |
+| AN2 | LOW | 2026-10-26 | TS-90 athena ancestry seam | stage-2 design input (informational): CONCEPT_ANCESTOR answers the VS02-01 family EXACTLY on real data — T2DM = exactly 9 ancestors w/ per-pair min/max depths (multi-path +5-6 distinguished) vs the UMLS walk's capped approximations; the Athena hierarchy surface should read the closure directly (exact totals = one indexed COUNT) | test_ts90_athena_ancestry_seam_20261026.py (an10-an12) |
 | PC1 | LOW | 2026-10-23 | TS-80 Terminology client | fourth miss convention now on record: lookup() returns None for BOTH unknown-code and bogus-SOURCE (indistinguishable; CLI Errors on the same source input) while whitespace fails loud; completes the per-surface miss matrix (FHIR 400+OO / MCP null-record / REST [null] / client None) — registered as doctrine record, not accident | test_ts80_client_miss_20261023.py (pc10-pc12) |
 | MS1 | MEDIUM | 2026-10-22 | TS-78 MCP schemas | ZERO of 142 tool parameters carry descriptions — every tool has a top-level description but param schemas expose bare names+types; LLM clients guess semantics (condition vs indication = the EV2 confusion; SAB spellings; resolve_mode values); EV2 TypeErrors are the visible cost, silent-default successes worse; fix = pydantic Field(description=...) on the param models | test_ts78_mcp_schemas_20261022.py (ms10-ms12) |
 | HT2 | LOW-MED | 2026-10-22 | TS-75 FhirApiSettings | settings accepts str db_path but the lifespan requires Path — a str path to a MISSING db crashes startup with raw AttributeError ('str' has no 'exists') instead of an actionable not-found message (Path-typed settings get the right error); every Path-typed consumer is one str away from the same crash; fix = __post_init__ Path coercion or lifespan validation | test_ts75_health_boundary_20261022.py (ht20/ht21) |
@@ -118,6 +119,18 @@ SUITES themselves are committed and are the load-bearing contracts.
 | CF-HISTORIAN-CM03-02 | LOW | sweep | CM-03 | incomplete_since not surfaced | (sweep suites) |
 
 
+
+### Resolved: athena-batch1 (2026-10-25, fix/athena-batch1)
+
+| id | mechanism |
+|---|---|
+| AR1 | Loader header-detect: reads CONCEPT_ANCESTOR's first line and selects the ACTUAL column names (real downloads ship ancestor_concept_id/descendant_concept_id; legacy fixtures may ship ancestor_id/descendant_id); output columns CDM-official either way. Verified on the real 4.09M-row download (16s ingest). |
+| AG1 | Edge tables semi-joined to the loaded concept set post-load (DELETE both endpoints); real download verified 0 orphan of 40.7M ancestor rows (was millions). |
+| AF1/AF2 | export-conceptmap pre-flight: missing-db → actionable 'database not found: <path>' exit 2; no-athena-tables → 'run ingest-athena first' naming the missing tables, exit 2 (BL2/HT2 doctrine). |
+| AF3 | ingest validates requested vocabularies against the download's own VOCABULARY.csv post-load; unknown → error listing the known set, exit 2 (HQ1 doctrine). |
+| AF4 | --form auto (default) derives from --out extension (.json→monolithic, .ndjson→thin); explicit mismatch warns. |
+| AC1 | Engine alias map extended: urn:oid HCPCS + sid/ndc now resolve (closes AL2's OID rows with it). |
+| AJ1 | NATIVE_IDENTITY_VOCABS (ICD10CM/ICD10PCS/ATC/HCPCS/NDC/ICD10/ICD9CM) map equal regardless of the S flag — identity mappings visible to equivalence=equal filters; real-download verified 3000/3000 ICD10CM equal. |
 
 ### Resolved: c-fixbatch6 (2026-10-14, commit pending)
 

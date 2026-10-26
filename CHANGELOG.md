@@ -7,6 +7,73 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.6] - 2026-10-25
+
+### Added
+
+- **OHDSI Athena vocabulary support** (design note
+  `docs/plans/athena-vocabulary-support-design.md`; the fhir4ds OMOP
+  VD campaign's join source):
+  - `medterm4ds data ingest-athena` — loads CONCEPT /
+    CONCEPT_ANCESTOR / CONCEPT_RELATIONSHIP / VOCABULARY from an
+    Athena download into `athena_*` tables in an existing UMLS
+    DuckDB. Header-detects the real CDM v5 ancestor schema;
+    semi-joins edge tables to the loaded vocabulary set (zero
+    orphan rows at real scale); staging-swap idempotence;
+    `athena_meta` provenance; per-vocabulary licensing notice with
+    a required `--accept-licenses`. Real-data verified: 4,088,225
+    default-vocabulary rows in 16s, 40.7M ancestry rows, zero
+    duplicate `(vocabulary_id, concept_code)` pairs.
+  - `medterm4ds data export-conceptmap` — the ConceptMap artifact
+    for OMOP VD joins. TWO forms: **monolithic** (one resource,
+    nested groups per vocabulary — the standard artifact) and
+    **thin** (one ConceptMap per mapping row, NDJSON — the scalar
+    ON-pair join contract); `--form auto` derives from the output
+    extension. Equivalence: identity vocabularies (ICD-10-CM,
+    ICD-10-PCS, ATC, HCPCS, NDC) map `equal` regardless of the
+    standard_concept flag; deprecated standard concepts
+    `unmatched`; RxNorm Extension `relatedto`. Per-group
+    vocabulary_version provenance. Both forms verified
+    scalar-joinable in duckdb.
+- **Engine system-alias extensions**: the HCPCS `urn:oid` and NDC
+  `sid` forms now resolve (Athena-bridge URIs are
+  `$validate-code`-clean on the same server).
+
+### Fixed
+
+- **athena-batch1** (8 findings from the spec-comp program's Athena
+  sweeps, iterations 83-88): real-schema loader failure (AR1,
+  HIGH — the loader could not ingest an actual Athena download),
+  unfiltered edge tables (AG1), raw tracebacks at the CLI config
+  boundaries (AF1/AF2), silently-dropped unknown vocabularies
+  (AF3), extension/form mismatch (AF4), engine URI resolution
+  (AC1), and the ICD10CM/ATC equivalence gap (AJ1).
+- **Spec-comp resolutions carried since v0.0.5**: none beyond
+  athena-batch1 (the remaining registry rows are tracked findings;
+  12 additional controls-clean surfaces verified through
+  iteration 97).
+
+### Known Issues
+
+- Open spec-comp findings in
+  `docs/maintenance-findings-registry.md` (the program ledger's
+  family census: silent-drop params 13, advertisement 7,
+  truncation 5, validation-by-mode 4, miss-encoding 3 — the
+  resolution queue for future fixbatches).
+- `scripts/` remains gitignored operator-local tooling (v0.0.3
+  QA-001): sdist installs skip those tests via skipif guards.
+
+### Benchmarks (fresh, this release)
+
+- Athena ingest (real download, 9 default vocabularies): 4,088,225
+  concept rows + 40.7M ancestry + 44.7M relationship rows in 16-39s
+  (cold vs warm disk cache); zero orphans post-filter.
+- Athena ConceptMap export at scale: thin NDJSON 4,088,225 rows in
+  18s (~228k rows/s, 2.2 GB); monolithic 4.1M elements in 12s.
+- Search ladder steady-state unchanged from v0.0.5 (lexical ~1ms,
+  semantic ~67ms, hybrid ~76ms, canonical ~30ms warm; cold SapBERT
+  load ~1min).
+
 ## [0.0.5] - 2026-10-21
 
 ### Added
