@@ -2103,6 +2103,9 @@ def run_athena_concepts(args: argparse.Namespace) -> int:
             include_deprecated=args.include_deprecated,
             limit=args.limit,
         )
+    except (ValueError, RuntimeError) as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        return 2
     finally:
         con.close()
     sys.stdout.write(_json_dumps({"results": rows}))
@@ -2129,6 +2132,9 @@ def run_athena_hierarchy(args: argparse.Namespace) -> int:
                 con, args.concept_id, max_depth=args.max_depth,
                 limit=args.limit,
             )
+    except (ValueError, RuntimeError) as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        return 2
     finally:
         con.close()
     sys.stdout.write(_json_dumps({"results": rows}))

@@ -509,11 +509,7 @@ def get_athena_ancestors(
     on min_levels_of_separation. The closure answers the VS02-01
     family exactly (TS-90/AN2): one indexed scan, no BFS caps.
     """
-    if not _athena_tables_present(con):
-        raise RuntimeError(
-            "no athena_* tables — run 'medterm4ds data "
-            "ingest-athena' first."
-        )
+    _check_athena_schema(con)
     sql = """
         SELECT a.ancestor_concept_id, c.concept_name, c.domain_id,
                c.vocabulary_id,
@@ -543,11 +539,7 @@ def get_athena_descendants(
     limit: int = 20,
 ) -> list[dict[str, object]]:
     """Exact descendants via the closure, nearest-first."""
-    if not _athena_tables_present(con):
-        raise RuntimeError(
-            "no athena_* tables — run 'medterm4ds data "
-            "ingest-athena' first."
-        )
+    _check_athena_schema(con)
     sql = """
         SELECT a.descendant_concept_id, c.concept_name, c.domain_id,
                c.vocabulary_id,
@@ -625,6 +617,22 @@ def search_athena_concepts(
         raise ValueError("query must be a non-empty string")
     if limit < 1:
         raise ValueError("limit must be at least 1")
+    # AS2 fix (TS-93): unknown vocabularies were silently dropped
+    # (results [] indistinguishable from a legitimate empty search;
+    # AF3's sibling gap). Validate against the ingested vocabulary
+    # table when a filter is supplied.
+    if vocabulary_id is not None:
+        known = {
+            r[0]
+            for r in con.execute(
+                "SELECT vocabulary_id FROM athena_vocabulary"
+            ).fetchall()
+        }
+        if vocabulary_id not in known:
+            raise ValueError(
+                f"unknown vocabulary_id: {vocabulary_id!r} — this "
+                f"database carries: {', '.join(sorted(known))}"
+            )
     sql = """
         SELECT concept_id, concept_name, domain_id, vocabulary_id,
                concept_class_id, standard_concept, concept_code,
@@ -679,3 +687,30 @@ def athena_health(con) -> dict[str, object]:
 def _athena_tables_present(con) -> bool:
     names = {r[0] for r in con.execute("SHOW TABLES").fetchall()}
     return {"athena_concept", "athena_concept_ancestor"} <= names
+
+
+def _check_athena_schema(con) -> None:
+    """AS1 fix (TS-93): DBs ingested before athena-batch1 carry the
+    old ancestor column names; the closure queries join on the
+    CDM-official names and die with a raw BinderException. Detect
+    the old schema at the service boundary and raise the actionable
+    re-ingest remedy — chosen over athena_health detection because
+    the error should fire at the moment of use, where the remedy is
+    actionable; health is advisory-only."""
+    if not _athena_tables_present(con):
+        raise RuntimeError(
+            "no athena_* tables — run 'medterm4ds data "
+            "ingest-athena' first."
+        )
+    cols = {
+        r[0]
+        for r in con.execute(
+            "DESCRIBE athena_concept_ancestor"
+        ).fetchall()
+    }
+    if "ancestor_concept_id" not in cols:
+        raise RuntimeError(
+            "athena tables predate athena-batch1 (old ancestor "
+            "column schema) — re-run 'medterm4ds data ingest-athena' "
+            "to migrate to the CDM-official columns."
+        )

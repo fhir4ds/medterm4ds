@@ -76,44 +76,6 @@ def fresh_db(tmp_path_factory):
     return db
 
 
-class TestAS1PreBatchDatabases:
-    """AS1 — old-schema athena tables break stage-2 raw."""
-
-    @pytest.mark.skipif(
-        not Path(PRE_BATCH_DB).exists(),
-        reason="pre-batch1 fixture DB not present",
-    )
-    def test_as10_raw_binder_traceback(self):
-        proc = _cli(
-            "athena-hierarchy", "--db", PRE_BATCH_DB,
-            "--concept-id", "21602787",
-        )
-        assert proc.returncode != 0
-        assert "Binder" in proc.stderr or "Candidate" in proc.stderr
-
-    def test_as11_fresh_db_clean(self, fresh_db):
-        """Post-batch1 DBs work; unknown concepts → clean [] (the
-        CONTRACT on current output; AS1 is only the old-DB story)."""
-        proc = _cli(
-            "athena-hierarchy", "--db", fresh_db,
-            "--concept-id", "99999999",
-        )
-        assert proc.returncode == 0
-        assert '"results": []' in proc.stdout.replace("\n", "")
-
-
-class TestAS2UnknownVocabularySilent:
-    """AS2 — unknown --vocabulary → silent empty."""
-
-    def test_as20_bogus_vocabulary_empty(self, fresh_db):
-        proc = _cli(
-            "athena-concepts", "--db", fresh_db,
-            "--query", "diabetes", "--vocabulary", "BOGUS",
-        )
-        assert proc.returncode == 0
-        assert '"results": []' in proc.stdout.replace("\n", "").replace("  ", "")
-
-
 class TestTS93Controls:
     """Controls — the stage-2 contracts that hold."""
 
@@ -142,3 +104,157 @@ class TestTS93Controls:
         rows = search_athena_concepts(con, "diabetes", limit=10)
         assert all(r["invalid_reason"] is None for r in rows)
         con.close()
+
+
+class TestASFixes:
+    """athena-batch2: AS1/AS2 fixed — pins flipped."""
+
+    @pytest.mark.skipif(
+        not Path(PRE_BATCH_DB).exists(),
+        reason="pre-batch1 fixture DB not present",
+    )
+    def test_as10_flipped_remedy(self):
+        """AS1 FIXED: the old-schema DB now raises the actionable
+        re-ingest remedy (exit 2, no traceback)."""
+        proc = _cli(
+            "athena-hierarchy", "--db", PRE_BATCH_DB,
+            "--concept-id", "21602787",
+        )
+        assert proc.returncode == 2
+        assert "predate athena-batch1" in proc.stderr
+        assert "ingest-athena" in proc.stderr
+
+    def test_as20_flipped_loud_vocabulary(self, fresh_db):
+        """AS2 FIXED: unknown --vocabulary errors listing the
+        carried set (exit 2)."""
+        proc = _cli(
+            "athena-concepts", "--db", fresh_db,
+            "--query", "diabetes", "--vocabulary", "BOGUS",
+        )
+        assert proc.returncode == 2
+        assert "unknown vocabulary_id" in proc.stderr
+        assert "SNOMED" in proc.stderr
+
+
+class TestStage4bSeam:
+    """The runtime $translate Athena ConceptMap seam (4b)."""
+
+    @pytest.fixture(scope="class")
+    def seam_client(self, tmp_path_factory):
+        import duckdb as _d
+        from starlette.testclient import TestClient
+
+        from medterm4ds.apps.fhir_api import (
+            FhirApiSettings,
+            create_fhir_app,
+        )
+        from medterm4ds.services.athena import ingest_athena
+        from .conftest import _make_conformance_db
+
+        db = tmp_path_factory.mktemp("ts93_4b") / "m.duckdb"
+        _make_conformance_db(db)
+        con = _d.connect(str(db))
+        ingest_athena(
+            con, "/tmp/opencode/athena-mini",
+            vocabularies=("SNOMED",),
+            accept_licenses=True, licenses_accepted_at="4b",
+        )
+        con.close()
+        app = create_fhir_app(FhirApiSettings(
+            db_path=db, memory_profile="low",
+            search_index_dir=str(db.parent / "noi"),
+            prepare_cache=False,
+        ))
+        with TestClient(app, raise_server_exceptions=False) as client:
+            yield client
+
+    ACM = "urn:medterm4ds:athena-conceptmap"
+    SNOMED = "http://snomed.info/sct"
+    TGT = "urn:athena:concept-id"
+
+    def _match_parts(self, body):
+        m = next(
+            p for p in body.get("parameter", [])
+            if p.get("name") == "match"
+        )
+        return {
+            q.get("name"): next(
+                (v for k, v in q.items() if k.startswith("value")),
+                None,
+            )
+            for q in m.get("part", [])
+        }
+
+    def test_4b10_happy_equivalent(self, seam_client):
+        r = seam_client.get(
+            "/fhir/ConceptMap/$translate",
+            params={
+                "url": self.ACM, "system": self.SNOMED,
+                "code": "44054006", "targetSystem": self.TGT,
+            },
+        )
+        assert r.status_code == 200
+        parts = self._match_parts(r.json())
+        assert parts["equivalence"] == "equivalent"
+        assert parts["concept"]["code"] == "21602787"
+
+    def test_4b11_deprecated_unmatched(self, seam_client):
+        r = seam_client.get(
+            "/fhir/ConceptMap/$translate",
+            params={
+                "url": self.ACM, "system": self.SNOMED,
+                "code": "99999001", "targetSystem": self.TGT,
+            },
+        )
+        parts = self._match_parts(r.json())
+        assert parts["equivalence"] == "unmatched"
+
+    def test_4b12_wrong_target_400(self, seam_client):
+        r = seam_client.get(
+            "/fhir/ConceptMap/$translate",
+            params={
+                "url": self.ACM, "system": self.SNOMED,
+                "code": "44054006", "targetSystem": self.SNOMED,
+            },
+        )
+        assert r.status_code == 400
+
+    def test_4b13_reverse_400(self, seam_client):
+        r = seam_client.get(
+            "/fhir/ConceptMap/$translate",
+            params={
+                "url": self.ACM, "system": self.SNOMED,
+                "code": "44054006", "targetSystem": self.TGT,
+                "reverse": "true",
+            },
+        )
+        assert r.status_code == 400
+
+    def test_4b14_unknown_code_false(self, seam_client):
+        r = seam_client.get(
+            "/fhir/ConceptMap/$translate",
+            params={
+                "url": self.ACM, "system": self.SNOMED,
+                "code": "ZZZ", "targetSystem": self.TGT,
+            },
+        )
+        result = next(
+            p.get("valueBoolean")
+            for p in r.json()["parameter"]
+            if p.get("name") == "result"
+        )
+        assert result is False
+
+    def test_4b15_default_crosswalk_unchanged(self, seam_client):
+        """url omitted → the UMLS crosswalk (the seam NEVER changes
+        the default)."""
+        r = seam_client.get(
+            "/fhir/ConceptMap/$translate",
+            params={
+                "system": "http://hl7.org/fhir/sid/icd-10-cm",
+                "code": "E11", "targetSystem": self.SNOMED,
+            },
+        )
+        assert r.status_code == 200
+        parts = self._match_parts(r.json())
+        assert parts["concept"]["code"] == "44054006"

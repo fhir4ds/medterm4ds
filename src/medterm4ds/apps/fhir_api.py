@@ -515,6 +515,11 @@ def vs_membership(
 # crosswalk answered under the requested map's name (N1) with zero
 # version semantics (N2).
 IMPLICIT_CONCEPT_MAP_URL = "urn:medterm4ds:crosswalk"
+# Stage 4b (athena design addendum): the opt-in Athena ConceptMap —
+# source FHIR system+code → target urn:athena:concept-id, selected
+# ONLY by explicit url (the default crosswalk is unchanged); exists
+# solely when athena_* tables are ingested.
+ATHENA_CONCEPT_MAP_URL = "urn:medterm4ds:athena-conceptmap"
 
 
 def resolve_concept_map_url(
@@ -542,12 +547,14 @@ def resolve_concept_map_url(
             f"implicit map {IMPLICIT_CONCEPT_MAP_URL!r} is unversioned "
             f"(got {url!r})."
         )
-    if url != IMPLICIT_CONCEPT_MAP_URL:
+    if url not in (IMPLICIT_CONCEPT_MAP_URL, ATHENA_CONCEPT_MAP_URL):
         raise ValueError(
-            f"Unknown ConceptMap url: {url!r}. This server serves one "
-            f"implicit map, {IMPLICIT_CONCEPT_MAP_URL!r} (UMLS CUI "
-            "crosswalk, any admitted system to any admitted system). "
-            "Omit url to translate via it, or pass the exact urn above."
+            f"Unknown ConceptMap url: {url!r}. This server serves the "
+            f"implicit map {IMPLICIT_CONCEPT_MAP_URL!r} (UMLS CUI "
+            "crosswalk, any admitted system to any admitted system) "
+            f"and the Athena bridge map {ATHENA_CONCEPT_MAP_URL!r} "
+            "(FHIR system+code → OMOP concept_id; requires ingested "
+            "athena_* tables). Omit url to translate via the crosswalk."
         )
 
 
@@ -3550,7 +3557,8 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
             return _fhir_error_response(request, 400, str(exc))
         # T1 fix: reverse=true consults the map from the target side.
         reverse = request.query_params.get("reverse", "").lower() == "true"
-        payload = await _run_db(_executor(request), _do_translate, _engine(request), system, actual_code, effective_target, reverse)
+        map_url = url if url == ATHENA_CONCEPT_MAP_URL else None
+        payload = await _run_db(_executor(request), _do_translate, _engine(request), system, actual_code, effective_target, reverse, map_url)
         return _respond(request, payload)
 
     @app.post("/fhir/ConceptMap/$translate")
@@ -3607,10 +3615,103 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
         reverse = reverse_raw is True or (
             isinstance(reverse_raw, str) and reverse_raw.lower() == "true"
         )
-        payload = await _run_db(_executor(request), _do_translate, _engine(request), system, code, targetsystem, reverse)
+        post_url = post_params.get("url")
+        map_url = post_url if post_url == ATHENA_CONCEPT_MAP_URL else None
+        payload = await _run_db(_executor(request), _do_translate, _engine(request), system, code, targetsystem, reverse, map_url)
         return _respond(request, payload)
 
-    def _do_translate(engine: LocalDuckDBEngine, source_uri: str, code: str, target_uri: str | None, reverse: bool = False):
+    def _do_translate_athena(
+        engine: LocalDuckDBEngine,
+        source_uri: str,
+        code: str,
+        target_uri: str | None,
+        reverse: bool,
+    ):
+        """Stage 4b: code → OMOP concept_id via the ingested bridge.
+
+        Per the design addendum: target must be urn:athena:concept-id;
+        reverse unsupported (the bridge is code→id only); equivalence
+        classes mirror the converter's (NATIVE_IDENTITY equal /
+        deprecated-unmatched / relatedto)."""
+        from medterm4ds.services.athena import ATHENA_VOCAB_TO_FHIR
+
+        if target_uri != "urn:athena:concept-id":
+            return _fhir_error(
+                400,
+                "The athena ConceptMap translates to "
+                f"urn:athena:concept-id only (got {target_uri!r}).",
+            )
+        if reverse:
+            return _fhir_error(
+                400,
+                "reverse is not supported on the athena map: the "
+                "bridge is code→concept_id only.",
+            )
+        vocabs = [
+            v
+            for v, uri in ATHENA_VOCAB_TO_FHIR.items()
+            if uri == source_uri and v != "RxNorm Extension"
+        ]
+        if not vocabs:
+            return _fhir_error(
+                400,
+                f"Source system {source_uri!r} has no Athena "
+                "vocabulary correspondence.",
+            )
+        try:
+            placeholders = ",".join("?" * len(vocabs))
+            row = engine.con.execute(
+                "SELECT concept_id, concept_name, standard_concept, "
+                "invalid_reason, vocabulary_id FROM athena_concept "
+                "WHERE concept_code = ? "
+                f"AND vocabulary_id IN ({placeholders}) LIMIT 1",
+                [code, *vocabs],
+            ).fetchone()
+        except Exception:
+            return _fhir_error(
+                400,
+                "No athena_* tables in this database — run "
+                "'medterm4ds data ingest-athena' to use the athena "
+                "ConceptMap.",
+            )
+        if row is None:
+            return build_parameters_translate(
+                [], source_system_uri=source_uri, source_code=code,
+            )
+        from medterm4ds.core.models import CodeMapping, CodeRef
+        from medterm4ds.services.athena import NATIVE_IDENTITY_VOCABS
+
+        concept_id, name, standard, invalid, vocab = row
+        if invalid and standard == "S":
+            relationship = "unmatched"
+        elif (
+            vocab in NATIVE_IDENTITY_VOCABS
+            or (standard == "S" and vocab != "RxNorm Extension")
+        ):
+            relationship = "equivalent"
+        else:
+            relationship = "relatedto"
+        mapping = CodeMapping(
+            source=CodeRef(source="ATHENA", code=code),
+            target=CodeRef(source="ATHENA", code=str(concept_id)),
+            target_display=name,
+            relationship=relationship,
+            match_type="athena_bridge",
+        )
+        return build_parameters_translate(
+            [mapping],
+            source_system_uri=source_uri,
+            source_code=code,
+        )
+
+    def _do_translate(engine: LocalDuckDBEngine, source_uri: str, code: str, target_uri: str | None, reverse: bool = False, map_url: str | None = None):
+        # Stage 4b (athena design addendum): the opt-in Athena bridge
+        # map — selected ONLY by explicit url; the default crosswalk
+        # path below is untouched.
+        if map_url == ATHENA_CONCEPT_MAP_URL:
+            return _do_translate_athena(
+                engine, source_uri, code, target_uri, reverse
+            )
         # T1 fix (TS-02/TS-19): reverse=true asks "which codes map TO
         # this code?" instead of "what does this code map to?" The
         # engine's crosswalk is same-CUI (symmetric), so the match SET
