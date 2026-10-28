@@ -89,7 +89,6 @@ def _bm25_index_available() -> bool:
     d = Path(DEFAULT_SEARCH_INDEX_DIR)
     return d.exists() and any(d.glob("*_bm25.json"))
 
-pytest.mark.skipif(not _bm25_index_available(), reason="BM25 indexes absent (CI)")
 class TestSC1TotalTracksPageSize:
     """SC1 — total never reports the true match count."""
 
@@ -130,7 +129,6 @@ class TestSC1TotalTracksPageSize:
         assert r.json().get("link") is None
 
 
-pytest.mark.skipif(not _bm25_index_available(), reason="BM25 indexes absent (CI)")
 class TestSC2OffsetNoOp:
     """SC2 — offset accepted, does nothing."""
 
@@ -179,7 +177,6 @@ class TestSC2OffsetNoOp:
         assert c0 != c1
 
 
-pytest.mark.skipif(not _bm25_index_available(), reason="BM25 indexes absent (CI)")
 class TestTS57Controls:
     """Controls — count bounds + envelope shape, fresh."""
 

@@ -103,7 +103,6 @@ def _bm25_index_available() -> bool:
     d = Path(DEFAULT_SEARCH_INDEX_DIR)
     return d.exists() and any(d.glob("*_bm25.json"))
 
-pytest.mark.skipif(not _bm25_index_available(), reason="BM25 indexes absent (CI)")
 class TestSB1UnknownParamsBothTransports:
     """SB1 — $search accepts unknown params everywhere."""
 
@@ -151,7 +150,6 @@ class TestSB1UnknownParamsBothTransports:
         assert r.status_code == 400
 
 
-pytest.mark.skipif(not _bm25_index_available(), reason="BM25 indexes absent (CI)")
 class TestSB2EngineNeverValidated:
     """SB2 — engine param accepted, unvalidated, both transports."""
 
@@ -193,7 +191,6 @@ class TestSB2EngineNeverValidated:
         assert r.status_code == 400
 
 
-pytest.mark.skipif(not _bm25_index_available(), reason="BM25 indexes absent (CI)")
 class TestControls:
     """Controls — the binding contract, fresh."""
 
