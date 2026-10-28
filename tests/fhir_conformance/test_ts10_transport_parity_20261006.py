@@ -202,6 +202,28 @@ class TestTransportParityControls:
     ):
         """GET and POST return semantically identical responses for
         the same logical request (status + body equality)."""
+        # Warm semantic mode first: on CI the model loads lazily and
+        # the response timestamp differs between the cold GET and the
+        # warm POST — warm both before comparing.
+        def _flat(x):
+            out = []
+            if isinstance(x, dict):
+                out.extend(str(v) for v in x.values())
+            elif isinstance(x, (list, tuple)):
+                for i in x:
+                    out.extend(_flat(i))
+            else:
+                out.append(str(x))
+            return out
+
+        if any(
+            v.lower() in ("semantic", "hybrid", "canonical")
+            for v in _flat(get_params) + _flat(post_params)
+        ):
+            fhir_client.get(
+                path,
+                params={**get_params, "count": 1},
+            )
         g = fhir_client.get(path, params=get_params)
         p = fhir_client.post(
             path,

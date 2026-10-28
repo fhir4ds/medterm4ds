@@ -51,13 +51,28 @@ import pytest
 PROD_DB = pathlib.Path("/mnt/d/medterm4ds/data/umls_current.duckdb")
 
 
+
+
+
+
+def _bm25_index_available() -> bool:
+    """CI has the SapBERT model (downloads) but NOT the lexical BM25
+    indexes — every suite needing real lexical/hybrid results guards
+    on the index dir actually containing indexes."""
+    from pathlib import Path
+
+    from medterm4ds.apps.fhir_api import DEFAULT_SEARCH_INDEX_DIR
+
+    d = Path(DEFAULT_SEARCH_INDEX_DIR)
+    return d.exists() and any(d.glob("*_bm25.json"))
+
+pytest.mark.skipif(not _bm25_index_available(), reason="BM25 indexes absent (CI)")
 class TestG1SharpEndpointLayer:
     """G1-SHARP — the service filters; the endpoint drops the param."""
 
     def test_g10s_service_layer_filters(self):
-        """Direct service call with result_types=['lab'] on semantic
-        returns all-lab results (production artifacts). The G1
-        defect is NOT in the service."""
+        if not PROD_DB.exists():
+            pytest.skip("no prod DB (CI)")
         from medterm4ds.services.search import get_search_service
 
         svc = get_search_service()
@@ -86,11 +101,11 @@ class TestG1SharpEndpointLayer:
             create_fhir_app,
         )
 
+        if not PROD_DB.exists():
+            pytest.skip("no prod DB")
         app = create_fhir_app(
             FhirApiSettings(
-                db_path=PROD_DB if PROD_DB.exists() else (
-                    pytest.skip("no prod DB"), None
-                )[1] or PROD_DB,
+                db_path=PROD_DB,
                 memory_profile="low",
                 search_index_dir=str(tmp_path / "no-idx"),
                 prepare_cache=False,
@@ -118,6 +133,7 @@ class TestG1SharpEndpointLayer:
             assert systems == {"http://loinc.org"}
 
 
+pytest.mark.skipif(not _bm25_index_available(), reason="BM25 indexes absent (CI)")
 class TestPD3McpProductionParity:
     """PD3 — MCP surface is path-stable on production SQL."""
 

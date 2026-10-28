@@ -181,3 +181,29 @@ Tests ride the existing conformance discipline: new suites pin the
 loader's provenance block, the correspondence table, and the
 converter's group/element shape (incl. equivalence classes + the
 deprecated-row unmatched encoding).
+
+## Addendum (2026-10-26): the runtime $translate seam (stage 4b)
+
+The design sketched "ConceptMap/$translate?url=urn:medterm4ds:
+athena-conceptmap resolves against the converter's in-DB view". The
+concrete seam, now specified:
+
+- The implicit-map resolver's accepted set EXTENDS to include the
+  athena ConceptMap url when athena_* tables are present: url=
+  urn:medterm4ds:athena-conceptmap selects the bridge; the DEFAULT
+  (url omitted) stays the UMLS crosswalk — the athena map is
+  opt-in per request, never a silent replacement.
+- Direction: source system+code → target urn:athena:concept-id.
+  The $translate In-params carry the FHIR system + code; the
+  targetSystem is the concept-id urn. targetSystem values OTHER
+  than the concept-id urn 400 (the map has one target).
+- Version semantics: the map is unversioned like the implicit
+  crosswalk (the athena_meta loaded_at is the provenance, surfaced
+  in cache-info, not a version dial) — conceptMapVersion rejected
+  identically to N2.
+- Equivalence: the converter's classes ride through unchanged
+  (identity vocababs equal; deprecated unmatched; RxNorm Extension
+  relatedto).
+- The seam exists ONLY when athena tables are ingested; without
+  them the url 400s as unknown (the resolve_concept_map_url
+  contract, extended-set behavior only).

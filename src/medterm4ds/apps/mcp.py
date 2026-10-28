@@ -128,7 +128,7 @@ class McpRuntime:
         self.engine = None
 
     def health(self) -> dict[str, Any]:
-        return {
+        base = {
             "status": "ok" if self.ready else "starting",
             "ready": self.ready,
             "database": str(self.settings.db_path),
@@ -136,6 +136,84 @@ class McpRuntime:
             "memory_profile": self.settings.memory_profile,
             "cache_prepared": bool(self.engine.cache_prepared) if self.engine else False,
         }
+        # Design §2 + HH1 doctrine: the athena block reports LIVE
+        # table facts (present/vocabularies/loaded_at), only when
+        # the runtime is ready — configured-vs-live made explicit.
+        if self.ready:
+            try:
+                base["athena"] = self.athena_health()
+            except Exception:  # noqa: BLE001 — health never throws
+                base["athena"] = {"present": False}
+        return base
+
+    def athena_health(self) -> dict[str, Any]:
+        """Athena store health (design §2; HH1 doctrine — live facts,
+        only when the runtime is ready)."""
+        if not self.ready:
+            return {"present": False}
+        from medterm4ds.services.athena import athena_health
+
+        return athena_health(self.con)
+
+    def athena_ancestors(
+        self, *, concept_id: int, max_depth: int | None = None,
+    ) -> dict[str, Any]:
+        from medterm4ds.services.athena import (
+            get_athena_ancestors,
+        )
+
+        return {
+            "concept_id": concept_id,
+            "ancestors": get_athena_ancestors(
+                self.con, concept_id, max_depth=max_depth
+            ),
+        }
+
+    def athena_descendants(
+        self, *, concept_id: int, max_depth: int | None = None,
+        limit: int = 20,
+    ) -> dict[str, Any]:
+        from medterm4ds.services.athena import (
+            get_athena_descendants,
+        )
+
+        return {
+            "concept_id": concept_id,
+            "descendants": get_athena_descendants(
+                self.con, concept_id, max_depth=max_depth,
+                limit=limit,
+            ),
+        }
+
+    def athena_subsumes(
+        self, *, code_a: int, code_b: int
+    ) -> dict[str, Any]:
+        from medterm4ds.services.athena import athena_subsumes
+
+        return {
+            "code_a": code_a,
+            "code_b": code_b,
+            "outcome": athena_subsumes(self.con, code_a, code_b),
+        }
+
+    def athena_search(
+        self,
+        *,
+        query: str,
+        domain_id: str | None = None,
+        vocabulary_id: str | None = None,
+        include_deprecated: bool = False,
+        limit: int = 20,
+    ) -> dict[str, Any]:
+        from medterm4ds.services.athena import search_athena_concepts
+
+        rows = search_athena_concepts(
+            self.con, query, domain_id=domain_id,
+            vocabulary_id=vocabulary_id,
+            include_deprecated=include_deprecated, limit=limit,
+        )
+        return {"query": query, "result_count": len(rows),
+                "results": rows}
 
     def patient_friendly_name(
         self,
@@ -730,6 +808,60 @@ def create_mcp_server(
         # db_executor made readiness checks queue behind long-running tools
         # (measured 39.3s behind one LNC optimize). Invoke it directly.
         return server_runtime.health()
+
+    @mcp.tool()
+    async def athena_lookup(
+        concept_id: int,
+        ancestor_depth: int | None = None,
+    ) -> dict[str, Any]:
+        """Athena concept ancestry via the precomputed closure
+        (exact totals, no caps). concept_id is the OMOP concept_id."""
+        return await _run_db(
+            server_runtime.athena_ancestors,
+            concept_id=concept_id, max_depth=ancestor_depth,
+        )
+
+    @mcp.tool()
+    async def athena_descendants(
+        concept_id: int,
+        max_depth: int | None = None,
+        limit: int = 20,
+    ) -> dict[str, Any]:
+        """Athena concept descendants via the closure (nearest
+        first)."""
+        return await _run_db(
+            server_runtime.athena_descendants,
+            concept_id=concept_id, max_depth=max_depth, limit=limit,
+        )
+
+    @mcp.tool()
+    async def athena_subsumes(
+        code_a: int, code_b: int
+    ) -> dict[str, Any]:
+        """Exact subsumption between two OMOP concept_ids via the
+        Athena closure (equivalent/subsumes/subsumed-by/
+        not-subsumed)."""
+        return await _run_db(
+            server_runtime.athena_subsumes,
+            code_a=code_a, code_b=code_b,
+        )
+
+    @mcp.tool()
+    async def athena_search(
+        query: str,
+        domain_id: str | None = None,
+        vocabulary_id: str | None = None,
+        include_deprecated: bool = False,
+        limit: int = 20,
+    ) -> dict[str, Any]:
+        """Search Athena concept names with native filters
+        (domain_id, vocabulary_id, deprecated)."""
+        return await _run_db(
+            server_runtime.athena_search,
+            query=query, domain_id=domain_id,
+            vocabulary_id=vocabulary_id,
+            include_deprecated=include_deprecated, limit=limit,
+        )
 
     @mcp.tool()
     async def patient_friendly_name(

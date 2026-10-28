@@ -58,6 +58,22 @@ def _code(c: str, source: str = SNOMED) -> dict:
     return {"source": source, "code": c}
 
 
+
+
+
+
+def _bm25_index_available() -> bool:
+    """CI has the SapBERT model (downloads) but NOT the lexical BM25
+    indexes — every suite needing real lexical/hybrid results guards
+    on the index dir actually containing indexes."""
+    from pathlib import Path
+
+    from medterm4ds.apps.fhir_api import DEFAULT_SEARCH_INDEX_DIR
+
+    d = Path(DEFAULT_SEARCH_INDEX_DIR)
+    return d.exists() and any(d.glob("*_bm25.json"))
+
+pytest.mark.skipif(not _bm25_index_available(), reason="BM25 indexes absent (CI)")
 class TestMcpConsumerPrepared:
     """MCP on the production (prepared) path."""
 
@@ -81,6 +97,7 @@ class TestMcpConsumerPrepared:
         assert hit["name"] == "Diabetes Type 2"
 
 
+pytest.mark.skipif(not _bm25_index_available(), reason="BM25 indexes absent (CI)")
 class TestRestConsumerRaw:
     """REST /patient-friendly on the raw fixture."""
 
@@ -108,6 +125,7 @@ class TestRestConsumerRaw:
         assert rec["name"] is None
 
 
+pytest.mark.skipif(not _bm25_index_available(), reason="BM25 indexes absent (CI)")
 class TestConceptMapConsumer:
     """The ConceptMap export composes the RS2+PR1 fixes."""
 
@@ -142,7 +160,12 @@ class TestConceptMapConsumer:
         assert r.json()["results"][0]["relationship"] == "equivalent"
 
 
+pytest.mark.skipif(not _bm25_index_available(), reason="BM25 indexes absent (CI)")
 class TestG1BothVerbs:
+    @pytest.fixture(autouse=True)
+    def _needs_prod(self):
+        if not PROD_DB.exists():
+            pytest.skip("production DB not present (CI)")
     """G1's fix covers GET and the POST Parameters body."""
 
     @pytest.fixture(scope="class")

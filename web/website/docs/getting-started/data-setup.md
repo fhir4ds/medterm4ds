@@ -135,3 +135,21 @@ medterm4ds data export-conceptmap \
   and **thin** (one ConceptMap per mapping row, `.ndjson` — scalar
   `(code, system)` ON pairs for SQL view-decomposition joins);
   `--form` overrides with a mismatch warning.
+
+### Querying Athena concepts (v0.0.7+)
+
+```bash
+# Exact ancestry via the precomputed closure (no caps):
+medterm4ds athena-hierarchy --db data/umls_current.duckdb \
+  --concept-id 201826 --max-depth 3
+
+# Search with Athena-native filters:
+medterm4ds athena-concepts --db data/umls_current.duckdb \
+  --query diabetes --domain Condition --vocabulary SNOMED
+```
+
+The `$subsumes` Athena fast path is opt-in
+(`MEDTERM4DS_ATHENA_SUBSUMES=1`; OFF by default — a locked ruling:
+the closure is 164x faster but includes OMOP tradename/ingredient
+relationships the isa-only UMLS walk excludes). Databases ingested
+before v0.0.6's athena-batch1 must re-run `data ingest-athena`.

@@ -369,6 +369,36 @@ def build_parser() -> argparse.ArgumentParser:
     )
     data_ingest_athena.set_defaults(func=run_data_ingest_athena)
 
+    athena_concepts = subparsers.add_parser(
+        "athena-concepts",
+        help="Search ingested Athena concepts (name, domain, vocabulary).",
+    )
+    athena_concepts.add_argument("--query", required=True)
+    athena_concepts.add_argument("--domain", default=None)
+    athena_concepts.add_argument("--vocabulary", default=None)
+    athena_concepts.add_argument(
+        "--include-deprecated", action="store_true",
+    )
+    athena_concepts.add_argument("--limit", type=int, default=20)
+    _add_common_engine_args(athena_concepts)
+    athena_concepts.set_defaults(func=run_athena_concepts)
+
+    athena_hierarchy = subparsers.add_parser(
+        "athena-hierarchy",
+        help="Ancestry over the Athena closure (exact; no caps).",
+    )
+    athena_hierarchy.add_argument(
+        "--direction", choices=("ancestors", "descendants"),
+        default="ancestors",
+    )
+    athena_hierarchy.add_argument(
+        "--concept-id", type=int, required=True,
+    )
+    athena_hierarchy.add_argument("--max-depth", type=int, default=None)
+    athena_hierarchy.add_argument("--limit", type=int, default=20)
+    _add_common_engine_args(athena_hierarchy)
+    athena_hierarchy.set_defaults(func=run_athena_hierarchy)
+
     data_export_conceptmap = data_subparsers.add_parser(
         "export-conceptmap",
         help="Export the ingested Athena CONCEPT table as a FHIR "
@@ -2054,6 +2084,60 @@ def run_data_cache_list(args: argparse.Namespace) -> int:
     from medterm4ds.core.artifact_cache import cache_list_remote
 
     sys.stdout.write(_json_dumps(cache_list_remote()))
+    return 0
+
+
+
+def run_athena_concepts(args: argparse.Namespace) -> int:
+    """CLI athena-concepts (design §2): Athena-native search filters
+    mirroring the discovery-command conventions."""
+    import duckdb
+
+    from medterm4ds.services.athena import search_athena_concepts
+
+    con = duckdb.connect(args.db, read_only=True)
+    try:
+        rows = search_athena_concepts(
+            con, args.query, domain_id=args.domain,
+            vocabulary_id=args.vocabulary,
+            include_deprecated=args.include_deprecated,
+            limit=args.limit,
+        )
+    except (ValueError, RuntimeError) as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        return 2
+    finally:
+        con.close()
+    sys.stdout.write(_json_dumps({"results": rows}))
+    return 0
+
+
+def run_athena_hierarchy(args: argparse.Namespace) -> int:
+    """CLI athena-hierarchy: closure-based ancestry (exact)."""
+    import duckdb
+
+    from medterm4ds.services.athena import (
+        get_athena_ancestors,
+        get_athena_descendants,
+    )
+
+    con = duckdb.connect(args.db, read_only=True)
+    try:
+        if args.direction == "ancestors":
+            rows = get_athena_ancestors(
+                con, args.concept_id, max_depth=args.max_depth
+            )
+        else:
+            rows = get_athena_descendants(
+                con, args.concept_id, max_depth=args.max_depth,
+                limit=args.limit,
+            )
+    except (ValueError, RuntimeError) as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        return 2
+    finally:
+        con.close()
+    sys.stdout.write(_json_dumps({"results": rows}))
     return 0
 
 

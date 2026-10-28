@@ -25,15 +25,15 @@ from medterm4ds.services.athena import (  # noqa: E402
     licensing_notice,
 )
 
-MINI = Path("/tmp/opencode/athena-mini")
+MINI = None  # injected per-fixture
 
 
 @pytest.fixture(scope="module")
-def ingested(tmp_path_factory):
+def ingested(tmp_path_factory, athena_mini_dir):
     db = tmp_path_factory.mktemp("ts82") / "athena.duckdb"
     con = duckdb.connect(str(db))
     result = ingest_athena(
-        con, MINI, accept_licenses=True,
+        con, str(athena_mini_dir), accept_licenses=True,
         licenses_accepted_at="2026-10-23T18:00:00+00:00",
     )
     yield con, result
@@ -55,10 +55,10 @@ class TestLoader:
             "athena_meta",
         } <= names
 
-    def test_a11_license_gate_fail_loud(self, tmp_path):
+    def test_a11_license_gate_fail_loud(self, tmp_path, athena_mini_dir):
         con = duckdb.connect(str(tmp_path / "gate.duckdb"))
         with pytest.raises(PermissionError, match="accept"):
-            ingest_athena(con, MINI, accept_licenses=False)
+            ingest_athena(con, str(athena_mini_dir), accept_licenses=False)
         con.close()
 
     def test_a12_provenance_block(self, ingested):
@@ -79,10 +79,10 @@ class TestLoader:
         ).fetchone()[0]
         assert t == "DATE"
 
-    def test_a14_idempotent_rerun(self, ingested):
+    def test_a14_idempotent_rerun(self, ingested, athena_mini_dir):
         con, first = ingested
         second = ingest_athena(
-            con, MINI, accept_licenses=True,
+            con, str(athena_mini_dir), accept_licenses=True,
             licenses_accepted_at="2026-10-23T19:00:00+00:00",
         )
         assert second.row_counts == first.row_counts

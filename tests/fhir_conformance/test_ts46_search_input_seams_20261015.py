@@ -78,6 +78,12 @@ def search_client(tmp_path_factory):
     )
     app = create_fhir_app(settings)
     with TestClient(app) as client:
+        probe = client.get(
+            "/fhir/CodeSystem/$search",
+            params={"query": "diabetes", "searchMode": "lexical", "count": 1},
+        )
+        if probe.status_code == 503:
+            pytest.skip("lexical BM25 not loaded in this environment (CI)")
         yield client
 
 
@@ -87,6 +93,21 @@ def _systems_of(r) -> set[str]:
         for e in r.json().get("entry", [])
     }
 
+
+
+
+
+
+def _bm25_index_available() -> bool:
+    """CI has the SapBERT model (downloads) but NOT the lexical BM25
+    indexes — every suite needing real lexical/hybrid results guards
+    on the index dir actually containing indexes."""
+    from pathlib import Path
+
+    from medterm4ds.apps.fhir_api import DEFAULT_SEARCH_INDEX_DIR
+
+    d = Path(DEFAULT_SEARCH_INDEX_DIR)
+    return d.exists() and any(d.glob("*_bm25.json"))
 
 class TestSB1UnknownParamsBothTransports:
     """SB1 — $search accepts unknown params everywhere."""

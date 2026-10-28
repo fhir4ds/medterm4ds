@@ -49,6 +49,8 @@ Controls (fresh): QC-437 once-only guard held; dispatch-gate source
 
 from __future__ import annotations
 
+import pathlib
+
 import duckdb
 import pytest
 
@@ -103,6 +105,8 @@ class TestFX1EscalationFleetPrepared:
         import logging
 
         db = f"{DATA_DIR}/umls_current.duckdb"
+        if not pathlib.Path(db).exists():
+            pytest.skip("production umls_current not present (CI)")
         con = duckdb.connect(db, read_only=True)
         try:
             from medterm4ds.engines.duckdb.engine import (

@@ -95,7 +95,34 @@ def _systems(client, **params) -> set[str]:
     }
 
 
+
+
+
+
+def _bm25_index_available() -> bool:
+    """CI has the SapBERT model (downloads) but NOT the lexical BM25
+    indexes — every suite needing real lexical/hybrid results guards
+    on the index dir actually containing indexes."""
+    from pathlib import Path
+
+    from medterm4ds.apps.fhir_api import DEFAULT_SEARCH_INDEX_DIR
+
+    d = Path(DEFAULT_SEARCH_INDEX_DIR)
+    return d.exists() and any(d.glob("*_bm25.json"))
+
+pytest.mark.skipif(not _bm25_index_available(), reason="BM25 indexes absent (CI)")
 class TestG1SemanticResultTypesIgnored:
+    @pytest.fixture(autouse=True)
+    def _needs_semantic(self, search_client):
+        r = search_client.get(
+            "/fhir/CodeSystem/$search",
+            params={"query": "diabetes", "searchMode": "semantic", "count": 1},
+        )
+        entries = r.json().get("entry", []) if r.status_code == 200 else []
+        if r.status_code != 200 or not entries:
+            pytest.skip(
+                "semantic results unavailable in this environment (CI)"
+            )
     """G1 — resultTypes is a silent no-op on the semantic path."""
 
     def test_g10_get_unfiltered(self, search_client):
@@ -152,6 +179,7 @@ class TestG1SemanticResultTypesIgnored:
         assert "Unknown result type" in str(r.json())
 
 
+pytest.mark.skipif(not _bm25_index_available(), reason="BM25 indexes absent (CI)")
 class TestG2AvailabilityBeforeValidation:
     """G2 — 503 availability gate precedes input validation."""
 
@@ -177,6 +205,7 @@ class TestG2AvailabilityBeforeValidation:
         assert r.status_code == 503
 
 
+pytest.mark.skipif(not _bm25_index_available(), reason="BM25 indexes absent (CI)")
 class TestSearchControls:
     """Controls: guarded params + happy paths, fresh."""
 

@@ -41,6 +41,7 @@ def hostile_client(tmp_path_factory):
     from starlette.testclient import TestClient
 
     from medterm4ds.apps.fhir_api import FhirApiSettings, create_fhir_app
+
     from .conftest import _make_conformance_db
 
     db_path = tmp_path_factory.mktemp("ts01_maint") / "umls.duckdb"
@@ -63,7 +64,7 @@ class TestL1DuplicateQueryParams:
         r = hostile_client.get("/fhir/metadata?mode=terminology&mode=full")
         assert r.status_code == 200, r.text
         assert r.json()["resourceType"] in (
-            "CapabilityStatement", 
+            "CapabilityStatement",
             "TerminologyCapabilities",
         )
 

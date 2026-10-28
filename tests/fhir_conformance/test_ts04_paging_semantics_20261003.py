@@ -52,6 +52,7 @@ def paged_client(tmp_path_factory):
     from starlette.testclient import TestClient
 
     from medterm4ds.apps.fhir_api import FhirApiSettings, create_fhir_app
+
     from .conftest import _make_conformance_db
 
     db_path = tmp_path_factory.mktemp("ts04_paging") / "umls.duckdb"

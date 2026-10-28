@@ -4,6 +4,48 @@ title: Releases
 
 This page tracks Medical Terminology for Data Science package releases.
 
+## 0.0.7
+
+Athena query surfaces + the runtime $translate seam. No breaking
+API changes; pre-batch1 athena databases must re-ingest (see the
+migration note below).
+
+Athena query surfaces (stage 2):
+
+- Closure-based ancestry (exact — the precomputed CONCEPT_ANCESTOR
+  answers with per-pair min/max depths; no BFS caps): CLI
+  `athena-hierarchy --concept-id N [--max-depth D]`, MCP
+  `athena_lookup`/`athena_descendants`, and `athena_search` with
+  Athena-native filters (domain, vocabulary, deprecated). Health
+  exposes an `athena` block with LIVE table facts.
+- `$subsumes` fast path behind `MEDTERM4DS_ATHENA_SUBSUMES=1`
+  (opt-in, OFF by default — RULING LOCKED 2026-10-27): the Athena
+  closure is 164x faster but the parity measurement found 23 real
+  disagreements, all RxNorm definitional (OMOP's closure includes
+  `tradename_of`; the UMLS walk is isa-only). Operators choose
+  which universe their $subsumes reflects.
+
+Runtime $translate seam (stage 4b):
+
+- `GET/POST /fhir/ConceptMap/$translate?url=urn:medterm4ds:
+  athena-conceptmap&system=...&code=...&targetSystem=urn:athena:
+  concept-id` resolves FHIR codes to OMOP concept_ids with the
+  converter's equivalence classes (identity vocabularies equal;
+  deprecated unmatched). The default crosswalk is unchanged.
+
+Migration note: databases ingested with medterm4ds < 0.0.6
+athena-batch1 carry the old ancestor column schema — every Athena
+surface now raises the actionable 're-run medterm4ds data
+ingest-athena' remedy at use.
+
+Robustness (athena-batch2 + the spec-comp wings): loud vocabulary
+validation, the service-boundary schema remedy, and the batch
+bypass matrix fully pinned (2 transports × 2 rejection families —
+the dispatcher-level fix is the queued fixbatch).
+
+Benchmarks: closure ~10.7ms/pair vs walk ~1,754ms/pair on the
+254-pair parity set; ingest/export/search unchanged from 0.0.6.
+
 ## 0.0.6
 
 Athena vocabulary support release — the fhir4ds OMOP VD campaign's

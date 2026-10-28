@@ -204,10 +204,11 @@ class TestGovernanceControls:
         """The committed artifact-layout suite passes on the
         rotated registry (fresh run inside this iteration)."""
         import subprocess
+        import sys
 
         r = subprocess.run(
             [
-                ".venv/bin/python", "-m", "pytest",
+                sys.executable, "-m", "pytest",
                 "tests/test_artifact_layout.py", "-q",
                 "-p", "no:cacheprovider",
             ],

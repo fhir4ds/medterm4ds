@@ -35,11 +35,13 @@ pytest.importorskip("medterm4ds.services.athena")
 
 from medterm4ds.services.athena import ingest_athena  # noqa: E402
 
-MINI = "/tmp/opencode/athena-mini"
+MINI = None  # injected per-fixture
 
 
 @pytest.fixture(scope="module")
-def snomed_only(tmp_path_factory):
+def snomed_only(tmp_path_factory, athena_mini_dir):
+    global MINI
+    MINI = str(athena_mini_dir)
     db = tmp_path_factory.mktemp("ts84") / "m.duckdb"
     con = duckdb.connect(str(db))
     ingest_athena(

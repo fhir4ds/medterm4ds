@@ -75,3 +75,46 @@ def fhir_client(tmp_path_factory):
     app = create_fhir_app(settings)
     with TestClient(app) as client:
         yield client
+
+
+@pytest.fixture(scope="session")
+def athena_mini_dir(tmp_path_factory):
+    """Build the mini Athena fixture directory on demand (portable —
+    CI has no /tmp/opencode). Mirrors the original survey fixture:
+    SNOMED (+RxNorm in VOCABULARY.csv) with T2DM/DM/retired rows."""
+    d = tmp_path_factory.mktemp("athena-mini")
+    (d / "CONCEPT.csv").write_text(
+        "concept_id\tconcept_name\tdomain_id\tvocabulary_id\t"
+        "concept_class_id\tstandard_concept\tconcept_code\t"
+        "valid_start_date\tvalid_end_date\tinvalid_reason\n"
+        "21602787\tType 2 diabetes mellitus\tCondition\tSNOMED\t"
+        "SCT Clinical Finding\tS\t44054006\t19700101\t20991231\t\n"
+        "21602788\tOld diabetes code\tCondition\tSNOMED\t"
+        "SCT Clinical Finding\tS\t99999001\t19700101\t20231231\tD\n"
+        "21060909\tMetformin\tDrug\tRxNorm\tIngredient\tS\t6809\t"
+        "19700101\t20991231\t\n",
+        encoding="utf-8",
+    )
+    (d / "CONCEPT_ANCESTOR.csv").write_text(
+        "ancestor_concept_id\tdescendant_concept_id\t"
+        "min_levels_of_separation\tmax_levels_of_separation\n"
+        "21602787\t21602787\t0\t0\n"
+        "443813\t21602787\t1\t2\n",
+        encoding="utf-8",
+    )
+    (d / "CONCEPT_RELATIONSHIP.csv").write_text(
+        "concept_id_1\tconcept_id_2\trelationship_id\t"
+        "valid_start_date\tvalid_end_date\tinvalid_reason\n"
+        "21602787\t21060909\tHas inferred drug\t19700101\t20991231\t\n",
+        encoding="utf-8",
+    )
+    (d / "VOCABULARY.csv").write_text(
+        "vocabulary_id\tvocabulary_name\tvocabulary_reference\t"
+        "vocabulary_version\tvocabulary_concept_id\n"
+        "SNOMED\tSNOMED CT\thttp://snomed.info\t"
+        "snomed-2024-01-31\t44819124\n"
+        "RxNorm\tRxNorm\thttp://nlm.gov\t"
+        "rxnorm-2024-01-08\t756296\n",
+        encoding="utf-8",
+    )
+    return d

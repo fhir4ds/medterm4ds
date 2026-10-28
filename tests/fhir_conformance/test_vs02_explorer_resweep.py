@@ -542,9 +542,11 @@ class TestLens2CrossBuilderMethodologyConsistency:
                 and node.func.id == "build_parameters_translate"
             ):
                 count += 1
-        # Per HISTORIAN test_h30: 1 call site (_do_translate).
-        assert count == 1, (
-            f"Expected 1 build_parameters_translate call site, found {count}"
+        # Per HISTORIAN test_h30 + the athena 4b seam (2026-10-26):
+        # 3 sites — _do_translate (crosswalk), _do_translate_athena's
+        # empty + mapping paths.
+        assert count == 3, (
+            f"Expected 3 build_parameters_translate call sites, found {count}"
         )
 
     def test_e24_build_closure_response_call_sites_count(self):

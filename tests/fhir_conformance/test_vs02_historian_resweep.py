@@ -597,9 +597,13 @@ class TestLens3MethodologyReuseBuilderCallSiteAudit:
             ):
                 call_count += 1
                 call_nodes.append(node.lineno)
-        assert call_count == 1, (
+        # Athena 4b seam (2026-10-26): 3 sites — _do_translate
+        # (crosswalk) + _do_translate_athena's empty + mapping paths.
+        # All audited for client-input-as-canonical drift (the 4b
+        # paths pass source_uri via the same canonical-system pattern).
+        assert call_count == 3, (
             f"build_parameters_translate has {call_count} call sites at lines "
-            f"{call_nodes}; expected exactly 1. New call sites MUST be audited "
+            f"{call_nodes}; expected exactly 3. New call sites MUST be audited "
             f"for client-input-as-canonical drift (count=8 PROMOTED pattern)."
         )
 
