@@ -143,6 +143,10 @@ class TestConceptMapConsumer:
 
 
 class TestG1BothVerbs:
+    @pytest.fixture(autouse=True)
+    def _needs_prod(self):
+        if not PROD_DB.exists():
+            pytest.skip("production DB not present (CI)")
     """G1's fix covers GET and the POST Parameters body."""
 
     @pytest.fixture(scope="class")

@@ -96,6 +96,14 @@ def _systems(client, **params) -> set[str]:
 
 
 class TestG1SemanticResultTypesIgnored:
+    @pytest.fixture(autouse=True)
+    def _needs_semantic(self, search_client):
+        r = search_client.get(
+            "/fhir/CodeSystem/$search",
+            params={"query": "diabetes", "searchMode": "semantic", "count": 1},
+        )
+        if r.status_code != 200:
+            pytest.skip("semantic model unavailable (CI)")
     """G1 — resultTypes is a silent no-op on the semantic path."""
 
     def test_g10_get_unfiltered(self, search_client):

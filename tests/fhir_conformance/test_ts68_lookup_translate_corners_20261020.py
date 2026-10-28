@@ -55,6 +55,21 @@ def _property_codes(body: dict):
     return codes
 
 
+
+def _pf_baseline_available() -> bool:
+    import os
+    from pathlib import Path
+
+    d = Path(
+        os.getenv(
+            "MEDTERM4DS_FHIR4PX_BASELINE",
+            "/mnt/d/medterm4ds/reports/fhir4px",
+        )
+    )
+    return d.exists() and any(d.glob("patient_friendly_*.json"))
+
+
+pytest.mark.skipif(not _pf_baseline_available(), reason="patient-friendly baseline absent (CI)")
 class TestL1PropertyFormsIgnored:
     """L1 re-verified — every property form returns the full set."""
 

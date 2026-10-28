@@ -54,7 +54,7 @@ import pytest
 
 pytest.importorskip("medterm4ds.services.athena")
 
-MINI = Path("/tmp/opencode/athena-mini")
+MINI = None  # injected per-fixture
 CLI = [sys.executable, "-m", "medterm4ds.apps.cli"]
 
 
@@ -67,7 +67,9 @@ def _cli(*args: str) -> subprocess.CompletedProcess:
 
 
 @pytest.fixture(scope="module")
-def ingested_db(tmp_path_factory):
+def ingested_db(tmp_path_factory, athena_mini_dir):
+    global MINI
+    MINI = str(athena_mini_dir)
     db = str(tmp_path_factory.mktemp("ts83") / "m.duckdb")
     # AF3 (fixbatch): the default vocabulary list would error
     # against the mini fixture's two-vocab VOCABULARY.csv; the
@@ -116,6 +118,11 @@ class TestAF2NoAthenaTables:
 
 
 class TestAF3UnknownVocabularies:
+    @pytest.fixture(autouse=True)
+    def _mini(self, athena_mini_dir):
+        global MINI
+        MINI = str(athena_mini_dir)
+
     """AF3 — silent drop from --vocabularies."""
 
     def test_af30_ingest_bogus_vocab_loud(self, tmp_path):

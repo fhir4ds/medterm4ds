@@ -50,7 +50,7 @@ from medterm4ds.services.athena import (  # noqa: E402
     search_athena_concepts,
 )
 
-MINI = "/tmp/opencode/athena-mini"
+MINI = None  # injected per-fixture
 PRE_BATCH_DB = "/tmp/opencode/m24.duckdb"  # ingested pre-batch1 (old cols)
 
 
@@ -65,7 +65,9 @@ def _cli(*args: str) -> subprocess.CompletedProcess:
 
 
 @pytest.fixture(scope="module")
-def fresh_db(tmp_path_factory):
+def fresh_db(tmp_path_factory, athena_mini_dir):
+    global MINI
+    MINI = str(athena_mini_dir)
     db = str(tmp_path_factory.mktemp("ts93") / "m.duckdb")
     con = duckdb.connect(db)
     ingest_athena(
@@ -140,7 +142,7 @@ class TestStage4bSeam:
     """The runtime $translate Athena ConceptMap seam (4b)."""
 
     @pytest.fixture(scope="class")
-    def seam_client(self, tmp_path_factory):
+    def seam_client(self, tmp_path_factory, athena_mini_dir):
         import duckdb as _d
         from starlette.testclient import TestClient
 
@@ -156,7 +158,7 @@ class TestStage4bSeam:
         _make_conformance_db(db)
         con = _d.connect(str(db))
         ingest_athena(
-            con, "/tmp/opencode/athena-mini",
+            con, str(athena_mini_dir),
             vocabularies=("SNOMED",),
             accept_licenses=True, licenses_accepted_at="4b",
         )

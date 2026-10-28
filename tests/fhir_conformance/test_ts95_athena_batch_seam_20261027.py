@@ -41,7 +41,7 @@ NS = {"f": "http://hl7.org/fhir"}
 
 
 @pytest.fixture(scope="module")
-def seam_client(tmp_path_factory):
+def seam_client(tmp_path_factory, athena_mini_dir):
     import duckdb
     from starlette.testclient import TestClient
 
@@ -57,7 +57,7 @@ def seam_client(tmp_path_factory):
     _make_conformance_db(db)
     con = duckdb.connect(str(db))
     ingest_athena(
-        con, "/tmp/opencode/athena-mini",
+        con, str(athena_mini_dir),
         vocabularies=("SNOMED",),
         accept_licenses=True, licenses_accepted_at="ts95",
     )

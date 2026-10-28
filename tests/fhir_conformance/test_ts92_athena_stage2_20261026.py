@@ -160,7 +160,7 @@ class TestSubsumesFlag:
         assert r.status_code == 200
 
     def test_d11_fast_path_resolvable_pair(
-        self, tmp_path_factory, monkeypatch
+        self, tmp_path_factory, athena_mini_dir, monkeypatch
     ):
         """Flag ON + both codes Athena-resolvable → closure answer.
         Fixture DB + mini athena (SNOMED) — T2DM/DM are in both."""
@@ -178,7 +178,7 @@ class TestSubsumesFlag:
         _make_conformance_db(db)
         con = duckdb.connect(str(db))
         ingest_athena(
-            con, "/tmp/opencode/athena-mini",
+            con, str(athena_mini_dir),
             vocabularies=("SNOMED",),
             accept_licenses=True, licenses_accepted_at="ts92",
         )
@@ -206,7 +206,7 @@ class TestSubsumesFlag:
         assert outcome == "subsumes"
 
     def test_d12_fast_path_unresolvable_falls_back(
-        self, tmp_path_factory, monkeypatch
+        self, tmp_path_factory, athena_mini_dir, monkeypatch
     ):
         """Flag ON + codes NOT in athena (UMLS-only fixture) → the
         UMLS walk answers (fallback, contract unchanged)."""

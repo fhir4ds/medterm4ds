@@ -86,11 +86,11 @@ class TestG1SharpEndpointLayer:
             create_fhir_app,
         )
 
+        if not PROD_DB.exists():
+            pytest.skip("no prod DB")
         app = create_fhir_app(
             FhirApiSettings(
-                db_path=PROD_DB if PROD_DB.exists() else (
-                    pytest.skip("no prod DB"), None
-                )[1] or PROD_DB,
+                db_path=PROD_DB,
                 memory_profile="low",
                 search_index_dir=str(tmp_path / "no-idx"),
                 prepare_cache=False,

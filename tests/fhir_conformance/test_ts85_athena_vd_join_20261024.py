@@ -38,11 +38,13 @@ from medterm4ds.services.athena import (  # noqa: E402
     iter_thin_concept_map_rows,
 )
 
-MINI = "/tmp/opencode/athena-mini"
+MINI = None  # injected per-fixture
 
 
 @pytest.fixture(scope="module")
-def ndjson(tmp_path_factory):
+def ndjson(tmp_path_factory, athena_mini_dir):
+    global MINI
+    MINI = str(athena_mini_dir)
     db = tmp_path_factory.mktemp("ts85") / "m.duckdb"
     con = duckdb.connect(str(db))
     ingest_athena(
