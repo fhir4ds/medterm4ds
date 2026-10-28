@@ -149,6 +149,7 @@ class TestStage4bSeam:
             create_fhir_app,
         )
         from medterm4ds.services.athena import ingest_athena
+
         from .conftest import _make_conformance_db
 
         db = tmp_path_factory.mktemp("ts93_4b") / "m.duckdb"

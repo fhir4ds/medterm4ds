@@ -50,7 +50,6 @@ from __future__ import annotations
 
 import pytest
 
-
 SNOMED_URI = "http://snomed.info/sct"
 ROOT = "73211009"
 DESCENDANTS_L1 = ("44054006", "10000004")
@@ -64,6 +63,7 @@ def deep_client(tmp_path_factory):
     from starlette.testclient import TestClient
 
     from medterm4ds.apps.fhir_api import FhirApiSettings, create_fhir_app
+
     from .conftest import _make_conformance_db
 
     db_path = tmp_path_factory.mktemp("vs02_deep") / "umls.duckdb"

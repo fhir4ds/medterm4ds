@@ -39,7 +39,6 @@ from __future__ import annotations
 
 import pytest
 
-
 SNOMED_URI = "http://snomed.info/sct"
 
 
@@ -49,6 +48,7 @@ def abstract_client(tmp_path_factory):
     from starlette.testclient import TestClient
 
     from medterm4ds.apps.fhir_api import FhirApiSettings, create_fhir_app
+
     from .conftest import _make_conformance_db
 
     db_path = tmp_path_factory.mktemp("cs05_abstract") / "umls.duckdb"
