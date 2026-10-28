@@ -7,6 +7,59 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.7] - 2026-10-27
+
+### Added
+
+- **Athena query surfaces** (stage 2 of the Athena campaign; the
+  loader + ConceptMap converter shipped in 0.0.6):
+  - Closure-based ancestry: `get_athena_ancestors`/`descendants`
+    over CONCEPT_ANCESTOR — EXACT totals (the VS02-01 family's
+    answer: one indexed scan, no caps), per-pair min/max depths,
+    multi-path ancestors distinguished. Real-data: T2DM = exactly 9
+    ancestors in ~10ms.
+  - `athena_subsumes` (4-outcome semantics), MCP tools
+    `athena_lookup`/`athena_descendants`/`athena_subsumes`/
+    `athena_search` (42 tools total), CLI `athena-concepts` +
+    `athena-hierarchy`, and the health() `athena` block reporting
+    LIVE table facts (present/vocabularies/loaded_at).
+  - `$subsumes` Athena fast path behind `MEDTERM4DS_ATHENA_SUBSUMES=1`
+    (opt-in only; see the parity measurement below).
+- **Runtime `$translate` Athena seam** (stage 4b):
+  `url=urn:medterm4ds:athena-conceptmap` translates FHIR
+  system+code → `urn:athena:concept-id` with the converter's
+  equivalence classes; wrong-target/reverse 400; the DEFAULT
+  crosswalk is unchanged.
+
+### Fixed
+
+- **athena-batch2**: pre-batch1 athena databases now raise the
+  actionable 're-run data ingest-athena' remedy at the service
+  boundary (was a raw BinderException); unknown `--vocabulary`
+  filters error loudly listing the carried set.
+- Batch wings pinned (not yet fixed — the dispatcher-level FA2 fix
+  is the queued fixbatch): the batch bypass matrix is 2 transports ×
+  2 rejection families (unknown-params + validation), all pinned
+  with the held-contrast proving the per-branch wiring root cause.
+
+### Known Issues
+
+- The `$subsumes` Athena fast-path ruling (LOCKED 2026-10-27): the
+  flag stays OFF-default permanently — the 23 real parity
+  disagreements are RxNorm definitional (`tradename_of` vs isa-only);
+  164x faster but not load-bearing. See
+  docs/plans/athena-subsumes-parity-measurement.md.
+- Pre-batch1 athena DBs must re-ingest (the AS1 remedy surfaces
+  this at use).
+- Open spec-comp findings in docs/maintenance-findings-registry.md.
+
+### Benchmarks (fresh, this release)
+
+- Athena closure vs UMLS walk ($subsumes parity set, 254 pairs):
+  closure ~10.7ms/pair vs walk ~1,754ms/pair (164x); flag-on and
+  flag-off both measured.
+- Ingest/export/search ladder unchanged from 0.0.6.
+
 ## [0.0.6] - 2026-10-25
 
 ### Added
