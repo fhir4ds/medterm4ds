@@ -77,6 +77,22 @@ def _property_codes_of(client, extra=None) -> list[str]:
     return codes
 
 
+
+
+
+
+def _bm25_index_available() -> bool:
+    """CI has the SapBERT model (downloads) but NOT the lexical BM25
+    indexes — every suite needing real lexical/hybrid results guards
+    on the index dir actually containing indexes."""
+    from pathlib import Path
+
+    from medterm4ds.apps.fhir_api import DEFAULT_SEARCH_INDEX_DIR
+
+    d = Path(DEFAULT_SEARCH_INDEX_DIR)
+    return d.exists() and any(d.glob("*_bm25.json"))
+
+pytest.mark.skipif(not _bm25_index_available(), reason="BM25 indexes absent (CI)")
 class TestLK1UndeclaredPropertyCodes:
     """LK1 — medterm4ds property extensions are undeclarable."""
 
@@ -102,6 +118,7 @@ class TestLK1UndeclaredPropertyCodes:
         assert r2.json()["total"] == 0
 
 
+pytest.mark.skipif(not _bm25_index_available(), reason="BM25 indexes absent (CI)")
 class TestLK2VersionNeverEmitted:
     """LK2 — version Out param absent."""
 
@@ -113,6 +130,7 @@ class TestLK2VersionNeverEmitted:
         assert "version" not in top
 
 
+pytest.mark.skipif(not _bm25_index_available(), reason="BM25 indexes absent (CI)")
 class TestLKControls:
     """Controls — the R4-required OUT contract, fresh."""
 

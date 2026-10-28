@@ -69,6 +69,22 @@ def _properties(params_json: dict) -> dict:
     return out
 
 
+
+
+
+
+def _bm25_index_available() -> bool:
+    """CI has the SapBERT model (downloads) but NOT the lexical BM25
+    indexes — every suite needing real lexical/hybrid results guards
+    on the index dir actually containing indexes."""
+    from pathlib import Path
+
+    from medterm4ds.apps.fhir_api import DEFAULT_SEARCH_INDEX_DIR
+
+    d = Path(DEFAULT_SEARCH_INDEX_DIR)
+    return d.exists() and any(d.glob("*_bm25.json"))
+
+pytest.mark.skipif(not _bm25_index_available(), reason="BM25 indexes absent (CI)")
 class TestCrossOpDisplayUniformity:
     """DL-C1 — one display convention across all four ops."""
 
@@ -116,6 +132,7 @@ class TestCrossOpDisplayUniformity:
         assert concept["display"] == PT_DISPLAY
 
 
+pytest.mark.skipif(not _bm25_index_available(), reason="BM25 indexes absent (CI)")
 class TestLookupShapeControls:
     """DL-C2 — name vs display; DL-C3 — property set; DL-C4 shape."""
 

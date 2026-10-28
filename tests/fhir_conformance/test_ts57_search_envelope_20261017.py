@@ -16,7 +16,10 @@ SC1 (MEDIUM, NEW) — Bundle.total always equals the RETURNED entry
     page size exactly. Combined with NO link[rel=next] (never
     emitted), a client concludes the search is EXHAUSTED at whatever
     count it asked for. The $expand surface went through this exact
-    class (VS02-01 family) — the search envelope regresses it.
+
+
+
+class (VS02-01 family) — the search envelope regresses it.
     Fix shape: total = the engine's true hit count (BM25 indexes
     know candidate counts) or omit total entirely (0..1 — absence is
     honest) + emit next-link when truncating. Flip pins sc10/sc11.
@@ -74,6 +77,19 @@ def _codes(r) -> list[str]:
     return [e["resource"]["code"] for e in r.json().get("entry", [])]
 
 
+
+def _bm25_index_available() -> bool:
+    """CI has the SapBERT model (downloads) but NOT the lexical BM25
+    indexes — every suite needing real lexical/hybrid results guards
+    on the index dir actually containing indexes."""
+    from pathlib import Path
+
+    from medterm4ds.apps.fhir_api import DEFAULT_SEARCH_INDEX_DIR
+
+    d = Path(DEFAULT_SEARCH_INDEX_DIR)
+    return d.exists() and any(d.glob("*_bm25.json"))
+
+pytest.mark.skipif(not _bm25_index_available(), reason="BM25 indexes absent (CI)")
 class TestSC1TotalTracksPageSize:
     """SC1 — total never reports the true match count."""
 
@@ -114,6 +130,7 @@ class TestSC1TotalTracksPageSize:
         assert r.json().get("link") is None
 
 
+pytest.mark.skipif(not _bm25_index_available(), reason="BM25 indexes absent (CI)")
 class TestSC2OffsetNoOp:
     """SC2 — offset accepted, does nothing."""
 
@@ -162,6 +179,7 @@ class TestSC2OffsetNoOp:
         assert c0 != c1
 
 
+pytest.mark.skipif(not _bm25_index_available(), reason="BM25 indexes absent (CI)")
 class TestTS57Controls:
     """Controls — count bounds + envelope shape, fresh."""
 

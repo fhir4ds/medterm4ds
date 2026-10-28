@@ -84,6 +84,25 @@ def _props(client, **params) -> set[str]:
 
 
 
+def _pf_overlay_resolves(fhir_client) -> bool:
+    """The L1 pins compare the FULL property set (incl.
+    patient-friendly); on CI the cached baseline's revision may not
+    overlay the synthetic fixture codes — guard on actual overlay."""
+    r = fhir_client.get(
+        "/fhir/CodeSystem/$lookup",
+        params={"system": "http://snomed.info/sct", "code": "44054006"},
+    )
+    if r.status_code != 200:
+        return False
+    codes = set()
+    for q in r.json().get("parameter", []):
+        if q.get("name") == "property":
+            for part in q.get("part", []):
+                if part.get("name") == "code":
+                    codes.add(part.get("valueCode"))
+    return "patient-friendly" in codes
+
+
 def _pf_baseline_available() -> bool:
     import os
     from pathlib import Path
@@ -97,8 +116,11 @@ def _pf_baseline_available() -> bool:
     return d.exists() and any(d.glob("patient_friendly_*.json"))
 
 
-pytest.mark.skipif(not _pf_baseline_available(), reason="patient-friendly baseline absent (CI)")
 class TestL1LookupPropertyFilterIgnored:
+    @pytest.fixture(autouse=True)
+    def _need_overlay(self, fhir_client):
+        if not (_pf_baseline_available() and _pf_overlay_resolves(fhir_client)):
+            pytest.skip("patient-friendly overlay not resolving (CI)")
     """L1 — the R4 `property` In-param is accepted but never filters."""
 
     def test_l10_property_display_not_filtered(self, fhir_client):
