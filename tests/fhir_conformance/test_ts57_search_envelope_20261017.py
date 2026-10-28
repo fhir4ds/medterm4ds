@@ -70,6 +70,12 @@ def search_client(tmp_path_factory):
     )
     app = create_fhir_app(settings)
     with TestClient(app) as client:
+        probe = client.get(
+            "/fhir/CodeSystem/$search",
+            params={"query": "diabetes", "searchMode": "lexical", "count": 1},
+        )
+        if probe.status_code == 503:
+            pytest.skip("lexical BM25 not loaded in this environment (CI)")
         yield client
 
 

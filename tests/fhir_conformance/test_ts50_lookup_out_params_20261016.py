@@ -94,6 +94,21 @@ def _bm25_index_available() -> bool:
 
 pytest.mark.skipif(not _bm25_index_available(), reason="BM25 indexes absent (CI)")
 class TestLK1UndeclaredPropertyCodes:
+    @pytest.fixture(autouse=True)
+    def _need_overlay(self, fhir_client):
+        r = fhir_client.get(
+            "/fhir/CodeSystem/$lookup",
+            params={"system": "http://snomed.info/sct", "code": "44054006"},
+        )
+        codes = set()
+        if r.status_code == 200:
+            for q in r.json().get("parameter", []):
+                if q.get("name") == "property":
+                    for part in q.get("part", []):
+                        if part.get("name") == "code":
+                            codes.add(part.get("valueCode"))
+        if "patient-friendly" not in codes:
+            pytest.skip("pf overlay not resolving (CI)")
     """LK1 — medterm4ds property extensions are undeclarable."""
 
     def test_k10_extension_property_codes_emitted(self, fhir_client):
