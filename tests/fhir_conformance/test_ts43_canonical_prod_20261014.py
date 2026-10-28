@@ -103,11 +103,14 @@ class TestCanonicalEndpointControls:
             create_fhir_app,
         )
 
+        prod = pathlib.Path(
+            "/mnt/d/medterm4ds/data/umls_current.duckdb"
+        )
+        if not prod.exists():
+            pytest.skip("production umls_current not present (CI)")
         app = create_fhir_app(
             FhirApiSettings(
-                db_path=pathlib.Path(
-                    "/mnt/d/medterm4ds/data/umls_current.duckdb"
-                ),
+                db_path=prod,
                 memory_profile="low",
                 search_index_dir=str(
                     tmp_path_factory.mktemp("ts43-idx")
