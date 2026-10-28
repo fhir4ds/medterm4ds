@@ -230,7 +230,21 @@ class TestTransportParityControls:
             json={"resourceType": "Parameters", "parameter": post_params},
         )
         assert g.status_code == p.status_code == 200
-        assert g.json() == p.json(), (
+
+        def _norm(body):
+            # $expand stamps a per-response expansion.timestamp — on
+            # CI the GET and POST straddle a second boundary. Parity
+            # is the CONTENT; compare ex-timestamp (the same
+            # normalization TS-31-era probes use).
+            if isinstance(body, dict) and isinstance(
+                body.get("expansion"), dict
+            ):
+                body = dict(body)
+                body["expansion"] = dict(body["expansion"])
+                body["expansion"].pop("timestamp", None)
+            return body
+
+        assert _norm(g.json()) == _norm(p.json()), (
             f"GET/POST bodies diverged for {path}"
         )
 
