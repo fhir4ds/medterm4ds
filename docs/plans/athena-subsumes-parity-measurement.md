@@ -64,3 +64,12 @@ and visible — the honest contract for a definitional difference.
 Athena-sourced ancestry (the athena-hierarchy CLI + MCP tools)
 already answers closure questions on its own surface without
 touching $subsumes.
+
+## RULING (Joel, 2026-10-27 — LOCKED)
+
+The recommendation is ACCEPTED: **MEDTERM4DS_ATHENA_SUBSUMES stays
+OFF-default PERMANENTLY.** The opt-in flag is the final posture —
+the definitional RxNorm divergence, the operator's-universe choice,
+and the non-load-bearing speedup all stand as recorded. No future
+fixbatch should flip the default; changes to this posture require a
+new explicit ruling.
