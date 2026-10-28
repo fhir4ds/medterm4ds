@@ -71,9 +71,8 @@ class TestG1SharpEndpointLayer:
     """G1-SHARP — the service filters; the endpoint drops the param."""
 
     def test_g10s_service_layer_filters(self):
-        """Direct service call with result_types=['lab'] on semantic
-        returns all-lab results (production artifacts). The G1
-        defect is NOT in the service."""
+        if not PROD_DB.exists():
+            pytest.skip("no prod DB (CI)")
         from medterm4ds.services.search import get_search_service
 
         svc = get_search_service()

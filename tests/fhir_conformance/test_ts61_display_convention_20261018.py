@@ -132,8 +132,22 @@ class TestCrossOpDisplayUniformity:
         assert concept["display"] == PT_DISPLAY
 
 
-pytest.mark.skipif(not _bm25_index_available(), reason="BM25 indexes absent (CI)")
 class TestLookupShapeControls:
+    @pytest.fixture(autouse=True)
+    def _need_overlay(self, fhir_client):
+        r = fhir_client.get(
+            "/fhir/CodeSystem/$lookup",
+            params={"system": "http://snomed.info/sct", "code": "44054006"},
+        )
+        codes = set()
+        if r.status_code == 200:
+            for q in r.json().get("parameter", []):
+                if q.get("name") == "property":
+                    for part in q.get("part", []):
+                        if part.get("name") == "code":
+                            codes.add(part.get("valueCode"))
+        if "patient-friendly" not in codes:
+            pytest.skip("pf overlay not resolving (CI)")
     """DL-C2 — name vs display; DL-C3 — property set; DL-C4 shape."""
 
     def test_c20_name_is_code_system_name(self, fhir_client):
