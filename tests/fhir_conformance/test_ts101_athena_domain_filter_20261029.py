@@ -77,26 +77,26 @@ pytestmark = pytest.mark.skipif(
 class TestAD1DomainFilterSilence:
     """AD1 — wrong-case/unknown domains silently drop."""
 
-    def test_ad10_wrong_case_silent(self, coexist_db):
-        """--domain condition (wrong case) → empty results, no
-        signal. Flip when validation or documented case-sensitivity
-        lands."""
+    def test_ad10_wrong_case_loud(self, coexist_db):
+        """AD1 FIXED (athena-batch3): --domain condition (wrong
+        case) → exit 2 with the carried domain set listed."""
         proc = _cli(
             "athena-concepts", "--db", str(coexist_db),
             "--query", "diabetes", "--domain", "condition",
         )
-        assert proc.returncode == 0
-        assert json.loads(proc.stdout)["results"] == []
+        assert proc.returncode == 2
+        assert "unknown domain_id" in proc.stderr
 
-    def test_ad11_unknown_domain_same_shape(self, coexist_db):
-        """--domain Bogus → byte-class identical emptiness — the two
-        failure classes are indistinguishable."""
+    def test_ad11_unknown_domain_loud(self, coexist_db):
+        """AD1 FIXED (athena-batch3): --domain Bogus → exit 2,
+        distinct from the wrong-case class by the message listing
+        the carried set."""
         proc = _cli(
             "athena-concepts", "--db", str(coexist_db),
             "--query", "diabetes", "--domain", "Bogus",
         )
-        assert proc.returncode == 0
-        assert json.loads(proc.stdout)["results"] == []
+        assert proc.returncode == 2
+        assert "unknown domain_id" in proc.stderr
 
 
 class TestTS101Controls:

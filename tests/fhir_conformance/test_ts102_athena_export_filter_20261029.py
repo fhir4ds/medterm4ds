@@ -75,19 +75,17 @@ pytestmark = pytest.mark.skipif(
 class TestAE1ExportVocabSilence:
     """AE1 — export silently drops unknown vocabularies."""
 
-    def test_ae10_bogus_vocab_silent(self, coexist_db, tmp_path):
-        """--vocabularies SNOMED,BOGUS → full SNOMED export, exit 0,
-        no signal for BOGUS. Flip when the export path validates
-        against athena_vocabulary (mirroring AF3)."""
+    def test_ae10_bogus_vocab_loud(self, coexist_db, tmp_path):
+        """AE1 FIXED (athena-batch3): --vocabularies SNOMED,BOGUS →
+        exit 2 naming BOGUS, mirroring the ingest side (AF3)."""
         out = tmp_path / "x.ndjson"
         proc = _cli(
             "data", "export-conceptmap",
             "--db", str(coexist_db), "--out", str(out),
             "--vocabularies", "SNOMED,BOGUS",
         )
-        assert proc.returncode == 0
-        body = json.loads(proc.stdout)
-        assert body["rows"] > 1_000_000  # SNOMED carried everything
+        assert proc.returncode == 2
+        assert "unknown vocabulary_id" in proc.stderr
 
     def test_ae11_ingest_side_contrast(self, tmp_path):
         """Premise control: the INGEST twin errors loudly (AF3

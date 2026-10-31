@@ -2228,6 +2228,27 @@ def run_data_export_conceptmap(args: argparse.Namespace) -> int:
             file=sys.stderr,
         )
         return 2
+    # AE1 fix (TS-102): export silently dropped unknown
+    # vocabularies (the ingest side errors loudly per AF3) — the
+    # shared loud closed-enum helper closes the export side.
+    pre = duckdb.connect(args.db, read_only=True)
+    try:
+        from medterm4ds.services.athena import validate_closed_enum
+
+        for v in vocabs:
+            validate_closed_enum(
+                pre,
+                v,
+                "vocabulary_id",
+                "athena_vocabulary",
+                param_name="vocabulary_id",
+            )
+    except ValueError as exc:
+        pre.close()
+        print(f"Error: {exc}", file=sys.stderr)
+        return 2
+    finally:
+        pre.close()
     con = duckdb.connect(args.db, read_only=True)
     # AF2 fix (TS-83): pointing at a DB that never ran ingest-athena
     # died with a raw CatalogException; name the remedy instead.
