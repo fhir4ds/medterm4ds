@@ -98,6 +98,10 @@ SEARCH_CATEGORIES = ("condition", "lab", "medication", "procedure", "vaccine", "
 # when present and falls back to the legacy revision-keyed layout;
 # 'legacy' forces the legacy layout (instant rollback kill-switch).
 _LAYOUT_ENV = os.getenv("MEDTERM4DS_LAYOUT", "auto").strip().lower()
+# 'auto' (default): terminology release → split → legacy.
+# 'terminology' / 'split' / 'legacy' pin one layout (explicit operator
+# contracts never silently fall through).
+_LAYOUT_TERMINOLOGY = _LAYOUT_ENV in ("auto", "terminology")
 MODELS_DIRNAME = "models"
 DATA_DIRNAME = "data"
 _SPLIT_ROOT = _CACHE_DIR if not _CACHE_REVISION_KEYED else (Path.home() / ".cache" / "medterm4ds")
@@ -150,6 +154,87 @@ def _local_latest_data_dir() -> Path | None:
     if not revs:
         return None
     return data_root / max(revs, key=_natural_key)
+
+
+_TERM_CACHE: dict[tuple[str, str, str], object | None] = {}
+
+
+def _local_artifacts_present() -> bool:
+    """True when a servable legacy/split cache exists locally.
+
+    Used only to gate the on-demand terminology download in 'auto'
+    mode: an existing cache keeps serving (instant rollback, no silent
+    3.7GB fetch on first query) until the operator runs
+    ``data cache-refresh --terminology``. Fresh installs have no local
+    artifacts and download the release eagerly on first use.
+    """
+    legacy_model = Path(DEFAULT_EMBEDDING_MODEL_DIR) / "model.safetensors"
+    if legacy_model.exists():
+        return True
+    # Any accepted space, not just the serving pin: an existing cache
+    # from a previous generation must not trigger a terminology fetch.
+    models_root = _SPLIT_ROOT / MODELS_DIRNAME
+    if models_root.is_dir() and any(
+        (d / "model.safetensors").exists()
+        for d in models_root.iterdir()
+        if d.is_dir()
+    ):
+        return True
+    data_root = _SPLIT_ROOT / DATA_DIRNAME
+    if data_root.is_dir() and any(
+        (d / "manifest.json").exists() for d in data_root.iterdir() if d.is_dir()
+    ):
+        return True
+    lexical = Path(DEFAULT_SEARCH_INDEX_DIR)
+    if lexical.is_dir() and any(lexical.glob("*.json")):
+        return True
+    return False
+
+
+def _terminology_root() -> Path:
+    """Cache root holding ``terminology/<release>/`` (shared across revisions)."""
+    if _CACHE_REVISION_KEYED:
+        return Path.home() / ".cache" / "medterm4ds"
+    return _CACHE_DIR
+
+
+def _resolve_terminology(download: bool = True):
+    """Resolve the ``fhir4ds/terminology`` release, or None when unavailable.
+
+    Preferred layout (repoint 2026-10-31): one release dir per dated tag,
+    keyed under the cache root so legacy revisions stay untouched. A
+    malformed/foreign-space release raises (never silently serves wrong
+    vectors); an absent one downloads on demand in 'auto'/'terminology'
+    modes and degrades to split/legacy only in 'auto'.
+    """
+    if not _LAYOUT_TERMINOLOGY:
+        return None
+    from medterm4ds.core import terminology as _term
+    from medterm4ds.core.artifact_manifest import (
+        effective_embedding_space,
+    )
+
+    space = effective_embedding_space()
+    root = _terminology_root()
+    key = (str(root), _term.release(), space)
+    if key in _TERM_CACHE:
+        return _TERM_CACHE[key]  # type: ignore[return-value]
+    paths = _term.resolve(root, space_id=space)
+    if paths is None and download and not _local_artifacts_present():
+        try:
+            paths = _term.download(root, space_id=space)
+        except _term.TerminologyLayoutError:
+            raise
+        except Exception as exc:
+            if _LAYOUT_ENV == "terminology":
+                raise
+            logger.warning(
+                "Terminology layout unavailable (%s); falling back to the "
+                "split/legacy artifacts.", exc,
+            )
+            paths = None
+    _TERM_CACHE[key] = paths
+    return paths
 
 
 def _maybe_log_legacy_deprecation() -> None:
@@ -739,7 +824,16 @@ class SearchService:
     def _ensure_bm25(self) -> None:
         if self._bm25_loaded:
             return
-        if not self._bm25_dir.is_dir() or not any(self._bm25_dir.glob("*_bm25.json")):
+        # Terminology layout: <family>/<release>/<category>.json — resolved
+        # before the legacy download so the new default source wins.
+        if self._bm25_dir == Path(DEFAULT_SEARCH_INDEX_DIR):
+            term = _resolve_terminology()
+            if term is not None:
+                self._bm25_dir = term.lexical
+        if not self._bm25_dir.is_dir() or not any(
+            p.name.endswith("_bm25.json") or p.suffix == ".json"
+            for p in self._bm25_dir.iterdir()
+        ):
             _hf_download_atomic(
                 ["lexical/*"], target_root=_CACHE_DIR, family="lexical",
                 revision=_HF_REVISION,
@@ -748,6 +842,8 @@ class SearchService:
             raise RuntimeError(f"BM25 index directory not found: {self._bm25_dir}")
         for category in SEARCH_CATEGORIES:
             json_path = self._bm25_dir / f"{category}_bm25.json"
+            if not json_path.exists():
+                json_path = self._bm25_dir / f"{category}.json"
             if json_path.exists():
                 with json_path.open() as f:
                     index = json.load(f)
@@ -805,6 +901,11 @@ class SearchService:
                 os.getenv("MEDTERM4DS_SEMANTIC_INDEX_DIR") or None,
             )
 
+        term = _resolve_terminology()
+        if term is not None:
+            self._resolved_index_dir = str(term.semantic)
+            return str(term.model), str(term.semantic)
+
         split_dir = _local_split_model_dir()
         if split_dir is None and not self.semantic_available:
             try:
@@ -845,7 +946,15 @@ class SearchService:
             return self._semantic_engine
         model_dir, index_dir = self._resolve_semantic_layouts()
         from medterm4ds.engines.fhir.semantic import SemanticSearchEngine
-        self._semantic_engine = SemanticSearchEngine(model_dir, index_dir=index_dir)
+        # Terminology model units carry no manifest.json; the release
+        # manifest's space (already fingerprint-verified in the resolver)
+        # is handed to the engine so space cross-checks stay live.
+        term = _resolve_terminology()
+        self._semantic_engine = SemanticSearchEngine(
+            model_dir,
+            index_dir=index_dir,
+            space_id=term.space_id if term is not None else None,
+        )
         return self._semantic_engine
 
     def _resolve_split_data_dir(self) -> Path | None:
@@ -895,7 +1004,10 @@ class SearchService:
             return
         path = self._canonical_path
         if not self._paths_pinned:
-            data_dir = self._resolve_split_data_dir()
+            term = _resolve_terminology()
+            if term is not None:
+                path = term.canonical / "value_sets.json"
+            data_dir = None if term is not None else self._resolve_split_data_dir()
             if data_dir is not None:
                 if not (data_dir / "canonical_anchor_value_sets.json").exists():
                     raise RuntimeError(
@@ -1126,7 +1238,11 @@ class SearchService:
         index_path = self._concepts_index_path
         meta_path = self._concepts_meta_path
         if not self._paths_pinned:
-            data_dir = self._resolve_split_data_dir()
+            term = _resolve_terminology()
+            if term is not None:
+                index_path = term.semantic / "anchors.faiss"
+                meta_path = term.semantic / "anchors_metadata.json"
+            data_dir = None if term is not None else self._resolve_split_data_dir()
             if data_dir is not None:
                 from medterm4ds.core.artifact_manifest import (
                     ManifestError,
@@ -1268,33 +1384,46 @@ class SearchService:
             if score < min_score:
                 break  # results are sorted by score; stop at threshold
             m = self._concepts_meta[idx]
-            if source_set and m["anchor_system"] not in source_set:
-                continue
             cid = m["canonical_id"]
+            vset = self._canonical_by_id.get(cid, {})
+            # Terminology-layout metadata carries only {canonical_id, name};
+            # card fields come from value_sets.json (single source of truth).
+            anchor_system = (
+                m.get("anchor_system")
+                or vset.get("anchor_system")
+                or vset.get("system")
+            )
+            anchor_code = (
+                m.get("anchor_code")
+                or vset.get("anchor_code")
+                or vset.get("code")
+            )
+            meta_name = m.get("patient_friendly_name") or m.get("name")
+            if source_set and anchor_system not in source_set:
+                continue
             if result_type_prefixes and not any(cid.startswith(p) for p in result_type_prefixes):
                 continue
             if cid in seen_ids:
                 continue
             seen_ids.add(cid)
 
-            vset = self._canonical_by_id.get(cid, {})
             # Anchor's primary name — what we want to display. For alias hits
             # (m["is_alias"]=True), m["patient_friendly_name"] is the alias text
             # (e.g., "Adbry"); we surface the actual anchor name instead
             # (e.g., "Tralokinumab") so downstream consumers don't see brand and
             # ingredient as two separate concepts. The alias text goes only in
             # matched_via_display.
-            primary_name = vset.get("patient_friendly_name") or m["patient_friendly_name"]
+            primary_name = vset.get("patient_friendly_name") or meta_name
             results.append(CanonicalSearchResult(
                 canonical_id=cid,
                 domain=vset.get("domain", m.get("domain", [])),
-                anchor_system=m["anchor_system"],
-                anchor_code=m["anchor_code"],
+                anchor_system=anchor_system,
+                anchor_code=anchor_code,
                 patient_friendly_name=primary_name,
                 score=float(score),
                 match_grade="exact" if score > 0.95 else "probable" if score > 0.80 else "possible",
-                matched_via_code=f"concept:{m['anchor_code']}",
-                matched_via_display=m["patient_friendly_name"],
+                matched_via_code=f"concept:{anchor_code}",
+                matched_via_display=meta_name,
                 total_member_count=self._total_member_count(vset, m),
                 members=vset.get("members", []),
                 combination_members=vset.get("combination_members", []),
