@@ -102,4 +102,19 @@
 - Gates (fresh, serial): conformance 8061 passed / 0 failed / 19
   skipped (24:05); unit 850 passed / 11 skipped (5:35); ruff clean +
   formatted.
+## 2026-10-31 — TS-107 client lookup/resolve cross-surface agreement (worktree maint/spec-comp-20261031b)
+
+- Surface: the CLIENT library's two overlapping entry points —
+  Terminology.lookup() (get_code_infos) vs Terminology.resolve()
+  (effective_code_refs + resolve_codes). test_client.py pins shapes;
+  no suite ever verified SEMANTIC cross-agreement on the same code
+  (display drift, activity disagreement, mode-vocabulary drift).
+- RESULT: ZERO FINDINGS — controls-only (20th clean surface). 7/7
+  fresh probes PASS: displays agree per-row (batch zip-aligned);
+  activity verdicts consistent; unknown codes carry the same
+  not-found story; invalid resolve_mode raises the identical
+  exception type on both surfaces.
+- Gates (fresh, serial): conformance 8060 passed / 0 failed / 19
+  skipped (34:49); unit 850 passed / 11 skipped (12:47); ruff clean
+  + formatted.
 - Zero production changes. No registry edit (findings-only run).
