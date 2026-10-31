@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Terminology release tags switched to `yyyy.mm.dd.N`** (per Joel):
+  `2026.10.31.1` replaces the `v2026.11.x` scheme. Default release bumped
+  to `2026.10.31.1` (canonical `.1341`, wave-9 folded,
+  `cdb_2026_10_31@5adb4e8`, without-cpt variant); the `v2026.11.2` family
+  dirs remain on the wire for rollback.
 - **Artifact source repointed to `fhir4ds/terminology`** (release layout,
   default release `v2026.11.2`): `<family>/<release>/` directories replace
   the `data/<revision>/` split layout and the `cdb_` prefix. Canonical

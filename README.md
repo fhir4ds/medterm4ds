@@ -129,7 +129,7 @@ Search/extract artifacts are cached from the `fhir4ds/terminology` HF repo
 Three layouts are accepted; the release layout is preferred:
 
 - **Release (current default)** — one self-contained release per dated tag
-  (`v2026.11.2` today): `canonical/<release>/value_sets.json` +
+  (`2026.10.31.1` today): `canonical/<release>/value_sets.json` +
   `claimant_details.json` + `decomposition_links.json`,
   `lexical/<release>/<category>.json`, `semantic/<release>/<category>.faiss`
   + metadata plus `anchors.faiss`/`anchors_metadata.json` (the canonical
@@ -150,7 +150,7 @@ Environment knobs:
 - `MEDTERM4DS_LAYOUT` — `auto` (default: release → split → legacy),
   `terminology`, `split`, or `legacy` (instant rollback kill-switch)
 - `MEDTERM4DS_TERMINOLOGY_RELEASE` — release to serve (default
-  `v2026.11.2`; must exist as a tag in the terminology repo)
+  `2026.10.31.1`; must exist as a tag in the terminology repo)
 - `MEDTERM4DS_TERMINOLOGY_REPO_ID` — override the artifact repo
   (default `fhir4ds/terminology`)
 - `MEDTERM4DS_TERMINOLOGY_DIR` — operator-managed release directory (used

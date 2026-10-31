@@ -33,7 +33,7 @@ logger = logging.getLogger(__name__)
 
 TERMINOLOGY_DIRNAME = "terminology"
 DEFAULT_TERMINOLOGY_REPO_ID = "fhir4ds/terminology"
-DEFAULT_TERMINOLOGY_RELEASE = "v2026.11.2"
+DEFAULT_TERMINOLOGY_RELEASE = "2026.10.31.1"
 
 # Canonical render policy of the published release. It is a property of the
 # canonical build that produced the embedded texts (docs/plans/

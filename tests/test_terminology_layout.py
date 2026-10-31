@@ -75,7 +75,7 @@ def _write_faiss(path: Path, n: int = 3) -> None:
     faiss.write_index(index, str(path))
 
 
-def _build_release(base: Path, *, release: str = "v2026.11.2") -> dict:
+def _build_release(base: Path, *, release: str = term.DEFAULT_TERMINOLOGY_RELEASE) -> dict:
     """Synthetic but contract-complete release; returns helpers for tests."""
     model_dir = base / "model" / "_pending"
     model_dir.mkdir(parents=True)
@@ -203,7 +203,7 @@ class TestResolve:
         built = _build_release(tmp_path / "rel")
         (built["base"] / "semantic" / built["release"] / "anchors.faiss").unlink()
         monkeypatch.setenv("MEDTERM4DS_TERMINOLOGY_DIR", str(built["base"]))
-        with pytest.raises(term.TerminologyLayoutError, match="incomplete"):
+        with pytest.raises(term.TerminologyLayoutError, match="is incomplete"):
             term.resolve(tmp_path, space_id=built["space"])
 
     def test_foreign_space_dir_fails_loud(self, tmp_path, monkeypatch):
