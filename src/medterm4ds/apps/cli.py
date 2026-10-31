@@ -340,6 +340,10 @@ def build_parser() -> argparse.ArgumentParser:
         "--data-revision", default=None,
         help="Data revision for --split (default: latest published on main; "
              "or MEDTERM4DS_DATA_REVISION).")
+    data_cache_refresh.add_argument(
+        "--terminology", action="store_true",
+        help="Refresh the fhir4ds/terminology release layout "
+             "(<family>/<release>/; default source for this release).")
     data_cache_refresh.set_defaults(func=run_data_cache_refresh)
     data_cache_list = data_subparsers.add_parser(
         "cache-list", help="List artifact-repo tags and branches (network call).")
@@ -2075,6 +2079,7 @@ def run_data_cache_refresh(args: argparse.Namespace) -> int:
         revision=args.revision,
         split=args.split,
         data_revision=args.data_revision,
+        terminology=getattr(args, "terminology", False),
     )
     sys.stdout.write(_json_dumps(report))
     return 0

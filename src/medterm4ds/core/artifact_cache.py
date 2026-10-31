@@ -71,6 +71,7 @@ def cache_info() -> dict[str, Any]:
             families[fam] = {"present": False}
     info["families"] = families
     info["split_layout"] = _split_layout_summary()
+    info["terminology_layout"] = _terminology_summary()
     return info
 
 
@@ -155,12 +156,45 @@ def read_manifest_summary(directory: Path) -> dict[str, Any]:
     return summary
 
 
+def _terminology_summary() -> dict[str, Any]:
+    """Local fhir4ds/terminology release state (default artifact layout)."""
+    from medterm4ds.core import terminology as _term
+    from medterm4ds.services import search as _search
+
+    root = _search._terminology_root()
+    rel = _term.release()
+    expected = _term.base_dir(root, rel)
+    summary: dict[str, Any] = {
+        "enabled": _search._LAYOUT_TERMINOLOGY,
+        "repo_id": _term.repo_id(),
+        "release": rel,
+        "cache_root": str(root),
+        "expected_dir": str(expected),
+        "present": _term.is_present(expected),
+    }
+    if summary["present"]:
+        summary["manifest"] = read_manifest_summary(expected)
+        try:
+            resolved = _term.resolve(root)
+        except Exception as exc:  # noqa: BLE001 — reporting path
+            summary["resolved"] = {"status": "invalid", "error": str(exc)}
+        else:
+            if resolved is not None:
+                summary["resolved"] = {
+                    "status": "ok",
+                    "embedding_space_id": resolved.space_id,
+                    "model_dir": str(resolved.model),
+                }
+    return summary
+
+
 def cache_refresh(
     revision: str | None = None,
     *,
     families: tuple[str, ...] = ARTIFACT_FAMILIES,
     split: bool = False,
     data_revision: str | None = None,
+    terminology: bool | None = None,
 ) -> dict[str, Any]:
     """Force-download artifact families for a revision.
 
@@ -189,6 +223,33 @@ def cache_refresh(
 
     if split:
         return _cache_refresh_split(data_revision=data_revision)
+
+    from medterm4ds.core import terminology as _term
+
+    if terminology is None:
+        terminology = _search._LAYOUT_ENV == "terminology" or (
+            _search._LAYOUT_TERMINOLOGY
+            and _term.is_present(_term.base_dir(_search._terminology_root()))
+        )
+    if terminology:
+        if not _search._LAYOUT_TERMINOLOGY:
+            raise RuntimeError(
+                "terminology refresh requested but MEDTERM4DS_LAYOUT="
+                f"{_search._LAYOUT_ENV} disables that layout"
+            )
+        root = _search._terminology_root()
+        base = _term.base_dir(root)
+        if base.exists():
+            shutil.rmtree(base)
+        resolved = _term.download(root)
+        return {
+            "layout": "terminology",
+            "repo_id": resolved.repo_id,
+            "release": resolved.release,
+            "cache_dir": str(resolved.base),
+            "embedding_space_id": resolved.space_id,
+            "families": ["canonical", "lexical", "semantic", "model"],
+        }
 
     repo_id = _search._HF_REPO_ID
     rev = revision or _search._HF_REVISION

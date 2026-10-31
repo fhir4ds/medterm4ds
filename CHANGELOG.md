@@ -7,6 +7,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Artifact source repointed to `fhir4ds/terminology`** (release layout,
+  default release `v2026.11.2`): `<family>/<release>/` directories replace
+  the `data/<revision>/` split layout and the `cdb_` prefix. Canonical
+  concept search now loads `semantic/<release>/anchors.faiss` +
+  `anchors_metadata.json` (the canonical family is JSON-only); per-category
+  FAISS files are `<category>.faiss` and BM25 files `<category>.json`.
+- **Embedding space `esp_468d01ebbab03648` admitted as the serving default**
+  (v3-hybrid encoder; render policy `rp_1891c4cb719d`). The release model
+  unit carries no manifest, so the space is verified by recomputing the
+  content fingerprint (weights + tokenizer md5s) against the directory name
+  and the release manifest — a mismatch is a loud `ManifestError`.
+
+### Added
+
+- `MEDTERM4DS_TERMINOLOGY_{RELEASE,REPO_ID,DIR}` and
+  `MEDTERM4DS_RENDER_POLICY_VERSION` env vars; `MEDTERM4DS_LAYOUT` accepts
+  `terminology` / `split` / `legacy` (and `auto` = release → split →
+  legacy). `medterm4ds data cache-refresh --terminology` re-fetches the
+  release; `data cache-info` reports `terminology_layout`.
+
+### Preserved
+
+- Existing legacy/split caches keep serving until explicitly refreshed —
+  the repoint never triggers a silent multi-GB re-download on first query.
+
 ## [0.0.7] - 2026-10-27
 
 ### Added

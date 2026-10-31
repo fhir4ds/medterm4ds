@@ -192,6 +192,11 @@ ACCEPTED_EMBEDDING_SPACES: frozenset[str] = frozenset({
     # render policy rp_1891c4cb719d, weights md5 668b86e0…, tokenizer
     # md5 e566a7ad… — fingerprint esp_f6c5c18d5f3ee3b5.
     "esp_f6c5c18d5f3ee3b5",
+    # fhir4ds/terminology v2026.11.1/v2026.11.2 (v3-hybrid encoder):
+    # render policy rp_1891c4cb719d, weights md5 4baf5ad7…, tokenizer
+    # md5 e566a7ad… — verified by recomputing SpaceFingerprint from the
+    # published model unit (2026-10-31 repoint).
+    "esp_468d01ebbab03648",
 })
 
 # The space the split-layout resolver serves by default. Governance
@@ -201,7 +206,7 @@ ACCEPTED_EMBEDDING_SPACES: frozenset[str] = frozenset({
 # spaces from different generations co-existing that silently serves
 # whichever id happens to sort first (and keeps serving it after a
 # rotation). Explicit override: MEDTERM4DS_EMBEDDING_SPACE env var.
-DEFAULT_SERVING_EMBEDDING_SPACE = "esp_f6c5c18d5f3ee3b5"
+DEFAULT_SERVING_EMBEDDING_SPACE = "esp_468d01ebbab03648"
 
 
 def serving_embedding_space() -> str:
