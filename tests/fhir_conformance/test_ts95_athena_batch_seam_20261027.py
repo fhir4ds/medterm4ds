@@ -74,10 +74,9 @@ def seam_client(tmp_path_factory, athena_mini_dir):
 class TestAS3BatchCannotSelect:
     """AS3 — the dispatcher never forwards map_url."""
 
-    def test_as30_batch_get_400(self, seam_client):
-        """Batch GET entry with the athena url: 400 (falls to the
-        crosswalk where the concept-id target fails resolution).
-        Flip when the dispatcher forwards map_url."""
+    def test_as30_batch_get_200(self, seam_client):
+        """AS3 FIXED (athena-batch3): the dispatcher forwards
+        map_url — the batch GET entry selects the athena map."""
         batch = {
             "resourceType": "Bundle", "type": "batch",
             "entry": [{
@@ -94,9 +93,11 @@ class TestAS3BatchCannotSelect:
         }
         r = seam_client.post("/fhir", json=batch)
         status = r.json()["entry"][0]["response"]["status"]
-        assert status == "400"
+        assert status == "200"
 
-    def test_as31_batch_post_400(self, seam_client):
+    def test_as31_batch_post_200(self, seam_client):
+        """AS3 FIXED (athena-batch3): batch POST body selects the
+        athena map too."""
         batch = {
             "resourceType": "Bundle", "type": "batch",
             "entry": [{
@@ -117,7 +118,7 @@ class TestAS3BatchCannotSelect:
         }
         r = seam_client.post("/fhir", json=batch)
         status = r.json()["entry"][0]["response"]["status"]
-        assert status == "400"
+        assert status == "200"
 
     def test_as32_direct_route_works(self, seam_client):
         """Premise control: the IDENTICAL request succeeds direct —

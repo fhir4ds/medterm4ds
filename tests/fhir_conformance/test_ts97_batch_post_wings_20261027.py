@@ -56,8 +56,8 @@ class TestBX2PostBodyWings:
     """FA2/BX1 wings on the POST-body channel."""
 
     def test_bx10_validate_date_bypassed(self, fhir_client):
-        """H4: date=garbage in a batch POST body → 200 (the direct
-        POST 400s). Flip with FA2's dispatcher fix."""
+        """FA2 FIXED (athena-batch3): H4 fires in batch POST
+        bodies too, matching the direct POST."""
         status = _batch_post_status(
             fhir_client,
             "CodeSystem/$validate-code",
@@ -67,7 +67,7 @@ class TestBX2PostBodyWings:
                 {"name": "date", "valueDateTime": "garbage"},
             ],
         )
-        assert status == "200"
+        assert status == "400"
 
     def test_bx11_validate_date_direct_400(self, fhir_client):
         """Premise: the direct POST twin validates (H4 held there
@@ -86,8 +86,8 @@ class TestBX2PostBodyWings:
         assert r.status_code == 400
 
     def test_bx12_expand_unknown_body_bypassed(self, fhir_client):
-        """EA body-side: zzz in a batch POST body → 200 (direct POST
-        400s per fixbatch2's body checks)."""
+        """FA2 FIXED (athena-batch3): unknown names in batch POST
+        bodies are rejected, matching the direct POST."""
         status = _batch_post_status(
             fhir_client,
             "ValueSet/$expand",
@@ -96,7 +96,7 @@ class TestBX2PostBodyWings:
                 {"name": "zzz", "valueString": "1"},
             ],
         )
-        assert status == "200"
+        assert status == "400"
 
     def test_bx13_expand_unknown_direct_400(self, fhir_client):
         r = fhir_client.post(

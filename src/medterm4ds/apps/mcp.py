@@ -102,6 +102,28 @@ class McpRuntime:
             return
         if not self.settings.db_path.exists():
             raise RuntimeError(f"Database not found: {self.settings.db_path}")
+        # AM1 fix (TS-100): an athena-ONLY database (no UMLS
+        # mrconso) died in prepare_cache with a raw
+        # CatalogException — a named remedy instead, per the
+        # BL2/AF2 doctrine. athena_* tables are designed to ride
+        # ALONGSIDE a UMLS database (design note §4).
+        probe = duckdb.connect(
+            str(self.settings.db_path), read_only=True
+        )
+        try:
+            tables = {
+                r[0]
+                for r in probe.execute("SHOW TABLES").fetchall()
+            }
+        finally:
+            probe.close()
+        if "mrconso" not in tables:
+            raise RuntimeError(
+                "this runtime requires a UMLS database (no mrconso "
+                f"in {self.settings.db_path}) — athena_* tables are "
+                "designed to ride alongside a UMLS database "
+                "(medterm4ds data ingest-athena ingests INTO one)."
+            )
         self.con = duckdb.connect(str(self.settings.db_path), read_only=True)
         config = local_duckdb_config(
             self.settings.memory_profile,
