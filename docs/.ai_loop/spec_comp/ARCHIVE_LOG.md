@@ -84,4 +84,22 @@
   skipped (29:23); unit 850 passed / 11 skipped (9:28); ruff clean +
   formatted. .venv symlinked per the 20261030b lesson (ts69 green
   from the start this run).
+## 2026-10-31 — TS-106 $subsumes fast-path partial-hit fallbacks (worktree maint/spec-comp-20261031)
+
+- Surface: the MEDTERM4DS_ATHENA_SUBSUMES fast path's PARTIAL
+  resolution — ts92 pinned both/neither-resolvable; the partial-hit
+  pairs (one code athena-resolvable, one UMLS-only, either order),
+  the RxNorm-Extension same-URI exclusion, and equivalence-first
+  under the flag were never probed.
+- RESULT: ZERO FINDINGS — controls-only (19th clean surface). 8/8
+  fresh probes PASS. Builder-level mechanism evidence for the
+  Extension exclusion: the fast path's vocab filter resolves the
+  RxNorm URI to ['RxNorm'] only — Extension codes are invisible to
+  resolution, per-code None → clean fallback; no closure answer can
+  leak for an excluded vocabulary. Partial-hit verdicts identical
+  flag-on/flag-off; equivalence-first holds for known and unknown
+  identical codes.
+- Gates (fresh, serial): conformance 8061 passed / 0 failed / 19
+  skipped (24:05); unit 850 passed / 11 skipped (5:35); ruff clean +
+  formatted.
 - Zero production changes. No registry edit (findings-only run).
