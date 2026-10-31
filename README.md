@@ -240,8 +240,9 @@ Hugging Face Spaces deployment.
 
 The Docker container builds `lookup.duckdb` from UMLS RRF files using the
 user's own NMLS API key — no UMLS data is redistributed. Derived search
-indexes (BM25, SapBERT, patient-friendly JSONs) are downloaded from
-[joelmontavon/medterm4ds-data](https://huggingface.co/datasets/joelmontavon/medterm4ds-data)
+artifacts (lexical BM25, semantic SapBERT embeddings, canonical value
+sets) are downloaded from
+[fhir4ds/terminology](https://huggingface.co/fhir4ds/terminology)
 on HuggingFace.
 
 ## Development
