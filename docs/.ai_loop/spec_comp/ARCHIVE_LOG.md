@@ -63,4 +63,25 @@
   formatted on the new file. ts69's 9 failures were WORKTREE-ENV
   (missing .venv), fixed by the standard symlink — pre-existing on
   the base commit, verified via stash.
+
+## 2026-10-30 — TS-105 athena bridge identity-vocab equivalence E2E (worktree maint/spec-comp-20261030c)
+
+- Surface: the AJ1 identity-vocabulary rule (NATIVE_IDENTITY_VOCABS)
+  through the LIVE FHIR $translate seam with an Athena DB actually
+  carrying identity-vocab rows — ts88 pinned the rule only at the
+  registry-membership level (aj11 asserts set membership); the mini
+  fixture has no ICD10CM/ATC rows, so _do_translate_athena_bridge's
+  equivalence branches were never exercised end-to-end.
+- Fixture: mini-Athena extended with REAL-download shapes (ICD10CM
+  E11.9 + ATC A10BA02 with standard_concept NULL; ICD10PCS with S;
+  a RxNorm Extension row that must stay excluded).
+- RESULT: ZERO FINDINGS — controls-only (18th clean surface). 8/8
+  fresh probes PASS: NULL-S identity rows → equivalence='equivalent'
+  (AJ1 holds through the seam); RxNorm Extension excluded (empty
+  match, not identity); deprecated S → 'unmatched'; unknown code →
+  empty match; direct-route controls green.
+- Gates (fresh, serial): conformance 8061 passed / 0 failed / 19
+  skipped (29:23); unit 850 passed / 11 skipped (9:28); ruff clean +
+  formatted. .venv symlinked per the 20261030b lesson (ts69 green
+  from the start this run).
 - Zero production changes. No registry edit (findings-only run).
