@@ -118,3 +118,26 @@
   skipped (34:49); unit 850 passed / 11 skipped (12:47); ruff clean
   + formatted.
 - Zero production changes. No registry edit (findings-only run).
+## 2026-10-31 — TS-108 data-verify athena coexistence + verdict edges (worktree maint/spec-comp-20261031c)
+
+- Surface: the `data verify` deploy gate (verify_duckdb) against the
+  ATHENA coexistence shape — every verify pin predates the athena
+  campaign; none probed a DB with athena_* tables (or staging
+  residue) alongside mrconso/mrrel, nor the malformed-mrconso edge.
+- RESULT: TWO FINDINGS, pinned strict-xfail flip-rows:
+  VV1 (MEDIUM) — verify_duckdb's Python API silently accepts unknown
+    source names (CLI validates via _normalize_sources_or_exit; the
+    API returns ok with zero counts — QC-451's 'gate is a no-op'
+    shape on the validation axis; QC-446/QC-453 API/CLI asymmetry
+    class).
+  VV2 (MEDIUM) — a MALFORMED mrconso (table present, required column
+    absent) crashes with a raw duckdb BinderException instead of
+    ok:false; QC-441 covered only the missing-TABLE shape.
+  Controls PASS fresh: athena tables + interrupted-swap staging
+  residue do not flip has_required_tables or ok; source_counts stay
+  UMLS-only (no athena-vocab leakage); CLI-vs-API verdict symmetric
+  via the console script; plain-DB ok and missing-table not-ok hold.
+- Gates (fresh, serial): conformance 8058 passed / 0 failed / 19
+  skipped / 2 xfailed (27:33); unit 850 passed / 11 skipped (5:40);
+  ruff clean + formatted.
+- Zero production changes (findings-only; fixes left to a fixbatch).
