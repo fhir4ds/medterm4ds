@@ -112,13 +112,13 @@ class TestBX1BatchPostBodyBypass:
     """BX1 — batch POST entries skip body unknown-param checks."""
 
     @pytest.mark.parametrize("op", list(_ZZZ_BODIES))
-    def test_b10_batch_post_zzz_200(self, fhir_client, op):
-        """Entry-status 200 for the zzz body in a batch POST entry
-        (all four body-capable ops). Flip when the dispatcher's POST
-        branches run the name-set check."""
+    def test_b10_batch_post_zzz_400(self, fhir_client, op):
+        """BX1/FA2 FIXED (athena-batch3): the dispatcher's POST
+        branch runs the name-set check — zzz bodies 400 via batch
+        entries on all four body-capable ops."""
         path, params = _ZZZ_BODIES[op]
         status = _batch_post_entry(fhir_client, path, params)
-        assert status == "200", op
+        assert status == "400", op
 
     def test_b11_direct_twins_reject_control(self, fhir_client):
         """Premise control: the wired ops 400 the identical body on

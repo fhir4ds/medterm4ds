@@ -126,12 +126,12 @@ class TestFA2BatchBypassesW4:
         ],
         ids=["lookup", "validate", "subsumes", "expand", "translate"],
     )
-    def test_f20_batch_unknown_param_200(self, fhir_client, url):
-        """Direct route 400s bogusParam on all five ops; the batch
-        entry 200s — the W4/U3 family never reached the dispatcher.
-        Flip when the dispatcher runs the known-set rejection."""
+    def test_f20_batch_unknown_param_400(self, fhir_client, url):
+        """FA2 FIXED (athena-batch3): the dispatcher runs the
+        known-set rejection — the batch entry 400s bogusParam on all
+        five ops, matching the direct routes."""
         _, entry_status = _batch_entry_status(fhir_client, url)
-        assert entry_status == "200"
+        assert entry_status == "400"
 
     def test_f21_direct_rejects_control(self, fhir_client):
         """Premise control: the direct routes DO 400 (fixbatch2-4
