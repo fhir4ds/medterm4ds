@@ -141,3 +141,28 @@
   skipped / 2 xfailed (27:33); unit 850 passed / 11 skipped (5:40);
   ruff clean + formatted.
 - Zero production changes (findings-only; fixes left to a fixbatch).
+
+## 2026-11-01 — TS-111 cache-refresh --terminology live + refusal symmetry (worktree maint/spec-comp-20261101c)
+
+- Surface: the cache-refresh --terminology migration path (rmtree +
+  atomic re-download + summary) shipped in the repoint with NO test
+  at any level — unit or conformance.
+- RESULT: ZERO FINDINGS — controls-only (23rd clean surface). 5/5
+  live probes PASS: refresh downloads the default release with full
+  summary; resolvable post-refresh; stale/corrupt family files
+  REPLACED (rmtree semantics verified by byte-size restore);
+  operator-managed refusal holds for default AND explicit
+  terminology refreshes; MEDTERM4DS_LAYOUT=legacy disables with a
+  named error; CLI round-trip exit 0 with API-matching JSON. DESIGN
+  FACT pinned: operator-managed refusal fires BEFORE the layout
+  check — pipeline-managed files are never deletable by
+  cache-refresh under MEDTERM4DS_CACHE_DIR.
+- PROCESS LESSON (recorded in-test): the first in-process draft
+  reloaded search/artifact_cache modules and its HOME monkeypatch
+  polluted subsequent suite files (19 cross-file failures that
+  passed in isolation — ordering pollution, not contention). Fixed
+  by running every probe in a subprocess with isolated env; probes
+  that mutate module state must never reload in-process.
+- Gates (fresh, serial): conformance 8110 / 0 / 19 + 2 xfailed
+  (32:40); unit 860 / 11 (8:22); ruff clean + formatted.
+- Zero production changes. No registry edit.
