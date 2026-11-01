@@ -59,12 +59,19 @@ class TestCanonicalServiceControls:
             "combination_members",
         ):
             assert field in d, field
-        assert d["canonical_id"] == "VAL-MED-RXNORM-6809"
+        # The release carries TWO exact-1.000 hits for "metformin"
+        # (VAL-MED-RXNORM-6809 and the 'metFORMIN' LOINC panel
+        # LP33332-5); which of the tied pair ranks first flips with
+        # last-ULP embedding differences across CPU platforms —
+        # assert the medication's membership + fields, not row 0.
+        by_id = {_row_dict(r)["canonical_id"]: _row_dict(r) for r in rows}
+        assert "VAL-MED-RXNORM-6809" in by_id
+        med = by_id["VAL-MED-RXNORM-6809"]
         # Service rows carry domain as a DISPLAY-form list
         # (['Medications']); the endpoint maps it to the wire enum
         # ('medication') — one source of truth per side.
-        assert d["domain"] == ["Medications"]
-        assert d["match_grade"] == "exact"
+        assert med["domain"] == ["Medications"]
+        assert med["match_grade"] == "exact"
 
     def test_c11_match_grade_taxonomy(self):
         rows = _svc_rows("metformin", count=5)

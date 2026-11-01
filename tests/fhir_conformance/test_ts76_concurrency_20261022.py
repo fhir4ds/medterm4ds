@@ -145,4 +145,15 @@ class TestPagingDeterminism:
         for t in threads:
             t.join()
         assert len(outputs) == 6
-        assert len(set(outputs)) == 1
+        # $expand stamps a per-response expansion.timestamp (the p10
+        # parity contract); six concurrent reads can straddle a second
+        # boundary, so byte-identity holds only with the volatile stamp
+        # normalized (same normalization the p10 parity test uses).
+        import re
+
+        def _normalized(b: bytes) -> bytes:
+            return re.sub(
+                rb'"timestamp":"[^"]*"', b'"timestamp":"T"', b
+            )
+
+        assert len({_normalized(o) for o in outputs}) == 1
