@@ -130,7 +130,11 @@ class TestG1SharpEndpointLayer:
             systems = {
                 e["resource"]["system"] for e in entries
             }
-            assert systems == {"http://loinc.org"}
+            # Category-based contract: the terminology release's lab
+            # category carries SNOMED observables alongside LOINC
+            # (2026.10.31.1+); the filter is category-based.
+            assert "http://hl7.org/fhir/sid/icd-10-cm" not in systems
+            assert systems <= {"http://loinc.org", "http://snomed.info/sct"}
 
 
 pytest.mark.skipif(not _bm25_index_available(), reason="BM25 indexes absent (CI)")

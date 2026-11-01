@@ -50,15 +50,15 @@ def _batch_status(fhir_client, url: str) -> str:
 class TestFW1ValidationBypassWings:
     """FA2 wings — validation families bypassed in batch."""
 
-    def test_b10_lookup_version_bypassed(self, fhir_client):
-        """H1: version=9.9 → batch 200 (direct 400s). Flip with
-        FA2's dispatcher-level fix."""
+    def test_b10_lookup_version_rejected(self, fhir_client):
+        """FA2 FIXED (athena-batch3): version=9.9 → batch 400,
+        matching the direct route's H1 rejection."""
         status = _batch_status(
             fhir_client,
             f"CodeSystem/$lookup?system={SNOMED_URI}"
             f"&code={T2DM}&version=9.9",
         )
-        assert status == "200"
+        assert status == "400"
 
     def test_b11_lookup_version_direct_400(self, fhir_client):
         """Premise: the DIRECT twin rejects (H1 held there)."""
@@ -71,22 +71,23 @@ class TestFW1ValidationBypassWings:
         )
         assert r.status_code == 400
 
-    def test_b12_expand_date_bypassed(self, fhir_client):
-        """EB: date=garbage → batch 200 (direct 400s)."""
+    def test_b12_expand_date_rejected(self, fhir_client):
+        """FA2 FIXED (athena-batch3): EB fires in batch too."""
         status = _batch_status(
             fhir_client,
             f"ValueSet/$expand?url={DM_ISA_URL}&date=garbage",
         )
-        assert status == "200"
+        assert status == "400"
 
-    def test_b13_expand_designations_bypassed(self, fhir_client):
-        """EA: includeDesignations → batch 200 (direct 400s)."""
+    def test_b13_expand_designations_rejected(self, fhir_client):
+        """FA2 FIXED (athena-batch3): the EA second gate
+        (declared-but-unsupported) now fires in batch."""
         status = _batch_status(
             fhir_client,
             f"ValueSet/$expand?url={DM_ISA_URL}"
             "&includeDesignations=true",
         )
-        assert status == "200"
+        assert status == "400"
 
     def test_b14_validate_version_held_in_batch(
         self, fhir_client
@@ -128,4 +129,4 @@ class TestDispatcherParamAudit:
             src,
         )
         assert direct is not None
-        assert batch is not None  # the 6-arg form persists
+        assert batch is None  # the 6-arg form is gone (AS3 fixed)

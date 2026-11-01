@@ -345,6 +345,12 @@ class TestFhirEndpoints:
             lexical_available = False
             semantic_available = False
 
+            def ensure_lexical(self):
+                return False
+
+            def ensure_semantic(self):
+                return False
+
         monkeypatch.setattr(
             search_module, "get_search_service", lambda: _UnavailableService()
         )
@@ -1732,6 +1738,13 @@ class TestFhirEndpoints:
         class _FakeService:
             lexical_available = True
             semantic_available = True
+
+            def ensure_lexical(self):
+                return True
+
+            def ensure_semantic(self):
+                return True
+
             # QC-400: the handler now passes the engine so the SERVICE can
             # canonicalize displays (single source of truth). Record it to
             # assert the wiring; the canonicalization itself is covered by

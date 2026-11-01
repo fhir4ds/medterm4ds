@@ -709,6 +709,13 @@ _CS_VALIDATE_KNOWN_PARAMS = frozenset(
      "abstract", "display", "displayLanguage", "coding", "codeableConcept",
      "property", "_format"),
 )
+_VS_VALIDATE_KNOWN_PARAMS = frozenset(
+    ("system", "code", "version", "systemVersion", "date",
+     "inferSystem", "abstract", "display", "displayLanguage",
+     "coding", "codeableConcept", "property", "url",
+     "valueSetVersion", "context", "contextTac", "filter", "_format"),
+)
+
 _SUBSUMES_KNOWN_PARAMS = frozenset(
     ("system", "codeA", "codeB", "version", "systemVersion",
      "codingA", "codingB", "_format"),
@@ -784,6 +791,24 @@ def reject_unknown_query_params(
         )
 
 
+def _terminology_lexical_dir() -> Path | None:
+    """Lexical family dir of a locally present terminology release, if any.
+
+    Read-only probe (no download) used by the startup banner so a
+    fresh install serving from the ``fhir4ds/terminology`` release is
+    reported as available instead of warning about the absent legacy
+    directory.
+    """
+    try:
+        from medterm4ds.services.search import _resolve_terminology
+    except ImportError:
+        return None
+    term = _resolve_terminology(download=False)
+    if term is None:
+        return None
+    return term.lexical if term.lexical.is_dir() else None
+
+
 def _load_bm25_indexes(search_dir: str) -> dict[str, Any]:
     """Probe the BM25 search index directory and report what's available.
 
@@ -791,10 +816,28 @@ def _load_bm25_indexes(search_dir: str) -> dict[str, Any]:
     owns the indexes now (single source of truth, shared across all four
     surfaces). This function just produces a summary dict so the startup
     banner can tell operators what's available and what's missing.
+
+    Terminology-layout aware: when the legacy dir is absent but the
+    ``fhir4ds/terminology`` release serves a lexical family locally,
+    report from the release instead of warning (the fresh-install path).
     """
     expected = ("condition", "lab", "medication", "procedure", "vaccine", "body_structure")
     search_path = Path(search_dir)
     if not search_path.is_dir():
+        term_dir = _terminology_lexical_dir()
+        if term_dir is not None:
+            loaded = [c for c in expected if (term_dir / f"{c}.json").exists()]
+            if loaded:
+                logger.info(
+                    "  BM25 from terminology release: %s (%s)",
+                    ", ".join(loaded), term_dir,
+                )
+                return {
+                    "loaded": loaded,
+                    "missing": [c for c in expected if c not in loaded],
+                    "flat_format": [],
+                    "dir": str(term_dir),
+                }
         logger.warning(
             "BM25 search index directory not found: %s "
             "(set MEDTERM4DS_SEARCH_INDEX_DIR to enable $search lexical/hybrid)",
@@ -2111,6 +2154,131 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
         executor = _executor(request)
         pf_cache = request.app.state.patient_friendly_cache
 
+        # FA2 fix (TS-44/TS-96/TS-97): batch entries previously
+        # bypassed the W4/U3 unknown-param rejection AND the
+        # validation wings (H1 version, EB date) on every op — a
+        # complete transport bypass of the direct-route contracts
+        # (2 transports x 2 rejection families). This seam carries
+        # the SAME checks the direct routes run, before dispatch:
+        # per-op known sets on the GET query params, the body-side
+        # name check on POST bodies, and the version/date
+        # validation everywhere those params can appear.
+        _BATCH_OP_KNOWN_PARAMS = {
+            "/CodeSystem/$lookup": _LOOKUP_KNOWN_PARAMS,
+            "/CodeSystem/$validate-code": _CS_VALIDATE_KNOWN_PARAMS,
+            "/ValueSet/$validate-code": _VS_VALIDATE_KNOWN_PARAMS,
+            "/ValueSet/$expand": _EXPAND_KNOWN_PARAMS,
+            "/ConceptMap/$translate": _TRANSLATE_KNOWN_PARAMS,
+            "/CodeSystem/$subsumes": _SUBSUMES_KNOWN_PARAMS,
+        }
+        known = _BATCH_OP_KNOWN_PARAMS.get(path)
+        if known is not None:
+            # GET: reject unknown query params. The dispatcher's
+            # ``params`` are the ENTRY's parsed query — expose them
+            # through the shim the shared helper expects.
+            if method == "GET":
+                class _EntryQuery:
+                    def __init__(self, entry_params):
+                        self.query_params = entry_params
+
+                try:
+                    reject_unknown_query_params(
+                        _EntryQuery(params),
+                        known,
+                        path,
+                        known_prefixes=(
+                            ("property.",)
+                            if path == "/CodeSystem/$lookup"
+                            else ()
+                        ),
+                    )
+                except ValueError as exc:
+                    return _batch_error_entry(400, str(exc))
+            # POST: body-side unknown-param names.
+            if method == "POST" and body_resource:
+                names = _parameter_names_present(body_resource)
+                unknown = {
+                    n for n in names
+                    if not any(
+                        n.startswith(pfx)
+                        for pfx in (
+                            ("property.",)
+                            if path == "/CodeSystem/$lookup"
+                            else ()
+                        )
+                    )
+                    and n not in known
+                }
+                if unknown:
+                    return _batch_error_entry(
+                        400,
+                        f"Unsupported parameter(s) for {path}: "
+                        f"{', '.join(sorted(unknown))}.",
+                    )
+            # Validation wings: version/systemVersion (H1/U4) and
+            # date (EB/H4) — on whichever channel carries them.
+            _vpairs: list[tuple[str | None, str]] = []
+            if method == "GET":
+                _vpairs = [
+                    (params.get("version"), "version"),
+                    (params.get("systemVersion"), "systemVersion"),
+                    (params.get("date"), "date"),
+                ]
+            elif body_resource:
+                _vpairs = [
+                    (
+                        _raw_parameter_value(body_resource, "version"),
+                        "version",
+                    ),
+                    (
+                        _raw_parameter_value(
+                            body_resource, "systemVersion"
+                        ),
+                        "systemVersion",
+                    ),
+                    (
+                        _raw_parameter_value(body_resource, "date"),
+                        "date",
+                    ),
+                ]
+            for val, name in _vpairs:
+                if val is None or val == "":
+                    continue
+                try:
+                    if name == "date":
+                        validate_fhir_date(val, name)
+                    else:
+                        reject_unsupported_version_params(
+                            version=val if name == "version" else None,
+                            system_version=(
+                                val if name == "systemVersion" else None
+                            ),
+                            kind=path,
+                        )
+                except ValueError as exc:
+                    return _batch_error_entry(400, str(exc))
+
+            # $expand's declared-but-unsupported params (the EA
+            # contract: known names that the direct routes reject
+            # via their own explicit check — e.g. includeDesignations
+            # passes the known-set gate then fails loudly).
+            if path == "/ValueSet/$expand":
+                if method == "GET":
+                    present = set(params)
+                elif body_resource:
+                    present = _parameter_names_present(body_resource)
+                else:
+                    present = set()
+                unsupported = present & set(_EXPAND_UNSUPPORTED_PARAMS)
+                if unsupported:
+                    return _batch_error_entry(
+                        400,
+                        "Unsupported $expand parameter(s): "
+                        f"{', '.join(sorted(unsupported))}. This "
+                        "server declares url, filter, count, offset, "
+                        "activeOnly, system, date.",
+                    )
+
         # Route based on path. Supported operations:
         #   POST /CodeSystem/$lookup
         #   POST /CodeSystem/$validate-code
@@ -2192,6 +2360,14 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
                     )
                     batch_url = batch_p.get("url")
                     batch_ver = batch_p.get("conceptMapVersion")
+                # AS3 fix (athena-batch3): forward the athena map
+                # selection — the direct routes pass map_url since
+                # stage 4b; the batch call site was missed.
+                batch_map_url = (
+                    batch_url
+                    if batch_url == ATHENA_CONCEPT_MAP_URL
+                    else None
+                )
                 try:
                     resolve_concept_map_url(batch_url, batch_ver)
                 except ValueError as exc:
@@ -2213,7 +2389,7 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
                     )
                 payload = await _run_db(
                     executor, _do_translate, engine, system, code,
-                    targetsystem, batch_reverse,
+                    targetsystem, batch_reverse, batch_map_url,
                 )
             elif path == "/CodeSystem/$lookup":
                 system, code = _extract_lookup_params(method, params, body_resource)
@@ -5279,10 +5455,15 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
                     })
                 return build_bundle_search(entries, query=query_text, search_mode=search_mode)
 
-            # Legacy modes (lexical, semantic, hybrid): probe availability
-            if search_mode in ("lexical", "hybrid") and not service.lexical_available:
+            # Legacy modes (lexical, semantic, hybrid): probe availability.
+            # First-use provisioning (0.0.8): with unpinned dirs the gate
+            # attempts to LOAD (downloading the terminology release /
+            # split artifacts) before answering — a fresh install serves
+            # its first $search instead of 503ing until another surface
+            # warms the cache. Pinned dirs keep the plain 503 contract.
+            if search_mode in ("lexical", "hybrid") and not service.ensure_lexical():
                 return _fhir_error(503, "BM25 search index not loaded.")
-            if search_mode in ("semantic", "hybrid") and not service.semantic_available:
+            if search_mode in ("semantic", "hybrid") and not service.ensure_semantic():
                 return _fhir_error(503, "Embedding model not found.")
 
             results = service.search(

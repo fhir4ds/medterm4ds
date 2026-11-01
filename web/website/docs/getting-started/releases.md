@@ -4,6 +4,52 @@ title: Releases
 
 This page tracks Medical Terminology for Data Science package releases.
 
+## 0.0.8
+
+Terminology artifact repoint — the search stack now serves from the
+`fhir4ds/terminology` release layout. No breaking API changes; existing
+caches keep serving (no forced re-download).
+
+Artifact repoint (the headline change):
+
+- Search artifacts (lexical BM25, semantic SapBERT + FAISS, canonical
+  value sets) resolve from **one self-contained release** at
+  [fhir4ds/terminology](https://huggingface.co/fhir4ds/terminology):
+  `<family>/<release>/` directories under dated `yyyy.mm.dd.N` tags.
+  Default release `2026.10.31.1`.
+- The embedding model ships inside the release
+  (`model/esp_468d01ebbab03648`, the v3-hybrid encoder, render policy
+  `rp_1891c4cb719d`) and is admitted by content fingerprint — a
+  mismatch is a loud `ManifestError`, never a silent wrong-space serve.
+- `mt.connect()` no longer downloads derived artifacts from the retired
+  `joelmontavon/medterm4ds-data` dataset: auto-provisioning builds only
+  `lookup.duckdb` (UMLS RRF via the user's NLM UTS API key); search
+  artifacts self-download from the terminology release on first use.
+- New env vars: `MEDTERM4DS_TERMINOLOGY_{RELEASE,REPO_ID,DIR}`,
+  `MEDTERM4DS_RENDER_POLICY_VERSION`; `MEDTERM4DS_LAYOUT` accepts
+  `terminology` / `split` / `legacy` / `auto` (release → split →
+  legacy). `medterm4ds data cache-refresh --terminology` re-fetches;
+  `data cache-info` reports a `terminology_layout` block.
+- Existing legacy/split caches keep serving until explicitly refreshed
+  — the repoint never triggers a silent multi-GB download on first
+  query.
+
+Athena robustness (athena-batch3, from the nightly spec-comp program):
+
+- Batch `$validate-code` entries no longer bypass the direct route's
+  contracts: unknown parameters 400, per-entry validation wings
+  (version/date) enforced, `map_url` forwards to the Athena bridge.
+- `athena-concepts --domain` and `export-conceptmap --vocabularies`
+  validate against the database's closed enum — wrong-case or unknown
+  values fail loud with the legal set instead of silently returning
+  empty results.
+- MCP `athena_*` tools opening an athena-only database (no UMLS
+  tables) report the ingest remedy instead of a startup traceback.
+
+Full finding registry in `docs/maintenance-findings-registry.md`;
+spec-compliance sweep TS-99…TS-108 pinned ten more surfaces
+(controls-only beyond the fixes above).
+
 ## 0.0.7
 
 Athena query surfaces + the runtime $translate seam. No breaking

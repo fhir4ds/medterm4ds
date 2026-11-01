@@ -21,6 +21,13 @@ jobs:
           python-version: ${{ matrix.python-version }}
           cache: pip
 
+      - name: Cache search artifacts
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/medterm4ds
+          key: terminology-${{ hashFiles('src/medterm4ds/core/terminology.py') }}
+          restore-keys: terminology-
+
       - name: Install package
         run: |
           python -m pip install --upgrade pip

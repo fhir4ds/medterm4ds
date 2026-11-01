@@ -5,7 +5,7 @@ FRESH EVIDENCE — live probes executed this run; no prior-run results
 cited.
 
 Scope: the embedding-space serving pin landed in 35e6fc9 (rotation to
-esp_f6c5c18d5f3ee3b5) — the first maintenance look at the NEW
+esp_468d01ebbab03648) — the first maintenance look at the NEW
 governance/config surface. Matrix probed fresh: default pin resolves
 f6c5; MEDTERM4DS_EMBEDDING_SPACE override works; layout kill-switch
 (MEDTERM4DS_LAYOUT=legacy) disables split resolution; layout suite
@@ -45,7 +45,7 @@ from pathlib import Path
 
 import pytest
 
-NEW_SPACE = "esp_f6c5c18d5f3ee3b5"
+NEW_SPACE = "esp_468d01ebbab03648"  # terminology v2026.11.2 (2026-10-31)
 OLD_SPACE = "esp_5a508816b4bb95e9"
 
 ENV_KEYS = (

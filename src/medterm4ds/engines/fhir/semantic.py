@@ -39,6 +39,7 @@ class SemanticSearchEngine:
         model_dir: str = DEFAULT_MODEL_DIR,
         device: str | None = None,
         index_dir: str | None = None,
+        space_id: str | None = None,
     ):
         self._model_dir = Path(model_dir)
         # Split-layout (Phase 3): model weights live under models/<space_id>/
@@ -51,7 +52,9 @@ class SemanticSearchEngine:
         self._lock = threading.Lock()
         self._model = None
         self._tokenizer = None
-        self._space_id: str | None = None
+        # Terminology layout: the model unit carries no manifest.json —
+        # the caller passes the release-declared, fingerprint-verified space.
+        self._space_id: str | None = space_id
         self._faiss_indexes: dict[str, Any] = {}
         self._metadata: dict[str, list[dict]] = {}
         self._loaded = False
@@ -115,6 +118,8 @@ class SemanticSearchEngine:
                 if isinstance(manifest.get("index_lineage"), dict):
                     for cat in _CATEGORIES:
                         index_path = self._index_root / f"{cat}_faiss.index"
+                        if not index_path.exists():
+                            index_path = self._index_root / f"{cat}.faiss"
                         if index_path.exists():
                             validate_index_lineage(
                                 manifest,
@@ -127,7 +132,9 @@ class SemanticSearchEngine:
                     "SapBERT manifest validated: %s", manifest_str(manifest)
                 )
             else:
-                self._space_id = None
+                # Keep the constructor-provided space (terminology layout);
+                # legacy operator dirs without a manifest remain None.
+                pass
 
             from transformers import AutoModel, AutoTokenizer
 
@@ -148,6 +155,9 @@ class SemanticSearchEngine:
 
             for cat in _CATEGORIES:
                 index_path = self._index_root / f"{cat}_faiss.index"
+                if not index_path.exists():
+                    # terminology layout: semantic/<release>/<cat>.faiss
+                    index_path = self._index_root / f"{cat}.faiss"
                 meta_path = self._index_root / f"{cat}_metadata.json"
                 if index_path.exists() and meta_path.exists():
                     self._faiss_indexes[cat] = faiss.read_index(str(index_path))

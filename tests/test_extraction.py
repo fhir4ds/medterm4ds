@@ -880,7 +880,13 @@ class TestBatchExtract:
         ]
 
     def test_order_preserved(self, service):
-        batch = service.extract([self.T1, self.T0], format="codes")
+        # min_grade="possible": the v3-hybrid serving space (0.0.8 default,
+        # esp_468d01ebbab03648) scores HbA1c→LOINC LP16413-4 at 0.79 —
+        # below the 0.80 "probable" line the legacy space cleared. The
+        # test's contract is ORDER, not grade calibration.
+        batch = service.extract(
+            [self.T1, self.T0], format="codes", min_grade="possible"
+        )
         # T1 is the lab text: its result must contain a LOINC concept
         assert any(c.source == "LOINC" for c in batch[0])
         # T0 is the medication text

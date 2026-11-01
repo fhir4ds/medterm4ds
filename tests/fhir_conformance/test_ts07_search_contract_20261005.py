@@ -161,8 +161,13 @@ class TestG1SemanticResultTypesIgnored:
             e["resource"]["system"]
             for e in r.json().get("entry", [])
         }
-        # G1 FIXED (c-fixbatch6): POST filters too.
-        assert systems and systems == {"http://loinc.org"}
+        # G1 FIXED (c-fixbatch6): POST filters too. Category-based
+        # contract (matches g10): the lab CATEGORY in the terminology
+        # release (2026.10.31.1+) carries SNOMED observables alongside
+        # LOINC — the filter is category-based, not system-based.
+        assert systems
+        assert "http://hl7.org/fhir/sid/icd-10-cm" not in systems
+        assert systems <= {"http://loinc.org", "http://snomed.info/sct"}
 
     def test_g12_canonical_validates(self, search_client):
         """CONTRAST: canonical mode validates resultTypes and 400s

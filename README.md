@@ -124,27 +124,39 @@ Valid result types: `condition`, `symptom`, `lab`, `vital`, `medication`,
 
 ### Artifact cache layout
 
-Search/extract artifacts are cached from the `fhir4ds/medterm4ds` HF repo
-under `~/.cache/medterm4ds/`. Two layouts are accepted (one release of
-dual-layout acceptance; the split layout is preferred):
+Search/extract artifacts are cached from the `fhir4ds/terminology` HF repo
+(the 2026-10-31 repoint) under `~/.cache/medterm4ds/terminology/<release>/`.
+Three layouts are accepted; the release layout is preferred:
 
-- **Split (current)** — `models/<embedding_space_id>/` (SapBERT weights,
-  content-addressed, pinned by an in-code acceptance registry) and
-  `data/<data_revision>/` (canonical value sets + concept FAISS index +
-  metadata, floats to the latest published revision, resolved revision is
-  logged). Each unit ships `manifest.json`; the runtime validates
-  embedding-space identity and md5 lineage at component load and hard-fails
-  on mismatch (stale indexes warn and serve during a deprecation window).
-  `medterm4ds data cache-refresh --split [--data-revision R]` downloads or
-  migrates to this layout.
+- **Release (current default)** — one self-contained release per dated tag
+  (`2026.10.31.1` today): `canonical/<release>/value_sets.json` +
+  `claimant_details.json` + `decomposition_links.json`,
+  `lexical/<release>/<category>.json`, `semantic/<release>/<category>.faiss`
+  + metadata plus `anchors.faiss`/`anchors_metadata.json` (the canonical
+  concept index moved here), and `model/<embedding_space_id>/`. The
+  release manifest declares the embedding space; the runtime recomputes its
+  content fingerprint (weights + tokenizer md5 + render policy) and
+  hard-fails on a mismatch. `medterm4ds data cache-refresh --terminology`
+  re-fetches the release. A fresh cache downloads it on first use; an
+  existing legacy/split cache keeps serving until you refresh.
+- **Split** — `models/<embedding_space_id>/` +
+  `data/<data_revision>/` (the pre-repoint `fhir4ds/medterm4ds` layout).
+  Still served when present; `data cache-refresh --split` migrates.
 - **Legacy (tag `v0.0.5`)** — flat `semantic/`, `canonical/`, `lexical/`
-  directories. Still served when present, with a deprecation notice
-  pointing at `cache-refresh --split`.
+  directories. Still served when present, with a deprecation notice.
 
 Environment knobs:
 
-- `MEDTERM4DS_LAYOUT` — `auto` (default) or `legacy` (kill-switch forcing
-  the legacy layout; instant rollback)
+- `MEDTERM4DS_LAYOUT` — `auto` (default: release → split → legacy),
+  `terminology`, `split`, or `legacy` (instant rollback kill-switch)
+- `MEDTERM4DS_TERMINOLOGY_RELEASE` — release to serve (default
+  `2026.10.31.1`; must exist as a tag in the terminology repo)
+- `MEDTERM4DS_TERMINOLOGY_REPO_ID` — override the artifact repo
+  (default `fhir4ds/terminology`)
+- `MEDTERM4DS_TERMINOLOGY_DIR` — operator-managed release directory (used
+  as-is, no download; the directory itself is the release root)
+- `MEDTERM4DS_RENDER_POLICY_VERSION` — canonical render policy used when
+  fingerprinting the release model (default `rp_1891c4cb719d`)
 - `MEDTERM4DS_DATA_REVISION` — pin a specific data revision (e.g.
   `cdb_2026_09_07`) instead of floating to latest
 - `MEDTERM4DS_SEMANTIC_INDEX_DIR` — per-category FAISS index directory,
@@ -228,8 +240,9 @@ Hugging Face Spaces deployment.
 
 The Docker container builds `lookup.duckdb` from UMLS RRF files using the
 user's own NMLS API key — no UMLS data is redistributed. Derived search
-indexes (BM25, SapBERT, patient-friendly JSONs) are downloaded from
-[joelmontavon/medterm4ds-data](https://huggingface.co/datasets/joelmontavon/medterm4ds-data)
+artifacts (lexical BM25, semantic SapBERT embeddings, canonical value
+sets) are downloaded from
+[fhir4ds/terminology](https://huggingface.co/fhir4ds/terminology)
 on HuggingFace.
 
 ## Development

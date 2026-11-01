@@ -1,15 +1,15 @@
 """Auto-provisioning for mt.connect().
 
-Builds ``lookup.duckdb`` from the user's own UMLS RRF download and
-fetches derived artifacts (BM25, SapBERT, patient_friendly) from the
-open Hugging Face dataset. Everything is cached so subsequent ``connect()``
-calls are instant.
+Builds ``lookup.duckdb`` from the user's own UMLS RRF download (NLM UTS
+API). Everything is cached so subsequent ``connect()`` calls are instant.
 
-Two caches:
+Derived search artifacts (BM25, SapBERT, canonical value sets) are NOT
+provisioned here — they self-download from the ``fhir4ds/terminology``
+release layout on first use (see ``core/terminology.py``).
+
+One cache:
   - ``~/.medterm4ds/cache/lookup-{version}.duckdb`` — built locally,
     versioned by UMLS release. Multiple releases can coexist.
-  - Standard HF cache (``~/.cache/huggingface/``) — derived artifacts
-    via ``snapshot_download()``. Shared with other HF-using tools.
 
 Override the medterm4ds cache root via ``MEDTERM4DS_HOME`` env var.
 """
@@ -26,7 +26,6 @@ from typing import Any
 logger = logging.getLogger(__name__)
 
 DEFAULT_UMLS_RELEASE = os.getenv("UMLS_RELEASE") or "2026AA"
-DEFAULT_HF_DATASET = os.getenv("MEDTERM4DS_HF_DATASET", "joelmontavon/medterm4ds-data")
 
 # DuckDB database files carry the magic bytes "DUCK" at offset 8 of the main
 # header block (the first 8 bytes are a checksum). QC-475/QC-476 (MEDIUM):
@@ -124,9 +123,7 @@ def build_lookup_db(
     db_path = get_lookup_db_path(version, home)
     db_path.parent.mkdir(parents=True, exist_ok=True)
 
-    logger.info(
-        "Building lookup.duckdb from UMLS %s (one-time, ~8 min)...", version
-    )
+    logger.info("Building lookup.duckdb from UMLS %s (one-time, ~8 min)...", version)
 
     # Late import — avoids pulling duckdb into the import chain for users
     # who just want to check cache state.
@@ -163,102 +160,39 @@ def build_lookup_db(
     return db_path
 
 
-def download_derived_artifacts(
-    hf_token: str | None = None,
-    hf_dataset: str = DEFAULT_HF_DATASET,
-) -> dict[str, Path]:
-    """Download BM25, SapBERT, and patient_friendly from the open HF dataset.
-
-    These are derivative works (transformed beyond recognition from UMLS
-    source strings) and are redistributable under the UMLS license. No
-    gating — anyone can download.
-
-    Returns a dict with keys:
-      - ``baseline_dir``: directory containing patient_friendly_*.json
-      - ``bm25_dir``: directory containing *_bm25.json
-      - ``sapbert_dir``: directory containing model.safetensors + FAISS indexes
-
-    On failure (network down, HF unavailable), returns an empty dict and
-    logs a warning. Lookup/mapping/hierarchy operations still work without
-    these; only $search and $extract are affected.
-    """
-    try:
-        from huggingface_hub import snapshot_download
-    except ImportError:
-        logger.warning(
-            "huggingface_hub not installed — derived artifacts (BM25, SapBERT) "
-            "will not be available. Install with: pip install huggingface_hub"
-        )
-        return {}
-
-    try:
-        logger.info("Downloading derived artifacts from HF: %s...", hf_dataset)
-        local_path = snapshot_download(
-            repo_id=hf_dataset,
-            repo_type="dataset",
-            token=hf_token or os.getenv("HF_TOKEN"),
-            allow_patterns=["patient_friendly_*.json", "bm25/*", "sapbert/*"],
-        )
-    except Exception as exc:
-        logger.warning(
-            "Derived artifact download failed: %s: %s. "
-            "$search and $extract will not be available; "
-            "lookup/mapping/hierarchy operations still work.",
-            type(exc).__name__, exc,
-        )
-        return {}
-
-    base = Path(local_path)
-    return {
-        "baseline_dir": base,
-        "bm25_dir": base / "bm25",
-        "sapbert_dir": base / "sapbert",
-    }
-
-
 def set_env_vars(
     db_path: Path,
-    derived: dict[str, Path],
     memory_profile: str = "fast",
 ) -> None:
     """Set MEDTERM4DS_* env vars so downstream services find the data.
 
-    Called by provision() after build/download completes. Existing env
-    vars are NOT overridden (user may have set custom paths).
+    Called by provision() after the lookup build completes. Existing env
+    vars are NOT overridden (user may have set custom paths). Search
+    artifacts are NOT pinned here — they resolve from the
+    ``fhir4ds/terminology`` release layout (see ``core/terminology.py``).
     """
     os.environ.setdefault("MEDTERM4DS_DB", str(db_path))
     os.environ.setdefault("MEDTERM4DS_MEMORY_PROFILE", memory_profile)
-
-    if "baseline_dir" in derived:
-        os.environ.setdefault(
-            "MEDTERM4DS_FHIR4PX_BASELINE", str(derived["baseline_dir"])
-        )
-    if "bm25_dir" in derived:
-        os.environ.setdefault(
-            "MEDTERM4DS_SEARCH_INDEX_DIR", str(derived["bm25_dir"])
-        )
-    if "sapbert_dir" in derived:
-        os.environ.setdefault(
-            "MEDTERM4DS_EMBEDDING_MODEL_DIR", str(derived["sapbert_dir"])
-        )
 
 
 def provision(
     version: str = DEFAULT_UMLS_RELEASE,
     umls_api_key: str | None = None,
     cache_home: Path | None = None,
-    hf_token: str | None = None,
     memory_profile: str = "fast",
     offline: bool = False,
 ) -> Path:
-    """Full provisioning: build lookup.duckdb + download derived + set env vars.
+    """Full provisioning: build lookup.duckdb + set env vars.
+
+    Derived search artifacts (lexical/semantic/canonical) self-download
+    from the ``fhir4ds/terminology`` release layout on first use — they
+    are no longer provisioned here.
 
     Args:
         version: UMLS release tag (default ``2026AA``).
         umls_api_key: NLM UTS API key. Falls back to ``UMLS_API_KEY`` /
             ``UTS_API_KEY`` env vars.
         cache_home: Override cache root (default ``~/.medterm4ds/``).
-        hf_token: Hugging Face token (optional — derived dataset is open).
         memory_profile: DuckDB memory profile (``low``, ``balanced``, ``fast``).
         offline: If True, skip all network calls. Use existing cache only;
             error if data is missing. A corrupt or truncated
@@ -312,13 +246,10 @@ def provision(
                 f"usable database."
             )
 
-    # Step 2: derived artifacts (optional — $search/$extract only)
-    derived: dict[str, Path] = {}
-    if not offline:
-        derived = download_derived_artifacts(hf_token=hf_token)
-
-    # Step 3: set env vars for downstream services
-    set_env_vars(db_path, derived, memory_profile=memory_profile)
+    # Step 2: set env vars for downstream services. Search artifacts
+    # ($search/$extract) self-download from the fhir4ds/terminology
+    # release layout on first use — nothing to fetch here.
+    set_env_vars(db_path, memory_profile=memory_profile)
 
     return db_path
 
@@ -331,8 +262,9 @@ def provision(
 def cache_info() -> dict[str, Any]:
     """Return a summary of the medterm4ds cache state.
 
-    Includes paths, sizes, UMLS versions present, and whether derived
-    artifacts are available in the HF cache.
+    Includes paths, sizes, and UMLS versions present. Search artifacts
+    are managed separately by ``core/artifact_cache.py`` (release layout
+    at ``fhir4ds/terminology``).
     """
     import time as _time
 
@@ -353,24 +285,20 @@ def cache_info() -> dict[str, Any]:
             if not version_tag or not _is_usable_lookup_db(db_path):
                 continue
             stat = db_path.stat()
-            versions.append({
-                "version": version_tag,
-                "path": str(db_path),
-                "size_mb": round(stat.st_size / 1e6, 1),
-                "modified": _time.strftime(
-                    "%Y-%m-%d %H:%M", _time.localtime(stat.st_mtime)
-                ),
-            })
+            versions.append(
+                {
+                    "version": version_tag,
+                    "path": str(db_path),
+                    "size_mb": round(stat.st_size / 1e6, 1),
+                    "modified": _time.strftime("%Y-%m-%d %H:%M", _time.localtime(stat.st_mtime)),
+                }
+            )
             total_lookup_size += stat.st_size
-
-    # Check HF cache for derived artifacts
-    hf_cache_status = _check_hf_cache()
 
     return {
         "cache_home": str(home),
         "lookup_dbs": versions,
         "lookup_total_mb": round(total_lookup_size / 1e6, 1),
-        "derived_artifacts": hf_cache_status,
     }
 
 
@@ -476,47 +404,3 @@ def cache_clear(
         logger.info("Removed cached lookup-%s.duckdb (%.0f MB)", version, size_mb)
 
     return removed
-
-
-def _check_hf_cache() -> dict[str, Any]:
-    """Check whether derived artifacts are present in the HF cache."""
-    # QC-475 (MEDIUM): this was a bare ``except Exception: pass`` around the
-    # whole probe (the prohibited broad-except pattern) — it silently masked
-    # real API drift: huggingface_hub >= 1.0 removed ``try_scan_cache`` (the
-    # scan entry point is ``scan_cache_dir``), so the check had been
-    # returning "not found" unconditionally with no signal. Narrow the
-    # catches and log the drift per GLOBAL_RULES.
-    try:
-        from huggingface_hub import CacheNotFound, scan_cache_dir
-    except ImportError as exc:
-        logger.warning(
-            "huggingface_hub not importable (%s) — cannot report derived "
-            "artifact cache state.", exc,
-        )
-        return _hf_cache_not_found()
-    try:
-        cache_info = scan_cache_dir()
-    except CacheNotFound:
-        # No HF cache directory on this machine yet.
-        return _hf_cache_not_found()
-    # huggingface_hub >= 1.0 renamed the result attribute repositories -> repos
-    # (part of the same drift the pre-fix bare except was masking).
-    repos = getattr(cache_info, "repos", None)
-    if repos is None:
-        repos = cache_info.repositories
-    medterm4ds_entries = [
-        e for e in repos
-        if "medterm4ds-data" in e.repo_id
-    ]
-    if medterm4ds_entries:
-        entry = medterm4ds_entries[0]
-        return {
-            "available": True,
-            "repo_id": entry.repo_id,
-            "size_mb": round(entry.size_on_disk / 1e6, 1),
-        }
-    return _hf_cache_not_found()
-
-
-def _hf_cache_not_found() -> dict[str, Any]:
-    return {"available": False, "note": "Derived artifacts not found in HF cache. Run mt.connect() to download."}

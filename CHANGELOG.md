@@ -7,6 +7,88 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.8] - 2026-10-31
+
+### Changed
+
+- **Terminology release tags switched to `yyyy.mm.dd.N`** (per Joel):
+  `2026.10.31.1` replaces the `v2026.11.x` scheme. Default release bumped
+  to `2026.10.31.1` (canonical `.1341`, wave-9 folded,
+  `cdb_2026_10_31@5adb4e8`, without-cpt variant).
+- **Artifact source repointed to `fhir4ds/terminology`** (release
+  layout): `<family>/<release>/` directories replace
+  the `data/<revision>/` split layout and the `cdb_` prefix. Canonical
+  concept search now loads `semantic/<release>/anchors.faiss` +
+  `anchors_metadata.json` (the canonical family is JSON-only); per-category
+  FAISS files are `<category>.faiss` and BM25 files `<category>.json`.
+- **Embedding space `esp_468d01ebbab03648` admitted as the serving default**
+  (v3-hybrid encoder; render policy `rp_1891c4cb719d`). The release model
+  unit carries no manifest, so the space is verified by recomputing the
+  content fingerprint (weights + tokenizer md5s) against the directory name
+  and the release manifest — a mismatch is a loud `ManifestError`.
+- **`mt.connect()` no longer downloads derived search artifacts from the
+  retired `joelmontavon/medterm4ds-data` dataset.** Auto-provisioning now
+  builds only `lookup.duckdb` (from the user's own UMLS RRF via the NLM
+  UTS API); BM25/SapBERT/canonical artifacts self-download from the
+  `fhir4ds/terminology` release layout on first use. The redundant
+  `MEDTERM4DS_SEARCH_INDEX_DIR`/`_EMBEDDING_MODEL_DIR`/
+  `_FHIR4PX_BASELINE` pins provision() used to set are gone (user-set
+  values still honored).
+
+### Fixed
+
+- **Batch canonical resolve crashed under the terminology layout**:
+  `canonical_batch()` (the extraction batch path) read metadata card
+  fields (`anchor_system`/`anchor_code`/`patient_friendly_name`)
+  directly, but the release layout's anchors metadata carries only
+  `{canonical_id, name}` — every batch extraction resolve died with
+  `KeyError`. The `canonical()` fallback chain (metadata → value_sets
+  card fields) is now mirrored.
+- **`data export-conceptmap` gate ordering and defaults**: the
+  closed-enum vocabulary validation ran before the athena
+  tables-present check (a table-less DB died with the raw
+  CatalogException the check exists to prevent), and it fired on the
+  DEFAULT vocabulary set — breaking export on any database ingested
+  with a vocabulary subset. The presence check now runs first, and the
+  enum gate applies only to explicitly supplied `--vocabularies`;
+  the default intersects with the database's carried set.
+- **Batch `$validate-code` dispatcher seam** (FA2/AS3, athena-batch3):
+  unknown parameters are rejected, per-entry `wings` are validated, and
+  `map_url` forwards to the Athena bridge when present — previously the
+  batch envelope bypassed validations the direct route enforced.
+- **Athena filters fail loud on unknown values** (AD1/AE1): the
+  `athena-concepts` domain filter and `export-conceptmap` vocabulary filter
+  now validate against the closed enum of legal values — wrong-case or
+  unknown domains/vocabularies 400 with the legal set instead of silently
+  returning empty results.
+- **MCP `athena_*` tools name the remedy** (AM1): opening an athena-only
+  database (no UMLS tables) reports the ingest command to run instead of a
+  raw startup traceback.
+
+### Added
+
+- `MEDTERM4DS_TERMINOLOGY_{RELEASE,REPO_ID,DIR}` and
+  `MEDTERM4DS_RENDER_POLICY_VERSION` env vars; `MEDTERM4DS_LAYOUT` accepts
+  `terminology` / `split` / `legacy` (and `auto` = release → split →
+  legacy). `medterm4ds data cache-refresh --terminology` re-fetches the
+  release; `data cache-info` reports `terminology_layout`.
+
+### Preserved
+
+- Existing legacy/split caches keep serving until explicitly refreshed —
+  the repoint never triggers a silent multi-GB re-download on first query.
+
+### Test-only
+
+- Spec-compliance sweep TS-99…TS-108 (10 surfaces pinned, controls-only
+  apart from the athena-batch3 fixes above): $extract filter interaction,
+  Athena MCP at real scale, athena-concepts domain filter, export
+  vocabulary filter, $subsumes LOINC reach, batch Bundle envelope,
+  athena identity-vocab equivalence E2E, $subsumes fast-path fallbacks,
+  client lookup/resolve cross-surface agreement, data-verify athena
+  coexistence (VV1/VV2 pinned). Full registry in
+  `docs/maintenance-findings-registry.md`.
+
 ## [0.0.7] - 2026-10-27
 
 ### Added

@@ -622,17 +622,25 @@ def search_athena_concepts(
     # AF3's sibling gap). Validate against the ingested vocabulary
     # table when a filter is supplied.
     if vocabulary_id is not None:
-        known = {
-            r[0]
-            for r in con.execute(
-                "SELECT vocabulary_id FROM athena_vocabulary"
-            ).fetchall()
-        }
-        if vocabulary_id not in known:
-            raise ValueError(
-                f"unknown vocabulary_id: {vocabulary_id!r} — this "
-                f"database carries: {', '.join(sorted(known))}"
-            )
+        validate_closed_enum(
+            con,
+            vocabulary_id,
+            "vocabulary_id",
+            "athena_vocabulary",
+            param_name="vocabulary_id",
+        )
+    # AD1 fix (TS-101): domains were the same silent-drop class
+    # (wrong-case AND unknown both → results []). domain_id is a
+    # closed Athena enum riding CONCEPT.domain_id — validate
+    # against the DISTINCT set.
+    if domain_id is not None:
+        validate_closed_enum(
+            con,
+            domain_id,
+            "domain_id",
+            "athena_concept",
+            param_name="domain_id",
+        )
     sql = """
         SELECT concept_id, concept_name, domain_id, vocabulary_id,
                concept_class_id, standard_concept, concept_code,
@@ -682,6 +690,36 @@ def athena_health(con) -> dict[str, object]:
         "vocabularies": vocabs,
         "loaded_at": meta[0] if meta else None,
     }
+
+
+def validate_closed_enum(
+    con,
+    value: str,
+    column: str,
+    table: str,
+    *,
+    param_name: str,
+) -> None:
+    """Loud closed-enum validation (the AF3/AS2/AD1/AE1 doctrine).
+
+    Validates ``value`` against the DISTINCT set of ``column`` in
+    ``table``; on miss raises ValueError listing the carried values
+    — one shared helper for every filter over an Athena closed
+    vocabulary (vocabulary_id, domain_id). Single source of truth
+    for 'loud closed-enum'.
+    """
+    known = {
+        r[0]
+        for r in con.execute(
+            f"SELECT DISTINCT {column} FROM {table} "
+            f"ORDER BY {column}"
+        ).fetchall()
+    }
+    if value not in known:
+        raise ValueError(
+            f"unknown {param_name}: {value!r} — this database "
+            f"carries: {', '.join(sorted(k for k in known if k))}"
+        )
 
 
 def _athena_tables_present(con) -> bool:
