@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.8] - 2026-10-31
+
 ### Changed
 
 - **Terminology release tags switched to `yyyy.mm.dd.N`** (per Joel):
@@ -25,6 +27,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   unit carries no manifest, so the space is verified by recomputing the
   content fingerprint (weights + tokenizer md5s) against the directory name
   and the release manifest — a mismatch is a loud `ManifestError`.
+- **`mt.connect()` no longer downloads derived search artifacts from the
+  retired `joelmontavon/medterm4ds-data` dataset.** Auto-provisioning now
+  builds only `lookup.duckdb` (from the user's own UMLS RRF via the NLM
+  UTS API); BM25/SapBERT/canonical artifacts self-download from the
+  `fhir4ds/terminology` release layout on first use. The redundant
+  `MEDTERM4DS_SEARCH_INDEX_DIR`/`_EMBEDDING_MODEL_DIR`/
+  `_FHIR4PX_BASELINE` pins provision() used to set are gone (user-set
+  values still honored).
+
+### Fixed
+
+- **Batch `$validate-code` dispatcher seam** (FA2/AS3, athena-batch3):
+  unknown parameters are rejected, per-entry `wings` are validated, and
+  `map_url` forwards to the Athena bridge when present — previously the
+  batch envelope bypassed validations the direct route enforced.
+- **Athena filters fail loud on unknown values** (AD1/AE1): the
+  `athena-concepts` domain filter and `export-conceptmap` vocabulary filter
+  now validate against the closed enum of legal values — wrong-case or
+  unknown domains/vocabularies 400 with the legal set instead of silently
+  returning empty results.
+- **MCP `athena_*` tools name the remedy** (AM1): opening an athena-only
+  database (no UMLS tables) reports the ingest command to run instead of a
+  raw startup traceback.
 
 ### Added
 
@@ -38,6 +63,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Existing legacy/split caches keep serving until explicitly refreshed —
   the repoint never triggers a silent multi-GB re-download on first query.
+
+### Test-only
+
+- Spec-compliance sweep TS-99…TS-108 (10 surfaces pinned, controls-only
+  apart from the athena-batch3 fixes above): $extract filter interaction,
+  Athena MCP at real scale, athena-concepts domain filter, export
+  vocabulary filter, $subsumes LOINC reach, batch Bundle envelope,
+  athena identity-vocab equivalence E2E, $subsumes fast-path fallbacks,
+  client lookup/resolve cross-surface agreement, data-verify athena
+  coexistence (VV1/VV2 pinned). Full registry in
+  `docs/maintenance-findings-registry.md`.
 
 ## [0.0.7] - 2026-10-27
 
