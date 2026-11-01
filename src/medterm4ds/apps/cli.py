@@ -416,8 +416,10 @@ def build_parser() -> argparse.ArgumentParser:
         "--out", required=True, help="Output path (.json or .ndjson).",
     )
     data_export_conceptmap.add_argument(
-        "--vocabularies", default=",".join(DEFAULT_VOCABULARIES),
-        help="Comma-separated vocabulary_id filter.",
+        "--vocabularies", default=None,
+        help="Comma-separated vocabulary_id filter (default: the "
+             "carried default set, intersected with this "
+             "database's ingested vocabularies).",
     )
     data_export_conceptmap.add_argument(
         "--include-internal", action="store_true",
@@ -2213,10 +2215,11 @@ def run_data_export_conceptmap(args: argparse.Namespace) -> int:
 
     from medterm4ds.services.athena import build_concept_map
 
+    vocabs_explicit = args.vocabularies is not None
     vocabs = tuple(
         v.strip()
         for v in args.vocabularies.split(",") if v.strip()
-    )
+    ) if vocabs_explicit else ()
     out = Path(args.out)
     from medterm4ds.services.athena import (
         iter_thin_concept_map_rows,
@@ -2233,30 +2236,13 @@ def run_data_export_conceptmap(args: argparse.Namespace) -> int:
             file=sys.stderr,
         )
         return 2
-    # AE1 fix (TS-102): export silently dropped unknown
-    # vocabularies (the ingest side errors loudly per AF3) — the
-    # shared loud closed-enum helper closes the export side.
-    pre = duckdb.connect(args.db, read_only=True)
-    try:
-        from medterm4ds.services.athena import validate_closed_enum
-
-        for v in vocabs:
-            validate_closed_enum(
-                pre,
-                v,
-                "vocabulary_id",
-                "athena_vocabulary",
-                param_name="vocabulary_id",
-            )
-    except ValueError as exc:
-        pre.close()
-        print(f"Error: {exc}", file=sys.stderr)
-        return 2
-    finally:
-        pre.close()
     con = duckdb.connect(args.db, read_only=True)
     # AF2 fix (TS-83): pointing at a DB that never ran ingest-athena
     # died with a raw CatalogException; name the remedy instead.
+    # This check MUST precede the AE1 enum validation below —
+    # validate_closed_enum queries athena_vocabulary, so on a
+    # table-less DB the raw CatalogException would resurface
+    # (exactly what AF20 pins).
     present = {r[0] for r in con.execute("SHOW TABLES").fetchall()}
     missing = {"athena_concept", "athena_vocabulary"} - present
     if missing:
@@ -2268,6 +2254,38 @@ def run_data_export_conceptmap(args: argparse.Namespace) -> int:
             file=sys.stderr,
         )
         return 2
+    # AE1 fix (TS-102): export silently dropped unknown
+    # vocabularies (the ingest side errors loudly per AF3) — the
+    # shared loud closed-enum helper closes the export side. The
+    # gate applies to EXPLICITLY supplied filters only; the default
+    # filter intersects with the DB's carried set (a partial
+    # ingest exports what it carries — defaults are product
+    # policy, not user intent).
+    if not vocabs_explicit:
+        carried = {
+            r[0] for r in con.execute(
+                "SELECT vocabulary_id FROM athena_vocabulary"
+            ).fetchall()
+        }
+        vocabs = tuple(
+            v for v in DEFAULT_VOCABULARIES if v in carried
+        )
+    else:
+        from medterm4ds.services.athena import validate_closed_enum
+
+        try:
+            for v in vocabs:
+                validate_closed_enum(
+                    con,
+                    v,
+                    "vocabulary_id",
+                    "athena_vocabulary",
+                    param_name="vocabulary_id",
+                )
+        except ValueError as exc:
+            con.close()
+            print(f"Error: {exc}", file=sys.stderr)
+            return 2
     # AF4 fix (TS-83): the form was invisible in the filename —
     # derive from the extension unless explicitly chosen, and warn
     # on explicit mismatch.
