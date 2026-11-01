@@ -1646,21 +1646,35 @@ class SearchService:
                     break
                 m = self._concepts_meta[idx]
                 cid = m["canonical_id"]
+                vset = self._canonical_by_id.get(cid, {})
+                # Terminology-layout metadata carries only {canonical_id, name};
+                # card fields come from value_sets.json (single source of truth)
+                # — same fallback chain as canonical().
+                anchor_system = (
+                    m.get("anchor_system")
+                    or vset.get("anchor_system")
+                    or vset.get("system")
+                )
+                anchor_code = (
+                    m.get("anchor_code")
+                    or vset.get("anchor_code")
+                    or vset.get("code")
+                )
+                meta_name = m.get("patient_friendly_name") or m.get("name")
                 if cid in seen_ids:
                     continue
                 seen_ids.add(cid)
-                vset = self._canonical_by_id.get(cid, {})
-                primary_name = vset.get("patient_friendly_name") or m["patient_friendly_name"]
+                primary_name = vset.get("patient_friendly_name") or meta_name
                 results.append(CanonicalSearchResult(
                     canonical_id=cid,
                     domain=vset.get("domain", m.get("domain", [])),
-                    anchor_system=m["anchor_system"],
-                    anchor_code=m["anchor_code"],
+                    anchor_system=anchor_system,
+                    anchor_code=anchor_code,
                     patient_friendly_name=primary_name,
                     score=float(score),
                     match_grade="exact" if score > 0.95 else "probable" if score > 0.80 else "possible",
-                    matched_via_code=f"concept:{m['anchor_code']}",
-                    matched_via_display=m["patient_friendly_name"],
+                    matched_via_code=f"concept:{anchor_code}",
+                    matched_via_display=meta_name,
                     total_member_count=self._total_member_count(vset, m),
                     members=vset.get("members", []),
                     combination_members=vset.get("combination_members", []),
