@@ -38,6 +38,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Batch canonical resolve crashed under the terminology layout**:
+  `canonical_batch()` (the extraction batch path) read metadata card
+  fields (`anchor_system`/`anchor_code`/`patient_friendly_name`)
+  directly, but the release layout's anchors metadata carries only
+  `{canonical_id, name}` — every batch extraction resolve died with
+  `KeyError`. The `canonical()` fallback chain (metadata → value_sets
+  card fields) is now mirrored.
+- **`data export-conceptmap` gate ordering and defaults**: the
+  closed-enum vocabulary validation ran before the athena
+  tables-present check (a table-less DB died with the raw
+  CatalogException the check exists to prevent), and it fired on the
+  DEFAULT vocabulary set — breaking export on any database ingested
+  with a vocabulary subset. The presence check now runs first, and the
+  enum gate applies only to explicitly supplied `--vocabularies`;
+  the default intersects with the database's carried set.
 - **Batch `$validate-code` dispatcher seam** (FA2/AS3, athena-batch3):
   unknown parameters are rejected, per-entry `wings` are validated, and
   `map_url` forwards to the Athena bridge when present — previously the
