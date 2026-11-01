@@ -141,3 +141,27 @@
   skipped / 2 xfailed (27:33); unit 850 passed / 11 skipped (5:40);
   ruff clean + formatted.
 - Zero production changes (findings-only; fixes left to a fixbatch).
+
+## 2026-11-01 — TS-109 terminology repoint LIVE integration (worktree maint/spec-comp-20261101)
+
+- Surface: the repoint (cce25c6) shipped with mocked-download unit
+  tests only; no conformance test exercised the PUBLISHED
+  fhir4ds/terminology repo through the runtime's own resolver. This
+  sweep pins the live contract against release 2026.10.31.1 (the
+  current published tag — NEWER than the handoff's v2026.11.1).
+- RESULT: ZERO FINDINGS — controls-only (21st clean surface). 5/5
+  live probes PASS (T6 skipped: default release == live release):
+  fingerprint recomputes to esp_468d01ebbab03648 from the shipped
+  model; manifest single-stamp across families; lexical pairing
+  exact under the new filename contract; semantic pairing exact (6
+  categories); canonical JSON-only with value_sets == anchors ==
+  manifest rows. OBSERVATION (not a defect): the 2026.10.31.1
+  manifest's lexical family declares 'records' where v2026.11.1
+  declared 'rows' — manifest-shape drift worth a changelog note from
+  the model team.
+- Network-gated + cache-isolated (own /tmp cache root; operator
+  cache untouched).
+- Gates (fresh, serial): conformance 8110 passed / 0 failed / 20
+  skipped / 2 xfailed (25:48); unit 860 passed / 11 skipped (7:33);
+  ruff clean + formatted.
+- Zero production changes. No registry edit (findings-only run).
