@@ -141,3 +141,21 @@
   skipped / 2 xfailed (27:33); unit 850 passed / 11 skipped (5:40);
   ruff clean + formatted.
 - Zero production changes (findings-only; fixes left to a fixbatch).
+
+## 2026-11-01 — TS-110 canonical card fidelity on terminology layout, LIVE (worktree maint/spec-comp-20261101b)
+
+- Surface: the 54c49f2 canonical_batch card-field fallbacks were
+  pinned only at unit level (3-concept synthetic release); never
+  probed against the PUBLISHED release end-to-end.
+- RESULT: ZERO FINDINGS — controls-only (22nd clean surface). 6/6
+  live probes PASS against release 2026.10.31.1: metformin card
+  byte-equal to the live value_sets row; condition/lab cards
+  complete; result_types + sources filters hold; batch/single top-1
+  aligned. OBSERVATIONS (documented in-test, not defects): filtered
+  queries over-fetch only count*5 (min 50) neighbors — window
+  starvation is possible in principle (verified benign live: the
+  starved 'diabetes'→VAL-MED neighbor scores 0.43, below the 0.70
+  floor that makes empty filtered results trustworthy).
+- Gates (fresh, serial): conformance 8111 / 0 / 19 + 2 xfailed
+  (24:30); unit 860 / 11 (7:34); ruff clean + formatted.
+- Zero production changes. No registry edit.
