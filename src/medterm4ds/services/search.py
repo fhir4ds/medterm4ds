@@ -206,6 +206,10 @@ def _resolve_terminology(download: bool = True):
     malformed/foreign-space release raises (never silently serves wrong
     vectors); an absent one downloads on demand in 'auto'/'terminology'
     modes and degrades to split/legacy only in 'auto'.
+
+    ``download=False`` is the read-only probe for availability properties:
+    it never fetches and never caches an absent release (a later
+    ``download=True`` call must still be able to fetch).
     """
     if not _LAYOUT_TERMINOLOGY:
         return None
@@ -233,7 +237,8 @@ def _resolve_terminology(download: bool = True):
                 "split/legacy artifacts.", exc,
             )
             paths = None
-    _TERM_CACHE[key] = paths
+    if paths is not None or download:
+        _TERM_CACHE[key] = paths
     return paths
 
 
@@ -804,9 +809,64 @@ class SearchService:
         self._concepts_meta: list[dict] = []
         self._concepts_loaded = False
 
+    def ensure_lexical(self) -> bool:
+        """First-use lexical provisioning: load BM25 (downloading when the
+        dirs are unpinned), returning availability.
+
+        The FHIR $search availability gate calls this so a fresh install
+        provisions on first use instead of 503ing until some other
+        surface happens to warm the cache. Explicitly pinned index dirs
+        (operator contracts, isolation-pinned tests) are never
+        auto-provisioned — the 503 contract for those is unchanged.
+        """
+        if self.lexical_available:
+            return True
+        if self._bm25_dir != Path(DEFAULT_SEARCH_INDEX_DIR):
+            return False
+        try:
+            self._ensure_bm25()
+        except Exception as exc:  # noqa: BLE001 — best-effort availability probe
+            logger.warning(
+                "Lexical provisioning unavailable: %s: %s",
+                type(exc).__name__, exc,
+            )
+            return False
+        return self.lexical_available
+
+    def ensure_semantic(self) -> bool:
+        """First-use semantic provisioning (see ``ensure_lexical``)."""
+        if self.semantic_available:
+            return True
+        if self._model_dir_pinned:
+            return False
+        try:
+            self._ensure_semantic()
+        except Exception as exc:  # noqa: BLE001 — best-effort availability probe
+            logger.warning(
+                "Semantic provisioning unavailable: %s: %s",
+                type(exc).__name__, exc,
+            )
+            return False
+        return self.semantic_available
+
     @property
     def lexical_available(self) -> bool:
-        return self._bm25_loaded or (self._bm25_dir.is_dir() and any(self._bm25_dir.glob("*_bm25.json")))
+        """Whether lexical BM25 assets are available (read-only, no download).
+
+        Terminology-layout aware: with the DEFAULT (unpinned) index dir and
+        a locally present ``fhir4ds/terminology`` release, the lexical
+        family counts even though the legacy dir is absent (the
+        fresh-install path — CI runners, new machines).
+        """
+        if self._bm25_loaded:
+            return True
+        if self._bm25_dir.is_dir() and any(self._bm25_dir.glob("*_bm25.json")):
+            return True
+        if self._bm25_dir == Path(DEFAULT_SEARCH_INDEX_DIR):
+            term = _resolve_terminology(download=False)
+            if term is not None and any(term.lexical.glob("*.json")):
+                return True
+        return False
 
     @property
     def semantic_available(self) -> bool:
@@ -815,10 +875,15 @@ class SearchService:
         Split-layout aware: when the model dir is not pinned and a local
         split models/<space>/ unit exists for an accepted embedding space,
         semantic search is available even if the legacy semantic/ dir is
-        absent (the post-`cache-refresh --split` state).
+        absent (the post-`cache-refresh --split` state). The terminology
+        release's model unit (model/<space>/) counts the same way.
         """
-        if not self._model_dir_pinned and _local_split_model_dir() is not None:
-            return True
+        if not self._model_dir_pinned:
+            if _local_split_model_dir() is not None:
+                return True
+            term = _resolve_terminology(download=False)
+            if term is not None and (term.model / "model.safetensors").exists():
+                return True
         return (self._model_dir / "model.safetensors").exists()
 
     def _ensure_bm25(self) -> None:

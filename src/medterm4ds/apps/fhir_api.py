@@ -791,6 +791,24 @@ def reject_unknown_query_params(
         )
 
 
+def _terminology_lexical_dir() -> Path | None:
+    """Lexical family dir of a locally present terminology release, if any.
+
+    Read-only probe (no download) used by the startup banner so a
+    fresh install serving from the ``fhir4ds/terminology`` release is
+    reported as available instead of warning about the absent legacy
+    directory.
+    """
+    try:
+        from medterm4ds.services.search import _resolve_terminology
+    except ImportError:
+        return None
+    term = _resolve_terminology(download=False)
+    if term is None:
+        return None
+    return term.lexical if term.lexical.is_dir() else None
+
+
 def _load_bm25_indexes(search_dir: str) -> dict[str, Any]:
     """Probe the BM25 search index directory and report what's available.
 
@@ -798,10 +816,28 @@ def _load_bm25_indexes(search_dir: str) -> dict[str, Any]:
     owns the indexes now (single source of truth, shared across all four
     surfaces). This function just produces a summary dict so the startup
     banner can tell operators what's available and what's missing.
+
+    Terminology-layout aware: when the legacy dir is absent but the
+    ``fhir4ds/terminology`` release serves a lexical family locally,
+    report from the release instead of warning (the fresh-install path).
     """
     expected = ("condition", "lab", "medication", "procedure", "vaccine", "body_structure")
     search_path = Path(search_dir)
     if not search_path.is_dir():
+        term_dir = _terminology_lexical_dir()
+        if term_dir is not None:
+            loaded = [c for c in expected if (term_dir / f"{c}.json").exists()]
+            if loaded:
+                logger.info(
+                    "  BM25 from terminology release: %s (%s)",
+                    ", ".join(loaded), term_dir,
+                )
+                return {
+                    "loaded": loaded,
+                    "missing": [c for c in expected if c not in loaded],
+                    "flat_format": [],
+                    "dir": str(term_dir),
+                }
         logger.warning(
             "BM25 search index directory not found: %s "
             "(set MEDTERM4DS_SEARCH_INDEX_DIR to enable $search lexical/hybrid)",
@@ -5419,10 +5455,15 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
                     })
                 return build_bundle_search(entries, query=query_text, search_mode=search_mode)
 
-            # Legacy modes (lexical, semantic, hybrid): probe availability
-            if search_mode in ("lexical", "hybrid") and not service.lexical_available:
+            # Legacy modes (lexical, semantic, hybrid): probe availability.
+            # First-use provisioning (0.0.8): with unpinned dirs the gate
+            # attempts to LOAD (downloading the terminology release /
+            # split artifacts) before answering — a fresh install serves
+            # its first $search instead of 503ing until another surface
+            # warms the cache. Pinned dirs keep the plain 503 contract.
+            if search_mode in ("lexical", "hybrid") and not service.ensure_lexical():
                 return _fhir_error(503, "BM25 search index not loaded.")
-            if search_mode in ("semantic", "hybrid") and not service.semantic_available:
+            if search_mode in ("semantic", "hybrid") and not service.ensure_semantic():
                 return _fhir_error(503, "Embedding model not found.")
 
             results = service.search(

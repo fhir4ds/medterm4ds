@@ -16,8 +16,7 @@ Artifact repoint (the headline change):
   value sets) resolve from **one self-contained release** at
   [fhir4ds/terminology](https://huggingface.co/fhir4ds/terminology):
   `<family>/<release>/` directories under dated `yyyy.mm.dd.N` tags.
-  Default release `2026.10.31.1`; the prior `v2026.11.2` family dirs
-  remain on the wire for rollback.
+  Default release `2026.10.31.1`.
 - The embedding model ships inside the release
   (`model/esp_468d01ebbab03648`, the v3-hybrid encoder, render policy
   `rp_1891c4cb719d`) and is admitted by content fingerprint — a

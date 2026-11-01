@@ -126,12 +126,11 @@ def test_v5_cli_api_verdict_symmetry(athena_codb, tmp_path):
 
     api_ok = verify_duckdb(athena_codb)["ok"]
     import subprocess
-    from pathlib import Path
+    import sys
 
-    cli = Path("/mnt/d/medterm4ds/.venv/bin/medterm4ds")
-    pytest.mark.skipif(not cli.exists(), reason="console script not installed")
     r = subprocess.run(
-        [str(cli), "data", "verify", "--db", str(athena_codb)],
+        [sys.executable, "-m", "medterm4ds.apps.cli",
+         "data", "verify", "--db", str(athena_codb)],
         capture_output=True,
         text=True,
         timeout=300,
