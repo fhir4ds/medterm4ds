@@ -75,6 +75,22 @@
   {
    "phase": "GATES_GREEN",
    "ts": "2026-11-01T10:57:02Z"
+  },
+  {
+   "phase": "WORKTREE_SETUP",
+   "ts": "2026-11-01T19:57:50Z"
+  },
+  {
+   "phase": "PROBE_EXECUTION_TS111",
+   "ts": "2026-11-01T19:57:50Z"
+  },
+  {
+   "phase": "SUITE_GREEN",
+   "ts": "2026-11-01T19:57:50Z"
+  },
+  {
+   "phase": "GATES_GREEN",
+   "ts": "2026-11-01T19:57:50Z"
   }
  ]
 }
