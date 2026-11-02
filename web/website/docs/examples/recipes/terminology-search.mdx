@@ -1,0 +1,50 @@
+---
+title: Terminology Search (Live Demo)
+---
+
+import TerminologyDemo from '@site/src/components/TerminologyDemo';
+
+# Recipe: Terminology Search — Live Demo
+
+Try medterm4ds terminology operations right here, against a live public
+endpoint: [terminology-demo](https://fhir4ds-terminology-demo.hf.space), a
+Hugging Face Docker Space running the full stack (lexical, semantic,
+canonical and hybrid search; clinical-note extraction; cross-system
+mapping; patient-friendly translation).
+
+<TerminologyDemo />
+
+## How it works
+
+- **Lexical** — BM25 over pre-built token indexes (exact-term matching,
+  fastest, no model needed).
+- **Semantic** — SapBERT embeddings + FAISS similarity (finds "heart
+  attack" ↔ "myocardial infarction").
+- **Canonical** — anchored value-set cards with patient-friendly names and
+  full membership.
+- **Hybrid** — lexical and semantic combined.
+
+Extraction runs GLiNER + medspaCy NER over your note, resolves each span
+to codes, and translates the found codes into patient-friendly names.
+
+## The Space sleeps
+
+The demo runs on free-tier hardware. After **48 h without traffic the
+Space sleeps**, and the first request after sleep takes up to **~60 s** to
+wake it — the component above shows that state explicitly and retries
+automatically.
+
+## Running your own
+
+This demo is a Docker Space packaging of the `medterm4ds` FastAPI service.
+Everything is in the repo under `deploy/hf-spaces/terminology-demo/`
+(Dockerfile, app, README with the deploy runbook and licence notices).
+See [Docker deployment](../../interfaces/docker-deployment.md) for
+self-hosting the same image, or use the
+[FHIR server](fhir-server.md) recipe for a FHIR-native surface.
+
+## Rate limits & fair use
+
+The public Space allows 30 requests/minute per IP and only accepts
+browser calls from this site (origin allow-list). For anything heavier,
+self-host — the data build is reproducible from your own UMLS download.
