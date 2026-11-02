@@ -507,6 +507,10 @@ class SearchResult:
     score: float  # 0.0–1.0
     match_grade: str  # "certain" | "probable" | "possible"
     category: str = ""  # "condition", "medication", etc.
+    # AMUX-18: query surface equals the row's indexed name or friendly
+    # display (computed in lexical; carry-only everywhere else). Excluded
+    # from repr/compare and from to_dict — ranking metadata, not contract.
+    _exact_surface: bool = field(default=False, repr=False, compare=False)
 
     @property
     def system_label(self) -> str:
@@ -693,16 +697,75 @@ def _strip_accents(text: str) -> str:
 
 
 def _query_tokens(query: str) -> list[str]:
-    """Tokenize a free-text query for BM25 lookup (QC-329).
+    """Tokenize a free-text query for BM25 lookup (QC-329, AMUX-20).
 
-    Mirrors the index-build tokenizer (ASCII alphanumeric runs of >= 3
-    chars, lowercased, accents folded): hyphens and other punctuation split
-    tokens the same way the build split them, and accented characters fold
-    to their unaccented base instead of acting as token boundaries. Index
-    postings only contain build-token keys, so shorter/digit-only runs could
-    never match anyway.
+    Accents fold and punctuation splits exactly like the index-build
+    tokenizer (QC-329), but alphanumeric runs of >= 2 chars are kept —
+    the build tokenizer (ASCII ``[a-zA-Z]{3,}``) digitized acronyms and
+    alphanumerics out of the postings (A1c, HbA1c, MI, PE, PT), so the
+    query side must preserve them for the posting-candidate fallback
+    (letter runs, e.g. 'hba1c' -> 'hba') and the surface-name pass in
+    ``SearchService.lexical``. Tokens that can never match a posting key
+    are harmless: lookup simply yields no candidates for them.
     """
-    return re.findall(r"[a-z0-9]{3,}", _strip_accents(query.lower()))
+    return re.findall(r"[a-z0-9]{2,}", _strip_accents(query.lower()))
+
+
+# ASCII letter runs of >= 3 chars — the shape of every posting key in the
+# pre-built BM25 indexes (build tokenizer was ``[a-zA-Z]{3,}``).
+_LETTER_RUN_RE = re.compile(r"[a-z]{3,}")
+
+
+def _posting_candidates(token: str, postings: dict) -> list[str]:
+    """Posting keys a query token can look up (AMUX-20).
+
+    The index build lowercased + kept ASCII letter runs of >= 3 chars, so
+    posting keys never contain digits and are never shorter than 3 chars.
+    A pure >= 3-letter token maps to itself (stem fallback as before);
+    an alphanumeric or 2-char token maps to its >= 3-letter runs
+    ('hba1c' -> 'hba'). Tokens with no run (a1c, mi, pe, pt, b12)
+    return [] — the lexical surface pass covers those.
+    """
+    if token.isalpha() and len(token) >= 3:
+        runs = [token]
+    else:
+        runs = _LETTER_RUN_RE.findall(token)
+    cands: list[str] = []
+    for run in runs:
+        cands.append(run)
+        stemmed = _stem_token(run)
+        if stemmed != run:
+            cands.append(stemmed)
+    return [c for c in dict.fromkeys(cands) if c in postings]
+
+
+def _surface_key(text: str) -> str:
+    """Normalization for exact surface comparison (AMUX-18).
+
+    Accents folded, lowercased, non-alphanumerics dropped, whitespace
+    collapsed — the same family as _query_tokens, so 'Tylenol',
+    'tylenol ' and 'TYLENOL' all normalize identically.
+    """
+    return " ".join(re.findall(r"[a-z0-9]+", _strip_accents(text.lower())))
+
+
+def _cased_token_hits(typed_tokens: list[str], text: str) -> int:
+    """Count acronym tokens appearing in ``text`` as the user typed them (AMUX-20).
+
+    Only tokens the user typed with casing ('MI', 'PT', 'A1c') corroborate,
+    matched as a whole word either in the typed form or fully uppercased:
+    '(MI)', 'Prothrombin Time (PT) Test', 'HbA1c' hit; 'Mi-2 Ab',
+    'Mi-Acid Gas Relief', 'New Pt 10mins' never do. Lowercase-typed tokens
+    corroborate nothing (no signal). Deterministic, model-free.
+    """
+    hits = 0
+    for typed in typed_tokens:
+        if typed == typed.lower():
+            continue
+        pattern = rf"\b(?:{re.escape(typed)}|{re.escape(typed.upper())})\b"
+        if re.search(pattern, _strip_accents(text)):
+            hits += 1
+    return hits
 
 
 def _stem_token(token: str) -> str:
@@ -1884,6 +1947,12 @@ class SearchService:
         query_tokens = _query_tokens(query)
         if not query_tokens:
             return []
+        # Original-case form of each query token (first occurrence wins),
+        # for acronym corroboration in the surface pass (AMUX-20): a token
+        # typed 'MI' only corroborates names carrying uppercase 'MI'.
+        _typed_by_lower: dict[str, str] = {}
+        for typed in re.findall(r"[A-Za-z0-9]{2,}", _strip_accents(query)):
+            _typed_by_lower.setdefault(typed.lower(), typed)
         # QC-124: over-fetch per category when a source filter is set so the
         # filter doesn't drop the top-N slice down to 0 cross-source hits
         # (e.g., 'insulin' sources=['RXNORM'] count=1: the first RXNORM hit
@@ -1907,25 +1976,127 @@ class SearchService:
             rid_to_system = index.get("rid_to_system", [])
 
             scores: dict[int, float] = {}
+            # Per-query-token idf actually used (for the shared score
+            # denominator). Orphan tokens (no posting candidates — 2-char
+            # acronyms, digit-bearing runs with no >= 3-letter run) are
+            # scored by the surface pass below with the index's max idf as
+            # a rarity proxy, and contribute that same proxy to the
+            # denominator so surface-only rows grade honestly (AMUX-20).
+            matched_idfs: list[float] = []
+            orphan_tokens: list[str] = []
             for raw_token in query_tokens:
-                token = raw_token if raw_token in postings else _stem_token(raw_token)
-                if token not in postings:
+                keys = _posting_candidates(raw_token, postings)
+                if not keys:
+                    orphan_tokens.append(raw_token)
                     continue
-                token_idf = idf.get(token, idf.get(raw_token, 1.0))
-                for entry in postings[token]:
-                    if not (isinstance(entry, list) and len(entry) >= 2):
+                # idf of the strongest matching key (pre-fix behavior for
+                # ordinary >= 3-letter queries: idf.get(stem, idf.get(raw))).
+                matched_idfs.append(max(idf.get(k, 1.0) for k in keys))
+                for token in keys:
+                    token_idf = idf.get(token, 1.0)
+                    for entry in postings[token]:
+                        if not (isinstance(entry, list) and len(entry) >= 2):
+                            continue
+                        rid, tf = int(entry[0]), float(entry[1])
+                        doc_len = doc_lengths[rid] if rid < len(doc_lengths) else avg_doc_length
+                        k1, b = 1.5, 0.75
+                        tf_comp = (tf * (k1 + 1)) / (tf + k1 * (1 - b + b * doc_len / avg_doc_length))
+                        scores[rid] = scores.get(rid, 0.0) + token_idf * tf_comp
+
+            if orphan_tokens:
+                # AMUX-20 surface pass: tokens the index build digitized or
+                # length-truncated out of the postings (MI, PE, PT, A1c)
+                # are recovered from the row's indexed name text and
+                # friendly display, which carry them verbatim ('Acute
+                # Myocardial Infarction (MI)'). A row matches when its
+                # tokenized surfaces contain EVERY query token —
+                # full-query coverage keeps the pass precise. Scoring
+                # mirrors a tf=1 BM25 hit with max idf as the rarity
+                # proxy: deterministic, model-free, and lands in the same
+                # normalization pipeline as posting hits.
+                orphan_idf = max(idf.values(), default=1.0)
+                matched_idfs.extend([orphan_idf] * len(orphan_tokens))
+                k1, b = 1.5, 0.75
+                q_token_set = set(query_tokens)
+                names_raw = index.get("names") or []
+                typed_orphans = [_typed_by_lower.get(t, t) for t in orphan_tokens]
+                for rid in range(max(len(names_raw), len(rid_to_friendly))):
+                    name_raw = names_raw[rid] if rid < len(names_raw) else ""
+                    friendly = rid_to_friendly[rid] if rid < len(rid_to_friendly) else ""
+                    if not (name_raw or friendly):
                         continue
-                    rid, tf = int(entry[0]), float(entry[1])
+                    # Cheap substring prefilter before tokenizing — a row
+                    # whose combined surfaces don't even contain each query
+                    # token as a substring cannot cover the token set.
+                    # (Plain lower(); the exact coverage check below
+                    # applies the full accent-folding tokenizer.)
+                    combined = f"{name_raw} {friendly}"
+                    low = combined.lower()
+                    if not all(t in low for t in q_token_set):
+                        continue
+                    # Token coverage over the indexed name document AND
+                    # the friendly display — the two surfaces a row is
+                    # known by. (Space separator: no token can span it.)
+                    if not q_token_set <= set(_query_tokens(combined)):
+                        continue
                     doc_len = doc_lengths[rid] if rid < len(doc_lengths) else avg_doc_length
-                    k1, b = 1.5, 0.75
-                    tf_comp = (tf * (k1 + 1)) / (tf + k1 * (1 - b + b * doc_len / avg_doc_length))
-                    scores[rid] = scores.get(rid, 0.0) + token_idf * tf_comp
+                    tf_comp = (k1 + 1) / (1 + k1 * (1 - b + b * doc_len / avg_doc_length))
+                    # Acronym corroboration: an orphan token typed with
+                    # casing that appears in the surface as typed or fully
+                    # uppercased ('(MI)', 'Prothrombin Time (PT) Test',
+                    # 'HbA1c') is the sense the user typed; plain-word hits
+                    # ('Mi-2 Ab', 'New Pt 10mins') keep the base score and
+                    # rank below.
+                    cased_hits = max(
+                        _cased_token_hits(typed_orphans, name_raw),
+                        _cased_token_hits(typed_orphans, friendly),
+                    )
+                    boost = 1.0 + 0.5 * cased_hits
+                    scores[rid] = scores.get(rid, 0.0) + (
+                        orphan_idf * tf_comp * len(orphan_tokens) * boost
+                    )
 
             # Hoist the IDF denominator out of the per-result loop — it depends
-            # only on query_tokens and idf, both of which are constant across
-            # the top-N results. Previously recomputed once per result.
-            idf_denom = sum(idf.get(_stem_token(t), idf.get(t, 1.0)) for t in query_tokens) * 2.5 + 0.001
-            for rid, score in sorted(scores.items(), key=lambda x: -x[1])[:fetch_count]:
+            # only on the idfs used above, constant across the top-N results.
+            idf_denom = sum(matched_idfs) * 2.5 + 0.001
+            q_key = _surface_key(query)
+            name_list = index.get("names") or []
+
+            # Default-arg binding: these closures must not capture the
+            # category-loop variables (B023).
+            def _row_exact(
+                rid: int,
+                display: str,
+                q_key: str = q_key,
+                name_list: list = name_list,
+            ) -> bool:
+                """AMUX-18: exact surface = the query normalized equals
+                EITHER the row's indexed name document ('Tylenol', the
+                synonym the postings matched) or its friendly display."""
+                if _surface_key(display) == q_key:
+                    return True
+                return (
+                    rid < len(name_list)
+                    and bool(name_list[rid])
+                    and _surface_key(name_list[rid]) == q_key
+                )
+
+            def _row_rank(
+                item: tuple[int, float],
+                _exact=_row_exact,
+                _codes: list = rid_to_code,
+                _friendly: list = rid_to_friendly,
+            ) -> tuple[bool, float, str]:
+                """AMUX-18: exact surface match first, then BM25 score,
+                then code — a row literally named 'Tylenol' wins the tf=1
+                tie against longer combination-product rows,
+                deterministically."""
+                rid, score = item
+                code = _codes[rid] if rid < len(_codes) else str(rid)
+                display = _friendly[rid] if rid < len(_friendly) else code
+                return (not _exact(rid, display), -score, str(code))
+
+            for rid, score in sorted(scores.items(), key=_row_rank)[:fetch_count]:
                 code = rid_to_code[rid] if rid < len(rid_to_code) else str(rid)
                 display = rid_to_friendly[rid] if rid < len(rid_to_friendly) else code
                 sys_name = (rid_to_system[rid] if rid < len(rid_to_system) else "").upper()
@@ -1934,10 +2105,14 @@ class SearchService:
                 results.append(SearchResult(
                     code=str(code), source=source, display=display,
                     score=round(normalized, 4), match_grade=_score_to_grade(normalized),
-                    category=category,
+                    category=category, _exact_surface=_row_exact(rid, display),
                 ))
 
-        results.sort(key=lambda r: r.score, reverse=True)
+        # AMUX-18: exact surface matches first across categories too, then
+        # score, then code — fully deterministic ordering.
+        results.sort(
+            key=lambda r: (not r._exact_surface, -r.score, r.code)
+        )
         return self._filter_by_source(results, sources)[:count]
 
     def semantic(
