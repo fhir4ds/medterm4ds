@@ -141,3 +141,21 @@
   skipped / 2 xfailed (27:33); unit 850 passed / 11 skipped (5:40);
   ruff clean + formatted.
 - Zero production changes (findings-only; fixes left to a fixbatch).
+
+## 2026-11-02 — TS-112 $search first-use provisioning LIVE (worktree maint/spec-comp-20261102)
+
+- Surface: the 2dfca85 fix (first-use $search provisioning +
+  terminology-aware availability gates) shipped with FAKE-service
+  tests only. First live end-to-end verification: fresh HOME, no
+  pins, terminology default.
+- RESULT: ZERO FINDINGS — controls-only (24th clean surface). 2/2
+  live probes PASS: first lexical $search provisions the full
+  release in-call (~150s including download) and serves 200; hybrid
+  follows 200 warm. Pinned empty dir keeps the 503 contract (no
+  auto-provision under operator pins). PROBE GOTCHA recorded:
+  settings.search_index_dir must default (env-resolved) — an
+  explicitly passed dir IS a pin and legitimately keeps 503 (my
+  first probe defeated itself that way).
+- Gates (fresh, serial): conformance 8107 / 0 / 19 + 2 xfailed
+  (27:49); unit 860 / 11 (16:23); ruff clean + formatted.
+- Zero production changes. No registry edit.
