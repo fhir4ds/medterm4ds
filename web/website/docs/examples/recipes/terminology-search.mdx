@@ -30,9 +30,23 @@ to codes, and translates the found codes into patient-friendly names.
 ## The Space sleeps
 
 The demo runs on free-tier hardware. After **48 h without traffic the
-Space sleeps**, and the first request after sleep takes up to **~60 s** to
-wake it — the component above shows that state explicitly and retries
-automatically.
+Space sleeps**, and the first request after sleep takes up to **~2 minutes**
+to wake it — the component above polls the Space's health endpoint and shows
+that state explicitly ("Checking the terminology server…", then "Starting
+up…"), keeping the form disabled until the Space is really ready.
+
+## Browser calls the Space directly (and why)
+
+This site is hosted on **GitHub Pages, which is static-only** — there is no
+server-side component, so nothing can hide an API key or sign requests. The
+demo above therefore calls the Space **directly, cross-origin**. The only
+browser-side control is the Space's **origin allow-list**: calls from this
+site's origin are accepted, calls from other websites' origins are refused,
+and non-browser clients (curl, scripts) are allowed but rate-limited.
+
+That allow-list is a **speed bump, not authentication** — the `Origin`
+header is browser-supplied and trivially spoofed. Treat the Space as a
+public demo endpoint, not an access-controlled API.
 
 ## Running your own
 
