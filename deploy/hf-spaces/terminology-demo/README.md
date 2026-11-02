@@ -35,12 +35,45 @@ Live at: **https://fhir4ds-terminology-demo.hf.space**
 
 No API key in the browser (none to leak). Instead:
 
-- **Origin allow-list** — requests carrying an `Origin` header are refused
-  with 403 unless the origin is in `DEMO_ALLOWED_ORIGINS`. Server-side
-  clients (curl, no Origin) are not affected.
+- **Origin allow-list** — configurable via the `DEMO_ALLOWED_ORIGINS` env var
+  (comma-separated; an explicit enumerated list — no wildcards, no suffix
+  matching, no `*.fhir4ds.com` patterns). Default:
+  `https://terminology.fhir4ds.com` (canonical browser Origin — the docs
+  site is GitHub Pages with a CNAME, fronted by Cloudflare for DNS only),
+  `https://fhir4ds.com`, `https://www.fhir4ds.com` (main fhir4ds site —
+  examples also live there), `http://localhost:3000`,
+  `http://127.0.0.1:3000` (local dev), and `https://fhir4ds.github.io`
+  (Pages default host; harmless, covers previews). The active allow-list
+  is printed at startup and exposed in `GET /capabilities`, so operators
+  can see what is accepted without reading code. CORS preflight responses
+  echo the allow-listed origin; a request with a non-allowed `Origin` gets
+  **403 with no CORS headers at all** (no `Access-Control-Allow-Origin` on
+  the 403 — echoing it would hide the intent). No credentials are used: no
+  cookies, no Authorization header from the page, and
+  `Access-Control-Allow-Credentials` stays off.
+- **No-Origin requests are allowed but rate-limited** — `curl`, server-to-
+  server clients and HF health probes send no `Origin` header and pass.
 - **Per-IP rate limit** — 30 requests/minute sliding window per client IP
   (`DEMO_RATE_LIMIT_PER_MINUTE`), 429 + `Retry-After` beyond. `/health` is
   exempt.
+
+> **This is a speed bump, not authentication.** The `Origin` header is
+> browser-supplied and trivially spoofed by any non-browser client. The
+> allow-list stops *other websites* from driving their visitors' browsers
+> against this Space; it does not make the Space access-controlled, private
+> or authenticated. Treat the Space as public.
+
+### Why the browser calls the Space directly
+
+The docs site is hosted on **GitHub Pages, which is static-only** — there is
+no server-side proxy, so nothing can hide a key or sign requests. The example
+page therefore calls this Space directly, cross-origin, and the origin
+allow-list is the **only** browser-side control. Cloudflare sits in front of
+the *website* only (DNS for terminology.fhir4ds.com); it does not touch the
+Space or its CORS headers, and the app adds no header manipulation that
+assumes a proxy. Preflight (`OPTIONS`) is handled explicitly and is cheap:
+it never touches the model or the database, so preflight traffic cannot
+trigger index loads or double the cold-start cost.
 
 ## Data (mounted read-only volumes — NOT baked into the image)
 
@@ -139,8 +172,9 @@ Prerequisites: `pip install "huggingface_hub[cli]"`, `hf auth login`
 # 1. Create the Space (Docker SDK)
 hf api create-space fhir4ds/terminology-demo --sdk docker
 
-# 2. Secrets / variables (allow-list = docs site + local dev)
-hf api add-space-secret  fhir4ds/terminology-demo DEMO_ALLOWED_ORIGINS "https://terminology.fhir4ds.com,http://localhost:3000"
+# 2. Secrets / variables (allow-list = fhir4ds sites + local dev + Pages host;
+#    explicit enumerated list — no wildcards)
+hf api add-space-secret  fhir4ds/terminology-demo DEMO_ALLOWED_ORIGINS "https://terminology.fhir4ds.com,https://fhir4ds.com,https://www.fhir4ds.com,http://localhost:3000,http://127.0.0.1:3000,https://fhir4ds.github.io"
 hf api add-space-variable fhir4ds/terminology-demo DEMO_RATE_LIMIT_PER_MINUTE "30"
 
 # 3. Push the Space code (from the repo root; the Space repo needs

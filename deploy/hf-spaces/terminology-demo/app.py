@@ -51,7 +51,8 @@ ALLOWED_ORIGINS = tuple(
     o.strip()
     for o in os.getenv(
         "DEMO_ALLOWED_ORIGINS",
-        "https://terminology.fhir4ds.com,http://localhost:3000",
+        "https://terminology.fhir4ds.com,https://fhir4ds.com,https://www.fhir4ds.com,"
+        "http://localhost:3000,http://127.0.0.1:3000,https://fhir4ds.github.io",
     ).split(",")
     if o.strip()
 )
@@ -239,8 +240,11 @@ async def origin_allowlist_and_rate_limit(request: Request, call_next):
         )
 
     # 2. Origin allow-list: browsers always send Origin on cross-site calls.
-    #    A present-but-unlisted Origin is refused; no Origin (curl, servers,
-    #    HF probes) passes — the docs example page is the browser surface.
+    #    A present-but-unlisted Origin is refused with NO CORS headers;
+    #    no Origin (curl, servers, HF probes) passes but is still
+    #    rate-limited. NOTE: Origin is browser-supplied and trivially
+    #    spoofed — this is a speed bump against other sites' browsers,
+    #    NOT authentication.
     origin = request.headers.get("origin")
     if origin is not None and origin not in ALLOWED_ORIGINS:
         return JSONResponse(
@@ -422,6 +426,11 @@ async def hierarchy(payload: HierarchyRequest, request: Request) -> dict[str, An
 if __name__ == "__main__":
     import uvicorn
 
+    print(
+        "terminology-demo starting — "
+        f"allowed origins (explicit list, DEMO_ALLOWED_ORIGINS): {', '.join(ALLOWED_ORIGINS) or '(none)'}; "
+        f"rate limit {RATE_LIMIT_PER_MINUTE}/min per IP"
+    )
     uvicorn.run(
         app,
         host=os.getenv("DEMO_HOST", "0.0.0.0"),
