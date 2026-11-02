@@ -40,17 +40,12 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-REGISTRY = (
-    Path(__file__).parent.parent.parent
-    / "docs" / "maintenance-findings-registry.md"
-)
+REGISTRY = Path(__file__).parent.parent.parent / "docs" / "maintenance-findings-registry.md"
 
 
 def _rows():
     for line in REGISTRY.read_text().splitlines():
-        m = re.match(
-            r"^\| (\S+) \| \S+ \| \d{4}-\d{2}-\d{2}", line
-        )
+        m = re.match(r"^\| (\S+) \| \S+ \| \d{4}-\d{2}-\d{2}", line)
         if m:
             yield m.group(1), line
 
@@ -62,9 +57,7 @@ class TestRegistryIntegrity:
         """The K1/K2 defect class: an id appears at most once
         (resolved XOR open — never both)."""
         ids = [fid for fid, _ in _rows()]
-        dupes = {
-            i for i in ids if ids.count(i) > 1
-        }
+        dupes = {i for i in ids if ids.count(i) > 1}
         assert not dupes, f"duplicate registry rows: {sorted(dupes)}"
 
     def test_a11_every_row_references_a_suite(self):
@@ -96,11 +89,7 @@ class TestRegistryIntegrity:
         """Guard the corrected count: after the K1/K2 dedup the open
         table holds ≤ 41 findings (bump this only with a NEW finding
         + registry row — never by re-adding a resolved id)."""
-        open_rows = [
-            (fid, line)
-            for fid, line in _rows()
-            if "RESOLVED" not in line
-        ]
+        open_rows = [(fid, line) for fid, line in _rows() if "RESOLVED" not in line]
         assert len(open_rows) <= 41, (
             f"open findings grew to {len(open_rows)} — if these are "
             "genuine new findings, register them properly and bump "
@@ -118,13 +107,12 @@ class TestAuditProbesLive:
             "/fhir/CodeSystem/$validate-code",
             params={
                 "system": "http://snomed.info/sct",
-                "code": "44054006", "abstract": "true",
+                "code": "44054006",
+                "abstract": "true",
             },
         )
         result = next(
-            p.get("valueBoolean")
-            for p in r.json()["parameter"]
-            if p.get("name") == "result"
+            p.get("valueBoolean") for p in r.json()["parameter"] if p.get("name") == "result"
         )
         assert result is True
 
@@ -132,15 +120,21 @@ class TestAuditProbesLive:
         """F2 held: vsd-3 (concept+filter same include) accepted."""
         vs = {
             "resourceType": "ValueSet",
-            "compose": {"include": [{
-                "system": "http://snomed.info/sct",
-                "concept": [{"code": "44054006"}],
-                "filter": [{
-                    "property": "concept",
-                    "op": "is-a",
-                    "value": "73211009",
-                }],
-            }]},
+            "compose": {
+                "include": [
+                    {
+                        "system": "http://snomed.info/sct",
+                        "concept": [{"code": "44054006"}],
+                        "filter": [
+                            {
+                                "property": "concept",
+                                "op": "is-a",
+                                "value": "73211009",
+                            }
+                        ],
+                    }
+                ]
+            },
         }
         r = fhir_client.post("/fhir/ValueSet/$expand", json=vs)
         assert r.status_code == 200
@@ -153,10 +147,12 @@ class TestAuditProbesLive:
         r = fhir_client.get(
             "/fhir/CodeSystem/$lookup",
             params={
-                "coding": json.dumps({
-                    "system": "http://snomed.info/sct",
-                    "code": "44054006",
-                }),
+                "coding": json.dumps(
+                    {
+                        "system": "http://snomed.info/sct",
+                        "code": "44054006",
+                    }
+                ),
             },
         )
         assert r.status_code == 422

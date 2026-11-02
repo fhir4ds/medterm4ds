@@ -76,7 +76,8 @@ class TestAL1VersionedUriRejected:
         r = fhir_client.get(
             "/fhir/CodeSystem/$lookup",
             params={
-                "system": SNOMED_URI, "code": T2DM,
+                "system": SNOMED_URI,
+                "code": T2DM,
                 "version": "20260301",
             },
         )
@@ -90,9 +91,7 @@ class TestAL1VersionedUriRejected:
             ("$subsumes", {"codeA": "73211009", "codeB": T2DM}),
         ],
     )
-    def test_a12_uniform_across_ops(
-        self, fhir_client, op, extra
-    ):
+    def test_a12_uniform_across_ops(self, fhir_client, op, extra):
         """The versioned form 400s identically on every
         system-bearing op."""
         r = fhir_client.get(
@@ -105,9 +104,7 @@ class TestAL1VersionedUriRejected:
 class TestAL2UrnOidCoverage:
     """AL2 — OID addressing reaches only SNOMED+LOINC."""
 
-    @pytest.mark.parametrize(
-        "oid", [RXNORM_OID, "urn:oid:2.16.840.1.113883.6.3"]
-    )
+    @pytest.mark.parametrize("oid", [RXNORM_OID, "urn:oid:2.16.840.1.113883.6.3"])
     def test_a20_uncovered_oids_400(self, fhir_client, oid):
         """RXNORM/ICD-10-CM OIDs → 400 'Unrecognized' (their http
         forms work — the map, not the engine, is the gap). Flip when
@@ -127,9 +124,7 @@ class TestAL2UrnOidCoverage:
         )
         assert r.status_code == 200  # miss-encoded, not unrecognized
 
-    @pytest.mark.parametrize(
-        "oid", [SNOMED_OID, LOINC_OID]
-    )
+    @pytest.mark.parametrize("oid", [SNOMED_OID, LOINC_OID])
     def test_a22_covered_oids_ok(self, fhir_client, oid):
         """The two covered OIDs resolve (premise: the mechanism
         exists, coverage is partial)."""
@@ -143,12 +138,8 @@ class TestAL2UrnOidCoverage:
 class TestAliasControls:
     """Controls — canonical + trailing-slash accepted everywhere."""
 
-    @pytest.mark.parametrize(
-        "system_uri", [SNOMED_URI, SNOMED_URI + "/"]
-    )
-    def test_c10_canonical_and_slash(
-        self, fhir_client, system_uri
-    ):
+    @pytest.mark.parametrize("system_uri", [SNOMED_URI, SNOMED_URI + "/"])
+    def test_c10_canonical_and_slash(self, fhir_client, system_uri):
         """Both spellings accepted on every system-bearing op."""
         for op, extra in [
             ("$lookup", {"code": T2DM}),

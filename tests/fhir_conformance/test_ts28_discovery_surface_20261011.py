@@ -95,7 +95,12 @@ class TestSearchNamesControls:
         results = r.json()["results"]
         assert results, "fixture has diabetes names"
         for field in (
-            "source", "code", "name", "cui", "aui", "tty",
+            "source",
+            "code",
+            "name",
+            "cui",
+            "aui",
+            "tty",
             "match_type",
         ):
             assert field in results[0]
@@ -108,9 +113,7 @@ class TestDiscoveryControls:
 
     def test_c14_sample_codes_unknown_source_400(self, rest_client):
         """QC-195 boundary HELD here (contrast BL1's bulk gap)."""
-        r = rest_client.post(
-            "/sample-codes", json={"sources": ["NOTASAB"]}
-        )
+        r = rest_client.post("/sample-codes", json={"sources": ["NOTASAB"]})
         assert r.status_code == 400
 
     def test_c15_source_stats_unknown_source_400(self, rest_client):

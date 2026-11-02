@@ -74,18 +74,14 @@ class TestPY1MissShapes:
         """Unknown source → 200 {"results": [null]} — a JSON null
         entry (vs FHIR 400 / MCP+CLI null-FIELD records). Flip when
         the facade aligns to one miss convention."""
-        r = rest_client.post(
-            "/lookup", json={"codes": [_code("44054006", "NOTASAB")]}
-        )
+        r = rest_client.post("/lookup", json={"codes": [_code("44054006", "NOTASAB")]})
         assert r.status_code == 200
         assert r.json()["results"] == [None]
 
     def test_p11_unknown_code_same_shape(self, rest_client):
         """Unknown code → the same null-entry shape (the two miss
         classes are indistinguishable here too — CLI3/Z3 family)."""
-        r = rest_client.post(
-            "/lookup", json={"codes": [_code("99999999")]}
-        )
+        r = rest_client.post("/lookup", json={"codes": [_code("99999999")]})
         assert r.status_code == 200
         assert r.json()["results"] == [None]
 
@@ -140,9 +136,7 @@ class TestRESTControls:
         assert "SAB" in r.json()["detail"]
 
     def test_c12_empty_source_422(self, rest_client):
-        r = rest_client.post(
-            "/lookup", json={"codes": [{"source": "", "code": "X"}]}
-        )
+        r = rest_client.post("/lookup", json={"codes": [{"source": "", "code": "X"}]})
         assert r.status_code == 422
 
     def test_c13_map_target_required(self, rest_client):
@@ -186,6 +180,10 @@ class TestRESTControls:
         assert r.status_code == 200
         paths = set(r.json()["paths"])
         for route in (
-            "/health", "/lookup", "/map", "/hierarchy", "/resolve",
+            "/health",
+            "/lookup",
+            "/map",
+            "/hierarchy",
+            "/resolve",
         ):
             assert route in paths

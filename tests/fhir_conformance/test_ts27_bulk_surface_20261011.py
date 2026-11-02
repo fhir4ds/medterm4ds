@@ -70,7 +70,10 @@ def cli_db(tmp_path_factory):
 
 def _run(args: list[str]) -> subprocess.CompletedProcess:
     return subprocess.run(
-        [_CLI, *args], capture_output=True, text=True, timeout=600,
+        [_CLI, *args],
+        capture_output=True,
+        text=True,
+        timeout=600,
     )
 
 
@@ -85,17 +88,25 @@ class TestBL1UnknownSourcesEmptyExport:
             ("hierarchy", ["--direction", "children"]),
         ],
     )
-    def test_b10_empty_export_exit_zero(
-        self, cli_db, tmp_path, mode, extra
-    ):
+    def test_b10_empty_export_exit_zero(self, cli_db, tmp_path, mode, extra):
         """Unknown --sources → 0-byte output file at exit 0. Flip
         when the source-existence check lands at bulk dispatch."""
         out = tmp_path / f"{mode}-na.jsonl"
-        r = _run([
-            "bulk", mode, "--db", str(cli_db),
-            "--sources", "NOTASAB",
-            "--output", str(out), "--format", "jsonl", *extra,
-        ])
+        r = _run(
+            [
+                "bulk",
+                mode,
+                "--db",
+                str(cli_db),
+                "--sources",
+                "NOTASAB",
+                "--output",
+                str(out),
+                "--format",
+                "jsonl",
+                *extra,
+            ]
+        )
         assert r.returncode == 0
         assert out.exists()
         assert out.stat().st_size == 0
@@ -104,11 +115,22 @@ class TestBL1UnknownSourcesEmptyExport:
         """Premise control: bulk MAP fails loud on an unknown TARGET
         — the boundary exists in the family, just not on sources."""
         out = tmp_path / "map-na.jsonl"
-        r = _run([
-            "bulk", "map", "--db", str(cli_db),
-            "--sources", SNOMED, "--target", "NOTASAB",
-            "--output", str(out), "--format", "jsonl",
-        ])
+        r = _run(
+            [
+                "bulk",
+                "map",
+                "--db",
+                str(cli_db),
+                "--sources",
+                SNOMED,
+                "--target",
+                "NOTASAB",
+                "--output",
+                str(out),
+                "--format",
+                "jsonl",
+            ]
+        )
         assert r.returncode == 1
 
     def test_b12_nonbulk_rejects(self, cli_db):
@@ -116,11 +138,19 @@ class TestBL1UnknownSourcesEmptyExport:
         at the boundary (Error + exit != 0) — the asymmetry is
         bulk-sources-specific. (Non-bulk LOOKUP itself resolves
         null-field records at exit 0 — that is CLI3, registered.)"""
-        r = _run([
-            "map", "--db", str(cli_db),
-            "--source", SNOMED, "--code", "44054006",
-            "--target", "NOTASAB",
-        ])
+        r = _run(
+            [
+                "map",
+                "--db",
+                str(cli_db),
+                "--source",
+                SNOMED,
+                "--code",
+                "44054006",
+                "--target",
+                "NOTASAB",
+            ]
+        )
         assert r.returncode != 0
 
 
@@ -129,11 +159,22 @@ class TestBL2RawTracebackOnMapTarget:
 
     def test_b20_exit_one(self, cli_db, tmp_path):
         out = tmp_path / "map-na2.jsonl"
-        r = _run([
-            "bulk", "map", "--db", str(cli_db),
-            "--sources", SNOMED, "--target", "NOTASAB",
-            "--output", str(out), "--format", "jsonl",
-        ])
+        r = _run(
+            [
+                "bulk",
+                "map",
+                "--db",
+                str(cli_db),
+                "--sources",
+                SNOMED,
+                "--target",
+                "NOTASAB",
+                "--output",
+                str(out),
+                "--format",
+                "jsonl",
+            ]
+        )
         assert r.returncode == 1
 
     def test_b21_traceback_not_convention(self, cli_db, tmp_path):
@@ -142,18 +183,24 @@ class TestBL2RawTracebackOnMapTarget:
         'Error:' line every other op uses. Flip when the entry-point
         catch lands."""
         out = tmp_path / "map-na3.jsonl"
-        r = _run([
-            "bulk", "map", "--db", str(cli_db),
-            "--sources", SNOMED, "--target", "NOTASAB",
-            "--output", str(out), "--format", "jsonl",
-        ])
-        assert "Traceback" in r.stderr or "ValueError" in (
-            r.stderr + r.stdout
+        r = _run(
+            [
+                "bulk",
+                "map",
+                "--db",
+                str(cli_db),
+                "--sources",
+                SNOMED,
+                "--target",
+                "NOTASAB",
+                "--output",
+                str(out),
+                "--format",
+                "jsonl",
+            ]
         )
-        assert not any(
-            line.startswith("Error:")
-            for line in (r.stderr + r.stdout).splitlines()
-        )
+        assert "Traceback" in r.stderr or "ValueError" in (r.stderr + r.stdout)
+        assert not any(line.startswith("Error:") for line in (r.stderr + r.stdout).splitlines())
 
 
 class TestBulkControls:
@@ -161,42 +208,87 @@ class TestBulkControls:
 
     def test_c10_jsonl_shape(self, cli_db, tmp_path):
         out = tmp_path / "cvx.jsonl"
-        r = _run([
-            "bulk", "lookup", "--db", str(cli_db),
-            "--sources", CVX, "--output", str(out),
-            "--format", "jsonl",
-        ])
+        r = _run(
+            [
+                "bulk",
+                "lookup",
+                "--db",
+                str(cli_db),
+                "--sources",
+                CVX,
+                "--output",
+                str(out),
+                "--format",
+                "jsonl",
+            ]
+        )
         assert r.returncode == 0
         rec = json.loads(out.read_text().splitlines()[0])
         for field in (
-            "source", "code", "name", "cui", "aui", "tty", "suppress",
+            "source",
+            "code",
+            "name",
+            "cui",
+            "aui",
+            "tty",
+            "suppress",
         ):
             assert field in rec
 
     def test_c11_csv_shape(self, cli_db, tmp_path):
         out = tmp_path / "cvx.csv"
-        r = _run([
-            "bulk", "lookup", "--db", str(cli_db),
-            "--sources", CVX, "--output", str(out), "--format", "csv",
-        ])
+        r = _run(
+            [
+                "bulk",
+                "lookup",
+                "--db",
+                str(cli_db),
+                "--sources",
+                CVX,
+                "--output",
+                str(out),
+                "--format",
+                "csv",
+            ]
+        )
         assert r.returncode == 0
         lines = out.read_text().splitlines()
         assert lines[0].startswith("source,code,name")
 
     def test_c12_format_enum(self, cli_db, tmp_path):
-        r = _run([
-            "bulk", "lookup", "--db", str(cli_db),
-            "--sources", CVX, "--output", str(tmp_path / "x"),
-            "--format", "bogus",
-        ])
+        r = _run(
+            [
+                "bulk",
+                "lookup",
+                "--db",
+                str(cli_db),
+                "--sources",
+                CVX,
+                "--output",
+                str(tmp_path / "x"),
+                "--format",
+                "bogus",
+            ]
+        )
         assert r.returncode == 2
 
     def test_c13_direction_enum(self, cli_db, tmp_path):
-        r = _run([
-            "bulk", "hierarchy", "--db", str(cli_db),
-            "--sources", SNOMED, "--direction", "sideways",
-            "--output", str(tmp_path / "x"), "--format", "jsonl",
-        ])
+        r = _run(
+            [
+                "bulk",
+                "hierarchy",
+                "--db",
+                str(cli_db),
+                "--sources",
+                SNOMED,
+                "--direction",
+                "sideways",
+                "--output",
+                str(tmp_path / "x"),
+                "--format",
+                "jsonl",
+            ]
+        )
         assert r.returncode == 2
 
     def test_c14_checkpoint_and_resume(self, cli_db, tmp_path):
@@ -205,23 +297,44 @@ class TestBulkControls:
         duplicated rows)."""
         out = tmp_path / "r.jsonl"
         ck = tmp_path / "ck.json"
-        r1 = _run([
-            "bulk", "lookup", "--db", str(cli_db),
-            "--sources", CVX, "--output", str(out),
-            "--format", "jsonl",
-            "--checkpoint", str(ck),
-        ])
+        r1 = _run(
+            [
+                "bulk",
+                "lookup",
+                "--db",
+                str(cli_db),
+                "--sources",
+                CVX,
+                "--output",
+                str(out),
+                "--format",
+                "jsonl",
+                "--checkpoint",
+                str(ck),
+            ]
+        )
         assert r1.returncode == 0
         state = json.loads(ck.read_text())
         assert state["complete"] is True
         assert state["last_source"] == CVX
         rows_before = out.read_text().count("\n")
-        r2 = _run([
-            "bulk", "lookup", "--db", str(cli_db),
-            "--sources", CVX, "--output", str(out),
-            "--format", "jsonl",
-            "--resume", "--checkpoint", str(ck),
-        ])
+        r2 = _run(
+            [
+                "bulk",
+                "lookup",
+                "--db",
+                str(cli_db),
+                "--sources",
+                CVX,
+                "--output",
+                str(out),
+                "--format",
+                "jsonl",
+                "--resume",
+                "--checkpoint",
+                str(ck),
+            ]
+        )
         assert r2.returncode == 0
         rows_after = out.read_text().count("\n")
         assert rows_after == rows_before
@@ -234,11 +347,20 @@ class TestBulkControls:
         resolver serves 'original'; the cvx_group strategy is only
         observable with the env cleared — pinned BOTH ways."""
         out = tmp_path / "pf.jsonl"
-        r = _run([
-            "bulk", "patient-friendly", "--db", str(cli_db),
-            "--sources", CVX, "--output", str(out),
-            "--format", "jsonl",
-        ])
+        r = _run(
+            [
+                "bulk",
+                "patient-friendly",
+                "--db",
+                str(cli_db),
+                "--sources",
+                CVX,
+                "--output",
+                str(out),
+                "--format",
+                "jsonl",
+            ]
+        )
         assert r.returncode == 0
         rec = json.loads(out.read_text().splitlines()[0])
         assert rec["match_type"] == "original"  # DISABLE_CVX_GROUPS=1
@@ -246,19 +368,26 @@ class TestBulkControls:
 
         import os
 
-        env = {
-            k: v
-            for k, v in os.environ.items()
-            if k != "MEDTERM4DS_DISABLE_CVX_GROUPS"
-        }
+        env = {k: v for k, v in os.environ.items() if k != "MEDTERM4DS_DISABLE_CVX_GROUPS"}
         out2 = tmp_path / "pf-cvx.jsonl"
         r2 = subprocess.run(
             [
-                _CLI, "bulk", "patient-friendly",
-                "--db", str(cli_db), "--sources", CVX,
-                "--output", str(out2), "--format", "jsonl",
+                _CLI,
+                "bulk",
+                "patient-friendly",
+                "--db",
+                str(cli_db),
+                "--sources",
+                CVX,
+                "--output",
+                str(out2),
+                "--format",
+                "jsonl",
             ],
-            capture_output=True, text=True, timeout=600, env=env,
+            capture_output=True,
+            text=True,
+            timeout=600,
+            env=env,
         )
         assert r2.returncode == 0
         rec2 = json.loads(out2.read_text().splitlines()[0])
@@ -269,11 +398,24 @@ class TestBulkControls:
         """Bulk map rows carry the full matched_via step chain
         (input_atom → same_cui → target_atom)."""
         out = tmp_path / "m.jsonl"
-        r = _run([
-            "bulk", "map", "--db", str(cli_db),
-            "--sources", SNOMED, "--target", "ICD10CM",
-            "--output", str(out), "--format", "jsonl", "--limit", "10",
-        ])
+        r = _run(
+            [
+                "bulk",
+                "map",
+                "--db",
+                str(cli_db),
+                "--sources",
+                SNOMED,
+                "--target",
+                "ICD10CM",
+                "--output",
+                str(out),
+                "--format",
+                "jsonl",
+                "--limit",
+                "10",
+            ]
+        )
         assert r.returncode == 0
         rec = json.loads(out.read_text().splitlines()[0])
         ops = [s["op"] for s in rec["matched_via"]["steps"]]

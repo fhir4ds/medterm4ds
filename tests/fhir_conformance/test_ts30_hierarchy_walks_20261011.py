@@ -71,7 +71,9 @@ def deep_client(tmp_path_factory):
             [code, "PT", name, f"A{code}", SNOMED, cui],
         )
     for parent, child in [
-        (ROOT, L1), (L1, L2), (L2, L3),
+        (ROOT, L1),
+        (L1, L2),
+        (L2, L3),
     ]:
         con.execute(
             "INSERT INTO mrrel VALUES (?,?,?,?)",
@@ -93,10 +95,7 @@ def _descendants(client, code: str, depth: int):
         },
     )
     assert r.status_code == 200
-    return {
-        (row["target_code"], row["depth"])
-        for row in r.json()["results"]
-    }
+    return {(row["target_code"], row["depth"]) for row in r.json()["results"]}
 
 
 class TestHY1UnknownSource:
@@ -131,11 +130,19 @@ class TestHY1UnknownSource:
         cli = str(Path(sys.executable).parent / "medterm4ds")
         r = subprocess.run(
             [
-                cli, "hierarchy", "descendants",
-                "--db", str(db), "--source", "NOTASAB",
-                "--code", "1",
+                cli,
+                "hierarchy",
+                "descendants",
+                "--db",
+                str(db),
+                "--source",
+                "NOTASAB",
+                "--code",
+                "1",
             ],
-            capture_output=True, text=True, timeout=300,
+            capture_output=True,
+            text=True,
+            timeout=300,
         )
         assert r.returncode == 0
         assert '"results": []' in r.stdout
@@ -168,9 +175,7 @@ class TestHierarchyControls:
             (5, {(L1, 1), (L2, 2), (L3, 3), ("44054006", 1)}),
         ],
     )
-    def test_c10_depth_caps_exact(
-        self, deep_client, cap, expected
-    ):
+    def test_c10_depth_caps_exact(self, deep_client, cap, expected):
         """Layered BFS: exactly the layers ≤ cap, correct depth
         attribution per node (QC-432 held)."""
         assert _descendants(deep_client, ROOT, cap) == expected
@@ -184,10 +189,7 @@ class TestHierarchyControls:
                 "max_depth": 2,
             },
         )
-        got = {
-            (row["target_code"], row["depth"])
-            for row in r.json()["results"]
-        }
+        got = {(row["target_code"], row["depth"]) for row in r.json()["results"]}
         assert got == {(L2, 1), (L1, 2)}
 
     def test_c12_depth_floor(self, deep_client):
@@ -222,8 +224,17 @@ class TestHierarchyControls:
         )
         row = r.json()["results"][0]
         for field in (
-            "source", "code", "source_display", "target_source",
-            "target_code", "target_display", "relationship", "depth",
-            "rel", "rela", "source_cui", "target_cui",
+            "source",
+            "code",
+            "source_display",
+            "target_source",
+            "target_code",
+            "target_display",
+            "relationship",
+            "depth",
+            "rel",
+            "rela",
+            "source_cui",
+            "target_cui",
         ):
             assert field in row

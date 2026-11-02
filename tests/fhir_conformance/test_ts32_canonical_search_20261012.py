@@ -60,8 +60,7 @@ QUERY = "diabetes"
 def _first_entry(client, **extra):
     r = client.get(
         "/fhir/CodeSystem/$search",
-        params={"query": QUERY, "searchMode": "canonical",
-                "count": "3", **extra},
+        params={"query": QUERY, "searchMode": "canonical", "count": "3", **extra},
     )
     assert r.status_code == 200, r.text
     return r.json()
@@ -99,12 +98,8 @@ class TestCA2ExtensionNamespaces:
         W3-hosted)."""
         body = _first_entry(fhir_client)
         entry = body["entry"][0]
-        urls = [
-            ext["url"]
-            for ext in entry["resource"].get("extension", [])
-        ] + [
-            ext["url"]
-            for ext in entry["search"].get("extension", [])
+        urls = [ext["url"] for ext in entry["resource"].get("extension", [])] + [
+            ext["url"] for ext in entry["search"].get("extension", [])
         ]
         domains = {u.split("/fhir/")[0] for u in urls}
         assert domains == {
@@ -116,9 +111,7 @@ class TestCA2ExtensionNamespaces:
 class TestCA3EngineNoOpOnCanonical:
     """CA3 — engine accepted, meaningless, unvalidated."""
 
-    @pytest.mark.parametrize(
-        "engine", ["bm25", "sapbert", "hybrid", "bogus"]
-    )
+    @pytest.mark.parametrize("engine", ["bm25", "sapbert", "hybrid", "bogus"])
     def test_c30_engine_all_200(self, fhir_client, engine):
         """Every engine value (including garbage) returns 200 on
         canonical mode — no validation, no mode semantics. Flip when
@@ -137,7 +130,8 @@ class TestCanonicalControls:
         r = fhir_client.get(
             "/fhir/CodeSystem/$search",
             params={
-                "query": QUERY, "searchMode": "canonical",
+                "query": QUERY,
+                "searchMode": "canonical",
                 "resultTypes": "bogus",
             },
         )
@@ -147,7 +141,8 @@ class TestCanonicalControls:
         r = fhir_client.get(
             "/fhir/CodeSystem/$search",
             params={
-                "query": QUERY, "searchMode": "canonical",
+                "query": QUERY,
+                "searchMode": "canonical",
                 "count": "0",
             },
         )
@@ -156,19 +151,13 @@ class TestCanonicalControls:
     def test_c42_envelope_extensions(self, fhir_client):
         body = _first_entry(fhir_client)
         entry = body["entry"][0]
-        res_exts = {
-            ext["url"].rsplit("/", 1)[-1]: ext
-            for ext in entry["resource"]["extension"]
-        }
+        res_exts = {ext["url"].rsplit("/", 1)[-1]: ext for ext in entry["resource"]["extension"]}
         assert "canonical-id" in res_exts
-        assert res_exts["canonical-id"]["valueString"].startswith(
-            "VAL-"
-        )
+        assert res_exts["canonical-id"]["valueString"].startswith("VAL-")
         assert res_exts["canonical-result-type"]["valueCode"]
         assert entry["search"]["score"] > 0
         search_exts = {
-            ext["url"].rsplit("/", 1)[-1]
-            for ext in entry["search"].get("extension", [])
+            ext["url"].rsplit("/", 1)[-1] for ext in entry["search"].get("extension", [])
         }
         assert "match-grade" in search_exts
 

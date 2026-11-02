@@ -91,7 +91,12 @@ class TestNavigatorControls:
         out = runtime.diagnosis_codes(condition="diabetes")
         row = out["results"][0]
         for field in (
-            "source", "code", "name", "cui", "aui", "tty",
+            "source",
+            "code",
+            "name",
+            "cui",
+            "aui",
+            "tty",
             "match_type",
         ):
             assert field in row
@@ -128,9 +133,7 @@ class TestEV1EvidenceNetwork:
             def search_guidelines(self, *a, **kw):
                 raise ConnectionError("no route to host")
 
-        monkeypatch.setattr(
-            ev, "PubMedGuidelineClient", lambda: _Failing()
-        )
+        monkeypatch.setattr(ev, "PubMedGuidelineClient", lambda: _Failing())
         out = ev.guideline_search("diabetes")
         assert out["status"] == "error"
         assert "PubMed" in out["source"]
@@ -143,9 +146,7 @@ class TestEV1EvidenceNetwork:
         import socket
 
         try:
-            socket.create_connection(
-                ("eutils.ncbi.nlm.nih.gov", 443), timeout=5
-            ).close()
+            socket.create_connection(("eutils.ncbi.nlm.nih.gov", 443), timeout=5).close()
         except OSError:
             pytest.skip("offline — live PubMed path not probeable")
 
