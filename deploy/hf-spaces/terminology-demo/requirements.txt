@@ -1,10 +1,9 @@
 # terminology-demo Space dependencies.
-# medterm4ds itself is installed from the repo sources copied into the image
-# (PYTHONPATH=/app/src, matching the fhir-server precedent) so the Space
-# tracks the deployed branch exactly.
+# medterm4ds itself is pip-installed (see Dockerfile) from the PUBLIC
+# GitHub repo at a pinned commit, with the fhir/search/extraction extras.
 #
 # search: torch CPU + faiss + transformers (SapBERT weights come from the
-#         mounted terminology release, never downloaded)
+#         terminology release volume/download, never baked)
 # extraction: gliner + medspacy (+ en-core-web-sm installed in the Dockerfile
 #         from the spacy-models index; GLiNER weights are baked at build time)
 # api: fastapi + uvicorn

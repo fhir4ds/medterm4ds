@@ -1,8 +1,10 @@
 # terminology-demo — HF Docker Space for medterm4ds operations.
 #
-# Build context: REPO ROOT (so src/medterm4ds is available), e.g. from the
-# repo root:
-#   docker build -f deploy/hf-spaces/terminology-demo/Dockerfile -t terminology-demo .
+# Build context: THIS DIRECTORY (deploy/hf-spaces/terminology-demo, or the
+# root of the HF Space repo, which contains the same files):
+#   docker build -t terminology-demo deploy/hf-spaces/terminology-demo
+# medterm4ds is pip-installed from the pinned public GitHub commit, so the
+# image needs no repo sources in the build context.
 #
 # Runtime volumes (read-only):
 #   /data/lookup.duckdb      CPT-excluded lookup DB (deploy/scripts/export_lookup_db.py)
@@ -17,15 +19,17 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 WORKDIR /app
 
-COPY deploy/hf-spaces/terminology-demo/requirements.txt /app/requirements.txt
+COPY requirements.txt /app/requirements.txt
 RUN pip install --no-cache-dir -r /app/requirements.txt \
     && pip install --no-cache-dir \
         https://github.com/explosion/spacy-models/releases/download/en_core_web_sm-3.8.0/en_core_web_sm-3.8.0-py3-none-any.whl
 
-# medterm4ds from the repo tree (PYTHONPATH, matching the fhir-server Space)
-COPY src /app/src
-COPY pyproject.toml /app/pyproject.toml
-ENV PYTHONPATH=/app/src
+# medterm4ds from the PUBLIC GitHub repo at the pinned dev commit (the
+# exact commit this Space was built against; PyPI also carries 0.0.8 but
+# the pin guarantees the AMUX-18/20 lexical fixes are included). Installed
+# from the release tarball so the image needs no git binary.
+RUN pip install --no-cache-dir \
+        "medterm4ds[fhir,search,extraction] @ https://github.com/fhir4ds/medterm4ds/archive/72503ab4a721.tar.gz"
 
 # Bake the pinned GLiNER NER weights into the image so /extract needs no
 # runtime download (pinned revision from services/extraction.py).
@@ -39,13 +43,17 @@ ENV MEDTERM4DS_NER_MODEL=/app/models/gliner \
     MEDTERM4DS_NER_MODEL_REVISION= \
     HF_HUB_OFFLINE=0
 
-# Data layout (mounted read-only by the platform)
+# Data layout: volume mounts when attached (preferred); otherwise fetched
+# at container start from the private lookup dataset + public terminology
+# repo (see startup_data.py) — never baked into the public image.
 ENV MEDTERM4DS_DB=/data/lookup.duckdb \
     MEDTERM4DS_CACHE_DIR=/data/cache \
     MEDTERM4DS_MEMORY_PROFILE=low \
-    DEMO_DB_THREADS=2
+    DEMO_DB_THREADS=2 \
+    DEMO_PROVISION_DATA=true
 
-COPY deploy/hf-spaces/terminology-demo/app.py /app/app.py
+COPY app.py /app/app.py
+COPY startup_data.py /app/startup_data.py
 
 EXPOSE 7860
 

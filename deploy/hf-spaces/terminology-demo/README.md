@@ -12,24 +12,47 @@ license: other
 # terminology-demo
 
 Public demo service backing the [medterm4ds docs example](https://terminology.fhir4ds.com/docs/examples/recipes/terminology-search).
-Serves medterm4ds terminology operations over HTTP on **free-tier hardware
-(2 vCPU / 16 GB)**; the Space **sleeps after 48 h idle** and takes up to
-~60 s to wake. It is a demo, not an uptime-bearing API.
+Serves the **real medterm4ds FHIR R4 terminology API unmodified**
+(`medterm4ds.create_fhir_app`) on free-tier hardware (2 vCPU / 16 GB); the
+Space **sleeps after 48 h idle**. It is a demo, not an uptime-bearing API.
 
 Live at: **https://fhir4ds-terminology-demo.hf.space**
 
-## Endpoints
+## API — native FHIR R4 (plus two demo endpoints)
+
+The FHIR surface is the app that ships with medterm4ds; this Space is only
+a deployment wrapper (access control, rate limiting, readiness) around it.
+Every FHIR route it registers is served as-is:
+
+- `GET /fhir/metadata` — CapabilityStatement (authoritative route list)
+- `POST /fhir` — FHIR batch/transaction bundles
+- `CodeSystem/$lookup`, `CodeSystem/$validate-code`, `CodeSystem/$search`,
+  `CodeSystem/$extract` (GET and POST), `CodeSystem/$subsumes`,
+  `CodeSystem/$closure`
+- `ValueSet/$validate-code`, `ValueSet/$expand` (plus
+  `ValueSet/{id}/$expand` and `ValueSet/{id}/$validate-code`)
+- `ConceptMap/$translate` (plus `ConceptMap/{id}/$translate`)
+- Resource-level reads/search (`GET/POST /fhir/{type}[/{id}]`)
+
+The FHIR app's own `/docs` (Swagger) and `/openapi.json`, generated from
+the real routes, are served at the root.
+
+Demo-only endpoints added by the wrapper:
 
 | Endpoint | Method | Purpose |
 |---|---|---|
-| `/health` | GET | readiness + version. Reports `db_ready` and `search_ready` separately (cheap: in-memory booleans only); `status: "ready"` only when both are true |
-| `/capabilities` | GET | endpoints, search modes, code sources, limits, `search_warm` |
-| `/search` | POST | `{query, mode: lexical\|semantic\|canonical\|hybrid, count?, sources?, result_types?}` |
-| `/extract` | POST | `{text}` → concepts + annotated text (GLiNER + medspaCy NER, resolved to codes) |
-| `/map` | POST | `{codes: [{source, code}], target_sources: [...]}` → cross-system mappings |
-| `/translate` | POST | `{codes: [{source, code}]}` → patient-friendly names |
-| `/lookup` | POST | `{codes: [{source, code}]}` → best atom per code |
-| `/hierarchy` | POST | `{codes, direction: parents\|children\|ancestors\|descendants, max_depth?, limit?}` |
+| `/health` | GET | readiness + version. Reports `db_ready` and `search_ready` separately (cheap: in-memory booleans only); `status: "ready"` only when both are true. **Wins over the FHIR app's own `/health`** (registered first on the composed app) because it carries the split readiness signal |
+| `/capabilities` | GET | demo inventory: mounted terminology release, DB sources, surfaced FHIR routes, limits, allow-list, `search_warm` |
+
+`$search` and `$extract` need the SapBERT/FAISS/GLiNER models; until the
+background warm-up finishes they return **503 + Retry-After** instead of
+blocking behind a model load.
+
+**Excluded routes: none.** Every route of the FHIR app was exercised within
+the free-tier limits (2 vCPU / 16 GB): `$lookup`, `$validate-code`,
+`$search` (all four modes), `$extract`, `$subsumes`, `$closure`,
+`$expand` (url-form and filter-form), `$translate`, batch `POST /fhir`
+and `GET /fhir/metadata` all answer within seconds.
 
 ## Access control
 
