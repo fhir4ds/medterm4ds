@@ -19,6 +19,7 @@ import {
   fhirParams,
   lookupSummary,
   searchRows,
+  systemShortName,
   translateMatches,
 } from './terminologyFhir.ts';
 
@@ -98,6 +99,20 @@ test('searchRows produces distinct, renderable score/grade per row', () => {
   );
   assert.equal(rows[1].code, '22298006');
   assert.equal(rows[1].display, 'Myocardial infarction');
+});
+
+test('systemShortName maps FHIR URIs to compact names', () => {
+  assert.equal(systemShortName('http://snomed.info/sct'), 'SNOMED CT');
+  assert.equal(systemShortName('http://loinc.org'), 'LOINC');
+  assert.equal(systemShortName('http://hl7.org/fhir/sid/icd-10-cm'), 'ICD-10-CM');
+  // searchRows carries the short name alongside the URI
+  const rows = searchRows(LIVE_SEARCH_BUNDLE);
+  assert.equal(rows[1].systemName, 'SNOMED CT');
+  // unknown URIs degrade to a trimmed host, never a long raw URL
+  assert.equal(
+    systemShortName('https://example.org/CodeSystem/foo/'),
+    'example.org/CodeSystem/foo',
+  );
 });
 
 test('fhirParams builds a FHIR Parameters body with typed values', () => {

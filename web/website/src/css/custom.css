@@ -263,3 +263,68 @@ thead {
 .terminology-demo__error {
   color: var(--ifm-color-danger);
 }
+
+/* Mode card result list (no table, pills only, no horizontal scroll) */
+.terminology-demo__results {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+
+.terminology-demo__result {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+  padding: 0.35rem 0.5rem;
+  border-radius: 8px;
+  overflow-wrap: anywhere;
+}
+
+.terminology-demo__result.terminology-demo__top {
+  background: rgba(142, 230, 193, 0.09);
+}
+
+.terminology-demo__pills {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.3rem;
+  align-items: center;
+}
+
+.terminology-demo__pill {
+  display: inline-block;
+  padding: 0.05rem 0.5rem;
+  border-radius: 999px;
+  font-size: 0.72rem;
+  white-space: nowrap;
+}
+
+.terminology-demo__pill--system {
+  background: rgba(84, 198, 255, 0.08);
+  border: 1px solid rgba(84, 198, 255, 0.16);
+}
+
+.terminology-demo__pill--system code {
+  background: none;
+  border: none;
+  padding: 0;
+  font-size: inherit;
+}
+
+.terminology-demo__pill--score {
+  background: rgba(84, 198, 255, 0.05);
+  border: 1px solid rgba(84, 198, 255, 0.12);
+  font-variant-numeric: tabular-nums;
+}
+
+.terminology-demo__pill--best {
+  background: rgba(142, 230, 193, 0.12);
+  border-color: rgba(142, 230, 193, 0.3);
+}
+
+.terminology-demo__ner-hint {
+  opacity: 0.6;
+}

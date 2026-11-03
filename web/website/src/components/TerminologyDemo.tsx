@@ -206,34 +206,38 @@ function ModeCard({
       {rows.length === 0 ? (
         <p className="terminology-demo__card-empty">no results</p>
       ) : (
-        <table>
-          <tbody>
-            {rows.map((r, i) => {
-              const isTop = r.score === best;
-              return (
-                <tr key={i} className={isTop ? 'terminology-demo__top' : undefined}>
-                  <td>
-                    <span className="terminology-demo__display">
-                      {isTop ? <strong>{r.display}</strong> : r.display}
+        <ul className="terminology-demo__results">
+          {rows.map((r, i) => {
+            const isTop = r.score === best;
+            return (
+              <li
+                key={i}
+                className={`terminology-demo__result${isTop ? ' terminology-demo__top' : ''}`}>
+                <span className="terminology-demo__display">
+                  {isTop ? <strong>{r.display}</strong> : r.display}
+                </span>
+                <span className="terminology-demo__pills">
+                  <span className="terminology-demo__pill terminology-demo__pill--system">
+                    {r.systemName} <code>{r.code}</code>
+                  </span>
+                  {r.score != null && (
+                    <span
+                      className={`terminology-demo__pill terminology-demo__pill--score${
+                        isTop ? ' terminology-demo__pill--best' : ''
+                      }`}>
+                      {r.score.toFixed(3)}
                     </span>
-                    <br />
-                    <code>
-                      {r.system?.replace(/^https?:\/\//, '')} · {r.code}
-                    </code>
-                  </td>
-                  <td className="terminology-demo__score">
-                    {r.score != null ? r.score.toFixed(3) : ''}
-                    {r.grade ? (
-                      <span className={GRADE_STYLES[r.grade] ?? 'terminology-demo__grade'}>
-                        {r.grade}
-                      </span>
-                    ) : null}
-                  </td>
-                </tr>
-              );
-            })}
-          </tbody>
-        </table>
+                  )}
+                  {r.grade && (
+                    <span className={GRADE_STYLES[r.grade] ?? 'terminology-demo__grade'}>
+                      {r.grade}
+                    </span>
+                  )}
+                </span>
+              </li>
+            );
+          })}
+        </ul>
       )}
     </div>
   );
@@ -535,7 +539,17 @@ export default function TerminologyDemo(): React.JSX.Element {
                   </code>
                   </small>
                 </td>
-                <td>{d.concept.ner_label}</td>
+                <td>
+                  {d.concept.result_type ?? '—'}
+                  {d.concept.ner_label && d.concept.ner_label !== d.concept.result_type ? (
+                    <>
+                      <br />
+                      <small className="terminology-demo__ner-hint">
+                        NER: {d.concept.ner_label}
+                      </small>
+                    </>
+                  ) : null}
+                </td>
                 <td>
                   {d.concept.status ? (
                     <span

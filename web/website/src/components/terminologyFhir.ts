@@ -34,6 +34,31 @@ export type FhirSearchEntry = {
 
 const MATCH_GRADE_EXT = 'match-grade';
 
+/**
+ * Short human name for a FHIR system URI (keeps the demo compact — no
+ * long URLs, no horizontal scrolling).
+ */
+const SYSTEM_SHORT_NAMES: Record<string, string> = {
+  'http://snomed.info/sct': 'SNOMED CT',
+  'http://loinc.org': 'LOINC',
+  'http://hl7.org/fhir/sid/icd-10-cm': 'ICD-10-CM',
+  'http://hl7.org/fhir/sid/icd-10-pcs': 'ICD-10-PCS',
+  'http://www.nlm.nih.gov/research/umls/rxnorm': 'RxNorm',
+  'http://hl7.org/fhir/sid/cvx': 'CVX',
+  'http://terminology.hl7.org/CodeSystem/hcpcs': 'HCPCS',
+};
+
+export function systemShortName(system?: string): string {
+  if (!system) return '';
+  const mapped = SYSTEM_SHORT_NAMES[system];
+  if (mapped) return mapped;
+  // RxNorm has several URI spellings; cover the common prefix.
+  if (system.includes('rxnorm')) return 'RxNorm';
+  if (system.includes('icd-10-cm')) return 'ICD-10-CM';
+  if (system.includes('icd-10-pcs')) return 'ICD-10-PCS';
+  return system.replace(/^https?:\/\//, '').replace(/\/$/, '');
+}
+
 export function entryScore(entry: FhirSearchEntry): number | undefined {
   return entry.search?.score;
 }
@@ -51,6 +76,7 @@ export type SearchRow = {
   display?: string;
   code?: string;
   system?: string;
+  systemName?: string;
   score?: number;
   grade?: string;
 };
@@ -60,6 +86,7 @@ export function searchRows(bundle: {entry?: FhirSearchEntry[]}): SearchRow[] {
     display: e.resource?.display,
     code: e.resource?.code,
     system: e.resource?.system,
+    systemName: systemShortName(e.resource?.system),
     score: entryScore(e),
     grade: entryGrade(e),
   }));
