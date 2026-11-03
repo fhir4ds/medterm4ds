@@ -78,11 +78,12 @@ POST /fhir/CodeSystem/$search
 
 The demo runs on free-tier hardware. After **48 h without traffic the
 Space sleeps**, and the first request after sleep takes up to **~2 minutes**
-to wake — about half of that is loading the terminology models (SapBERT,
-FAISS, GLiNER). The component above polls the Space's health endpoint
-(which reports the model warm-up separately from basic liveness), keeps
-the form disabled until queries actually work, and shows that state
-explicitly ("Checking the terminology server…", then "Starting up…").
+to wake — about a minute of that is loading the terminology models
+(SapBERT, FAISS, GLiNER; measured ~55 s on the live Space). The component
+above polls the Space's health endpoint (which reports the model warm-up
+separately from basic liveness), keeps the form disabled until queries
+actually work, and shows that state explicitly ("Checking the terminology
+server…", then "Starting up…").
 
 ## Browser calls the Space directly (and why)
 

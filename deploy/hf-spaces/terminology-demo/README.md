@@ -70,10 +70,16 @@ No API key in the browser (none to leak). Instead:
   is printed at startup and exposed in `GET /capabilities`, so operators
   can see what is accepted without reading code. CORS preflight responses
   echo the allow-listed origin; a request with a non-allowed `Origin` gets
-  **403 with no CORS headers at all** (no `Access-Control-Allow-Origin` on
-  the 403 — echoing it would hide the intent). No credentials are used: no
-  cookies, no Authorization header from the page, and
-  `Access-Control-Allow-Credentials` stays off.
+  **403**. No credentials are used: no cookies, no Authorization header
+  from the page, and `Access-Control-Allow-Credentials` stays off.
+- **HF Spaces edge behaviour (important):** the `*.hf.space` edge proxy
+  answers CORS preflights itself and adds an `Access-Control-Allow-Origin`
+  header echoing ANY request Origin — including on this app's 403
+  refusals. The app cannot strip platform-added headers. The enforcement
+  that actually matters is therefore the **403 status**: a browser page on
+  a non-allowed origin can read the 403 error body, but no data response
+  is ever returned to it. The "403 carries no ACAO" property holds only
+  for direct/self-hosted deployments of this image.
 - **No-Origin requests are allowed but rate-limited** — `curl`, server-to-
   server clients and HF health probes send no `Origin` header and pass.
 - **Per-IP rate limit** — 30 requests/minute sliding window per client IP
@@ -238,19 +244,21 @@ curl -s -X POST $B/fhir/CodeSystem/\$search -H 'Content-Type: application/json' 
 Hardware: free tier (2 vCPU / 16 GB) is sufficient — everything runs on
 CPU (`MEDTERM4DS_MEMORY_PROFILE=low`, DuckDB threads=2).
 
-Cold start (stopped container → query-ready, measured on 2 vCPU / 16 GB
-with volumes/data already on local disk):
-- **db_ready in ~1-3 s** (container up, DuckDB open, prepare_cache done),
-- **search_ready in ~32-42 s** — a background warm-up loads the lexical
+Cold start (stopped container → query-ready):
+- **Live measurement (deployed Space, volumes attached, 2026-11-03):**
+  `db_ready` at **t+2 s**, `search_ready` at **t+55 s** after app start.
+  First `$search` (hybrid) after ready: **1.3 s**; first `$extract`: 0.4 s.
+- Locally (2 vCPU / 16 GB, data on local disk): db_ready ~1-3 s,
+  search_ready ~32-42 s. The background warm-up loads the lexical
   indexes, SapBERT, FAISS and the GLiNER/medspaCy pipeline before
   `/health` reports `search_ready: true`. `$search` and `$extract` return
   **503 + Retry-After** until then, rather than blocking behind the model
-  load. On the Space WITHOUT volumes, add the download time for the 207 MB
+  load. If warm-up FAILS, `/health` carries a `warm_error` field with the
+  reason instead of silently staying "starting".
+- On the Space WITHOUT volumes, add the download time for the 207 MB
   lookup DB and the ~4 GB terminology release on first start.
-- first `$search` after `search_ready`: ~1 s; first `$extract`: ~1-2 s.
 Idle-sleep wake adds Space scheduling on top; allow up to ~2 minutes
-(volume-mounted) or longer on the very first no-volume start.
-Health-check start-period is 120 s.
+(volume-mounted). Health-check start-period is 120 s.
 
 ## Building the data artifacts (reproducibility)
 
