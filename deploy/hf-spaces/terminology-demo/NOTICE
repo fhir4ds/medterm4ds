@@ -1,0 +1,37 @@
+NOTICE — terminology-demo (https://fhir4ds-terminology-demo-server.hf.space)
+=====================================================================
+
+CPT EXCLUSION (AMA)
+-------------------
+CPT is excluded entirely from every artifact this service serves. The AMA
+license (category 3) forbids use of CPT content "in publicly accessible
+systems". Both the terminology release (without-cpt variant, attested in
+its manifest.json) and lookup.duckdb (verified: zero SAB='CPT' rows, zero
+edges touching CPT atoms) contain no CPT codes, names, or derived text.
+
+UMLS METATHESAURUS LICENSE
+--------------------------
+This product uses publicly available data courtesy of the U.S. National
+Library of Medicine (NLM), National Institutes of Health, Department of
+Health and Human Services. Use of the UMLS Metathesaurus is subject to the
+UMLS license terms:
+https://www.nlm.nih.gov/research/umls/licensedcontent/umlslicense.html
+
+- LOINC(R) — This material contains content from LOINC(R) Regenstrief.
+  Use of LOINC is subject to the LOINC license: https://loinc.org/license/
+- UCUM — This product includes all or a portion of the UCUM table, UCUM
+  codes, and UCUM definitions and is copyright ©1999-2026 Regenstrief
+  Institute, Inc. and the Unified Medical Language System (UMLS), and is
+  subject to the UCUM license: https://unitsofmeasure.org/license
+  (UCUM is distributed with the UMLS Metathesaurus.)
+- SNOMED CT(R) — This material contains SNOMED CT(R) content from SNOMED
+  International. Use of SNOMED CT is subject to SNOMED CT license terms:
+  https://www.snomed.org/get-snomed
+- RxNorm — This product uses publicly available data courtesy of the
+  U.S. National Library of Medicine:
+  https://www.nlm.nih.gov/research/umls/rxnorm/
+- ICD-10-CM / ICD-10-PCS / HCPCS — U.S. Centers for Medicare & Medicaid
+  Services; public domain.
+
+The licence-restricted lookup.duckdb is stored in the PRIVATE dataset
+fhir4ds/terminology-demo-data and is never baked into this public Space repo.
