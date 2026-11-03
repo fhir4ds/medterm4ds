@@ -76,11 +76,8 @@ sys.path.insert(0, 'tests/fhir_conformance')
 logging.basicConfig(level=logging.INFO, stream=sys.stderr)
 from conftest import _make_conformance_db
 from starlette.testclient import TestClient
-from medterm4ds.apps.fhir_api import (
-    DEFAULT_SEARCH_INDEX_DIR,
-    FhirApiSettings,
-    create_fhir_app,
-)
+from medterm4ds.apps.fhir_api import FhirApiSettings, create_fhir_app
+from medterm4ds.services.search import DEFAULT_SEARCH_INDEX_DIR
 import tempfile, pathlib
 db = pathlib.Path(tempfile.mkdtemp()) / 'umls.duckdb'
 _make_conformance_db(db)
