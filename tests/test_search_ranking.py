@@ -276,6 +276,7 @@ class TestOrdinaryQueriesUnchanged:
 class TestSurfaceDistance:
     def test_zero_for_exact_and_basic_edits(self):
         from medterm4ds.services.search import _surface_distance as d
+
         assert d("tylenol", "Tylenol") == 0
         # normalized by the longer surface: 3 edits over 10 chars
         # ('tylenol' vs 'tylenol pm' — the space is part of the key)
@@ -285,6 +286,7 @@ class TestSurfaceDistance:
 
     def test_containment_beats_short_unrelated(self):
         from medterm4ds.services.search import _surface_distance as d
+
         # normalization makes surfaces CONTAINING the query closer than
         # short unrelated ones (raw edit distance is length-biased).
         assert d("tylenol pm", "Tylenol PM Extra Strength Tylenol") < d(
@@ -293,9 +295,8 @@ class TestSurfaceDistance:
 
     def test_closer_surface_ranks_lower_distance(self):
         from medterm4ds.services.search import _surface_distance as d
-        assert d("tylenol", "Tylenol PM") < d(
-            "tylenol", "Tylenol Cold Multi Symptom"
-        )
+
+        assert d("tylenol", "Tylenol PM") < d("tylenol", "Tylenol Cold Multi Symptom")
 
 
 class TestLexicalDistanceTiebreak:
@@ -318,19 +319,95 @@ class TestSemanticUnifiedTiebreak:
         class StubEngine:
             def search(self, query, *, categories=None, top_k=20):
                 return [
-                    {"code": "9999", "system": "lnc", "display": "zzz unrelated far",
-                     "score": 0.90, "match_grade": "probable", "category": "lab"},
-                    {"code": "0001", "system": "lnc", "display": "Hemoglobin A1c Panel",
-                     "score": 0.90, "match_grade": "probable", "category": "lab"},
-                    {"code": "0002", "system": "lnc", "display": "Hemoglobin A1c",
-                     "score": 0.90, "match_grade": "probable", "category": "lab"},
+                    {
+                        "code": "9999",
+                        "system": "lnc",
+                        "display": "zzz unrelated far",
+                        "score": 0.90,
+                        "match_grade": "probable",
+                        "category": "lab",
+                    },
+                    {
+                        "code": "0001",
+                        "system": "lnc",
+                        "display": "Hemoglobin A1c Panel",
+                        "score": 0.90,
+                        "match_grade": "probable",
+                        "category": "lab",
+                    },
+                    {
+                        "code": "0002",
+                        "system": "lnc",
+                        "display": "Hemoglobin A1c",
+                        "score": 0.90,
+                        "match_grade": "probable",
+                        "category": "lab",
+                    },
                     # exact surface with a LOWER cosine must still win (AMUX-18
                     # semantics preserved on the semantic path).
-                    {"code": "5555", "system": "lnc", "display": "Hemoglobin A1c measurement",
-                     "score": 0.85, "match_grade": "probable", "category": "lab"},
+                    {
+                        "code": "5555",
+                        "system": "lnc",
+                        "display": "Hemoglobin A1c measurement",
+                        "score": 0.85,
+                        "match_grade": "probable",
+                        "category": "lab",
+                    },
                 ]
 
         monkeypatch.setattr(search_svc, "_ensure_semantic", lambda: StubEngine())
         res = search_svc.semantic("Hemoglobin A1c", count=4)
         codes = [r.code for r in res]
         assert codes == ["0002", "0001", "9999", "5555"], codes
+
+
+class TestOrphanPassGradeCap:
+    """QC1-T3 (v0.0.9 QC): rows scored ONLY by the AMUX-20 orphan surface
+    pass carry substring-level evidence ('MS' matches 'LC/MS/MS' mass-spec
+    method notation — Tacrolimus/Metanephrines lab rows, not Multiple
+    Sclerosis). The max-idf proxy plus the short-doc tf term inflates the
+    normalized score past the certain cutoff; the grade must cap at
+    'probable' unless the row's surface IS the query (exact match)."""
+
+    @pytest.fixture()
+    def ms_svc(self, tmp_path: Path) -> SearchService:
+        idx = _build_index(
+            "lab",
+            [
+                {
+                    "code": "74097-7",
+                    "system": "lnc",
+                    "name": "Tacrolimus:MCnc:Pt:Bld:Qn:LC/MS/MS",
+                    "friendly": "Tacrolimus",
+                },
+                {
+                    "code": "104630-9",
+                    "system": "lnc",
+                    "name": "Metanephrines:MRat:24H:Urine:Qn:LC/MS/MS",
+                    "friendly": "Metanephrines",
+                },
+                {"code": "E1", "system": "snomed", "name": "Multiple Sclerosis", "friendly": "MS"},
+            ],
+            avg_doc_length=20.0,
+        )
+        (tmp_path / "lab_bm25.json").write_text(json.dumps(idx))
+        return SearchService(
+            search_index_dir=str(tmp_path), embedding_model_dir=str(tmp_path / "no_model")
+        )
+
+    def test_orphan_only_rows_never_certain(self, ms_svc):
+        results = ms_svc.lexical("MS", count=10)
+        by_code = {r.code: r for r in results}
+        # The LC/MS/MS rows surface (token coverage is real evidence)…
+        assert "74097-7" in by_code and "104630-9" in by_code
+        # …but their normalized score (~1.0 via the max-idf proxy + short
+        # doc-length term) must NOT buy 'certain' — substring coincidence
+        # is single weak evidence.
+        assert by_code["74097-7"].match_grade == "probable"
+        assert by_code["104630-9"].match_grade == "probable"
+
+    def test_exact_surface_orphan_row_stays_certain(self, ms_svc):
+        results = ms_svc.lexical("MS", count=10)
+        by_code = {r.code: r for r in results}
+        # Exact-surface rows are exempt from the cap: 'MS' IS the query.
+        assert by_code["E1"].match_grade == "certain"

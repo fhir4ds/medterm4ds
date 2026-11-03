@@ -191,3 +191,67 @@ class TestDeterminism:
         r1 = [r.code for r in svc.hybrid("alpha drug", count=5)]
         r2 = [r.code for r in svc.hybrid("alpha drug", count=5)]
         assert r1 == r2
+
+
+class TestBatchAFixes:
+    """v0.0.9 QC fixbatch pins: sort-key totality (QC1-S2), best-rank
+    dedupe (QC1-S1), and exact-flag reuse in the probable branch
+    (QC1-A4)."""
+
+    def test_sort_key_is_total_order_source_breaks_code_ties(self, svc):
+        # Two rows fully tied on (rrf, exact, distance, code) but distinct
+        # sources: the key's trailing source term must fix the order
+        # instead of hash-seed-dependent set iteration.
+        _wire(
+            svc,
+            lex_rows=[_lex_row("X", "Same Display", 0.5, source="BBB")],
+            sem_rows=[
+                ("rxnorm", "X", "Same Display", 0.90),
+                ("snomedct_us", "X", "Same Display", 0.90),
+            ],
+        )
+        # Give the lexical row the same total RRF as one sem row by
+        # aligning ranks: lex rank1 = 1/11, sem rank1 = 1/11. The lnc
+        # source label maps from the stub's raw source strings.
+        rows = svc.hybrid("same display", count=5)
+        xs = [r for r in rows if r.code == "X"]
+        assert len(xs) == 3, [(r.source, r.code) for r in rows]
+        # Deterministic contract: full ties (BBB lex-rank1 and RXNORM
+        # sem-rank1, both 1/11) order by source ascending; SNOMEDCT_US
+        # (sem rank2, 1/12) ranks last by RRF.
+        assert [r.source for r in xs] == ["BBB", "RXNORM", "SNOMEDCT_US"]
+
+    def test_duplicate_identity_keeps_best_rank(self, svc):
+        # The same (source, code) appearing twice in lexical's list (cross
+        # -category duplicates): the FIRST (better) rank must win the RRF
+        # contribution, not the last.
+        _wire(
+            svc,
+            lex_rows=[
+                _lex_row("A", "Alpha Drug", 0.4),  # rank 1
+                _lex_row("B", "Beta Drug", 0.4),  # rank 2
+                _lex_row("A", "Alpha Drug", 0.4),  # rank 3 (dup)
+                _lex_row("A", "Alpha Drug", 0.4),  # rank 5 shape
+                _lex_row("A", "Alpha Drug", 0.4),
+                _lex_row("A", "Alpha Drug", 0.4),
+            ],
+            sem_rows=[],
+        )
+        rows = svc.hybrid("alpha drug", count=5)
+        # A keeps rank 1 (1/11); B has rank 2 (1/12) — A must outrank B.
+        assert rows[0].code == "A", [(r.code, r.match_grade) for r in rows]
+
+    def test_probable_uses_row_exact_flag_not_display_only(self, svc):
+        # A row whose INDEXED NAME equals the query (AMUX-18 exactness:
+        # name doc OR display) but whose friendly display differs. Lexical
+        # carried exact=True at rank 1; the probable branch must honor
+        # that flag — a display-only re-derivation (QC1-A4) graded this
+        # 'possible'.
+        _wire(
+            svc,
+            lex_rows=[_lex_row("A", "Acetaminophen Oral Product", 0.42, exact=True)],
+            sem_rows=[],
+        )
+        rows = svc.hybrid("Tylenol", count=5)
+        assert rows, "union must surface the lexical row"
+        assert rows[0].match_grade == "probable", rows[0].match_grade

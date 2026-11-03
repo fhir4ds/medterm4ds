@@ -36,8 +36,6 @@ from medterm4ds.core.paths import cache_dir, hf_repo_id, hf_revision, terminolog
 
 logger = logging.getLogger(__name__)
 
-logger = logging.getLogger(__name__)
-
 # --- Cache directory and HF repo configuration ---
 
 # Hugging Face repo holding prebuilt artifacts. Override via env vars for
@@ -81,6 +79,15 @@ SEARCH_CATEGORIES = ("condition", "lab", "medication", "procedure", "vaccine", "
 # benchmarks/fusion_benchmark.py — RRF k=10 + agreement-aware grades).
 HYBRID_FUSION_K = 10
 HYBRID_CANDIDATE_DEPTH = 100
+
+# Grade-authority cutoffs for agreement-aware grading (AMUX-46): the
+# cosine bands beneath 'certain' and 'probable'. These mirror
+# engines/fhir/semantic._cosine_to_grade (the ENGINE-layer authority —
+# engines must not import services, so each layer holds one definition
+# and they cross-reference). Benchmark tooling imports THESE values; do
+# not inline the numbers at call sites.
+GRADE_CERTAIN_COSINE = 0.92
+GRADE_PROBABLE_COSINE = 0.75
 
 # --- Split-layout cache (Phase 3, docs/plans/artifact-governance-plan.md §4) ---
 #
@@ -754,9 +761,9 @@ def _surface_distance(query_key: str, text: str, cap: int = 64) -> float:
     'Tylenol PM') rank closer than short unrelated ones
     ('Acetaminophen') — raw edit distance is length-biased the other way.
 
-    Model-free and deterministic; only invoked for score ties, where it
-    replaces the bare-code arbiter. Inputs are capped so a pathological
-    display can't blow up the DP table.
+    Model-free and deterministic; invoked as a sort-key component on every
+    candidate row (not only score ties — it ranks the proximity tier
+    after the exact tier), so inputs are capped to bound the DP cost.
     """
     a = query_key[:cap]
     b = _surface_key(text)[:cap]
@@ -2093,6 +2100,8 @@ class SearchService:
                 # normalization pipeline as posting hits.
                 orphan_idf = max(idf.values(), default=1.0)
                 matched_idfs.extend([orphan_idf] * len(orphan_tokens))
+                posting_rids = set(scores)
+                orphan_touched: set[int] = set()
                 k1, b = 1.5, 0.75
                 q_token_set = set(query_tokens)
                 names_raw = index.get("names") or []
@@ -2132,6 +2141,18 @@ class SearchService:
                     scores[rid] = scores.get(rid, 0.0) + (
                         orphan_idf * tf_comp * len(orphan_tokens) * boost
                     )
+                    orphan_touched.add(rid)
+            else:
+                orphan_touched = set()
+            # Rows scored ONLY by the orphan pass (no posting matched the
+            # query): their evidence is substring-level surface coverage,
+            # not a term match — graded below (QC1-T3: 'MS' hits
+            # '(0.58-0.68 MS)' microsphere notation and 'Morphine'
+            # substrings; without the cap these graded 'certain').
+            if orphan_tokens:
+                orphan_only_rids = orphan_touched - posting_rids
+            else:
+                orphan_only_rids = set()
 
             # Hoist the IDF denominator out of the per-result loop — it depends
             # only on the idfs used above, constant across the top-N results.
@@ -2187,10 +2208,23 @@ class SearchService:
                 sys_name = (rid_to_system[rid] if rid < len(rid_to_system) else "").upper()
                 source = _SYSTEM_LABELS_REVERSE.get(sys_name, sys_name)
                 normalized = min(score / idf_denom, 1.0)
+                row_exact = _row_exact(rid, display)
+                # Orphan-pass-only rows (no posting matched the query)
+                # cap at 'probable': substring surface coverage is weaker
+                # evidence than a posting match, and the max-idf proxy
+                # inflates the normalized score (QC1-T3). Exact-surface
+                # rows are exempt — the surface IS the query.
+                grade = _score_to_grade(normalized)
+                if (
+                    rid in orphan_only_rids
+                    and grade == "certain"
+                    and not row_exact
+                ):
+                    grade = "probable"
                 results.append(SearchResult(
                     code=str(code), source=source, display=display,
-                    score=round(normalized, 4), match_grade=_score_to_grade(normalized),
-                    category=category, _exact_surface=_row_exact(rid, display),
+                    score=round(normalized, 4), match_grade=grade,
+                    category=category, _exact_surface=row_exact,
                 ))
 
         # AMUX-18 (+ unified tie-break): exact surface matches first across
@@ -2305,13 +2339,13 @@ class SearchService:
         """
         _validate_query(query)
         _validate_count(count)
-        self._ensure_bm25()
-        engine = self._ensure_semantic()
         categories = self._restrict_categories(
             self._resolve_categories(sources), result_types
         )
         if not categories:
             return []
+        self._ensure_bm25()
+        engine = self._ensure_semantic()
 
         depth = max(HYBRID_CANDIDATE_DEPTH, count)
         bm25_results = self.lexical(
@@ -2322,21 +2356,24 @@ class SearchService:
         )
         sem_raw = engine.search(query, categories=categories, top_k=depth)
 
-        # Per-system evidence keyed by (source, code).
+        # Per-system evidence keyed by (source, code). setdefault keeps
+        # the FIRST (best-ranked) occurrence of a duplicate identity — a
+        # code indexed under two categories must not lose its better
+        # rank to the later, worse one (QC1-S1).
         lex_ev: dict[tuple, dict] = {}
         for rank, r in enumerate(bm25_results, start=1):
-            lex_ev[(r.source, r.code)] = {
+            lex_ev.setdefault((r.source, r.code), {
                 "rank": rank, "score": r.score, "display": r.display,
                 "category": r.category, "exact": r._exact_surface,
-            }
+            })
         sem_ev: dict[tuple, dict] = {}
         for rank, r in enumerate(sem_raw, start=1):
             sys_name = r.get("system", "").upper()
             source = _SYSTEM_LABELS_REVERSE.get(sys_name, sys_name)
-            sem_ev[(source, r["code"])] = {
+            sem_ev.setdefault((source, r["code"]), {
                 "rank": rank, "cos": float(r["score"]),
                 "display": r["display"], "category": r.get("category", ""),
-            }
+            })
 
         union = set(lex_ev) | set(sem_ev)
         q_key = _surface_key(query)
@@ -2350,13 +2387,15 @@ class SearchService:
             )
             display = (lx or se)["display"]
             cos = se["cos"] if se is not None else 0.0
+            # AMUX-18 exactness as lexical defined it (display OR indexed
+            # name document equals the query) — reusing the carried flag,
+            # not re-deriving a weaker display-only check (QC1-A4).
             exact = bool(lx and lx["exact"])
             # Agreement-aware grade guard (see docstring).
-            if lx is not None and se is not None and cos >= 0.92:
+            if lx is not None and se is not None and cos >= GRADE_CERTAIN_COSINE:
                 grade = "certain"
-            elif cos >= 0.75 or (
-                lx is not None and lx["rank"] <= 3
-                and _surface_key(display) == q_key
+            elif cos >= GRADE_PROBABLE_COSINE or (
+                lx is not None and lx["rank"] <= 3 and exact
             ):
                 grade = "probable"
             else:
@@ -2372,13 +2411,17 @@ class SearchService:
             )
 
         # Deterministic order: RRF desc, then the unified AMUX-49 key
-        # (exact surface, surface distance, code).
+        # (exact surface, surface distance, code, source). The trailing
+        # source term makes the key a total order — two rows colliding
+        # on code across systems must not fall back to hash-seed-dependent
+        # set iteration order (QC1-S2).
         fused.sort(
             key=lambda t: (
                 -t[0],
                 not t[1]._exact_surface,
                 _surface_distance(q_key, t[1].display),
                 t[1].code,
+                t[1].source,
             )
         )
         results = [r for _, r in fused]
@@ -2508,7 +2551,7 @@ def search(
     Parameters
     ----------
     query : Free text to search for (e.g., "high blood sugar").
-    mode : 'lexical' (BM25, ~1ms), 'semantic' (SapBERT, ~100ms), or 'hybrid' (cascade, ~110ms).
+    mode : 'lexical' (BM25, ~1ms), 'semantic' (SapBERT, ~100ms), or 'hybrid' (RRF union fusion of both systems, AMUX-46).
     sources : Restrict to specific source systems (e.g., ["SNOMEDCT_US"]). None = all.
     count : Maximum results to return.
     engine : Optional terminology engine. When provided, legacy-mode result
