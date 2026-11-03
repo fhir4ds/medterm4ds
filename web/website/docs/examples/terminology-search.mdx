@@ -29,19 +29,11 @@ a courtesy filter, not authentication.
 
 <TerminologyDemo />
 
-## What the four search modes mean (plain English)
-
-### Matching the words: Lexical and Hybrid
+### Search modes
 
 - **Lexical** matches the *words* you typed. Fast and exact: "heart
   attack" finds concepts whose names contain those words — but it cannot
   find "myocardial infarction" from "heart attack".
-- **Hybrid** starts from lexical matching and adds semantic ranking on
-  top, taking the best of both worlds. (The API supports it; the demo
-  grid shows the three modes below side by side.)
-
-### Matching the meaning: Semantic and Canonical
-
 - **Semantic** matches the *meaning*. An embedding model (SapBERT)
   understands that "heart attack" and "myocardial infarction" are the
   same thing, so it finds concepts the exact words would miss.
@@ -51,24 +43,24 @@ a courtesy filter, not authentication.
   name — "heart attack" resolves to one card joining all the codes for
   myocardial infarction.
 
-The demo runs your query through lexical, semantic and canonical at once
-so you can see the differences on your own terms (top 3 per mode, best
-result per mode highlighted). See the
-[CapabilityStatement](https://fhir4ds-terminology-demo-server.hf.space/fhir/metadata)
-for the full operation surface.
+The demo runs your query through all three at once so you can see the
+differences on your own terms (top 3 per mode, best result per mode
+highlighted). The API also offers a **hybrid** mode (lexical + semantic
+combined) — see the
+[CapabilityStatement](https://fhir4ds-terminology-demo-server.hf.space/fhir/metadata).
 
-### Reading the annotations
+### Annotations
 
 Paste a clinical note and press **Extract concepts**: each identified
 term is highlighted in the note with its assertion status — mint for
 *affirmed*, lavender for *family history* (identified, but about a
-relative), rose with strikethrough for *negated* — followed by its
-resolved concept, patient-friendly name and code.
+relative), rose with strikethrough for *negated* — followed inline by
+its resolved concept, patient-friendly name and code.
 
-## The FHIR API behind it
+## Native FHIR R4 operations
 
 Every call the demo makes is a standard FHIR R4 operation with a
-`Parameters` request body — no custom JSON API. The server's
+`Parameters` request body. The server's
 [CapabilityStatement](https://fhir4ds-terminology-demo-server.hf.space/fhir/metadata)
 lists everything it serves; the demo uses:
 
@@ -84,7 +76,7 @@ The server also carries `$validate-code`, `$subsumes`, `$closure`,
 `ValueSet/$expand`, batch/transaction `POST /fhir`, and resource-level
 reads — all unmodified from `medterm4ds.create_fhir_app`.
 
-### Example: $search request and response
+### Example request and response ($search)
 
 ```json
 POST /fhir/CodeSystem/$search
