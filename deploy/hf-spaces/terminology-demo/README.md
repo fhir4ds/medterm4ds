@@ -186,52 +186,70 @@ i.e. the account that accepted the UMLS license):
 
 Send this **before** the Space is made public.
 
-## Deploying (Joel's runbook)
+## Deploying (status + Joel's remaining steps)
 
-Prerequisites: `pip install "huggingface_hub[cli]"`, `hf auth login`
-(Joel's account, with write access to the `fhir4ds` namespace).
+**Done (2026-11-03):** Space created (Docker SDK, cpu-basic, PRO account);
+code pushed to the Space repo root (`Dockerfile`, `app.py`,
+`startup_data.py`, `requirements.txt`, `README.md`, `NOTICE`); secrets set
+(`DEMO_ALLOWED_ORIGINS`, `DEMO_HF_TOKEN`) and variables set
+(`DEMO_RATE_LIMIT_PER_MINUTE=30`, `DEMO_LOOKUP_DATASET`);
+the CPT-excluded `lookup.duckdb` (207 MB) uploaded to the PRIVATE dataset
+**fhir4ds/medterm4ds-lookup** (never in this public repo — UMLS
+redistribution requires the private, token-gated path or a volume mount).
+
+**Data provisioning:** volume mounts win when attached (see below);
+otherwise `startup_data.py` fetches `lookup.duckdb` from the private
+dataset (with the `DEMO_HF_TOKEN` secret) and the terminology release from
+the public `fhir4ds/terminology` repo into the Space's ephemeral `/data`
+at container start. Nothing licence-restricted is ever baked into the
+image or the public repo.
+
+**Remaining for Joel — attach volumes (UI-only; the hub API exposes no
+volume-mount endpoint as of 2026-11-03):**
+
+1. Open https://huggingface.co/spaces/fhir4ds/terminology-demo/settings
+2. *Storage* section → mount the repos read-only:
+   - dataset `fhir4ds/medterm4ds-lookup` (private) → `/data`
+     (places `lookup.duckdb` at `/data/lookup.duckdb`)
+   - model `fhir4ds/terminology` (public) → `/data/cache`
+     (the release resolves as `/data/cache/terminology/<release>/`; if the
+     mount lands at a different sub-path, set `MEDTERM4DS_TERMINOLOGY_DIR`
+     accordingly)
+3. Restart the Space. With both volumes attached, the runtime download
+   fallback no longer runs and cold start drops by the download time.
+
+**Verify (live):**
 
 ```bash
-# 1. Create the Space (Docker SDK)
-hf api create-space fhir4ds/terminology-demo --sdk docker
-
-# 2. Secrets / variables (allow-list = fhir4ds sites + local dev + Pages host;
-#    explicit enumerated list — no wildcards)
-hf api add-space-secret  fhir4ds/terminology-demo DEMO_ALLOWED_ORIGINS "https://terminology.fhir4ds.com,https://fhir4ds.com,https://www.fhir4ds.com,http://localhost:3000,http://127.0.0.1:3000,https://fhir4ds.github.io"
-hf api add-space-variable fhir4ds/terminology-demo DEMO_RATE_LIMIT_PER_MINUTE "30"
-
-# 3. Push the Space code (from the repo root; the Space repo needs
-#    app.py, Dockerfile, requirements.txt at its root)
-cd deploy/hf-spaces/terminology-demo
-hf upload-space-repo . fhir4ds/terminology-demo --commit-message "terminology-demo initial deploy"
-
-# 4. Attach volumes (Settings → Volumes, or the API) — read-only mounts:
-#      /data/lookup.duckdb   <- built artifact from deploy/scripts/export_lookup_db.py
-#      /data/cache           <- fhir4ds/terminology release 2026.10.31.1
-#    If the platform does not offer read-only mounts, upload the release
-#    and lookup DB as private dataset repos and copy them into /data at
-#    startup instead (see deploy/hf-spaces/terminology-demo/README deploy notes).
-
-# 5. Verify after the build finishes:
-curl -s https://fhir4ds-terminology-demo.hf.space/health
-curl -s https://fhir4ds-terminology-demo.hf.space/capabilities
-curl -s -X POST https://fhir4ds-terminology-demo.hf.space/search \
-     -H 'Content-Type: application/json' \
-     -d '{"query": "myocardial infarction", "mode": "lexical", "count": 3}'
+B=https://fhir4ds-terminology-demo.hf.space
+curl -s $B/health                     # db_ready + search_ready flags
+curl -s $B/fhir/metadata              # CapabilityStatement
+curl -s -X POST $B/fhir/CodeSystem/\$lookup -H 'Content-Type: application/json' \
+     -d '{"resourceType":"Parameters","parameter":[
+          {"name":"system","valueUri":"http://snomed.info/sct"},
+          {"name":"code","valueCode":"22298006"}]}'
+curl -s -X POST $B/fhir/CodeSystem/\$search -H 'Content-Type: application/json' \
+     -d '{"resourceType":"Parameters","parameter":[
+          {"name":"query","valueString":"heart attack"},
+          {"name":"searchMode","valueCode":"hybrid"},
+          {"name":"count","valueInteger":3}]}'
 ```
 
 Hardware: free tier (2 vCPU / 16 GB) is sufficient — everything runs on
 CPU (`MEDTERM4DS_MEMORY_PROFILE=low`, DuckDB threads=2).
 
-Cold start (stopped container → query-ready, measured on 2 vCPU / 16 GB):
-- **db_ready in ~1 s** (container up, DuckDB open),
-- **search_ready in ~32 s** — a background warm-up loads the lexical
+Cold start (stopped container → query-ready, measured on 2 vCPU / 16 GB
+with volumes/data already on local disk):
+- **db_ready in ~1-3 s** (container up, DuckDB open, prepare_cache done),
+- **search_ready in ~32-42 s** — a background warm-up loads the lexical
   indexes, SapBERT, FAISS and the GLiNER/medspaCy pipeline before
-  `/health` reports `search_ready: true`. `/search` and `/extract`
-  return **503 + Retry-After** until then, rather than blocking behind
-  the model load.
-- first `/search` after `search_ready`: **<1 s**; first `/extract`: ~1 s.
-Idle-sleep wake adds Space scheduling on top; allow up to ~2 minutes.
+  `/health` reports `search_ready: true`. `$search` and `$extract` return
+  **503 + Retry-After** until then, rather than blocking behind the model
+  load. On the Space WITHOUT volumes, add the download time for the 207 MB
+  lookup DB and the ~4 GB terminology release on first start.
+- first `$search` after `search_ready`: ~1 s; first `$extract`: ~1-2 s.
+Idle-sleep wake adds Space scheduling on top; allow up to ~2 minutes
+(volume-mounted) or longer on the very first no-volume start.
 Health-check start-period is 120 s.
 
 ## Building the data artifacts (reproducibility)
