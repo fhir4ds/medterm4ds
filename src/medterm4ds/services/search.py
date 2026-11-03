@@ -9,9 +9,9 @@ Data sources:
   - SapBERT model + FAISS indexes: fine-tuned embeddings + ANN search
 
 Both are lazy-loaded on first use. BM25 loads from MEDTERM4DS_SEARCH_INDEX_DIR
-and SapBERT from MEDTERM4DS_EMBEDDING_MODEL_DIR; both default to the
-artifact cache root (MEDTERM4DS_CACHE_DIR, else ~/.cache/medterm4ds/<rev>)
-and prefer the locally provisioned fhir4ds/terminology release — never a
+and SapBERT from MEDTERM4DS_EMBEDDING_MODEL_DIR; unset env means the
+release-aware 'auto' resolution over the artifact cache root
+(MEDTERM4DS_CACHE_DIR, else ~/.cache/medterm4ds/<rev>) — never a
 machine-specific path (see medterm4ds.core.paths).
 
 No GPU required. Runs on CPU (~1ms lexical, ~100ms semantic).
@@ -32,31 +32,38 @@ from typing import Any
 from medterm4ds.core import paths as _paths
 from medterm4ds.core.models import CodeRef
 from medterm4ds.core.normalize import SOURCE_LABELS
-from medterm4ds.core.paths import (  # noqa: F401  (lazy re-exports)
-    cache_dir,
-    hf_repo_id,
-    hf_revision,
-    terminology_root,
-)
+from medterm4ds.core.paths import cache_dir, hf_repo_id, hf_revision, terminology_root
 
 logger = logging.getLogger(__name__)
 
 logger = logging.getLogger(__name__)
 
 # --- Cache directory and HF repo configuration ---
+
+# Hugging Face repo holding prebuilt artifacts. Override via env vars for
+# testing or private forks. Default revision tracks the artifact-set tag
+# (v0.0.5 = 2026-08-27 canonical build: shorthand class aliases — SGLT2i/
+# DPP4i/PPI/ARB, CDC vaccine groups, lab SNOMED crosswalk, ICD-10-PCS,
+# guard hardening; v0.0.2 = Aug-2026 canonical indexes with CID corrections).
+_HF_REPO_ID = os.getenv("MEDTERM4DS_HF_REPO_ID", "fhir4ds/medterm4ds")
+_HF_REVISION = os.getenv("MEDTERM4DS_HF_REVISION", "v0.0.5")
+
+# Artifact cache layout. Two modes:
 #
-# All cache-root-derived defaults live in medterm4ds.core.paths (AMUX-44:
-# single source of truth — the historical /mnt/d machine-specific defaults
-# were removed; see that module for the resolution order). Computed here at
-# import (and at every importlib.reload — the lazy core.paths helpers read
-# the env per call) because these names are the "unpinned" sentinels
-# compared against caller arguments throughout this module.
-#
-# Layout notes (see core.paths and docs/plans/artifact-governance-plan.md):
 # DEFAULT (no MEDTERM4DS_CACHE_DIR): revision-keyed —
 #   ~/.cache/medterm4ds/<revision>/{canonical,semantic,lexical}/...
+# Each revision gets its own subtree, so switching MEDTERM4DS_HF_REVISION
+# (or bumping the default at release) triggers the download automatically
+# and rollback is instant. A provenance marker records what was pulled.
+#
 # OPERATOR-MANAGED (MEDTERM4DS_CACHE_DIR set): the directory is used
-# as-is, without revision keying — the deploy.sh/data-dir contract.
+# as-is, without revision keying — the deploy.sh/data-dir contract where
+# artifacts are placed by an external pipeline. Files must exist; nothing
+# is re-checked or re-keyed.
+# AMUX-44: cache-root resolution lives in medterm4ds.core.paths (single
+# source of truth; the historical /mnt/d machine-specific defaults were
+# removed). The lazy helpers re-read env on every call so importlib.reload
+# under a patched env (tests) gets fresh values.
 _paths.warn_on_prerevision_cache()
 _CACHE_DIR = cache_dir()
 _CACHE_REVISION_KEYED = not bool(os.getenv("MEDTERM4DS_CACHE_DIR"))
@@ -65,9 +72,7 @@ _HF_REVISION = hf_revision()
 
 DEFAULT_SEARCH_INDEX_DIR = str(_CACHE_DIR / "lexical")
 DEFAULT_EMBEDDING_MODEL_DIR = str(_CACHE_DIR / "semantic")
-DEFAULT_CANONICAL_VALUE_SETS_PATH = str(
-    _CACHE_DIR / "canonical" / "canonical_anchor_value_sets.json"
-)
+DEFAULT_CANONICAL_VALUE_SETS_PATH = str(_CACHE_DIR / "canonical" / "canonical_anchor_value_sets.json")
 DEFAULT_CANONICAL_CONCEPTS_INDEX = str(_CACHE_DIR / "canonical" / "canonical_concepts_faiss.index")
 DEFAULT_CANONICAL_CONCEPTS_META = str(_CACHE_DIR / "canonical" / "canonical_concepts_metadata.json")
 SEARCH_CATEGORIES = ("condition", "lab", "medication", "procedure", "vaccine", "body_structure")
@@ -160,7 +165,9 @@ def _local_artifacts_present() -> bool:
     # from a previous generation must not trigger a terminology fetch.
     models_root = _SPLIT_ROOT / MODELS_DIRNAME
     if models_root.is_dir() and any(
-        (d / "model.safetensors").exists() for d in models_root.iterdir() if d.is_dir()
+        (d / "model.safetensors").exists()
+        for d in models_root.iterdir()
+        if d.is_dir()
     ):
         return True
     data_root = _SPLIT_ROOT / DATA_DIRNAME
@@ -214,8 +221,8 @@ def _resolve_terminology(download: bool = True):
             if _LAYOUT_ENV == "terminology":
                 raise
             logger.warning(
-                "Terminology layout unavailable (%s); falling back to the split/legacy artifacts.",
-                exc,
+                "Terminology layout unavailable (%s); falling back to the "
+                "split/legacy artifacts.", exc,
             )
             paths = None
     if paths is not None or download:
@@ -235,7 +242,6 @@ def _maybe_log_legacy_deprecation() -> None:
         "the split models/<space>/ + data/<revision>/ layout.",
         _CACHE_DIR,
     )
-
 
 # Upper bound on query length accepted by every search entry point
 # (QC-126/QC-140: no cap existed — 10K-char queries were silently tokenized).
@@ -258,7 +264,9 @@ def _validate_query(query: Any) -> str:
     if not query.strip():
         raise ValueError("query must not be empty")
     if len(query) > MAX_QUERY_CHARS:
-        raise ValueError(f"query length {len(query)} exceeds max {MAX_QUERY_CHARS} chars.")
+        raise ValueError(
+            f"query length {len(query)} exceeds max {MAX_QUERY_CHARS} chars."
+        )
     return query
 
 
@@ -292,9 +300,8 @@ def _hf_download(allow_patterns: list[str]) -> None:
             "Install with: pip install huggingface_hub\n"
             f"Or manually download from https://huggingface.co/{_HF_REPO_ID}"
         ) from None
-    logger.info(
-        "Downloading artifacts from Hugging Face (%s, revision=%s)...", _HF_REPO_ID, _HF_REVISION
-    )
+    logger.info("Downloading artifacts from Hugging Face (%s, revision=%s)...",
+                _HF_REPO_ID, _HF_REVISION)
     snapshot_download(
         repo_id=_HF_REPO_ID,
         revision=_HF_REVISION,
@@ -307,17 +314,11 @@ def _hf_download(allow_patterns: list[str]) -> None:
     # holds without trusting mtimes or file contents.
     try:
         import datetime
-
-        (_CACHE_DIR / "artifact_provenance.json").write_text(
-            json.dumps(
-                {
-                    "repo_id": _HF_REPO_ID,
-                    "revision": _HF_REVISION,
-                    "downloaded_at": datetime.datetime.now().isoformat(timespec="seconds"),
-                },
-                indent=2,
-            )
-        )
+        (_CACHE_DIR / "artifact_provenance.json").write_text(json.dumps({
+            "repo_id": _HF_REPO_ID,
+            "revision": _HF_REVISION,
+            "downloaded_at": datetime.datetime.now().isoformat(timespec="seconds"),
+        }, indent=2))
     except OSError:
         pass
     logger.info("Download complete → %s", _CACHE_DIR)
@@ -353,10 +354,7 @@ def _hf_download_atomic(
     tmp_root.mkdir(parents=True, exist_ok=True)
     logger.info(
         "Downloading artifacts from Hugging Face (%s, revision=%s) → %s/%s ...",
-        _HF_REPO_ID,
-        revision,
-        target_root,
-        family,
+        _HF_REPO_ID, revision, target_root, family,
     )
     snapshot_download(
         repo_id=_HF_REPO_ID,
@@ -383,7 +381,11 @@ def _remote_latest_data_revision() -> str:
         ) from None
     api = HfApi(token=_os.getenv("HF_TOKEN"))
     files = api.list_repo_files(_HF_REPO_ID, repo_type="model", revision="main")
-    revs = [m.group(1) for f in files if (m := re.match(r"^data/([^/]+)/manifest\.json$", f))]
+    revs = [
+        m.group(1)
+        for f in files
+        if (m := re.match(r"^data/([^/]+)/manifest\.json$", f))
+    ]
     if not revs:
         raise RuntimeError(
             f"No data/*/manifest.json found in {_HF_REPO_ID}@main — the "
@@ -415,9 +417,7 @@ def _download_split_data(revision: str | None = None) -> Path:
         target = _SPLIT_ROOT / "data" / rev
         if not (target / "manifest.json").exists():
             _hf_download_atomic(
-                [f"data/{rev}/*"],
-                target_root=_SPLIT_ROOT,
-                family="data",
+                [f"data/{rev}/*"], target_root=_SPLIT_ROOT, family="data",
                 revision="main",
             )
     else:
@@ -427,9 +427,7 @@ def _download_split_data(revision: str | None = None) -> Path:
         rev = _remote_latest_data_revision()
         target = _SPLIT_ROOT / "data" / rev
         _hf_download_atomic(
-            [f"data/{rev}/*"],
-            target_root=_SPLIT_ROOT,
-            family="data",
+            [f"data/{rev}/*"], target_root=_SPLIT_ROOT, family="data",
             revision="main",
         )
     manifest = read_manifest(target)
@@ -462,13 +460,10 @@ def _download_split_model(space_id: str | None = None) -> Path:
     target = _SPLIT_ROOT / "models" / space_id
     if not (target / "model.safetensors").exists():
         _hf_download_atomic(
-            [f"models/{space_id}/*"],
-            target_root=_SPLIT_ROOT,
-            family="models",
+            [f"models/{space_id}/*"], target_root=_SPLIT_ROOT, family="models",
             revision="main",
         )
     return target
-
 
 _SOURCE_TO_CATEGORIES = {
     "SNOMEDCT_US": list(SEARCH_CATEGORIES),
@@ -643,7 +638,9 @@ def _result_types_to_prefixes(result_types: str | list[str] | None) -> set[str]:
         key = t.lower().strip()
         if key not in _RESULT_TYPE_TO_PREFIXES:
             valid = ", ".join(sorted(_RESULT_TYPE_TO_PREFIXES))
-            raise ValueError(f"Unknown result type: {t!r}. Valid: {valid}.")
+            raise ValueError(
+                f"Unknown result type: {t!r}. Valid: {valid}."
+            )
         prefixes.update(_RESULT_TYPE_TO_PREFIXES[key])
     return prefixes
 
@@ -653,7 +650,9 @@ def _result_types_to_prefixes(result_types: str | list[str] | None) -> set[str]:
 # ExtractedConcept.result_type so downstream consumers can differentiate
 # medication vs drug_class vs vaccine without parsing canonical_id themselves.
 _PREFIX_TO_RESULT_TYPE: dict[str, str] = {
-    prefix: rt for rt, prefixes in _RESULT_TYPE_TO_PREFIXES.items() for prefix in prefixes
+    prefix: rt
+    for rt, prefixes in _RESULT_TYPE_TO_PREFIXES.items()
+    for prefix in prefixes
 }
 
 
@@ -760,38 +759,11 @@ def _cased_token_hits(typed_tokens: list[str], text: str) -> int:
 def _stem_token(token: str) -> str:
     """Porter-like stemmer to match pre-built BM25 tokenization."""
     token = token.lower()
-    for suffix in (
-        "ational",
-        "tional",
-        "iveness",
-        "fulness",
-        "ousness",
-        "ization",
-        "ation",
-        "ations",
-        "izer",
-        "ator",
-        "alism",
-        "iciti",
-        "ical",
-        "ness",
-        "ements",
-        "ement",
-        "ments",
-        "ment",
-        "iences",
-        "ience",
-        "iable",
-        "ing",
-        "ies",
-        "ied",
-        "ily",
-        "sses",
-        "ss",
-        "s",
-        "y",
-        "e",
-    ):
+    for suffix in ("ational", "tional", "iveness", "fulness", "ousness",
+                   "ization", "ation", "ations", "izer", "ator", "alism",
+                   "iciti", "ical", "ness", "ements", "ement", "ments",
+                   "ment", "iences", "ience", "iable", "ing", "ies", "ied",
+                   "ily", "sses", "ss", "s", "y", "e"):
         if token.endswith(suffix) and len(token) > len(suffix) + 2:
             if suffix == "ies":
                 return token[:-3] + "i"
@@ -831,7 +803,9 @@ def apply_preferred_display(
     """
     from medterm4ds.services.lookup import get_code_infos
 
-    infos = get_code_infos([CodeRef(r.source, r.code) for r in results], engine=engine)
+    infos = get_code_infos(
+        [CodeRef(r.source, r.code) for r in results], engine=engine
+    )
     updated: list[SearchResult] = []
     for r, info in zip(results, infos, strict=False):
         name = info.name if info else None
@@ -856,18 +830,20 @@ class SearchService:
         canonical_concepts_meta: str | None = None,
     ):
         # AMUX-44 acquisition story (one story, three surfaces):
-        #   explicit value (env pin / operator arg) → pinned, used as-is;
-        #   None (env unset)                          → release-aware 'auto'
-        #     resolution: terminology release → split → legacy cache dir,
-        #     with first-use provisioning (never a machine-specific path).
-        # The DEFAULT_* constants below only name where 'auto' provisioning
-        # lands (cache-root derived, medterm4ds.core.paths) and double as
-        # unpinned sentinels for legacy callers passing them explicitly.
+        #   explicit value (env pin / operator arg) -> pinned, used as-is;
+        #   None (env unset) -> release-aware 'auto' resolution:
+        #     terminology release -> split -> legacy cache dir, with
+        #     first-use provisioning (never a machine-specific path).
+        # The DEFAULT_* constants only name where 'auto' provisioning lands
+        # (cache-root derived) and double as unpinned sentinels for legacy
+        # callers passing them explicitly.
         self._bm25_dir_pinned = (
-            search_index_dir is not None and search_index_dir != DEFAULT_SEARCH_INDEX_DIR
+            search_index_dir is not None
+            and search_index_dir != DEFAULT_SEARCH_INDEX_DIR
         )
         self._model_dir_pinned = (
-            embedding_model_dir is not None and embedding_model_dir != DEFAULT_EMBEDDING_MODEL_DIR
+            embedding_model_dir is not None
+            and embedding_model_dir != DEFAULT_EMBEDDING_MODEL_DIR
         )
         self._bm25_dir = Path(search_index_dir or DEFAULT_SEARCH_INDEX_DIR)
         self._model_dir = Path(embedding_model_dir or DEFAULT_EMBEDDING_MODEL_DIR)
@@ -875,13 +851,18 @@ class SearchService:
         self._concepts_index_path = Path(
             canonical_concepts_index or DEFAULT_CANONICAL_CONCEPTS_INDEX
         )
-        self._concepts_meta_path = Path(canonical_concepts_meta or DEFAULT_CANONICAL_CONCEPTS_META)
+        self._concepts_meta_path = Path(
+            canonical_concepts_meta or DEFAULT_CANONICAL_CONCEPTS_META
+        )
         # Split-layout resolution only applies to DEFAULT (unpinned) paths —
         # explicitly passed dirs (operator contracts, fhir4ds
         # FHIR4DS_TERMINOLOGY_SEARCH_INDEX_DIR passthrough, provision flows)
         # are used exactly as given (plan §6.2).
         self._paths_pinned = (
-            (canonical_path is not None and canonical_path != DEFAULT_CANONICAL_VALUE_SETS_PATH)
+            (
+                canonical_path is not None
+                and canonical_path != DEFAULT_CANONICAL_VALUE_SETS_PATH
+            )
             or (
                 canonical_concepts_index is not None
                 and canonical_concepts_index != DEFAULT_CANONICAL_CONCEPTS_INDEX
@@ -926,8 +907,7 @@ class SearchService:
         except Exception as exc:  # noqa: BLE001 — best-effort availability probe
             logger.warning(
                 "Lexical provisioning unavailable: %s: %s",
-                type(exc).__name__,
-                exc,
+                type(exc).__name__, exc,
             )
             return False
         return self.lexical_available
@@ -943,8 +923,7 @@ class SearchService:
         except Exception as exc:  # noqa: BLE001 — best-effort availability probe
             logger.warning(
                 "Semantic provisioning unavailable: %s: %s",
-                type(exc).__name__,
-                exc,
+                type(exc).__name__, exc,
             )
             return False
         return self.semantic_available
@@ -996,12 +975,11 @@ class SearchService:
             if term is not None:
                 self._bm25_dir = term.lexical
         if not self._bm25_dir.is_dir() or not any(
-            p.name.endswith("_bm25.json") or p.suffix == ".json" for p in self._bm25_dir.iterdir()
+            p.name.endswith("_bm25.json") or p.suffix == ".json"
+            for p in self._bm25_dir.iterdir()
         ):
             _hf_download_atomic(
-                ["lexical/*"],
-                target_root=_CACHE_DIR,
-                family="lexical",
+                ["lexical/*"], target_root=_CACHE_DIR, family="lexical",
                 revision=_HF_REVISION,
             )
         if not self._bm25_dir.is_dir():
@@ -1036,15 +1014,16 @@ class SearchService:
                     return None
                 if md5_of_file(legacy / name) != md5_of_file(split_dir / name):
                     return None
-            if not any((legacy / f"{cat}_faiss.index").exists() for cat in SEARCH_CATEGORIES):
+            if not any(
+                (legacy / f"{cat}_faiss.index").exists() for cat in SEARCH_CATEGORIES
+            ):
                 return None
         except OSError:
             return None
         logger.info(
             "Bridging per-category FAISS indexes from legacy %s to split "
             "model %s (byte-identical weights + tokenizer).",
-            legacy,
-            split_dir,
+            legacy, split_dir,
         )
         return str(legacy)
 
@@ -1078,8 +1057,7 @@ class SearchService:
             except Exception as exc:
                 logger.warning(
                     "Split model download failed (%s); falling back to the "
-                    "legacy semantic/* download.",
-                    exc,
+                    "legacy semantic/* download.", exc,
                 )
         if split_dir is not None:
             bridge = self._resolved_index_dir or self._split_compatible_legacy_index_dir(split_dir)
@@ -1098,9 +1076,7 @@ class SearchService:
 
         if not self.semantic_available:
             _hf_download_atomic(
-                ["semantic/*"],
-                target_root=_CACHE_DIR,
-                family="semantic",
+                ["semantic/*"], target_root=_CACHE_DIR, family="semantic",
                 revision=_HF_REVISION,
             )
         if not self.semantic_available:
@@ -1114,7 +1090,6 @@ class SearchService:
             return self._semantic_engine
         model_dir, index_dir = self._resolve_semantic_layouts()
         from medterm4ds.engines.fhir.semantic import SemanticSearchEngine
-
         # Terminology model units carry no manifest.json; the release
         # manifest's space (already fingerprint-verified in the resolver)
         # is handed to the engine so space cross-checks stay live.
@@ -1150,8 +1125,7 @@ class SearchService:
             except Exception as exc:
                 logger.warning(
                     "Split data layout unavailable (%s); falling back to "
-                    "legacy canonical artifacts.",
-                    exc,
+                    "legacy canonical artifacts.", exc,
                 )
                 return None
         manifest = read_manifest(target)
@@ -1181,14 +1155,13 @@ class SearchService:
             if data_dir is not None:
                 if not (data_dir / "canonical_anchor_value_sets.json").exists():
                     raise RuntimeError(
-                        f"Split data unit at {data_dir} is missing canonical_anchor_value_sets.json"
+                        f"Split data unit at {data_dir} is missing "
+                        "canonical_anchor_value_sets.json"
                     )
                 path = data_dir / "canonical_anchor_value_sets.json"
         if not path.exists():
             _hf_download_atomic(
-                ["canonical/*"],
-                target_root=_CACHE_DIR,
-                family="canonical",
+                ["canonical/*"], target_root=_CACHE_DIR, family="canonical",
                 revision=_HF_REVISION,
             )
         if not path.exists():
@@ -1208,12 +1181,8 @@ class SearchService:
                 self._code_to_canonical_id[(m["system"], m["code"])] = cid
         self._build_group_dictionary(vsets)
         self._canonical_loaded = True
-        logger.info(
-            "Loaded %d Master Canonical Value Sets (%d code pairs, %d group terms)",
-            len(vsets),
-            len(self._code_to_canonical_id),
-            len(self._group_terms),
-        )
+        logger.info("Loaded %d Master Canonical Value Sets (%d code pairs, %d group terms)",
+                    len(vsets), len(self._code_to_canonical_id), len(self._group_terms))
 
     def _build_group_dictionary(self, vsets: list[dict]) -> None:
         """Inverted index for the composite-group dictionary pass.
@@ -1254,17 +1223,13 @@ class SearchService:
             if pcid:
                 parent_by_group[gid] = pcid
                 pa = self._canonical_by_id.get(pcid, {})
-                for t in [pa.get("patient_friendly_name")] + list(
-                    pa.get("consumer_synonyms") or []
-                ):
+                for t in [pa.get("patient_friendly_name")] + list(pa.get("consumer_synonyms") or []):
                     if t and str(t).strip():
                         terms.setdefault(" ".join(str(t).lower().split()), gid)
         self._group_terms = {
-            t: {
-                "group_id": gid,
+            t: {"group_id": gid,
                 "parent_cid": parent_by_group.get(gid),
-                "member_cids": sorted(members_by_group[gid]),
-            }
+                "member_cids": sorted(members_by_group[gid])}
             for t, gid in terms.items()
         }
 
@@ -1304,12 +1269,9 @@ class SearchService:
             # test_source_filter_excludes_foreign_rows).
             upper = {s.upper() for s in source_set}
             aliases = {
-                "LNC": {"LOINC"},
-                "LOINC": {"LNC"},
-                "RXNORM": {"ATC"},
-                "ATC": {"RXNORM"},
-                "SNOMED": {"SNOMEDCT_US"},
-                "SNOMEDCT_US": {"SNOMED"},
+                "LNC": {"LOINC"}, "LOINC": {"LNC"},
+                "RXNORM": {"ATC"}, "ATC": {"RXNORM"},
+                "SNOMED": {"SNOMEDCT_US"}, "SNOMEDCT_US": {"SNOMED"},
             }
             widened = set(upper)
             for s in upper:
@@ -1326,24 +1288,22 @@ class SearchService:
                 continue
             if result_type_prefixes and not any(cid.startswith(p) for p in result_type_prefixes):
                 continue
-            rows.append(
-                CanonicalSearchResult(
-                    canonical_id=cid,
-                    domain=v.get("domain", []),
-                    anchor_system=anchor_system,
-                    anchor_code=v.get("anchor_code") or v.get("code"),
-                    patient_friendly_name=v.get("patient_friendly_name", ""),
-                    score=1.0,
-                    match_grade="exact",
-                    matched_via_code=f"group:{gid}",
-                    matched_via_display=query,
-                    total_member_count=self._total_member_count(v),
-                    members=v.get("members", []),
-                    combination_members=v.get("combination_members", []),
-                    group_id=gid,
-                    group_cids=row_cids,
-                )
-            )
+            rows.append(CanonicalSearchResult(
+                canonical_id=cid,
+                domain=v.get("domain", []),
+                anchor_system=anchor_system,
+                anchor_code=v.get("anchor_code") or v.get("code"),
+                patient_friendly_name=v.get("patient_friendly_name", ""),
+                score=1.0,
+                match_grade="exact",
+                matched_via_code=f"group:{gid}",
+                matched_via_display=query,
+                total_member_count=self._total_member_count(v),
+                members=v.get("members", []),
+                combination_members=v.get("combination_members", []),
+                group_id=gid,
+                group_cids=row_cids,
+            ))
             if len(rows) >= count:
                 break
         return rows
@@ -1436,7 +1396,9 @@ class SearchService:
 
                 manifest = read_manifest(data_dir)
                 if manifest is None:
-                    raise ManifestError(f"Data unit at {data_dir} has no manifest.json")
+                    raise ManifestError(
+                        f"Data unit at {data_dir} has no manifest.json"
+                    )
                 self._concepts_data_dir = data_dir
                 self._concepts_data_manifest = manifest
                 index_path = data_dir / "canonical_concepts_faiss.index"
@@ -1457,16 +1419,13 @@ class SearchService:
                 )
         if not index_path.exists() or not meta_path.exists():
             _hf_download_atomic(
-                ["canonical/*"],
-                target_root=_CACHE_DIR,
-                family="canonical",
+                ["canonical/*"], target_root=_CACHE_DIR, family="canonical",
                 revision=_HF_REVISION,
             )
         if not index_path.exists() or not meta_path.exists():
             self._concepts_loaded = True  # mark as checked; concept search unavailable
             return
         import faiss
-
         self._concepts_faiss = faiss.read_index(str(index_path))
         with meta_path.open() as f:
             self._concepts_meta = json.load(f)
@@ -1574,9 +1533,15 @@ class SearchService:
             # Terminology-layout metadata carries only {canonical_id, name};
             # card fields come from value_sets.json (single source of truth).
             anchor_system = (
-                m.get("anchor_system") or vset.get("anchor_system") or vset.get("system")
+                m.get("anchor_system")
+                or vset.get("anchor_system")
+                or vset.get("system")
             )
-            anchor_code = m.get("anchor_code") or vset.get("anchor_code") or vset.get("code")
+            anchor_code = (
+                m.get("anchor_code")
+                or vset.get("anchor_code")
+                or vset.get("code")
+            )
             meta_name = m.get("patient_friendly_name") or m.get("name")
             if source_set and anchor_system not in source_set:
                 continue
@@ -1593,26 +1558,20 @@ class SearchService:
             # ingredient as two separate concepts. The alias text goes only in
             # matched_via_display.
             primary_name = vset.get("patient_friendly_name") or meta_name
-            results.append(
-                CanonicalSearchResult(
-                    canonical_id=cid,
-                    domain=vset.get("domain", m.get("domain", [])),
-                    anchor_system=anchor_system,
-                    anchor_code=anchor_code,
-                    patient_friendly_name=primary_name,
-                    score=float(score),
-                    match_grade="exact"
-                    if score > 0.95
-                    else "probable"
-                    if score > 0.80
-                    else "possible",
-                    matched_via_code=f"concept:{anchor_code}",
-                    matched_via_display=meta_name,
-                    total_member_count=self._total_member_count(vset, m),
-                    members=vset.get("members", []),
-                    combination_members=vset.get("combination_members", []),
-                )
-            )
+            results.append(CanonicalSearchResult(
+                canonical_id=cid,
+                domain=vset.get("domain", m.get("domain", [])),
+                anchor_system=anchor_system,
+                anchor_code=anchor_code,
+                patient_friendly_name=primary_name,
+                score=float(score),
+                match_grade="exact" if score > 0.95 else "probable" if score > 0.80 else "possible",
+                matched_via_code=f"concept:{anchor_code}",
+                matched_via_display=meta_name,
+                total_member_count=self._total_member_count(vset, m),
+                members=vset.get("members", []),
+                combination_members=vset.get("combination_members", []),
+            ))
             if len(results) >= count:
                 break
         return results
@@ -1644,7 +1603,7 @@ class SearchService:
         engine._ensure_loaded()
 
         # Find SNOMED candidate codes for the query
-        sem_results = self.semantic(query, sources=["SNOMEDCT_US"], count=max(count * 3, 10))
+        sem_results = self.semantic(query, sources=['SNOMEDCT_US'], count=max(count * 3, 10))
         if not sem_results:
             return []
         # QC-148: confidence floor on the semantic seed. The direct concept
@@ -1671,7 +1630,10 @@ class SearchService:
         # neither set the fallback is disabled LOUDLY (AMUX-44: the old
         # /mnt/d machine default silently returned [] on every machine
         # but the author's).
-        db_path = os.environ.get("MEDTERM4DS_UMLS_DB") or os.environ.get("MEDTERM4DS_DB")
+        db_path = (
+            os.environ.get("MEDTERM4DS_UMLS_DB")
+            or os.environ.get("MEDTERM4DS_DB")
+        )
         if not db_path:
             logger.warning(
                 "Ancestor fallback disabled: no UMLS DB configured. Set "
@@ -1687,13 +1649,11 @@ class SearchService:
                 "Ancestor fallback disabled: cannot open UMLS DB at %s "
                 "(%s: %s). Set MEDTERM4DS_UMLS_DB to a valid DuckDB file "
                 "with mt4ds.walk_closure_limited.",
-                db_path,
-                type(exc).__name__,
-                exc,
+                db_path, type(exc).__name__, exc,
             )
             return []
 
-        codes_str = ",".join(f"'{c}'" for c, _ in snomed_codes)
+        codes_str = ','.join(f"'{c}'" for c, _ in snomed_codes)
         # walk_closure_limited: from_code=descendant, to_code=ancestor
         # Find ancestors of the query codes. For each ancestor, also check if
         # it has a CHV/MLP consumer name — CHV/MLP presence indicates the
@@ -1748,54 +1708,50 @@ class SearchService:
             found = False
             # Try CHV-bearing ancestors first
             for a_code, depth in sorted(chv_ancestors, key=lambda x: x[1]):
-                key = ("SNOMEDCT_US", a_code)
+                key = ('SNOMEDCT_US', a_code)
                 cid = self._canonical_by_anchor.get(key)
                 if cid and cid not in seen_ids:
                     seen_ids.add(cid)
                     vset = self._canonical_by_id.get(cid, {})
-                    results.append(
-                        CanonicalSearchResult(
-                            canonical_id=cid,
-                            domain=vset.get("domain", []),
-                            anchor_system="SNOMEDCT_US",
-                            anchor_code=a_code,
-                            patient_friendly_name=vset.get("patient_friendly_name", ""),
-                            score=q_score * max(0.3, 1.0 - depth * 0.15),
-                            match_grade="broader",
-                            matched_via_code=f"chv-ancestor:{a_code}",
-                            matched_via_display=vset.get("patient_friendly_name", ""),
-                            total_member_count=self._total_member_count(vset),
-                            members=vset.get("members", []),
-                            combination_members=vset.get("combination_members", []),
-                        )
-                    )
+                    results.append(CanonicalSearchResult(
+                        canonical_id=cid,
+                        domain=vset.get("domain", []),
+                        anchor_system='SNOMEDCT_US',
+                        anchor_code=a_code,
+                        patient_friendly_name=vset.get("patient_friendly_name", ""),
+                        score=q_score * max(0.3, 1.0 - depth * 0.15),
+                        match_grade="broader",
+                        matched_via_code=f"chv-ancestor:{a_code}",
+                        matched_via_display=vset.get("patient_friendly_name", ""),
+                        total_member_count=self._total_member_count(vset),
+                        members=vset.get("members", []),
+                combination_members=vset.get("combination_members", []),
+                    ))
                     found = True
                     break
 
             if not found:
                 # Fall back to non-CHV ancestors (broader but still an anchor)
                 for a_code, depth in sorted(non_chv_ancestors, key=lambda x: x[1]):
-                    key = ("SNOMEDCT_US", a_code)
+                    key = ('SNOMEDCT_US', a_code)
                     cid = self._canonical_by_anchor.get(key)
                     if cid and cid not in seen_ids:
                         seen_ids.add(cid)
                         vset = self._canonical_by_id.get(cid, {})
-                        results.append(
-                            CanonicalSearchResult(
-                                canonical_id=cid,
-                                domain=vset.get("domain", []),
-                                anchor_system="SNOMEDCT_US",
-                                anchor_code=a_code,
-                                patient_friendly_name=vset.get("patient_friendly_name", ""),
-                                score=q_score * max(0.2, 1.0 - depth * 0.20),
-                                match_grade="broader",
-                                matched_via_code=f"ancestor:{a_code}",
-                                matched_via_display=vset.get("patient_friendly_name", ""),
-                                total_member_count=self._total_member_count(vset),
-                                members=vset.get("members", []),
-                                combination_members=vset.get("combination_members", []),
-                            )
-                        )
+                        results.append(CanonicalSearchResult(
+                            canonical_id=cid,
+                            domain=vset.get("domain", []),
+                            anchor_system='SNOMEDCT_US',
+                            anchor_code=a_code,
+                            patient_friendly_name=vset.get("patient_friendly_name", ""),
+                            score=q_score * max(0.2, 1.0 - depth * 0.20),
+                            match_grade="broader",
+                            matched_via_code=f"ancestor:{a_code}",
+                            matched_via_display=vset.get("patient_friendly_name", ""),
+                            total_member_count=self._total_member_count(vset),
+                            members=vset.get("members", []),
+                combination_members=vset.get("combination_members", []),
+                        ))
                         break
             if len(results) >= count:
                 break
@@ -1855,34 +1811,34 @@ class SearchService:
                 # card fields come from value_sets.json (single source of truth)
                 # — same fallback chain as canonical().
                 anchor_system = (
-                    m.get("anchor_system") or vset.get("anchor_system") or vset.get("system")
+                    m.get("anchor_system")
+                    or vset.get("anchor_system")
+                    or vset.get("system")
                 )
-                anchor_code = m.get("anchor_code") or vset.get("anchor_code") or vset.get("code")
+                anchor_code = (
+                    m.get("anchor_code")
+                    or vset.get("anchor_code")
+                    or vset.get("code")
+                )
                 meta_name = m.get("patient_friendly_name") or m.get("name")
                 if cid in seen_ids:
                     continue
                 seen_ids.add(cid)
                 primary_name = vset.get("patient_friendly_name") or meta_name
-                results.append(
-                    CanonicalSearchResult(
-                        canonical_id=cid,
-                        domain=vset.get("domain", m.get("domain", [])),
-                        anchor_system=anchor_system,
-                        anchor_code=anchor_code,
-                        patient_friendly_name=primary_name,
-                        score=float(score),
-                        match_grade="exact"
-                        if score > 0.95
-                        else "probable"
-                        if score > 0.80
-                        else "possible",
-                        matched_via_code=f"concept:{anchor_code}",
-                        matched_via_display=meta_name,
-                        total_member_count=self._total_member_count(vset, m),
-                        members=vset.get("members", []),
-                        combination_members=vset.get("combination_members", []),
-                    )
-                )
+                results.append(CanonicalSearchResult(
+                    canonical_id=cid,
+                    domain=vset.get("domain", m.get("domain", [])),
+                    anchor_system=anchor_system,
+                    anchor_code=anchor_code,
+                    patient_friendly_name=primary_name,
+                    score=float(score),
+                    match_grade="exact" if score > 0.95 else "probable" if score > 0.80 else "possible",
+                    matched_via_code=f"concept:{anchor_code}",
+                    matched_via_display=meta_name,
+                    total_member_count=self._total_member_count(vset, m),
+                    members=vset.get("members", []),
+                    combination_members=vset.get("combination_members", []),
+                ))
             all_results.append(results)
         return all_results
 
@@ -1927,8 +1883,7 @@ class SearchService:
         # group-term match fans out to the group (parent first). Falls
         # through to the concept-index path on any miss.
         group_results = self._group_dictionary_search(
-            query, result_types=result_types, sources=sources, count=count
-        )
+            query, result_types=result_types, sources=sources, count=count)
         if group_results:
             return group_results
 
@@ -1977,22 +1932,20 @@ class SearchService:
             if cid and cid not in seen_ids:
                 seen_ids.add(cid)
                 vset = self._canonical_by_id[cid]
-                canonical_results.append(
-                    CanonicalSearchResult(
-                        canonical_id=vset["canonical_id"],
-                        domain=vset["domain"],
-                        anchor_system=vset["anchor_system"],
-                        anchor_code=vset["anchor_code"],
-                        patient_friendly_name=vset["patient_friendly_name"],
-                        score=r.score,
-                        match_grade=r.match_grade,
-                        matched_via_code=f"{r.source}:{r.code}",
-                        matched_via_display=r.display,
-                        total_member_count=self._total_member_count(vset),
-                        members=vset.get("members", []),
-                        combination_members=vset.get("combination_members", []),
-                    )
-                )
+                canonical_results.append(CanonicalSearchResult(
+                    canonical_id=vset["canonical_id"],
+                    domain=vset["domain"],
+                    anchor_system=vset["anchor_system"],
+                    anchor_code=vset["anchor_code"],
+                    patient_friendly_name=vset["patient_friendly_name"],
+                    score=r.score,
+                    match_grade=r.match_grade,
+                    matched_via_code=f"{r.source}:{r.code}",
+                    matched_via_display=r.display,
+                    total_member_count=self._total_member_count(vset),
+                    members=vset.get("members", []),
+                combination_members=vset.get("combination_members", []),
+                ))
                 if len(canonical_results) >= count:
                     break
 
@@ -2016,7 +1969,9 @@ class SearchService:
         _validate_query(query)
         _validate_count(count)
         self._ensure_bm25()
-        categories = self._restrict_categories(self._resolve_categories(sources), result_types)
+        categories = self._restrict_categories(
+            self._resolve_categories(sources), result_types
+        )
         if not categories:
             return []
         # QC-329: fold accents + split on non-alphanumerics so accented
@@ -2077,9 +2032,7 @@ class SearchService:
                         rid, tf = int(entry[0]), float(entry[1])
                         doc_len = doc_lengths[rid] if rid < len(doc_lengths) else avg_doc_length
                         k1, b = 1.5, 0.75
-                        tf_comp = (tf * (k1 + 1)) / (
-                            tf + k1 * (1 - b + b * doc_len / avg_doc_length)
-                        )
+                        tf_comp = (tf * (k1 + 1)) / (tf + k1 * (1 - b + b * doc_len / avg_doc_length))
                         scores[rid] = scores.get(rid, 0.0) + token_idf * tf_comp
 
             if orphan_tokens:
@@ -2181,21 +2134,17 @@ class SearchService:
                 sys_name = (rid_to_system[rid] if rid < len(rid_to_system) else "").upper()
                 source = _SYSTEM_LABELS_REVERSE.get(sys_name, sys_name)
                 normalized = min(score / idf_denom, 1.0)
-                results.append(
-                    SearchResult(
-                        code=str(code),
-                        source=source,
-                        display=display,
-                        score=round(normalized, 4),
-                        match_grade=_score_to_grade(normalized),
-                        category=category,
-                        _exact_surface=_row_exact(rid, display),
-                    )
-                )
+                results.append(SearchResult(
+                    code=str(code), source=source, display=display,
+                    score=round(normalized, 4), match_grade=_score_to_grade(normalized),
+                    category=category, _exact_surface=_row_exact(rid, display),
+                ))
 
         # AMUX-18: exact surface matches first across categories too, then
         # score, then code — fully deterministic ordering.
-        results.sort(key=lambda r: (not r._exact_surface, -r.score, r.code))
+        results.sort(
+            key=lambda r: (not r._exact_surface, -r.score, r.code)
+        )
         return self._filter_by_source(results, sources)[:count]
 
     def semantic(
@@ -2216,7 +2165,9 @@ class SearchService:
         _validate_query(query)
         _validate_count(count)
         engine = self._ensure_semantic()
-        categories = self._restrict_categories(self._resolve_categories(sources), result_types)
+        categories = self._restrict_categories(
+            self._resolve_categories(sources), result_types
+        )
         if not categories:
             return []
         # Over-fetch when filtering by source so we still have `count` results
@@ -2229,16 +2180,11 @@ class SearchService:
         for r in raw:
             sys_name = r.get("system", "").upper()
             source = _SYSTEM_LABELS_REVERSE.get(sys_name, sys_name)
-            results.append(
-                SearchResult(
-                    code=r["code"],
-                    source=source,
-                    display=r["display"],
-                    score=r["score"],
-                    match_grade=r["match_grade"],
-                    category=r.get("category", ""),
-                )
-            )
+            results.append(SearchResult(
+                code=r["code"], source=source, display=r["display"],
+                score=r["score"], match_grade=r["match_grade"],
+                category=r.get("category", ""),
+            ))
         return self._filter_by_source(results, sources)[:count]
 
     def hybrid(
@@ -2262,7 +2208,9 @@ class SearchService:
         _validate_count(count)
         self._ensure_bm25()
         engine = self._ensure_semantic()
-        categories = self._restrict_categories(self._resolve_categories(sources), result_types)
+        categories = self._restrict_categories(
+            self._resolve_categories(sources), result_types
+        )
         if not categories:
             return []
 
@@ -2275,12 +2223,12 @@ class SearchService:
         )
         if not bm25_results:
             # Fall back to semantic-only
-            return self.semantic(query, sources=sources, count=count, result_types=result_types)
+            return self.semantic(
+                query, sources=sources, count=count, result_types=result_types
+            )
 
         # Stage 2: SapBERT re-rank
-        candidates = [
-            {"code": r.code, "system": r.source, "display": r.display} for r in bm25_results
-        ]
+        candidates = [{"code": r.code, "system": r.source, "display": r.display} for r in bm25_results]
         reranked = engine.rerank(query, candidates, top_k=count)
 
         cat_map = {(r.source, r.code): r.category for r in bm25_results}
@@ -2290,16 +2238,11 @@ class SearchService:
             sys_name = r.get("system", "").upper()
             source = _SYSTEM_LABELS_REVERSE.get(sys_name, sys_name)
             cat = cat_map.get((source, r["code"]), "")
-            results.append(
-                SearchResult(
-                    code=r["code"],
-                    source=source,
-                    display=r["display"],
-                    score=r["score"],
-                    match_grade=r["match_grade"],
-                    category=cat,
-                )
-            )
+            results.append(SearchResult(
+                code=r["code"], source=source, display=r["display"],
+                score=r["score"], match_grade=r["match_grade"],
+                category=cat,
+            ))
         return self._filter_by_source(results, sources)[:count]
 
     def search(
@@ -2330,13 +2273,21 @@ class SearchService:
         if mode == "canonical":
             # Canonical results carry the anchor's patient_friendly_name by
             # design — no preferred-term canonicalization applies.
-            return self.canonical(query, result_types=result_types, sources=sources, count=count)
+            return self.canonical(
+                query, result_types=result_types, sources=sources, count=count
+            )
         if mode == "lexical":
-            results = self.lexical(query, sources=sources, count=count, result_types=result_types)
+            results = self.lexical(
+                query, sources=sources, count=count, result_types=result_types
+            )
         elif mode == "semantic":
-            results = self.semantic(query, sources=sources, count=count, result_types=result_types)
+            results = self.semantic(
+                query, sources=sources, count=count, result_types=result_types
+            )
         elif mode == "hybrid":
-            results = self.hybrid(query, sources=sources, count=count, result_types=result_types)
+            results = self.hybrid(
+                query, sources=sources, count=count, result_types=result_types
+            )
         else:
             raise ValueError(
                 f"Unknown search mode: {mode}. Use 'lexical', 'semantic', 'hybrid', or 'canonical'."
@@ -2371,15 +2322,9 @@ def get_search_service() -> SearchService:
         _service = SearchService(
             search_index_dir=os.getenv("MEDTERM4DS_SEARCH_INDEX_DIR") or None,
             embedding_model_dir=os.getenv("MEDTERM4DS_EMBEDDING_MODEL_DIR") or None,
-            canonical_path=os.getenv(
-                "MEDTERM4DS_CANONICAL_PATH", DEFAULT_CANONICAL_VALUE_SETS_PATH
-            ),
-            canonical_concepts_index=os.getenv(
-                "MEDTERM4DS_CANONICAL_INDEX", DEFAULT_CANONICAL_CONCEPTS_INDEX
-            ),
-            canonical_concepts_meta=os.getenv(
-                "MEDTERM4DS_CANONICAL_META", DEFAULT_CANONICAL_CONCEPTS_META
-            ),
+            canonical_path=os.getenv("MEDTERM4DS_CANONICAL_PATH", DEFAULT_CANONICAL_VALUE_SETS_PATH),
+            canonical_concepts_index=os.getenv("MEDTERM4DS_CANONICAL_INDEX", DEFAULT_CANONICAL_CONCEPTS_INDEX),
+            canonical_concepts_meta=os.getenv("MEDTERM4DS_CANONICAL_META", DEFAULT_CANONICAL_CONCEPTS_META),
         )
     return _service
 
@@ -2398,9 +2343,7 @@ def configure_search_service(
     global _service
     _service = SearchService(
         search_index_dir=search_index_dir or os.getenv("MEDTERM4DS_SEARCH_INDEX_DIR") or None,
-        embedding_model_dir=embedding_model_dir
-        or os.getenv("MEDTERM4DS_EMBEDDING_MODEL_DIR")
-        or None,
+        embedding_model_dir=embedding_model_dir or os.getenv("MEDTERM4DS_EMBEDDING_MODEL_DIR") or None,
     )
     return _service
 
@@ -2450,7 +2393,8 @@ def search(
         # QC-395 guard; ``sources=None`` still means all.
         if isinstance(sources, (str, bytes)) or not isinstance(sources, (list, tuple)):
             raise TypeError(
-                f"sources must be a list of vocabulary names, got {type(sources).__name__}"
+                "sources must be a list of vocabulary names, got "
+                f"{type(sources).__name__}"
             )
         if not [s for s in sources if isinstance(s, str) and s.strip()]:
             raise ValueError(
@@ -2462,10 +2406,6 @@ def search(
         # terminology tables, so a DB probe is the wrong instrument. The LIKE
     # path (search_names) presence-checks in the engine.
     return get_search_service().search(
-        query,
-        mode=mode,
-        sources=sources,
-        count=count,
-        engine=engine,
+        query, mode=mode, sources=sources, count=count, engine=engine,
         result_types=result_types,
     )
