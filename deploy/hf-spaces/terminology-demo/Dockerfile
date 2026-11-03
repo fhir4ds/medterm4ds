@@ -24,12 +24,12 @@ RUN pip install --no-cache-dir -r /app/requirements.txt \
     && pip install --no-cache-dir \
         https://github.com/explosion/spacy-models/releases/download/en_core_web_sm-3.8.0/en_core_web_sm-3.8.0-py3-none-any.whl
 
-# medterm4ds from the PUBLIC GitHub repo at the pinned dev commit (the
-# exact commit this Space was built against; PyPI also carries 0.0.8 but
-# the pin guarantees the AMUX-18/20 lexical fixes are included). Installed
+# medterm4ds from the PUBLIC GitHub repo at the pinned release commit
+# (the v0.0.9 release tree: hybrid RRF fusion + agreement grades,
+# AMUX-18/20/49 ranking, AMUX-44 portability, demo hardening). Installed
 # from the release tarball so the image needs no git binary.
 RUN pip install --no-cache-dir \
-        "medterm4ds[fhir,search,extraction] @ https://github.com/fhir4ds/medterm4ds/archive/72503ab4a721.tar.gz"
+        "medterm4ds[fhir,search,extraction] @ https://github.com/fhir4ds/medterm4ds/archive/d7bcee94e0f9.tar.gz"
 
 # Bake the pinned GLiNER NER weights into the image so /extract needs no
 # runtime download (pinned revision from services/extraction.py).
