@@ -73,24 +73,25 @@ No API key in the browser (none to leak). Instead:
   echo the allow-listed origin; a request with a non-allowed `Origin` gets
   **403**. No credentials are used: no cookies, no Authorization header
   from the page, and `Access-Control-Allow-Credentials` stays off.
-- **HF Spaces edge behaviour (important, verified live 2026-11-03):** the
-  `*.hf.space` edge proxy intercepts **every** OPTIONS request — including
-  plain OPTIONS to nonexistent paths — and answers it itself with
-  `200`, `access-control-allow-methods: <requested>`, and an
-  `access-control-allow-origin` **echoing whatever Origin was sent**. It
-  also decorates all other responses with an echoed ACAO when the app
-  didn't set one (including this app's 403 refusals). The app cannot see
-  preflights and cannot strip platform-added headers, so a strict
-  "preflight from a stranger → 403, no ACAO" is **not achievable behind
-  `*.hf.space`** — this is platform behaviour, identical for every Space.
-  The enforcement that actually protects data is the app-level **403 on
-  the actual request**: a browser on a non-allowed origin may read the
-  403 error body (edge-echoed ACAO), but no data response is ever
-  returned to it. Verified: `POST /fhir/CodeSystem/$lookup` with
-  `Origin: https://evil.example` → 403 from the app, always. For strict
-  preflight refusal, front the Space with a proxy you control (e.g. the
-  existing Cloudflare, via a transform rule that overrides the CORS
-  headers) on a custom domain.
+- **HF Spaces edge behaviour (important, verified live 2026-11-04):** the
+  `*.hf.space` edge proxy **terminates every OPTIONS request itself** —
+  the app's runtime log records zero OPTIONS lines while answering
+  hundreds of GETs — responding 200 with an `access-control-allow-origin`
+  **echoing whatever Origin was sent**. It also **overwrites** the ACAO
+  on regular responses with the request-origin echo, even when the app
+  sets its own (verified: a 403 refusal with a pinned
+  `Access-Control-Allow-Origin: https://terminology.fhir4ds.com` left the
+  edge carrying the stranger's origin). No app-side configuration —
+  CORSMiddleware, pinned headers, preflight handlers — can change this;
+  the app never sees preflights and its CORS headers do not survive the
+  edge. The enforcement that actually protects data is the app-level
+  **403 on the actual request**: a browser on a non-allowed origin can
+  attempt the request (the platform preflight says yes) and can read the
+  403 error body, but **no data response is ever returned to it**. For
+  spec-conformant preflight refusal, front the Space with a proxy you
+  control (e.g. the existing Cloudflare on a custom domain, with a
+  transform rule overriding the CORS headers) — that is an owner
+  infrastructure decision, not an app change.
 - **No-Origin requests are allowed but rate-limited** — `curl`, server-to-
   server clients and HF health probes send no `Origin` header and pass.
 - **Per-IP rate limit** — 30 requests/minute sliding window per client IP
