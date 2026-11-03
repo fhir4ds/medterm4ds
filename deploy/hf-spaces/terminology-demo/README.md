@@ -65,6 +65,7 @@ No API key in the browser (none to leak). Instead:
   site is GitHub Pages with a CNAME, fronted by Cloudflare for DNS only),
   `https://fhir4ds.com`, `https://www.fhir4ds.com` (main fhir4ds site —
   examples also live there), `http://localhost:3000`,
+  `http://localhost:3001` (local dev — the docs site is served on both),
   `http://127.0.0.1:3000` (local dev), and `https://fhir4ds.github.io`
   (Pages default host; harmless, covers previews). The active allow-list
   is printed at startup and exposed in `GET /capabilities`, so operators
@@ -72,14 +73,24 @@ No API key in the browser (none to leak). Instead:
   echo the allow-listed origin; a request with a non-allowed `Origin` gets
   **403**. No credentials are used: no cookies, no Authorization header
   from the page, and `Access-Control-Allow-Credentials` stays off.
-- **HF Spaces edge behaviour (important):** the `*.hf.space` edge proxy
-  answers CORS preflights itself and adds an `Access-Control-Allow-Origin`
-  header echoing ANY request Origin — including on this app's 403
-  refusals. The app cannot strip platform-added headers. The enforcement
-  that actually matters is therefore the **403 status**: a browser page on
-  a non-allowed origin can read the 403 error body, but no data response
-  is ever returned to it. The "403 carries no ACAO" property holds only
-  for direct/self-hosted deployments of this image.
+- **HF Spaces edge behaviour (important, verified live 2026-11-03):** the
+  `*.hf.space` edge proxy intercepts **every** OPTIONS request — including
+  plain OPTIONS to nonexistent paths — and answers it itself with
+  `200`, `access-control-allow-methods: <requested>`, and an
+  `access-control-allow-origin` **echoing whatever Origin was sent**. It
+  also decorates all other responses with an echoed ACAO when the app
+  didn't set one (including this app's 403 refusals). The app cannot see
+  preflights and cannot strip platform-added headers, so a strict
+  "preflight from a stranger → 403, no ACAO" is **not achievable behind
+  `*.hf.space`** — this is platform behaviour, identical for every Space.
+  The enforcement that actually protects data is the app-level **403 on
+  the actual request**: a browser on a non-allowed origin may read the
+  403 error body (edge-echoed ACAO), but no data response is ever
+  returned to it. Verified: `POST /fhir/CodeSystem/$lookup` with
+  `Origin: https://evil.example` → 403 from the app, always. For strict
+  preflight refusal, front the Space with a proxy you control (e.g. the
+  existing Cloudflare, via a transform rule that overrides the CORS
+  headers) on a custom domain.
 - **No-Origin requests are allowed but rate-limited** — `curl`, server-to-
   server clients and HF health probes send no `Origin` header and pass.
 - **Per-IP rate limit** — 30 requests/minute sliding window per client IP

@@ -87,7 +87,8 @@ ALLOWED_ORIGINS = tuple(
     for o in os.getenv(
         "DEMO_ALLOWED_ORIGINS",
         "https://terminology.fhir4ds.com,https://fhir4ds.com,https://www.fhir4ds.com,"
-        "http://localhost:3000,http://127.0.0.1:3000,https://fhir4ds.github.io",
+        "http://localhost:3000,http://127.0.0.1:3000,"
+        "http://localhost:3001,http://127.0.0.1:3001,https://fhir4ds.github.io",
     ).split(",")
     if o.strip()
 )
