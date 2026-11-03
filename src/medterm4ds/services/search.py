@@ -32,7 +32,7 @@ from typing import Any
 from medterm4ds.core import paths as _paths
 from medterm4ds.core.models import CodeRef
 from medterm4ds.core.normalize import SOURCE_LABELS
-from medterm4ds.core.paths import cache_dir, hf_repo_id, hf_revision, terminology_root
+from medterm4ds.core.paths import env_pin, terminology_root
 
 logger = logging.getLogger(__name__)
 
@@ -43,8 +43,6 @@ logger = logging.getLogger(__name__)
 # (v0.0.5 = 2026-08-27 canonical build: shorthand class aliases — SGLT2i/
 # DPP4i/PPI/ARB, CDC vaccine groups, lab SNOMED crosswalk, ICD-10-PCS,
 # guard hardening; v0.0.2 = Aug-2026 canonical indexes with CID corrections).
-_HF_REPO_ID = os.getenv("MEDTERM4DS_HF_REPO_ID", "fhir4ds/medterm4ds")
-_HF_REVISION = os.getenv("MEDTERM4DS_HF_REVISION", "v0.0.5")
 
 # Artifact cache layout. Two modes:
 #
@@ -60,19 +58,21 @@ _HF_REVISION = os.getenv("MEDTERM4DS_HF_REVISION", "v0.0.5")
 # is re-checked or re-keyed.
 # AMUX-44: cache-root resolution lives in medterm4ds.core.paths (single
 # source of truth; the historical /mnt/d machine-specific defaults were
-# removed). The lazy helpers re-read env on every call so importlib.reload
-# under a patched env (tests) gets fresh values.
-_paths.warn_on_prerevision_cache()
-_CACHE_DIR = cache_dir()
-_CACHE_REVISION_KEYED = not bool(os.getenv("MEDTERM4DS_CACHE_DIR"))
-_HF_REPO_ID = hf_repo_id()
-_HF_REVISION = hf_revision()
+# removed). QC2-H4: the frozen sentinels are REFRESHED AS A UNIT here —
+# reloading this module under a patched env (the documented test pattern)
+# also refreshes paths' sentinels, so pin detection below always compares
+# against the same defaults the caller's constants came from.
+_paths._refresh_sentinels()
+_CACHE_DIR = _paths.CACHE_DIR
+_CACHE_REVISION_KEYED = _paths.CACHE_REVISION_KEYED
+_HF_REPO_ID = _paths.HF_REPO_ID
+_HF_REVISION = _paths.HF_REVISION
 
-DEFAULT_SEARCH_INDEX_DIR = str(_CACHE_DIR / "lexical")
-DEFAULT_EMBEDDING_MODEL_DIR = str(_CACHE_DIR / "semantic")
-DEFAULT_CANONICAL_VALUE_SETS_PATH = str(_CACHE_DIR / "canonical" / "canonical_anchor_value_sets.json")
-DEFAULT_CANONICAL_CONCEPTS_INDEX = str(_CACHE_DIR / "canonical" / "canonical_concepts_faiss.index")
-DEFAULT_CANONICAL_CONCEPTS_META = str(_CACHE_DIR / "canonical" / "canonical_concepts_metadata.json")
+DEFAULT_SEARCH_INDEX_DIR = _paths.DEFAULT_SEARCH_INDEX_DIR
+DEFAULT_EMBEDDING_MODEL_DIR = _paths.DEFAULT_EMBEDDING_MODEL_DIR
+DEFAULT_CANONICAL_VALUE_SETS_PATH = _paths.DEFAULT_CANONICAL_VALUE_SETS_PATH
+DEFAULT_CANONICAL_CONCEPTS_INDEX = _paths.DEFAULT_CANONICAL_CONCEPTS_INDEX
+DEFAULT_CANONICAL_CONCEPTS_META = _paths.DEFAULT_CANONICAL_CONCEPTS_META
 SEARCH_CATEGORIES = ("condition", "lab", "medication", "procedure", "vaccine", "body_structure")
 
 # AMUX-46 hybrid fusion constants (benchmark winner; see
@@ -106,7 +106,7 @@ _LAYOUT_ENV = os.getenv("MEDTERM4DS_LAYOUT", "auto").strip().lower()
 _LAYOUT_TERMINOLOGY = _LAYOUT_ENV in ("auto", "terminology")
 MODELS_DIRNAME = "models"
 DATA_DIRNAME = "data"
-_SPLIT_ROOT = _CACHE_DIR if not _CACHE_REVISION_KEYED else (Path.home() / ".cache" / "medterm4ds")
+_SPLIT_ROOT = _paths.TERMINOLOGY_ROOT if not _CACHE_REVISION_KEYED else (Path.home() / ".cache" / "medterm4ds")
 _LAYOUT_FORCED_LEGACY = _LAYOUT_ENV == "legacy"
 _DATA_REVISION_ENV = os.getenv("MEDTERM4DS_DATA_REVISION") or None
 
@@ -2502,8 +2502,8 @@ def get_search_service() -> SearchService:
     global _service
     if _service is None:
         _service = SearchService(
-            search_index_dir=os.getenv("MEDTERM4DS_SEARCH_INDEX_DIR") or None,
-            embedding_model_dir=os.getenv("MEDTERM4DS_EMBEDDING_MODEL_DIR") or None,
+            search_index_dir=env_pin("MEDTERM4DS_SEARCH_INDEX_DIR"),
+            embedding_model_dir=env_pin("MEDTERM4DS_EMBEDDING_MODEL_DIR"),
             canonical_path=os.getenv("MEDTERM4DS_CANONICAL_PATH", DEFAULT_CANONICAL_VALUE_SETS_PATH),
             canonical_concepts_index=os.getenv("MEDTERM4DS_CANONICAL_INDEX", DEFAULT_CANONICAL_CONCEPTS_INDEX),
             canonical_concepts_meta=os.getenv("MEDTERM4DS_CANONICAL_META", DEFAULT_CANONICAL_CONCEPTS_META),
@@ -2524,8 +2524,8 @@ def configure_search_service(
     """
     global _service
     _service = SearchService(
-        search_index_dir=search_index_dir or os.getenv("MEDTERM4DS_SEARCH_INDEX_DIR") or None,
-        embedding_model_dir=embedding_model_dir or os.getenv("MEDTERM4DS_EMBEDDING_MODEL_DIR") or None,
+        search_index_dir=search_index_dir or env_pin("MEDTERM4DS_SEARCH_INDEX_DIR"),
+        embedding_model_dir=embedding_model_dir or env_pin("MEDTERM4DS_EMBEDDING_MODEL_DIR"),
     )
     return _service
 

@@ -24,10 +24,13 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parents[1]
 
 # Machine-specific absolute host paths and the forbidden data-home repo.
+# QC2-H1: the Windows pattern must match the AST string VALUE ('D:\\data'
+# in source becomes D:\data — ONE backslash), so the regex carries a
+# single escaped backslash, and it covers both drive-letter cases.
 HOST_PATH_PATTERNS = (
-    re.compile(r"/mnt/[a-z]/"),  # WSL drive mounts (/mnt/d/...)
+    re.compile(r"/mnt/[a-z]/", re.IGNORECASE),  # WSL drive mounts (/mnt/d/, /mnt/D/)
     re.compile(r"/home/[a-z][^/\s]*/"),  # user homes (/home/jmontavon/...)
-    re.compile(r"[CD]:\\\\"),  # Windows drive paths (C:\, D:\)
+    re.compile(r"(?i)[cd]:\\"),  # Windows drive paths (C:\, d:\ — one backslash)
     re.compile(r"fhir4px-model"),  # data home, never a default target
 )
 

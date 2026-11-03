@@ -14,12 +14,14 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 import threading
 from pathlib import Path
 from typing import Any
 
-from medterm4ds.core.paths import DEFAULT_EMBEDDING_MODEL_DIR  # noqa: F401  (sentinel re-export)
+from medterm4ds.core.paths import (  # noqa: F401  (sentinel re-export)
+    DEFAULT_EMBEDDING_MODEL_DIR,
+    env_pin,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -115,11 +117,10 @@ class SemanticSearchEngine:
                 validate_index_lineage,
                 validate_model_manifest,
             )
+
             manifest = read_manifest(self._model_dir)
             if manifest is not None:
-                self._space_id = validate_model_manifest(
-                    manifest, source=str(self._model_dir)
-                )
+                self._space_id = validate_model_manifest(manifest, source=str(self._model_dir))
                 # Dual-edge check: the per-category FAISS indexes must come
                 # from a lineage matching the serving space. Indexes may be
                 # co-located with the model (legacy layout) or live in a
@@ -140,9 +141,7 @@ class SemanticSearchEngine:
                                 source=f"{self._index_root} ({cat} index)",
                             )
                             break
-                logger.info(
-                    "SapBERT manifest validated: %s", manifest_str(manifest)
-                )
+                logger.info("SapBERT manifest validated: %s", manifest_str(manifest))
             else:
                 # Keep the constructor-provided space (terminology layout);
                 # legacy operator dirs without a manifest remain None.
@@ -155,11 +154,11 @@ class SemanticSearchEngine:
             self._model.eval()
             # GPU/MPS placement (MEDTERM4DS_DEVICE, default auto-detect).
             from medterm4ds.core.env import resolve_device
+
             self._device = resolve_device(self._device_param)
             if self._device != "cpu":
                 self._model = self._model.to(self._device)
-            logger.info("SapBERT model loaded (768-dim embeddings, device=%s)",
-                        self._device)
+            logger.info("SapBERT model loaded (768-dim embeddings, device=%s)", self._device)
 
             # Load FAISS indexes + metadata per category
             import faiss
@@ -216,9 +215,12 @@ class SemanticSearchEngine:
         batch_size = env_int("MEDTERM4DS_EMBED_BATCH_SIZE", minimum=1) or 64
         all_embeddings = []
         for i in range(0, len(texts), batch_size):
-            batch = texts[i:i + batch_size]
+            batch = texts[i : i + batch_size]
             inputs = self._tokenizer(
-                batch, return_tensors="pt", truncation=True, max_length=512,
+                batch,
+                return_tensors="pt",
+                truncation=True,
+                max_length=512,
                 padding=True,
             )
             inputs = inputs.to(self._model.device)
@@ -261,14 +263,18 @@ class SemanticSearchEngine:
                 if idx < 0 or idx >= len(meta):
                     continue
                 entry = meta[idx]
-                results.append({
-                    "code": str(entry.get("code", "")),
-                    "system": str(entry.get("system", "")),
-                    "display": entry.get("friendly_name") or entry.get("technical_name") or entry.get("code", ""),
-                    "score": round(float(dist), 4),
-                    "match_grade": _cosine_to_grade(float(dist)),
-                    "category": cat,
-                })
+                results.append(
+                    {
+                        "code": str(entry.get("code", "")),
+                        "system": str(entry.get("system", "")),
+                        "display": entry.get("friendly_name")
+                        or entry.get("technical_name")
+                        or entry.get("code", ""),
+                        "score": round(float(dist), 4),
+                        "match_grade": _cosine_to_grade(float(dist)),
+                        "category": cat,
+                    }
+                )
 
         results.sort(key=lambda r: r["score"], reverse=True)
         return results[:top_k]
@@ -307,7 +313,12 @@ class SemanticSearchEngine:
             # Embed the candidate's display text
             cand_vec = self._embed(display)
             cosine = float(np.dot(query_vec[0], cand_vec[0]))
-            scored.append((cosine, {**cand, "score": round(cosine, 4), "match_grade": _cosine_to_grade(cosine)}))
+            scored.append(
+                (
+                    cosine,
+                    {**cand, "score": round(cosine, 4), "match_grade": _cosine_to_grade(cosine)},
+                )
+            )
 
         scored.sort(key=lambda x: x[0], reverse=True)
         return [item for _, item in scored[:top_k]]
@@ -332,8 +343,8 @@ def get_semantic_engine() -> SemanticSearchEngine:
     global _engine_instance
     if _engine_instance is None:
         with _engine_lock:
-                if _engine_instance is None:
-                    model_dir = os.getenv("MEDTERM4DS_EMBEDDING_MODEL_DIR") or None
-                    index_dir = os.getenv("MEDTERM4DS_SEMANTIC_INDEX_DIR") or None
-                    _engine_instance = SemanticSearchEngine(model_dir, index_dir=index_dir)
+            if _engine_instance is None:
+                model_dir = env_pin("MEDTERM4DS_EMBEDDING_MODEL_DIR")
+                index_dir = env_pin("MEDTERM4DS_SEMANTIC_INDEX_DIR")
+                _engine_instance = SemanticSearchEngine(model_dir, index_dir=index_dir)
     return _engine_instance

@@ -123,3 +123,61 @@ class TestSentinelBackcompat:
         # unpinned marker, not a pin.
         svc = sm.SearchService(search_index_dir=sm.DEFAULT_SEARCH_INDEX_DIR)
         assert svc._bm25_dir_pinned is False
+
+
+class TestBatchBFixes:
+    """v0.0.9 QC fixbatch B pins: env-pin tilde expansion (QC2-S1) and
+    cross-module sentinel unity (QC2-H4/A1)."""
+
+    def test_env_pin_expands_tilde(self, monkeypatch, tmp_path):
+        # A '~'-relative pin must resolve against the user's home, not a
+        # literal './~' directory relative to the server CWD. (expanduser
+        # reads $HOME, so patch the env, not Path.home.)
+        from medterm4ds.core.paths import env_pin
+
+        monkeypatch.setenv("HOME", str(tmp_path))
+        monkeypatch.setenv("MEDTERM4DS_SEARCH_INDEX_DIR", "~/medcache/idx")
+        assert env_pin("MEDTERM4DS_SEARCH_INDEX_DIR") == str(tmp_path / "medcache" / "idx")
+
+    def test_env_pin_none_for_unset_or_empty(self, monkeypatch):
+        from medterm4ds.core.paths import env_pin
+
+        monkeypatch.delenv("MEDTERM4DS_SEARCH_INDEX_DIR", raising=False)
+        assert env_pin("MEDTERM4DS_SEARCH_INDEX_DIR") is None
+        monkeypatch.setenv("MEDTERM4DS_SEARCH_INDEX_DIR", "")
+        assert env_pin("MEDTERM4DS_SEARCH_INDEX_DIR") is None
+
+    def test_cache_dir_expands_tilde(self, monkeypatch, tmp_path):
+        from medterm4ds.core import paths
+
+        monkeypatch.setenv("HOME", str(tmp_path))
+        monkeypatch.setenv("MEDTERM4DS_CACHE_DIR", "~/medcache44")
+        assert paths.cache_dir() == tmp_path / "medcache44"
+
+    def test_sentinels_single_source_across_modules(self):
+        # QC2-H4: services.search's DEFAULT_* must BE core.paths' frozen
+        # values — one source of truth, so pin detection can never
+        # compare against a divergent copy.
+        import medterm4ds.services.search as sm
+        from medterm4ds.core import paths
+
+        assert sm.DEFAULT_SEARCH_INDEX_DIR == paths.DEFAULT_SEARCH_INDEX_DIR
+        assert sm.DEFAULT_EMBEDDING_MODEL_DIR == paths.DEFAULT_EMBEDDING_MODEL_DIR
+        assert sm.DEFAULT_CANONICAL_VALUE_SETS_PATH == paths.DEFAULT_CANONICAL_VALUE_SETS_PATH
+        assert sm.DEFAULT_CANONICAL_CONCEPTS_INDEX == paths.DEFAULT_CANONICAL_CONCEPTS_INDEX
+        assert sm.DEFAULT_CANONICAL_CONCEPTS_META == paths.DEFAULT_CANONICAL_CONCEPTS_META
+
+    def test_windows_drive_path_caught_by_guard_regex(self):
+        # QC2-H1: the AST-value scan must catch a 'D:\\data' literal
+        # (source escape → value 'D:\data', ONE backslash).
+        import importlib.util
+        import sys
+
+        mod_path = Path(__file__).parent / "test_no_host_paths.py"
+        spec = importlib.util.spec_from_file_location("_guard_patterns", mod_path)
+        guard = importlib.util.module_from_spec(spec)
+        sys.modules["_guard_patterns"] = guard
+        spec.loader.exec_module(guard)
+
+        assert any(p.search("D:\\data\\model") for p in guard.HOST_PATH_PATTERNS)
+        assert any(p.search("c:\\x") for p in guard.HOST_PATH_PATTERNS)
