@@ -45,6 +45,7 @@ Spec: https://build.fhir.org/codesystem.html
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -83,11 +84,17 @@ SERVER_LOCAL_MATCH_TYPE_VOCABULARY: dict[str, str] = {
     "snomed_to_target_snomed_fallback": "SNOMED → target fallback via a SNOMED-defined crosswalk.",
 }
 
-PF_BASELINE = Path("/mnt/d/medterm4ds/reports/fhir4px")
+PF_BASELINE = Path(
+    os.environ.get("MEDTERM4DS_FHIR4PX_BASELINE")
+    or str(Path.home() / ".cache" / "medterm4ds" / "reports" / "fhir4px")
+)
 PF_SOURCES = ("snomedct_us", "rxnorm", "icd10cm", "icd10pcs", "lnc", "cpt", "hcpcs", "cvx")
 
-REGRESSION_FIXTURE = Path(
-    "/mnt/d/medterm4ds/tests/regression/fixtures/patient_friendly_verified.jsonl"
+# Repo-relative (the historical /mnt/d checkout no longer exists); falls
+# back to the regression fixture shipped in this repository.
+REGRESSION_FIXTURE = (
+    Path(__file__).resolve().parents[1]
+    / "regression" / "fixtures" / "patient_friendly_verified.jsonl"
 )
 
 
@@ -179,9 +186,9 @@ def _top_level_param(lookup_body: dict, name: str) -> str | None:
 # gap.)
 pytestmark = pytest.mark.skipif(
     not _pf_loaded(),
-    reason="Production patient-friendly JSONs not found at "
-    "/mnt/d/medterm4ds/reports/fhir4px — conformance fixture needs the "
-    "production baseline to exercise the $lookup patient-friendly surface.",
+    reason=f"Production patient-friendly JSONs not found at {PF_BASELINE} "
+    "(set MEDTERM4DS_FHIR4PX_BASELINE to the reports dir) — the "
+    "conformance fixture needs the production baseline.",
 )
 
 

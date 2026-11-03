@@ -26,7 +26,7 @@ HISTORIAN lens:
 Production-surface note: the conformance fixture's `fhir_client` does NOT
 seed patient-friendly rows, but it also does NOT override the
 `MEDTERM4DS_FHIR4PX_BASELINE` env var. As a result, the production JSONs
-at `/mnt/d/medterm4ds/reports/fhir4px/` are loaded into the app's
+at the MEDTERM4DS_FHIR4PX_BASELINE dir are loaded into the app's
 `patient_friendly_cache`. This is the same accidental-reproduction pattern
 that SKEPTIC CS-01 (QA-043) leveraged — beneficial for catching drift
 that the fixture-local surface can't exercise.
@@ -35,6 +35,7 @@ that the fixture-local surface can't exercise.
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -44,7 +45,10 @@ import pytest
 # actual surface that the conformance fixture accidentally loads.
 # ---------------------------------------------------------------------------
 
-PF_BASELINE = Path("/mnt/d/medterm4ds/reports/fhir4px")
+PF_BASELINE = Path(
+    os.environ.get("MEDTERM4DS_FHIR4PX_BASELINE")
+    or str(Path.home() / ".cache" / "medterm4ds" / "reports" / "fhir4px")
+)
 PF_SOURCES = ("snomedct_us", "rxnorm", "icd10cm", "icd10pcs", "lnc", "cpt", "hcpcs", "cvx")
 
 
@@ -98,7 +102,7 @@ def _first_pf_entry_for_source(source_lower: str) -> tuple[str, dict] | None:
 # Skip the entire module if the production baseline isn't loadable.
 pytestmark = pytest.mark.skipif(
     not _pf_loaded(),
-    reason="Production patient-friendly JSONs not found at /mnt/d/medterm4ds/reports/fhir4px — "
+    reason=f"Production patient-friendly JSONs not found at {PF_BASELINE} — "
     "conformance fixture needs the production baseline to exercise the $lookup custom-property surface.",
 )
 
