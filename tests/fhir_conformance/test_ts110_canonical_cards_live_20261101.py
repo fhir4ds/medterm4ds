@@ -94,7 +94,22 @@ def svc(tmp_path_factory, monkeypatch_module):
     from medterm4ds.services import search as search_mod
 
     search_mod = importlib.reload(search_mod)
-    return search_mod.SearchService(), paths
+    yield search_mod.SearchService(), paths
+    # Teardown (2026-11-02 cross-file pollution fix): the reload above
+    # re-freezes services.search's module-level env-derived constants
+    # (_HF_REVISION, _CACHE_DIR, _LAYOUT_ENV — read once at import) under
+    # THIS module's mutated environment, and the reloaded module stays in
+    # sys.modules for every later test file (fhir_api imports it lazily).
+    # Downstream effect observed: canonical resolution fell back to the
+    # legacy ~/.cache/medterm4ds/<rev> split cache, whose value-set rows
+    # lack composite_groups — killing the group-dictionary fan-out and
+    # making ts32 c43 ('diabetes medications' + resultTypes=medication)
+    # return total 0 (test_ts111's PROCESS LESSON, applied here: never
+    # leave a reloaded module behind). Restore order matters: env FIRST,
+    # then reload under the clean env, then drop the poisoned singleton.
+    monkeypatch_module.undo()
+    importlib.reload(search_mod)
+    search_mod.reset_search_service()
 
 
 @pytest.fixture(scope="module")
@@ -166,8 +181,8 @@ def test_l5_sources_filter(svc):
     # RXNORM but expect ATC class anchors — see the "ACE inhibitors"
     # rationale in _canonical_concept_search). Foreign systems
     # (LOINC/SNOMED/ICD/CVX) must never leak through the filter.
-    assert all(r.anchor_system in ("RXNORM", "ATC") for r in results), (
-        sorted({r.anchor_system for r in results})
+    assert all(r.anchor_system in ("RXNORM", "ATC") for r in results), sorted(
+        {r.anchor_system for r in results}
     )
     # The exact RXNORM anchor for the query itself must survive the filter.
     assert any(r.anchor_system == "RXNORM" and r.anchor_code == "6809" for r in results)
