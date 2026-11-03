@@ -7,7 +7,7 @@
 # image needs no repo sources in the build context.
 #
 # Runtime volumes (read-only):
-#   /data/lookup.duckdb      CPT-excluded lookup DB (deploy/scripts/export_lookup_db.py)
+#   /data/lookup.duckdb      CPT-excluded lookup DB (deploy/scripts/export_lookup_db_public.py)
 #   /data/cache              terminology release root, containing
 #                            terminology/2026.10.31.1/{canonical,lexical,semantic,model}
 

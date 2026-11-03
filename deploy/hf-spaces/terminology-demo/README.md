@@ -122,7 +122,7 @@ mounted read-only:
 
 1. `/data/lookup.duckdb` — ~217 MB CPT-excluded filtered UMLS DuckDB
    (7 sources: SNOMED CT, ICD-10-CM, ICD-10-PCS, RxNorm, LOINC, HCPCS, CVX)
-   built from UMLS 2025AB RRF with `deploy/scripts/export_lookup_db.py`
+   built from UMLS 2025AB RRF with `deploy/scripts/export_lookup_db_public.py`
    and verified with `deploy/scripts/verify_lookup_db.py`
    (asserts zero CPT rows/edges).
 2. `/data/cache/terminology/2026.10.31.1/` — the `fhir4ds/terminology`
@@ -275,7 +275,7 @@ Idle-sleep wake adds Space scheduling on top; allow up to ~2 minutes
 
 ```bash
 # lookup.duckdb from the local UMLS 2025AB RRF (CPT excluded by design)
-python3 deploy/scripts/export_lookup_db.py \
+python3 deploy/scripts/export_lookup_db_public.py \
     --rrf  data/rrf_2025ab/umls-2025AB-metathesaurus-full.nlm \
     --output lookup.duckdb
 python3 deploy/scripts/verify_lookup_db.py --db lookup.duckdb   # gate: zero CPT
