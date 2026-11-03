@@ -539,17 +539,7 @@ export default function TerminologyDemo(): React.JSX.Element {
                   </code>
                   </small>
                 </td>
-                <td>
-                  {d.concept.result_type ?? '—'}
-                  {d.concept.ner_label && d.concept.ner_label !== d.concept.result_type ? (
-                    <>
-                      <br />
-                      <small className="terminology-demo__ner-hint">
-                        NER: {d.concept.ner_label}
-                      </small>
-                    </>
-                  ) : null}
-                </td>
+                <td>{d.concept.result_type ?? '—'}</td>
                 <td>
                   {d.concept.status ? (
                     <span
