@@ -14,12 +14,12 @@ import {
  * the REAL medterm4ds FHIR R4 terminology API. All operations below are
  * native FHIR R4 operations using FHIR Parameters request bodies:
  *
- *  - compare search: POST /fhir/CodeSystem/$search for ALL FOUR modes at
- *    once (lexical | semantic | canonical | hybrid), top 3 each in its own
- *    card, best result per mode highlighted — response is a FHIR Bundle
- *    searchset with ranking (score + match-grade extension) on each
- *    ENTRY's `search` element. Canonical entries' display IS the
- *    patient-friendly name.
+ *  - compare search: POST /fhir/CodeSystem/$search for the lexical,
+ *    semantic and canonical modes at once (hybrid is supported by the API
+ *    but hidden from the demo for now), top 3 each in its own card, best
+ *    result per mode highlighted — response is a FHIR Bundle searchset
+ *    with ranking (score + match-grade extension) on each ENTRY's `search`
+ *    element. Canonical entries' display IS the patient-friendly name.
  *  - annotations: POST /fhir/CodeSystem/$extract — FHIR Bundle whose
  *    entries carry matched_text, span_start/end, ner_label (type),
  *    status and canonical_id; rendered as an annotation viewer over the
@@ -48,7 +48,6 @@ const SEARCH_MODES = [
   {id: 'lexical', label: 'Lexical', hint: 'exact words'},
   {id: 'semantic', label: 'Semantic', hint: 'meaning'},
   {id: 'canonical', label: 'Canonical', hint: 'grouped codes'},
-  {id: 'hybrid', label: 'Hybrid', hint: 'lexical + semantic'},
 ] as const;
 
 const GRADE_STYLES: Record<string, string> = {
@@ -265,8 +264,8 @@ export default function TerminologyDemo(): React.JSX.Element {
     setState({phase: 'loading'});
     setModeRows({});
     try {
-      // All four modes at once, top COMPARE_TOP each — the side-by-side
-      // cards. (~4 requests of the 30/min budget.)
+      // Each demo mode at once, top COMPARE_TOP each — the side-by-side
+      // cards. (~3 requests of the 30/min budget.)
       const results = await Promise.all(
         SEARCH_MODES.map(
           async (m) => [m.id, await postSearch(query, m.id, COMPARE_TOP)] as const,
@@ -428,7 +427,7 @@ export default function TerminologyDemo(): React.JSX.Element {
   const formDisabled = startup !== 'ready' || state.phase === 'loading';
 
   const compareBody = useMemo(() => {
-    if (state.phase === 'loading') return <p>Searching all four modes…</p>;
+    if (state.phase === 'loading') return <p>Searching each mode…</p>;
     if (state.phase === 'error')
       return <p className="terminology-demo__error">⚠️ {state.message}</p>;
     if (state.phase === 'idle') return <p>Type a term and press Compare.</p>;

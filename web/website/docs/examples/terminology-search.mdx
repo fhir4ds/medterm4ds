@@ -25,11 +25,12 @@ self-host, not a simplified convenience layer.
   RxNorm…) into one anchored value-set card, with a patient-friendly
   name — "heart attack" resolves to one card joining all the codes for
   myocardial infarction.
-- **Hybrid** combines lexical and semantic, taking the best of both.
 
-The demo below runs your query through all four at once so you can see
+The demo below runs your query through all three at once so you can see
 the differences on your own terms (top 3 per mode, best result per mode
-highlighted).
+highlighted). The API also offers a **hybrid** mode (lexical + semantic
+combined) — see the
+[CapabilityStatement](https://fhir4ds-terminology-demo-server.hf.space/fhir/metadata).
 
 :::note[Good to know]
 
@@ -55,8 +56,7 @@ lists everything it serves; the demo uses:
 
 | Operation | FHIR request | What it does |
 |---|---|---|
-| Term search | `POST /fhir/CodeSystem/$search` | `query` + `searchMode` = `lexical` \| `semantic` \| `canonical` \| `hybrid`; returns a searchset `Bundle` of codings with score + match-grade on each entry |
-| Note extraction | `POST /fhir/CodeSystem/$extract` | `text` → a `Bundle` of concepts found by GLiNER + medspaCy NER, each with span, type, status and canonical id |
+| Term search | `POST /fhir/CodeSystem/$search` | `query` + `searchMode` = `lexical` \| `semantic` \| `canonical` \| `hybrid`; returns a searchset `Bundle` of codings with score + match-grade on each entry || Note extraction | `POST /fhir/CodeSystem/$extract` | `text` → a `Bundle` of concepts found by GLiNER + medspaCy NER, each with span, type, status and canonical id |
 | Code detail | `POST /fhir/CodeSystem/$lookup` | `system` + `code` → `Parameters` with display, name and properties (incl. the UMLS CUI) |
 | Code mapping | `POST /fhir/ConceptMap/$translate` | `system` + `code` + `targetSystem` → `Parameters` with equivalence-rated matches |
 | Capabilities | `GET /fhir/metadata` | the `CapabilityStatement` |
@@ -73,7 +73,7 @@ POST /fhir/CodeSystem/$search
   "resourceType": "Parameters",
   "parameter": [
     {"name": "query", "valueString": "heart attack"},
-    {"name": "searchMode", "valueCode": "hybrid"},
+    {"name": "searchMode", "valueCode": "semantic"},
     {"name": "count", "valueInteger": 3}
   ]
 }
