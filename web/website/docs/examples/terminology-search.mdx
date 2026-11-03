@@ -1,34 +1,16 @@
 ---
-title: Terminology Search (Live Demo)
+title: Terminology Search
 ---
 
 import TerminologyDemo from '@site/src/components/TerminologyDemo';
 
-# Recipe: Terminology Search — Live Demo
+# Terminology Search
 
 Try medterm4ds terminology operations right here, against a live public
 endpoint: the [terminology-demo
 Space](https://fhir4ds-terminology-demo-server.hf.space), running the
 **native medterm4ds FHIR R4 terminology API** — the same app you can
 self-host, not a simplified convenience layer.
-
-:::info Good to know
-
-- The Space **sleeps when idle**; the first request after sleep can take
-  **up to ~2 minutes** to wake — the form stays disabled and tells you
-  what is happening until it is really ready.
-- **CPT is excluded** from everything this demo serves, due to AMA
-  licensing (CPT may not be used in publicly accessible systems).
-- The demo allows **30 requests/minute per IP**. For anything heavier,
-  self-host — the data build is reproducible from your own UMLS download
-  (CPT excluded by design).
-- This page calls the Space directly from your browser (this site is
-  static). The Space's origin allow-list decides which *websites* may
-  call it — that is a courtesy filter, not authentication.
-
-:::
-
-<TerminologyDemo />
 
 ## What the four search modes mean (plain English)
 
@@ -45,9 +27,24 @@ self-host, not a simplified convenience layer.
   myocardial infarction.
 - **Hybrid** combines lexical and semantic, taking the best of both.
 
-The side-by-side table above runs your query through all four at once so
-you can see the differences on your own terms (top 3 per mode, best
-result per mode in bold).
+The demo below runs your query through all four at once so you can see
+the differences on your own terms (top 3 per mode, best result per mode
+highlighted).
+
+:::note[Good to know]
+
+The Space **sleeps when idle**; the first request after sleep can take
+**up to ~2 minutes** to wake — the form stays disabled and tells you what
+is happening until it is really ready. **CPT is excluded** from
+everything this demo serves, due to AMA licensing. The demo allows
+**30 requests/minute per IP**; for anything heavier, self-host. This page
+calls the Space directly from your browser (this site is static) — the
+Space's origin allow-list decides which *websites* may call it, which is
+a courtesy filter, not authentication.
+
+:::
+
+<TerminologyDemo />
 
 ## Native FHIR R4 operations
 
@@ -114,6 +111,6 @@ This demo is a Docker Space wrapping `medterm4ds.create_fhir_app`.
 Everything is in the repo under `deploy/hf-spaces/terminology-demo/`
 (Dockerfile, wrapper app, README with the deploy runbook, licence notices
 and access-control details). See
-[Docker deployment](../../interfaces/docker-deployment.md) for
-self-hosting, or use the [FHIR server](fhir-server.md) recipe for a
-FHIR-native surface.
+[Docker deployment](../interfaces/docker-deployment.md) for self-hosting,
+or use the [FHIR server](recipes/fhir-server.md) recipe for a FHIR-native
+surface.

@@ -100,3 +100,166 @@ thead {
 .theme-admonition {
   border-radius: 8px;
 }
+
+/* ------------------------------------------------------------------ */
+/* TerminologyDemo live demo component                                 */
+/* ------------------------------------------------------------------ */
+
+.terminology-demo {
+  margin: 1rem 0;
+}
+
+.terminology-demo__controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.6rem;
+  align-items: stretch;
+}
+
+.terminology-demo__controls--column {
+  flex-direction: column;
+}
+
+.terminology-demo__input {
+  flex: 1 1 100%;
+  width: 100%;
+  border-radius: 8px;
+  border: 1px solid rgba(84, 198, 255, 0.25);
+  padding: 0.55rem 0.75rem;
+  font-size: 0.95rem;
+  background: var(--ifm-background-color);
+  color: var(--ifm-font-color-base);
+}
+
+.terminology-demo__input:focus {
+  outline: 2px solid rgba(142, 230, 193, 0.45);
+  outline-offset: 1px;
+}
+
+.terminology-demo__go {
+  flex: 0 0 auto;
+  border-radius: 8px;
+}
+
+/* Side-by-side mode cards */
+.terminology-demo__grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 0.8rem;
+  margin: 0.75rem 0;
+}
+
+.terminology-demo__card {
+  border: 1px solid rgba(84, 198, 255, 0.16);
+  border-radius: 10px;
+  padding: 0.7rem 0.85rem;
+  background: rgba(84, 198, 255, 0.03);
+}
+
+.terminology-demo__card-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 0.5rem;
+  margin-bottom: 0.4rem;
+}
+
+.terminology-demo__card-hint {
+  font-size: 0.75rem;
+  opacity: 0.65;
+}
+
+.terminology-demo__card .terminology-demo__top td {
+  background: rgba(142, 230, 193, 0.09);
+}
+
+.terminology-demo__card-empty {
+  opacity: 0.6;
+  font-style: italic;
+  margin: 0.3rem 0;
+}
+
+.terminology-demo__display {
+  font-size: 0.9rem;
+}
+
+.terminology-demo__score {
+  text-align: right;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+/* Soft pills for grades / statuses */
+.terminology-demo__grade {
+  display: inline-block;
+  margin-left: 0.45rem;
+  padding: 0.05rem 0.5rem;
+  border-radius: 999px;
+  font-size: 0.7rem;
+  font-weight: 500;
+}
+
+.terminology-demo__grade--certain {
+  background: rgba(142, 230, 193, 0.15);
+  color: #5fbf95;
+}
+
+.terminology-demo__grade--probable {
+  background: rgba(84, 198, 255, 0.13);
+  color: #6db8e8;
+}
+
+.terminology-demo__grade--possible {
+  background: rgba(240, 196, 110, 0.14);
+  color: #c2a05e;
+}
+
+.terminology-demo__grade--family {
+  background: rgba(180, 170, 255, 0.14);
+  color: #9d92e0;
+}
+
+.terminology-demo__grade--negated {
+  background: rgba(240, 130, 130, 0.13);
+  color: #c98080;
+}
+
+/* Annotation viewer */
+.terminology-demo__note {
+  border: 1px solid rgba(84, 198, 255, 0.16);
+  border-radius: 10px;
+  background: rgba(84, 198, 255, 0.03);
+  padding: 0.8rem 1rem;
+  margin: 0.75rem 0;
+  line-height: 1.9;
+}
+
+.terminology-demo__mark {
+  background: rgba(142, 230, 193, 0.16);
+  color: inherit;
+  font-weight: 600;
+  border-radius: 6px;
+  padding: 0.05rem 0.3rem;
+}
+
+/* Status banners */
+.terminology-demo__status {
+  padding: 0.55rem 0.85rem;
+  border-radius: 8px;
+  background: rgba(84, 198, 255, 0.07);
+  border: 1px solid rgba(84, 198, 255, 0.14);
+}
+
+.terminology-demo__status--ready {
+  background: rgba(142, 230, 193, 0.08);
+  border-color: rgba(142, 230, 193, 0.2);
+}
+
+.terminology-demo__status--error {
+  background: rgba(240, 130, 130, 0.08);
+  border-color: rgba(240, 130, 130, 0.2);
+}
+
+.terminology-demo__error {
+  color: var(--ifm-color-danger);
+}

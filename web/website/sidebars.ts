@@ -68,6 +68,7 @@ const sidebars: SidebarsConfig = {
       type: 'category',
       label: 'Examples',
       items: [
+        'examples/terminology-search',
         'examples/notebooks/overview',
         {
           type: 'category',
@@ -76,7 +77,6 @@ const sidebars: SidebarsConfig = {
             'examples/recipes/patient-friendly-names',
             'examples/recipes/icd10-to-snomed',
             'examples/recipes/text-to-code-search',
-            'examples/recipes/terminology-search',
             'examples/recipes/clinical-note-extraction',
             'examples/recipes/fhir-server',
             'examples/recipes/bulk-exports',
