@@ -93,23 +93,34 @@ def svc(tmp_path_factory, monkeypatch_module):
 
     from medterm4ds.services import search as search_mod
 
-    search_mod = importlib.reload(search_mod)
-    yield search_mod.SearchService(), paths
-    # Teardown (2026-11-02 cross-file pollution fix): the reload above
-    # re-freezes services.search's module-level env-derived constants
-    # (_HF_REVISION, _CACHE_DIR, _LAYOUT_ENV — read once at import) under
-    # THIS module's mutated environment, and the reloaded module stays in
-    # sys.modules for every later test file (fhir_api imports it lazily).
-    # Downstream effect observed: canonical resolution fell back to the
-    # legacy ~/.cache/medterm4ds/<rev> split cache, whose value-set rows
-    # lack composite_groups — killing the group-dictionary fan-out and
-    # making ts32 c43 ('diabetes medications' + resultTypes=medication)
-    # return total 0 (test_ts111's PROCESS LESSON, applied here: never
-    # leave a reloaded module behind). Restore order matters: env FIRST,
-    # then reload under the clean env, then drop the poisoned singleton.
-    monkeypatch_module.undo()
-    importlib.reload(search_mod)
-    search_mod.reset_search_service()
+    # QC4-H4: the mutate-env -> reload -> test sequence must be
+    # exception-safe end to end — a setup failure (network hiccup mid
+    # -reload, transient import error) between the setenv above and a
+    # completed reload would otherwise leave sys.modules holding a module
+    # whose constants were frozen under the mutated env, poisoning every
+    # later file (the ts32-c43 total-0 shape). try/finally makes the
+    # restore guaranteed, not teardown-position-dependent.
+    try:
+        search_mod = importlib.reload(search_mod)
+        yield search_mod.SearchService(), paths
+    finally:
+        # Teardown (2026-11-02 cross-file pollution fix): the reload
+        # above re-freezes services.search's module-level env-derived
+        # constants (_HF_REVISION, _CACHE_DIR, _LAYOUT_ENV — read once
+        # at import) under THIS module's mutated environment, and the
+        # reloaded module stays in sys.modules for every later test
+        # file (fhir_api imports it lazily). Downstream effect
+        # observed: canonical resolution fell back to the legacy
+        # ~/.cache/medterm4ds/<rev> split cache, whose value-set rows
+        # lack composite_groups — killing the group-dictionary fan-out
+        # and making ts32 c43 ('diabetes medications' +
+        # resultTypes=medication) return total 0 (test_ts111's PROCESS
+        # LESSON, applied here: never leave a reloaded module behind).
+        # Restore order matters: env FIRST, then reload under the clean
+        # env, then drop the poisoned singleton.
+        monkeypatch_module.undo()
+        importlib.reload(search_mod)
+        search_mod.reset_search_service()
 
 
 @pytest.fixture(scope="module")
