@@ -319,6 +319,9 @@ export default function TerminologyDemo(): React.JSX.Element {
           body: fhirParams([
             ['text', noteText],
             ['format', 'codes'],
+            // Show the full assertion picture in the demo: family-history
+            // findings are opt-in on $extract (default false).
+            ['includeFamily', true],
           ]),
         });
         if (res.status === 503) {
