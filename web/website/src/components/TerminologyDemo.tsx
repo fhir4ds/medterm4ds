@@ -1,10 +1,10 @@
 import React, {useCallback, useEffect, useMemo, useRef, useState} from 'react';
 import {
   FhirParam,
-  SearchRow,
   fhirParams,
   lookupSummary,
   searchRows,
+  SearchRow,
   translateMatches,
 } from './terminologyFhir';
 
@@ -14,16 +14,18 @@ import {
  * the REAL medterm4ds FHIR R4 terminology API. All operations below are
  * native FHIR R4 operations using FHIR Parameters request bodies:
  *
- *  - term search: POST /fhir/CodeSystem/$search   (searchMode lexical |
- *    semantic | canonical | hybrid) — response is a FHIR Bundle searchset
- *    with ranking (score + match-grade extension) on each ENTRY's
- *    `search` element
- *  - annotations: POST /fhir/CodeSystem/$extract  — FHIR Bundle of found
- *    concepts (own button; deliberately NOT chained to search, so it can
- *    never run against a stale `text` closure)
- *  - code detail: POST /fhir/CodeSystem/$lookup   — FHIR Parameters
- *  - code mapping: POST /fhir/ConceptMap/$translate — FHIR Parameters
- *  - CapabilityStatement: GET /fhir/metadata
+ *  - compare search: POST /fhir/CodeSystem/$search for ALL FOUR modes at
+ *    once (lexical | semantic | canonical | hybrid), top 3 each, best
+ *    result per mode bolded — response is a FHIR Bundle searchset with
+ *    ranking (score + match-grade extension) on each ENTRY's `search`
+ *    element. Canonical entries' display IS the patient-friendly name.
+ *  - annotations: POST /fhir/CodeSystem/$extract — FHIR Bundle whose
+ *    entries carry matched_text, span_start/end, ner_label (type),
+ *    status and canonical_id; rendered as an annotation viewer over the
+ *    note, with a per-term canonical/patient-friendly match (canonical
+ *    $search) and an ICD-10-CM mapping (ConceptMap/$translate).
+ *  - code detail: POST /fhir/CodeSystem/$lookup on the first found
+ *    concept.
  *
  * Startup gating: the form stays disabled until the Space is actually
  * usable. GET /health is polled every 2.5 s (5 s timeout per attempt —
@@ -38,13 +40,15 @@ const SPACE_URL = 'https://fhir4ds-terminology-demo-server.hf.space';
 const HEALTH_POLL_INTERVAL_MS = 2500;
 const FETCH_TIMEOUT_MS = 5000;
 const GIVE_UP_AFTER_MS = 150000; // ~2.5 min of consecutive failures
+const COMPARE_TOP = 3; // results per search mode
+const MAX_TERM_DETAILS = 3; // concepts enriched with canonical + mapping
 
 const SEARCH_MODES = [
-  {id: 'lexical', label: 'Lexical', hint: 'BM25 exact-term matching'},
-  {id: 'semantic', label: 'Semantic', hint: 'SapBERT embedding similarity'},
-  {id: 'canonical', label: 'Canonical', hint: 'anchored value-set cards'},
-  {id: 'hybrid', label: 'Hybrid', hint: 'lexical + semantic combined'},
-];
+  {id: 'lexical', label: 'Lexical', hint: 'exact words'},
+  {id: 'semantic', label: 'Semantic', hint: 'meaning'},
+  {id: 'canonical', label: 'Canonical', hint: 'grouped codes'},
+  {id: 'hybrid', label: 'Hybrid', hint: 'lexical + semantic'},
+] as const;
 
 const GRADE_STYLES: Record<string, string> = {
   certain: 'badge badge--success',
@@ -53,14 +57,33 @@ const GRADE_STYLES: Record<string, string> = {
   possible: 'badge badge--warning',
 };
 
-type ExtractEntry = {
-  resource?: {
-    code?: string;
-    display?: string;
-    matched_text?: string;
-    status?: string;
-    system?: string;
-  };
+const STATUS_STYLES: Record<string, string> = {
+  affirmed: 'badge badge--success',
+  family: 'badge badge--info',
+  historical: 'badge badge--warning',
+  negated: 'badge badge--danger',
+  uncertain: 'badge badge--warning',
+};
+
+type ExtractConcept = {
+  code?: string;
+  source?: string;
+  system?: string;
+  display?: string;
+  matched_text?: string;
+  status?: string;
+  ner_label?: string;
+  result_type?: string;
+  canonical_id?: string;
+  span_start?: number;
+  span_end?: number;
+};
+
+type TermDetail = {
+  concept: ExtractConcept;
+  patientFriendly?: string;
+  canonicalId?: string;
+  icd10?: string;
 };
 
 type StartupStatus = 'checking' | 'starting' | 'ready' | 'failed';
@@ -77,6 +100,20 @@ function fetchWithTimeout(url: string, init?: RequestInit): Promise<Response> {
   const ac = new AbortController();
   const timer = setTimeout(() => ac.abort(), FETCH_TIMEOUT_MS);
   return fetch(url, {...init, signal: ac.signal}).finally(() => clearTimeout(timer));
+}
+
+async function postSearch(query: string, mode: string, count: number): Promise<SearchRow[]> {
+  const res = await fetch(`${SPACE_URL}/fhir/CodeSystem/$search`, {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: fhirParams([
+      ['query', query],
+      ['searchMode', mode],
+      ['count', count],
+    ]),
+  });
+  if (!res.ok) return [];
+  return searchRows(await res.json());
 }
 
 /**
@@ -157,16 +194,15 @@ function useSpaceStartup(): {
 
 export default function TerminologyDemo(): React.JSX.Element {
   const [query, setQuery] = useState('myocardial infarction');
-  const [mode, setMode] = useState('hybrid');
   const [text, setText] = useState(
     'Patient with type 2 diabetes on metformin. Family history of heart attack.',
   );
   const [state, setState] = useState<SearchState>({phase: 'idle'});
-  const [rows, setRows] = useState<SearchRow[]>([]);
+  const [modeRows, setModeRows] = useState<Record<string, SearchRow[]>>({});
   const [extractState, setExtractState] = useState<ExtractState>({phase: 'idle'});
-  const [extractBundle, setExtractBundle] = useState<ExtractEntry[]>([]);
+  const [concepts, setConcepts] = useState<ExtractConcept[]>([]);
+  const [termDetails, setTermDetails] = useState<TermDetail[]>([]);
   const [lookup, setLookup] = useState<ReturnType<typeof lookupSummary> | null>(null);
-  const [translate, setTranslate] = useState<ReturnType<typeof translateMatches>>([]);
   const {status: startup, notReady, retry} = useSpaceStartup();
   const abortRef = useRef<AbortController | null>(null);
 
@@ -176,31 +212,23 @@ export default function TerminologyDemo(): React.JSX.Element {
     const ac = new AbortController();
     abortRef.current = ac;
     setState({phase: 'loading'});
-    setRows([]);
+    setModeRows({});
     try {
-      const res = await fetch(`${SPACE_URL}/fhir/CodeSystem/$search`, {
-        method: 'POST',
-        headers: {'Content-Type': 'application/json'},
-        body: fhirParams([
-          ['query', query],
-          ['searchMode', mode],
-          ['count', 10],
-        ]),
-        signal: ac.signal,
-      });
-      if (res.status === 503) {
-        notReady();
-        return;
+      // All four modes at once, top COMPARE_TOP each — the side-by-side
+      // comparison table. (~4 requests of the 30/min budget.)
+      const results = await Promise.all(
+        SEARCH_MODES.map(async (m) => [m.id, await postSearch(query, m.id, COMPARE_TOP)] as const),
+      );
+      if (ac.signal.aborted) return;
+      const byMode: Record<string, SearchRow[]> = {};
+      let any = false;
+      for (const [mode, rows] of results) {
+        byMode[mode] = rows;
+        if (rows.length) any = true;
       }
-      if (res.status === 429) {
-        setState({phase: 'error', message: 'Rate limit reached — wait a minute and try again.'});
-        return;
-      }
-      if (!res.ok) throw new Error(`Space answered ${res.status}`);
-      const bundle = await res.json();
-      setRows(searchRows(bundle));
-      setState({phase: 'done'});
-    } catch (err) {
+      setModeRows(byMode);
+      setState(any ? {phase: 'done'} : {phase: 'done'});
+    } catch {
       if (ac.signal.aborted) return;
       notReady();
       setState({
@@ -210,7 +238,69 @@ export default function TerminologyDemo(): React.JSX.Element {
           'Waiting for it to come back; the form will re-enable when it is ready.',
       });
     }
-  }, [query, mode, startup, notReady]);
+  }, [query, startup, notReady]);
+
+  // Canonical/patient-friendly match + ICD-10-CM mapping for the first few
+  // terms (rate-limit friendly). Defined before runExtract, which uses it.
+  const enrichTerms = useCallback(async (found: ExtractConcept[]) => {
+    const details: TermDetail[] = [];
+    for (const concept of found.slice(0, MAX_TERM_DETAILS)) {
+      const detail: TermDetail = {concept};
+      try {
+        // Canonical search: display IS the patient-friendly name.
+        const rows = await postSearch(concept.matched_text ?? '', 'canonical', 1);
+        if (rows[0]) {
+          detail.patientFriendly = rows[0].display;
+          detail.canonicalId = concept.canonical_id ?? rows[0].code;
+        }
+      } catch {
+        // best-effort enrichment
+      }
+      if (concept.system && concept.code) {
+        try {
+          const res = await fetch(`${SPACE_URL}/fhir/ConceptMap/$translate`, {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: fhirParams([
+              ['system', concept.system],
+              ['code', concept.code],
+              ['targetSystem', 'http://hl7.org/fhir/sid/icd-10-cm'],
+            ]),
+          });
+          if (res.ok) {
+            const params = (await res.json()) as {parameter?: FhirParam[]};
+            const match = translateMatches(params)[0];
+            if (match?.coding?.code) {
+              detail.icd10 = `${match.coding.code} — ${match.coding.display ?? ''}`.trim();
+            }
+          }
+        } catch {
+          // best-effort enrichment
+        }
+      }
+      details.push(detail);
+    }
+    setTermDetails(details);
+    const first = found[0];
+    if (first?.system && first?.code) {
+      try {
+        const res = await fetch(`${SPACE_URL}/fhir/CodeSystem/$lookup`, {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: fhirParams([
+            ['system', first.system],
+            ['code', first.code],
+          ]),
+        });
+        if (res.ok) {
+          const params = (await res.json()) as {parameter?: FhirParam[]};
+          setLookup(lookupSummary(params));
+        }
+      } catch {
+        // best-effort detail enrichment
+      }
+    }
+  }, []);
 
   // Extraction is deliberately independent of search: its own trigger,
   // with `text` passed explicitly so it can never run against a stale
@@ -218,9 +308,9 @@ export default function TerminologyDemo(): React.JSX.Element {
   const runExtract = useCallback(
     async (noteText: string) => {
       setExtractState({phase: 'loading'});
-      setExtractBundle([]);
+      setConcepts([]);
+      setTermDetails([]);
       setLookup(null);
-      setTranslate([]);
       try {
         const res = await fetch(`${SPACE_URL}/fhir/CodeSystem/$extract`, {
           method: 'POST',
@@ -235,15 +325,13 @@ export default function TerminologyDemo(): React.JSX.Element {
           return;
         }
         if (!res.ok) throw new Error(`Space answered ${res.status}`);
-        const bundle = (await res.json()) as {entry?: ExtractEntry[]};
-        setExtractBundle(bundle.entry ?? []);
+        const bundle = (await res.json()) as {entry?: Array<{resource?: ExtractConcept}>};
+        const found = (bundle.entry ?? [])
+          .map((e) => e.resource ?? {})
+          .filter((c) => c.matched_text);
+        setConcepts(found);
         setExtractState({phase: 'idle'});
-        const first = bundle.entry?.find(
-          (e) => e.resource?.system && e.resource?.code,
-        )?.resource;
-        if (first?.system && first?.code) {
-          void runDetail(first.system, first.code);
-        }
+        void enrichTerms(found);
       } catch {
         setExtractState({
           phase: 'error',
@@ -251,40 +339,8 @@ export default function TerminologyDemo(): React.JSX.Element {
         });
       }
     },
-    [notReady],
+    [notReady, enrichTerms],
   );
-
-  const runDetail = useCallback(async (system: string, code: string) => {
-    try {
-      const res = await fetch(`${SPACE_URL}/fhir/CodeSystem/$lookup`, {
-        method: 'POST',
-        headers: {'Content-Type': 'application/json'},
-        body: fhirParams([
-          ['system', system],
-          ['code', code],
-        ]),
-      });
-      if (res.ok) {
-        const params = (await res.json()) as {parameter?: FhirParam[]};
-        setLookup(lookupSummary(params));
-      }
-      const tr = await fetch(`${SPACE_URL}/fhir/ConceptMap/$translate`, {
-        method: 'POST',
-        headers: {'Content-Type': 'application/json'},
-        body: fhirParams([
-          ['system', system],
-          ['code', code],
-          ['targetSystem', 'http://hl7.org/fhir/sid/icd-10-cm'],
-        ]),
-      });
-      if (tr.ok) {
-        const tp = (await tr.json()) as {parameter?: FhirParam[]};
-        setTranslate(translateMatches(tp));
-      }
-    } catch {
-      // best-effort detail enrichment
-    }
-  }, []);
 
   const startupBanner = useMemo(() => {
     if (startup === 'ready')
@@ -325,16 +381,56 @@ export default function TerminologyDemo(): React.JSX.Element {
 
   const formDisabled = startup !== 'ready' || state.phase === 'loading';
 
-  const resultsBody = useMemo(() => {
-    if (state.phase === 'loading') return <p>Searching…</p>;
+  // Side-by-side table: one row per (mode, result); best score per mode bolded.
+  const compareBody = useMemo(() => {
+    if (state.phase === 'loading') return <p>Searching all four modes…</p>;
     if (state.phase === 'error')
       return <p className="demo-error">⚠️ {state.message}</p>;
-    if (state.phase === 'idle') return <p>Type a term and press Search.</p>;
-    if (!rows.length) return <p>No results for this query.</p>;
+    if (state.phase === 'idle') return <p>Type a term and press Compare.</p>;
+    const trs: React.ReactNode[] = [];
+    for (const m of SEARCH_MODES) {
+      const rows = modeRows[m.id] ?? [];
+      if (!rows.length) {
+        trs.push(
+          <tr key={m.id} className="demo-mode-row">
+            <td><strong>{m.label}</strong></td>
+            <td colSpan={5}><em>no results</em></td>
+          </tr>,
+        );
+        continue;
+      }
+      const best = Math.max(...rows.map((r) => r.score ?? 0));
+      rows.forEach((r, i) => {
+        const isTop = r.score === best;
+        trs.push(
+          <tr key={`${m.id}-${i}`} className={i === 0 ? 'demo-mode-row' : undefined}>
+            {i === 0 ? (
+              <td><strong>{m.label}</strong></td>
+            ) : (
+              <td></td>
+            )}
+            <td>{isTop ? <strong>{r.display}</strong> : r.display}</td>
+            <td>
+              <code>{r.code}</code>
+            </td>
+            <td>
+              <code>{r.system?.replace(/^https?:\/\//, '')}</code>
+            </td>
+            <td>{isTop ? <strong>{r.score?.toFixed(3)}</strong> : r.score?.toFixed(3)}</td>
+            <td>
+              {r.grade ? (
+                <span className={GRADE_STYLES[r.grade] ?? 'badge'}>{r.grade}</span>
+              ) : null}
+            </td>
+          </tr>,
+        );
+      });
+    }
     return (
       <table>
         <thead>
           <tr>
+            <th>Mode</th>
             <th>Display</th>
             <th>Code</th>
             <th>System</th>
@@ -342,28 +438,32 @@ export default function TerminologyDemo(): React.JSX.Element {
             <th>Grade</th>
           </tr>
         </thead>
-        <tbody>
-          {rows.map((r, i) => (
-            <tr key={i}>
-              <td>{r.display}</td>
-              <td>
-                <code>{r.code}</code>
-              </td>
-              <td>
-                <code>{r.system?.replace(/^https?:\/\//, '')}</code>
-              </td>
-              <td>{r.score != null ? r.score.toFixed(3) : ''}</td>
-              <td>
-                {r.grade ? (
-                  <span className={GRADE_STYLES[r.grade] ?? 'badge'}>{r.grade}</span>
-                ) : null}
-              </td>
-            </tr>
-          ))}
-        </tbody>
+        <tbody>{trs}</tbody>
       </table>
     );
-  }, [state, rows]);
+  }, [state, modeRows]);
+
+  // Annotation viewer: the note with each identified term highlighted.
+  const annotatedNote = useMemo(() => {
+    if (!concepts.length) return null;
+    const marks = concepts
+      .filter((c) => c.span_start != null && c.span_end != null)
+      .sort((a, b) => (a.span_start ?? 0) - (b.span_start ?? 0));
+    if (!marks.length) return null;
+    const parts: React.ReactNode[] = [];
+    let cursor = 0;
+    marks.forEach((c, i) => {
+      if ((c.span_start ?? 0) > cursor) parts.push(<span key={`t${i}`}>{text.slice(cursor, c.span_start)}</span>);
+      parts.push(
+        <mark key={`m${i}`} title={`${c.ner_label ?? ''} · ${c.status ?? ''} · ${c.display ?? ''}`}>
+          {text.slice(c.span_start, c.span_end)}
+        </mark>,
+      );
+      cursor = c.span_end ?? cursor;
+    });
+    if (cursor < text.length) parts.push(<span key="tail">{text.slice(cursor)}</span>);
+    return <p className="terminology-demo__annotated">{parts}</p>;
+  }, [concepts, text]);
 
   return (
     <div className="terminology-demo">
@@ -379,28 +479,27 @@ export default function TerminologyDemo(): React.JSX.Element {
           maxLength={200}
           disabled={formDisabled}
         />
-        <select
-          value={mode}
-          onChange={(e) => setMode(e.target.value)}
-          disabled={formDisabled}>
-          {SEARCH_MODES.map((m) => (
-            <option key={m.id} value={m.id}>
-              {m.label} — {m.hint}
-            </option>
-          ))}
-        </select>
         <button
           className="button button--primary"
           onClick={() => void runSearch()}
           disabled={formDisabled}>
-          Search
+          Compare all modes
         </button>
       </div>
+      <p className="demo-note">
+        First request after idle may take up to ~2 minutes while the Space
+        wakes. <strong>CPT is excluded</strong> due to AMA licensing. Limited
+        to 30 requests/min per IP —{' '}
+        <a href={`${SPACE_URL}`} target="_blank" rel="noreferrer">
+          Space details
+        </a>
+        .
+      </p>
 
-      <h4>Results — FHIR Bundle from <code>CodeSystem/$search</code></h4>
-      {resultsBody}
+      <h4>Side-by-side — FHIR <code>CodeSystem/$search</code>, all four modes (top {COMPARE_TOP}, best per mode in bold)</h4>
+      {compareBody}
 
-      <h4>Clinical-note extraction — <code>CodeSystem/$extract</code></h4>
+      <h4>Notes extraction — <code>CodeSystem/$extract</code></h4>
       <div className="terminology-demo__controls">
         <textarea
           value={text}
@@ -419,25 +518,48 @@ export default function TerminologyDemo(): React.JSX.Element {
       {extractState.phase === 'error' && (
         <p className="demo-error">⚠️ {extractState.message}</p>
       )}
-      {extractBundle.length > 0 && (
+      {annotatedNote}
+      {termDetails.length > 0 && (
         <table>
           <thead>
             <tr>
-              <th>Matched text</th>
-              <th>Concept</th>
-              <th>Code</th>
+              <th>Term</th>
+              <th>Type</th>
               <th>Status</th>
+              <th>Patient-friendly (canonical)</th>
+              <th>ICD-10-CM</th>
             </tr>
           </thead>
           <tbody>
-            {extractBundle.slice(0, 12).map((e, i) => (
+            {termDetails.map((d, i) => (
               <tr key={i}>
-                <td>{e.resource?.matched_text}</td>
-                <td>{e.resource?.display}</td>
                 <td>
-                  <code>{e.resource?.code}</code>
+                  <strong>{d.concept.matched_text}</strong>
+                  <br />
+                  <small>
+                    <code>{d.concept.source}/{d.concept.code}</code>
+                  </small>
                 </td>
-                <td>{e.resource?.status}</td>
+                <td>{d.concept.ner_label}</td>
+                <td>
+                  {d.concept.status ? (
+                    <span className={STATUS_STYLES[d.concept.status] ?? 'badge'}>
+                      {d.concept.status}
+                    </span>
+                  ) : null}
+                </td>
+                <td>
+                  {d.patientFriendly ?? '—'}
+                  {d.canonicalId ? (
+                    <br />
+                  ) : null}
+                  {d.canonicalId ? (
+                    <small>
+                      <code>{d.canonicalId}</code>
+                    </small>
+                  ) : null}
+                </td>
+                <td>{d.icd10 ? <code>{d.icd10}</code> : '—'}</td>
               </tr>
             ))}
           </tbody>
@@ -456,32 +578,6 @@ export default function TerminologyDemo(): React.JSX.Element {
               </>
             ) : null}
           </p>
-        </>
-      )}
-
-      {translate.length > 0 && (
-        <>
-          <h4>Mapping to ICD-10-CM — <code>ConceptMap/$translate</code></h4>
-          <table>
-            <thead>
-              <tr>
-                <th>Equivalence</th>
-                <th>Target code</th>
-                <th>Target display</th>
-              </tr>
-            </thead>
-            <tbody>
-              {translate.map((m, i) => (
-                <tr key={i}>
-                  <td>{m.equivalence}</td>
-                  <td>
-                    <code>{m.coding?.code}</code>
-                  </td>
-                  <td>{m.coding?.display}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
         </>
       )}
     </div>

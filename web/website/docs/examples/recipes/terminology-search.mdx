@@ -7,12 +7,47 @@ import TerminologyDemo from '@site/src/components/TerminologyDemo';
 # Recipe: Terminology Search — Live Demo
 
 Try medterm4ds terminology operations right here, against a live public
-endpoint: [terminology-demo](https://fhir4ds-terminology-demo-server.hf.space), a
-Hugging Face Docker Space running the **native medterm4ds FHIR R4
-terminology API** — the same app you can self-host, not a simplified
-convenience layer.
+endpoint: the [terminology-demo
+Space](https://fhir4ds-terminology-demo-server.hf.space), running the
+**native medterm4ds FHIR R4 terminology API** — the same app you can
+self-host, not a simplified convenience layer.
+
+:::info Good to know
+
+- The Space **sleeps when idle**; the first request after sleep can take
+  **up to ~2 minutes** to wake — the form stays disabled and tells you
+  what is happening until it is really ready.
+- **CPT is excluded** from everything this demo serves, due to AMA
+  licensing (CPT may not be used in publicly accessible systems).
+- The demo allows **30 requests/minute per IP**. For anything heavier,
+  self-host — the data build is reproducible from your own UMLS download
+  (CPT excluded by design).
+- This page calls the Space directly from your browser (this site is
+  static). The Space's origin allow-list decides which *websites* may
+  call it — that is a courtesy filter, not authentication.
+
+:::
 
 <TerminologyDemo />
+
+## What the four search modes mean (plain English)
+
+- **Lexical** matches the *words* you typed. Fast and exact: "heart
+  attack" finds concepts whose names contain those words — but it cannot
+  find "myocardial infarction" from "heart attack".
+- **Semantic** matches the *meaning*. An embedding model (SapBERT)
+  understands that "heart attack" and "myocardial infarction" are the
+  same thing, so it finds concepts the exact words would miss.
+- **Canonical** goes one step further: it groups codes from *different
+  code systems* that mean the same thing (SNOMED CT, ICD-10-CM, LOINC,
+  RxNorm…) into one anchored value-set card, with a patient-friendly
+  name — "heart attack" resolves to one card joining all the codes for
+  myocardial infarction.
+- **Hybrid** combines lexical and semantic, taking the best of both.
+
+The side-by-side table above runs your query through all four at once so
+you can see the differences on your own terms (top 3 per mode, best
+result per mode in bold).
 
 ## Native FHIR R4 operations
 
@@ -23,16 +58,15 @@ lists everything it serves; the demo uses:
 
 | Operation | FHIR request | What it does |
 |---|---|---|
-| Term search | `POST /fhir/CodeSystem/$search` | `query` + `searchMode` = `lexical` \| `semantic` \| `canonical` \| `hybrid`; returns a searchset `Bundle` of `CodeSystem` codings with match-grade extensions |
-| Note extraction | `POST /fhir/CodeSystem/$extract` | `text` → a `Bundle` of concepts found by GLiNER + medspaCy NER, resolved to codes |
+| Term search | `POST /fhir/CodeSystem/$search` | `query` + `searchMode` = `lexical` \| `semantic` \| `canonical` \| `hybrid`; returns a searchset `Bundle` of codings with score + match-grade on each entry |
+| Note extraction | `POST /fhir/CodeSystem/$extract` | `text` → a `Bundle` of concepts found by GLiNER + medspaCy NER, each with span, type, status and canonical id |
 | Code detail | `POST /fhir/CodeSystem/$lookup` | `system` + `code` → `Parameters` with display, name and properties (incl. the UMLS CUI) |
 | Code mapping | `POST /fhir/ConceptMap/$translate` | `system` + `code` + `targetSystem` → `Parameters` with equivalence-rated matches |
 | Capabilities | `GET /fhir/metadata` | the `CapabilityStatement` |
 
 The server also carries `$validate-code`, `$subsumes`, `$closure`,
-`ValueSet/$expand`, `ConceptMap/$translate` by id, batch/transaction
-`POST /fhir`, and resource-level reads — all unmodified from
-`medterm4ds.create_fhir_app`.
+`ValueSet/$expand`, batch/transaction `POST /fhir`, and resource-level
+reads — all unmodified from `medterm4ds.create_fhir_app`.
 
 ### Example request and response ($search)
 
@@ -59,7 +93,7 @@ POST /fhir/CodeSystem/$search
       "resource": {
         "system": "http://snomed.info/sct",
         "code": "22298006",
-        "display": "Heart Attack"
+        "display": "Myocardial infarction"
       },
       "search": {
         "mode": "match",
@@ -74,41 +108,12 @@ POST /fhir/CodeSystem/$search
 }
 ```
 
-## The Space sleeps
-
-The demo runs on free-tier hardware. After **48 h without traffic the
-Space sleeps**, and the first request after sleep takes up to **~2 minutes**
-to wake — about a minute of that is loading the terminology models
-(SapBERT, FAISS, GLiNER; measured ~55 s on the live Space). The component
-above polls the Space's health endpoint (which reports the model warm-up
-separately from basic liveness), keeps the form disabled until queries
-actually work, and shows that state explicitly ("Checking the terminology
-server…", then "Starting up…").
-
-## Browser calls the Space directly (and why)
-
-This site is hosted on **GitHub Pages, which is static-only** — there is no
-server-side component, so nothing can hide an API key or sign requests. The
-demo above therefore calls the Space **directly, cross-origin**. The only
-browser-side control is the Space's **origin allow-list**: calls from this
-site's origin are accepted, calls from other websites' origins are refused,
-and non-browser clients (curl, scripts) are allowed but rate-limited.
-
-That allow-list is a **speed bump, not authentication** — the `Origin`
-header is browser-supplied and trivially spoofed. Treat the Space as a
-public demo endpoint, not an access-controlled API.
-
 ## Running your own
 
 This demo is a Docker Space wrapping `medterm4ds.create_fhir_app`.
 Everything is in the repo under `deploy/hf-spaces/terminology-demo/`
-(Dockerfile, wrapper app, README with the deploy runbook and licence
-notices). See [Docker deployment](../../interfaces/docker-deployment.md)
-for self-hosting, or use the
-[FHIR server](fhir-server.md) recipe for a FHIR-native surface.
-
-## Rate limits & fair use
-
-The public Space allows 30 requests/minute per IP. For anything heavier,
-self-host — the data build is reproducible from your own UMLS download
-(CPT excluded by design).
+(Dockerfile, wrapper app, README with the deploy runbook, licence notices
+and access-control details). See
+[Docker deployment](../../interfaces/docker-deployment.md) for
+self-hosting, or use the [FHIR server](fhir-server.md) recipe for a
+FHIR-native surface.
