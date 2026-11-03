@@ -11,7 +11,8 @@
     "serve": "docusaurus serve",
     "dev:local": "BASE_URL=/ docusaurus start",
     "dev:local:wsl": "BASE_URL=/ WATCHPACK_POLLING=true docusaurus start",
-    "typecheck": "tsc"
+    "typecheck": "tsc",
+    "test": "node --test src/components/terminologyFhir.test.ts"
   },
   "dependencies": {
     "@docusaurus/core": "3.10.0",
