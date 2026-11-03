@@ -9,10 +9,10 @@ release candidates: per-system top-100; families: brands, acronyms, classes, pan
 | acronyms | 6 | 83.3% | 83.3% | 0.0% | 50.0% |
 | classes | 4 | 75.0% | 75.0% | 0.0% | 50.0% |
 | panels | 4 | 75.0% | 100.0% | 25.0% | 0.0% |
-| dose | 2 | 0.0% | 50.0% | 100.0% | 0.0% |
+| dose | 2 | 50.0% | 50.0% | 50.0% | 0.0% |
 | misspellings | 4 | 50.0% | 50.0% | 0.0% | 50.0% |
 | abstain | 5 | 0.0% | 0.0% | 0.0% | 100.0% |
-| **TOTAL** | 32 | 46.9% | 62.5% | 9.4% | 59.4% |
+| **TOTAL** | 32 | 50.0% | 62.5% | 6.2% | 59.4% |
 
 ## rrf(k=60)+guard
 | family | n | hit@1 | hit@5 | FP@1 | abstain |
@@ -113,6 +113,6 @@ release candidates: per-system top-100; families: brands, acronyms, classes, pan
 ## Calibration evidence (fused-score distributions)
 Scores of TRUE top-1 hits vs confident-but-wrong top-1s per variant (median [min..max]):
 
-- cascade: true top-1 = 0.9162 [0.4194..1.0000] (n=15); confident-wrong top-1 = 0.8942 [0.8832..0.9034] (n=3)
+- cascade: true top-1 = 0.9162 [0.4194..1.0000] (n=16); confident-wrong top-1 = 0.9034 [0.8832..0.9034] (n=2)
 - rrf(k=60): true top-1 = 0.0325 [0.0203..0.0638] (n=16); confident-wrong top-1 = 0.0328 [0.0311..0.0489] (n=6)
 - wsum(l=0.5): true top-1 = 2.8493 [1.4489..5.3675] (n=14); confident-wrong top-1 = 2.0740 [1.4871..3.4115] (n=13)
