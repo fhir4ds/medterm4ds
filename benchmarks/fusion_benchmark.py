@@ -29,7 +29,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import re
 import sys
 from collections.abc import Callable
 from pathlib import Path
@@ -38,8 +37,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from medterm4ds.services import search as sm  # noqa: E402
 
-TOP_K = 100          # per-system candidate depth for the union
-RRF_KS = (10, 60, 100)
+TOP_K = sm.HYBRID_CANDIDATE_DEPTH  # production per-system candidate depth
+RRF_KS = (sm.HYBRID_FUSION_K, 60, 100)  # production k first (QC1-A9)
 WSUM_LAMBDAS = (0.3, 0.5, 0.7)
 
 # --- Golden sets ------------------------------------------------------
@@ -124,7 +123,12 @@ GOLDEN: dict[str, list[tuple[str, dict]]] = {
 
 
 def _surface(text: str) -> str:
-    return " ".join(re.findall(r"[a-z0-9]+", text.lower()))
+    # Production surface equality (QC1-A5): reuse _surface_key — the
+    # local copy lacked accent folding and drifted from the real exact
+    # -surface decisions for accented queries.
+    from medterm4ds.services.search import _surface_key
+
+    return _surface_key(text)
 
 
 def _is_hit(truth, code: str, display: str) -> bool:
@@ -201,7 +205,11 @@ def fuse_rrf_guarded(c: Candidates, k: int, query: str) -> list[tuple]:
     the precision veto lexical had as a pool GATE returns as a GRADE gate.
     """
     rows, _ = fuse_rrf(c, k)
-    from medterm4ds.services.search import _surface_key
+    from medterm4ds.services.search import (
+        GRADE_CERTAIN_COSINE,
+        GRADE_PROBABLE_COSINE,
+        _surface_key,
+    )
     q_key = _surface_key(query)
     out = []
     for ident, rrf_score, display, m in rows:
@@ -210,9 +218,9 @@ def fuse_rrf_guarded(c: Candidates, k: int, query: str) -> list[tuple]:
         exact = m["lex_rank"] is not None and m["lex_rank"] <= 3 and (
             _surface_key(display) == q_key
         )
-        if both and cos >= 0.92:
+        if both and cos >= GRADE_CERTAIN_COSINE:
             gscore = 0.95  # certain band (report-grade proxy)
-        elif cos >= 0.75 or exact:
+        elif cos >= GRADE_PROBABLE_COSINE or exact:
             gscore = 0.80  # probable band
         else:
             gscore = 0.0   # possible -> abstain
@@ -250,9 +258,28 @@ def fuse_wsum(c: Candidates, lam: float) -> list[tuple[tuple, float, str, str]]:
 
 
 def cascade(svc: sm.SearchService, query: str) -> list[tuple[tuple, float, str, str]]:
+    """The HISTORICAL v0.0.8 cascade, reimplemented here (QC1-A3).
+
+    Production hybrid() became the RRF winner, so delegating the
+    baseline to svc.hybrid made 'cascade' silently alias the winner —
+    the baseline must be reproducible from the code under test's
+    predecessor shape: BM25 pool (max(50, 3*count)) -> engine.rerank
+    top_k, cosine grades from the engine."""
+    engine = svc._ensure_semantic()
+    pool = svc.lexical(query, count=min(TOP_K * 3, max(50, TOP_K)))
+    if not pool:
+        pool_sem = engine.search(query, top_k=TOP_K)
+        return [
+            ((r["system"].upper(), r["code"]), float(r["score"]), r["display"], "cascade")
+            for r in pool_sem
+        ]
+    candidates = [
+        {"code": r.code, "system": r.source, "display": r.display} for r in pool
+    ]
+    reranked = engine.rerank(query, candidates, top_k=TOP_K)
     return [
-        ((r.source, r.code), r.score, r.display, "cascade")
-        for r in svc.hybrid(query, count=TOP_K)
+        ((r.get("system", "").upper(), r["code"]), float(r["score"]), r["display"], "cascade")
+        for r in reranked
     ]
 
 
