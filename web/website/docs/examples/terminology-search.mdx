@@ -2,7 +2,10 @@
 title: Terminology Search
 ---
 
-import TerminologyDemo from '@site/src/components/TerminologyDemo';
+import {
+  TerminologyDemoAnnotations,
+  TerminologyDemoSearch,
+} from '@site/src/components/TerminologyDemo';
 
 # Terminology Search
 
@@ -45,15 +48,17 @@ a courtesy filter, not authentication.
 
 :::
 
-<TerminologyDemo />
-
 ### Search
+
+<TerminologyDemoSearch />
 
 The demo runs your query through lexical, semantic and canonical at once
 so you can see the differences on your own terms (top 3 per mode, best
 result per mode highlighted).
 
 ### Annotations
+
+<TerminologyDemoAnnotations />
 
 Paste a clinical note and press **Extract concepts**: each identified
 term is highlighted in the note with its assertion status — mint for

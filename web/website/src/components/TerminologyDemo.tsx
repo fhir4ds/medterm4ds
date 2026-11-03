@@ -10,31 +10,30 @@ import {
 } from './terminologyFhir';
 
 /**
- * Live terminology demo backed by the fhir4ds terminology-demo-server HF
- * Space (https://fhir4ds-terminology-demo-server.hf.space), which serves
- * the REAL medterm4ds FHIR R4 terminology API. All operations below are
- * native FHIR R4 operations using FHIR Parameters request bodies:
+ * Live terminology demo parts backed by the fhir4ds terminology-demo-server
+ * HF Space (https://fhir4ds-terminology-demo-server.hf.space), which serves
+ * the REAL medterm4ds FHIR R4 terminology API. Split into two components so
+ * the docs page can place each inside its own subsection:
  *
- *  - compare search: POST /fhir/CodeSystem/$search for the lexical,
- *    semantic and canonical modes at once (hybrid is supported by the API
- *    but hidden from the demo for now), top 3 each in its own card, best
- *    result per mode highlighted — response is a FHIR Bundle searchset
- *    with ranking (score + match-grade extension) on each ENTRY's `search`
- *    element. Canonical entries' display IS the patient-friendly name.
- *  - annotations: POST /fhir/CodeSystem/$extract — FHIR Bundle whose
- *    entries carry matched_text, span_start/end, ner_label (type),
- *    status and canonical_id; rendered as an annotation viewer over the
- *    note (highlighted terms) plus a per-term table with the
- *    patient-friendly canonical match (canonical $search).
- *  - code detail: POST /fhir/CodeSystem/$lookup + one ICD-10-CM mapping
- *    (ConceptMap/$translate) for the first found concept.
+ *  - <TerminologyDemoSearch /> (### Search): startup banner, the query
+ *    input, and POST /fhir/CodeSystem/$search for lexical, semantic and
+ *    canonical at once — top 3 per mode card, best result highlighted.
+ *    Ranking (score + match-grade extension) lives on each FHIR Bundle
+ *    ENTRY's `search` element; canonical entries' display IS the
+ *    patient-friendly name.
+ *  - <TerminologyDemoAnnotations /> (### Annotations): the note textarea
+ *    and POST /fhir/CodeSystem/$extract — FHIR Bundle entries carry
+ *    matched_text, span_start/end, status and canonical_id; rendered as an
+ *    annotation viewer (status-tinted inline highlights + resolved concept,
+ *    patient-friendly name, code), plus $lookup/$translate detail for the
+ *    first concept.
  *
- * Startup gating: the form stays disabled until the Space is actually
- * usable. GET /health is polled every 2.5 s (5 s timeout per attempt —
- * the first request wakes a sleeping container and may hang, so
- * timeout-then-retry is the expected path, not an error). The gate is on
- * search_ready (models loaded), not db_ready. Any 503 is treated as
- * not-ready and re-enters the same polling loop.
+ * Both gate on the same readiness protocol: GET /health is polled every
+ * 2.5 s (5 s timeout per attempt — the first request wakes a sleeping
+ * container and may hang, so timeout-then-retry is the expected path, not
+ * an error) until search_ready (models loaded), confirmed by
+ * GET /capabilities. Any 503 re-enters the same polling loop. /health is
+ * rate-limit exempt, so the two independent pollers are free.
  */
 
 const SPACE_URL = 'https://fhir4ds-terminology-demo-server.hf.space';
@@ -180,6 +179,46 @@ function useSpaceStartup(): {
   return {status, notReady, retry};
 }
 
+function StartupBanner({
+  startup,
+  retry,
+}: {
+  startup: StartupStatus;
+  retry: () => void;
+}): React.JSX.Element {
+  if (startup === 'ready')
+    return (
+      <p className="terminology-demo__status terminology-demo__status--ready">
+        ✅ <strong>Ready.</strong> Connected to the terminology demo Space (native FHIR R4 —{' '}
+        <a href={`${SPACE_URL}/fhir/metadata`} target="_blank" rel="noreferrer">
+          CapabilityStatement
+        </a>
+        ).
+      </p>
+    );
+  if (startup === 'checking')
+    return <p className="terminology-demo__status">🔎 Checking the terminology server…</p>;
+  if (startup === 'starting')
+    return (
+      <p className="terminology-demo__status">
+        🌅 <strong>Starting up</strong> — the demo Space sleeps when idle; waking it and
+        loading the terminology models takes about a minute, and the first start after a
+        cold stop can take up to about 2 minutes.
+      </p>
+    );
+  return (
+    <div className="terminology-demo__status terminology-demo__status--error">
+      <p>
+        ⚠️ <strong>Could not reach the demo Space</strong> after several minutes of trying.
+        It may still be waking up, or temporarily unavailable.
+      </p>
+      <button className="button button--secondary" onClick={retry}>
+        Retry
+      </button>
+    </div>
+  );
+}
+
 function ModeCard({
   label,
   hint,
@@ -236,20 +275,11 @@ function ModeCard({
   );
 }
 
-export default function TerminologyDemo(): React.JSX.Element {
+/** The search half: startup banner, query input, side-by-side mode cards. */
+export function TerminologyDemoSearch(): React.JSX.Element {
   const [query, setQuery] = useState('myocardial infarction');
-  const [text, setText] = useState(
-    'Patient with type 2 diabetes on metformin. Family history of heart attack.',
-  );
   const [state, setState] = useState<SearchState>({phase: 'idle'});
   const [modeRows, setModeRows] = useState<Record<string, SearchRow[]>>({});
-  const [extractState, setExtractState] = useState<ExtractState>({phase: 'idle'});
-  const [concepts, setConcepts] = useState<ExtractConcept[]>([]);
-  const [termDetails, setTermDetails] = useState<TermDetail[]>([]);
-  const [firstDetail, setFirstDetail] = useState<{
-    lookup: ReturnType<typeof lookupSummary>;
-    icd10?: string;
-  } | null>(null);
   const {status: startup, notReady, retry} = useSpaceStartup();
   const abortRef = useRef<AbortController | null>(null);
 
@@ -285,6 +315,60 @@ export default function TerminologyDemo(): React.JSX.Element {
     }
   }, [query, startup, notReady]);
 
+  const compareBody = useMemo(() => {
+    if (state.phase === 'loading') return <p>Searching each mode…</p>;
+    if (state.phase === 'error')
+      return <p className="terminology-demo__error">⚠️ {state.message}</p>;
+    if (state.phase === 'idle') return <p>Type a term and press Compare.</p>;
+    return (
+      <div className="terminology-demo__grid">
+        {SEARCH_MODES.map((m) => (
+          <ModeCard key={m.id} label={m.label} hint={m.hint} rows={modeRows[m.id] ?? []} />
+        ))}
+      </div>
+    );
+  }, [state, modeRows]);
+
+  return (
+    <div className="terminology-demo">
+      <StartupBanner startup={startup} retry={retry} />
+      <div className="terminology-demo__controls">
+        <input
+          type="text"
+          className="terminology-demo__input"
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+          onKeyDown={(e) => e.key === 'Enter' && runSearch()}
+          placeholder="e.g. heart attack, HbA1c, amoxicillin"
+          maxLength={200}
+          disabled={startup !== 'ready' || state.phase === 'loading'}
+        />
+        <button
+          className="button button--primary terminology-demo__go"
+          onClick={() => void runSearch()}
+          disabled={startup !== 'ready' || state.phase === 'loading'}>
+          Compare all modes
+        </button>
+      </div>
+      {compareBody}
+    </div>
+  );
+}
+
+/** The annotations half: note textarea, extract button, annotation viewer. */
+export function TerminologyDemoAnnotations(): React.JSX.Element {
+  const [text, setText] = useState(
+    'Patient with type 2 diabetes on metformin. Family history of heart attack.',
+  );
+  const [extractState, setExtractState] = useState<ExtractState>({phase: 'idle'});
+  const [concepts, setConcepts] = useState<ExtractConcept[]>([]);
+  const [termDetails, setTermDetails] = useState<TermDetail[]>([]);
+  const [firstDetail, setFirstDetail] = useState<{
+    lookup: ReturnType<typeof lookupSummary>;
+    icd10?: string;
+  } | null>(null);
+  const {status: startup, notReady} = useSpaceStartup();
+
   // Patient-friendly canonical names for the first few extracted terms.
   // Defined before runExtract, which uses it.
   const enrichTerms = useCallback(async (found: ExtractConcept[]) => {
@@ -303,9 +387,8 @@ export default function TerminologyDemo(): React.JSX.Element {
     setTermDetails(details);
   }, []);
 
-  // Extraction is deliberately independent of search: its own trigger,
-  // with `text` passed explicitly so it can never run against a stale
-  // closure capture of the note.
+  // Extraction takes `text` explicitly so it can never run against a
+  // stale closure capture of the note.
   const runExtract = useCallback(
     async (noteText: string) => {
       setExtractState({phase: 'loading'});
@@ -388,58 +471,6 @@ export default function TerminologyDemo(): React.JSX.Element {
     [notReady, enrichTerms],
   );
 
-  const startupBanner = useMemo(() => {
-    if (startup === 'ready')
-      return (
-        <p className="terminology-demo__status terminology-demo__status--ready">
-          ✅ <strong>Ready.</strong> Connected to the terminology demo Space (native FHIR R4 —{' '}
-          <a href={`${SPACE_URL}/fhir/metadata`} target="_blank" rel="noreferrer">
-            CapabilityStatement
-          </a>
-          ).
-        </p>
-      );
-    if (startup === 'checking')
-      return (
-        <p className="terminology-demo__status">🔎 Checking the terminology server…</p>
-      );
-    if (startup === 'starting')
-      return (
-        <p className="terminology-demo__status">
-          🌅 <strong>Starting up</strong> — the demo Space sleeps when idle; waking it and
-          loading the terminology models takes about a minute, and the first start after a
-          cold stop can take up to about 2 minutes.
-        </p>
-      );
-    return (
-      <div className="terminology-demo__status terminology-demo__status--error">
-        <p>
-          ⚠️ <strong>Could not reach the demo Space</strong> after several minutes of trying.
-          It may still be waking up, or temporarily unavailable.
-        </p>
-        <button className="button button--secondary" onClick={retry}>
-          Retry
-        </button>
-      </div>
-    );
-  }, [startup, retry]);
-
-  const formDisabled = startup !== 'ready' || state.phase === 'loading';
-
-  const compareBody = useMemo(() => {
-    if (state.phase === 'loading') return <p>Searching each mode…</p>;
-    if (state.phase === 'error')
-      return <p className="terminology-demo__error">⚠️ {state.message}</p>;
-    if (state.phase === 'idle') return <p>Type a term and press Compare.</p>;
-    return (
-      <div className="terminology-demo__grid">
-        {SEARCH_MODES.map((m) => (
-          <ModeCard key={m.id} label={m.label} hint={m.hint} rows={modeRows[m.id] ?? []} />
-        ))}
-      </div>
-    );
-  }, [state, modeRows]);
-
   // Annotation viewer: the note with each identified term highlighted,
   // status-tinted, carrying its details inline — no separate table.
   const annotatedNote = useMemo(() => {
@@ -481,36 +512,19 @@ export default function TerminologyDemo(): React.JSX.Element {
     return <div className="terminology-demo__note">{parts}</div>;
   }, [concepts, termDetails, text]);
 
+  const busy = startup !== 'ready' || extractState.phase === 'loading';
+
   return (
     <div className="terminology-demo">
-      {startupBanner}
-
-      <div className="terminology-demo__controls">
-        <input
-          type="text"
-          className="terminology-demo__input"
-          value={query}
-          onChange={(e) => setQuery(e.target.value)}
-          onKeyDown={(e) => e.key === 'Enter' && runSearch()}
-          placeholder="e.g. heart attack, HbA1c, amoxicillin"
-          maxLength={200}
-          disabled={formDisabled}
-        />
-        <button
-          className="button button--primary terminology-demo__go"
-          onClick={() => void runSearch()}
-          disabled={formDisabled}>
-          Compare all modes
-        </button>
-      </div>
-
-      <h4>
-        Side-by-side — <code>CodeSystem/$search</code>, top {COMPARE_TOP} per mode, best
-        highlighted
-      </h4>
-      {compareBody}
-
-      <h4>Notes extraction — <code>CodeSystem/$extract</code></h4>
+      {startup !== 'ready' && (
+        <p className="terminology-demo__status">
+          {startup === 'failed'
+            ? '⚠️ The demo Space is unreachable — see the Search section above to retry.'
+            : startup === 'checking'
+              ? '🔎 Waiting for the terminology server…'
+              : '🌅 The demo Space is starting up — extraction unlocks when it is ready.'}
+        </p>
+      )}
       <div className="terminology-demo__controls terminology-demo__controls--column">
         <textarea
           className="terminology-demo__input"
@@ -518,12 +532,12 @@ export default function TerminologyDemo(): React.JSX.Element {
           onChange={(e) => setText(e.target.value)}
           rows={3}
           maxLength={4000}
-          disabled={startup !== 'ready'}
+          disabled={busy}
         />
         <button
           className="button button--secondary terminology-demo__go"
           onClick={() => void runExtract(text)}
-          disabled={startup !== 'ready' || extractState.phase === 'loading'}>
+          disabled={busy}>
           {extractState.phase === 'loading' ? 'Extracting…' : 'Extract concepts'}
         </button>
       </div>
@@ -531,24 +545,20 @@ export default function TerminologyDemo(): React.JSX.Element {
         <p className="terminology-demo__error">⚠️ {extractState.message}</p>
       )}
       {annotatedNote}
-
       {firstDetail && (firstDetail.lookup.display || firstDetail.lookup.systemName) && (
-        <>
-          <h4>Code detail — <code>CodeSystem/$lookup</code> + <code>$translate</code></h4>
-          <p>
-            <strong>{firstDetail.lookup.display ?? firstDetail.lookup.systemName}</strong>
-            {firstDetail.lookup.cui ? (
-              <>
-                {' '}— UMLS CUI <code>{firstDetail.lookup.cui}</code>
-              </>
-            ) : null}
-            {firstDetail.icd10 ? (
-              <>
-                {' '}· ICD-10-CM <code>{firstDetail.icd10}</code>
-              </>
-            ) : null}
-          </p>
-        </>
+        <p className="terminology-demo__codedetail">
+          <strong>{firstDetail.lookup.display ?? firstDetail.lookup.systemName}</strong>
+          {firstDetail.lookup.cui ? (
+            <>
+              {' '}— UMLS CUI <code>{firstDetail.lookup.cui}</code>
+            </>
+          ) : null}
+          {firstDetail.icd10 ? (
+            <>
+              {' '}· ICD-10-CM <code>{firstDetail.icd10}</code>
+            </>
+          ) : null}
+        </p>
       )}
     </div>
   );
