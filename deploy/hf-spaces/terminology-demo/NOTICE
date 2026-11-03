@@ -1,4 +1,4 @@
-NOTICE — terminology-demo (https://fhir4ds-terminology-demo.hf.space)
+NOTICE — terminology-demo (https://fhir4ds-terminology-demo-server.hf.space)
 =====================================================================
 
 CPT EXCLUSION (AMA)
@@ -34,4 +34,4 @@ https://www.nlm.nih.gov/research/umls/licensedcontent/umlslicense.html
   Services; public domain.
 
 The licence-restricted lookup.duckdb is stored in the PRIVATE dataset
-fhir4ds/medterm4ds-lookup and is never baked into this public Space repo.
+fhir4ds/terminology-demo-data and is never baked into this public Space repo.

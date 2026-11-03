@@ -49,6 +49,7 @@ from fastapi.responses import JSONResponse
 
 from medterm4ds import __version__, create_fhir_app
 from medterm4ds.apps.fhir_api import FhirApiSettings
+from medterm4ds.services import search as _search_module
 
 # On the HF Space the data volumes may be attached (preferred) or fetched
 # at startup from the private dataset / public terminology repo — see
@@ -58,6 +59,18 @@ if os.getenv("DEMO_PROVISION_DATA", "false").lower() == "true":
     from startup_data import ensure_data
 
     ensure_data()
+
+# The FHIR app's own default search_index_dir is a PINNED developer path
+# (/mnt/d/..., fhir_api.py:95) which disables the library's terminology-
+# release resolution (services/search.py uses explicitly-passed dirs
+# "exactly as given"). Default instead to the services' UNPINNED cache
+# default so SearchService resolves the mounted release under
+# MEDTERM4DS_CACHE_DIR/terminology/<release>/ (lexical/, semantic/ and
+# model/ families) — the library's intended fresh-install path.
+SEARCH_INDEX_DIR = os.getenv(
+    "MEDTERM4DS_SEARCH_INDEX_DIR", _search_module.DEFAULT_SEARCH_INDEX_DIR
+)
+EMBEDDING_MODEL_DIR = os.getenv("MEDTERM4DS_EMBEDDING_MODEL_DIR")
 
 logger = logging.getLogger("terminology-demo")
 
@@ -99,6 +112,7 @@ def _env_str(name: str) -> str | None:
 fhir_settings = FhirApiSettings(
     db_path=Path(DB_PATH),
     memory_profile=MEMORY_PROFILE,
+    search_index_dir=SEARCH_INDEX_DIR,
     threads=DB_THREADS,
     temp_directory=_env_str("MEDTERM4DS_TEMP_DIR"),
     memory_limit=_env_str("MEDTERM4DS_MEMORY_LIMIT"),
@@ -106,6 +120,9 @@ fhir_settings = FhirApiSettings(
     cache_indexes=os.getenv("MEDTERM4DS_CACHE_INDEXES", "false").lower() == "true",
 )
 fhir_app = create_fhir_app(fhir_settings)
+# The FHIR lifespan pins the SearchService singleton to these same dirs
+# (configure_search_service), and MEDTERM4DS_EMBEDDING_MODEL_DIR from the
+# environment is honored there too — no further wiring needed.
 
 
 # ---------------------------------------------------------------------------
@@ -166,8 +183,9 @@ def _warm_up(app: FastAPI) -> None:
         # Full extract path (NER + section detection + resolution) —
         # more of the pipeline is lazy beyond find_terms alone.
         get_extraction_service().extract("Patient has diabetes.", format="codes")
-    except Exception:
+    except Exception as exc:
         logger.exception("terminology-demo warm-up failed; /health stays 'starting'")
+        app.state.warm_error = f"{type(exc).__name__}: {exc}"
         return
     app.state.search_ready = True
     logger.info("terminology-demo warm-up complete: search_ready=True")
@@ -195,6 +213,7 @@ async def lifespan(app: FastAPI):
     async with fhir_app.router.lifespan_context(fhir_app):
         app.state.db_ready = True
         app.state.search_ready = False
+        app.state.warm_error = None
         threading.Thread(
             target=_warm_up, args=(app,), name="demo-warmup", daemon=True
         ).start()
@@ -203,6 +222,7 @@ async def lifespan(app: FastAPI):
         finally:
             app.state.db_ready = False
             app.state.search_ready = False
+            app.state.warm_error = None
 
 
 app = FastAPI(
@@ -311,14 +331,18 @@ async def health(request: Request) -> dict[str, Any]:
     # Cheap by design: two in-memory booleans, no engine/model touch.
     db_ready = bool(getattr(request.app.state, "db_ready", False))
     search_ready = bool(getattr(request.app.state, "search_ready", False))
+    warm_error = getattr(request.app.state, "warm_error", None)
     ready = db_ready and search_ready
     return {
         "status": "ready" if ready else "starting",
         "ready": ready,
         "db_ready": db_ready,
         "search_ready": search_ready,
+        # Why search_ready is stuck false, when warm-up failed — never
+        # leave an operator staring at "starting" forever.
+        "warm_error": warm_error,
         "version": __version__,
-        "service": "terminology-demo",
+        "service": "terminology-demo-server",
     }
 
 
@@ -339,7 +363,7 @@ async def capabilities(request: Request) -> dict[str, Any]:
         }
     )
     return {
-        "service": "terminology-demo",
+        "service": "terminology-demo-server",
         "version": __version__,
         "api": "native FHIR R4 (medterm4ds.apps.fhir_api, unmodified)",
         "mounted_terminology_release": _mounted_release(),

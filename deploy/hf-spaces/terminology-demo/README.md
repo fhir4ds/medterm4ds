@@ -16,7 +16,7 @@ Serves the **real medterm4ds FHIR R4 terminology API unmodified**
 (`medterm4ds.create_fhir_app`) on free-tier hardware (2 vCPU / 16 GB); the
 Space **sleeps after 48 h idle**. It is a demo, not an uptime-bearing API.
 
-Live at: **https://fhir4ds-terminology-demo.hf.space**
+Live at: **https://fhir4ds-terminology-demo-server.hf.space**
 
 ## API — native FHIR R4 (plus two demo endpoints)
 
@@ -169,7 +169,7 @@ i.e. the account that accepted the UMLS license):
 > Metathesaurus (2025AB) as part of a public demonstration service:
 >
 > - Service: terminology-demo, a Hugging Face Docker Space at
->   https://fhir4ds-terminology-demo.hf.space (source: https://huggingface.co/spaces/fhir4ds/terminology-demo)
+>   https://fhir4ds-terminology-demo-server.hf.space (source: https://huggingface.co/spaces/fhir4ds/terminology-demo-server)
 > - Content distributed: a filtered subset (7 sources: SNOMED CT,
 >   ICD-10-CM, ICD-10-PCS, RxNorm, LOINC, HCPCS, CVX; active atoms,
 >   hierarchy edges, RxNorm NDC attributes) served via a search/lookup API
@@ -194,7 +194,7 @@ code pushed to the Space repo root (`Dockerfile`, `app.py`,
 (`DEMO_ALLOWED_ORIGINS`, `DEMO_HF_TOKEN`) and variables set
 (`DEMO_RATE_LIMIT_PER_MINUTE=30`, `DEMO_LOOKUP_DATASET`);
 the CPT-excluded `lookup.duckdb` (207 MB) uploaded to the PRIVATE dataset
-**fhir4ds/medterm4ds-lookup** (never in this public repo — UMLS
+**fhir4ds/terminology-demo-data** (never in this public repo — UMLS
 redistribution requires the private, token-gated path or a volume mount).
 
 **Data provisioning:** volume mounts win when attached (see below);
@@ -207,9 +207,9 @@ image or the public repo.
 **Remaining for Joel — attach volumes (UI-only; the hub API exposes no
 volume-mount endpoint as of 2026-11-03):**
 
-1. Open https://huggingface.co/spaces/fhir4ds/terminology-demo/settings
+1. Open https://huggingface.co/spaces/fhir4ds/terminology-demo-server/settings
 2. *Storage* section → mount the repos read-only:
-   - dataset `fhir4ds/medterm4ds-lookup` (private) → `/data`
+   - dataset `fhir4ds/terminology-demo-data` (private) → `/data`
      (places `lookup.duckdb` at `/data/lookup.duckdb`)
    - model `fhir4ds/terminology` (public) → `/data/cache`
      (the release resolves as `/data/cache/terminology/<release>/`; if the
@@ -221,7 +221,7 @@ volume-mount endpoint as of 2026-11-03):**
 **Verify (live):**
 
 ```bash
-B=https://fhir4ds-terminology-demo.hf.space
+B=https://fhir4ds-terminology-demo-server.hf.space
 curl -s $B/health                     # db_ready + search_ready flags
 curl -s $B/fhir/metadata              # CapabilityStatement
 curl -s -X POST $B/fhir/CodeSystem/\$lookup -H 'Content-Type: application/json' \

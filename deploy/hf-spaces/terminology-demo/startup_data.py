@@ -4,7 +4,7 @@ Volume mounts (the preferred configuration, attached in the Space settings
 UI) win: if the files are already at their mount points this module does
 nothing. Otherwise it fetches them at container start into the Space's
 ephemeral /data — the licence-restricted lookup.duckdb from the PRIVATE
-dataset (fhir4ds/medterm4ds-lookup, token-gated; never baked into the
+dataset (fhir4ds/terminology-demo-data, token-gated; never baked into the
 public image or repo) and the public fhir4ds/terminology release via
 medterm4ds's own atomic downloader.
 """
@@ -19,7 +19,7 @@ logger = logging.getLogger("terminology-demo.startup-data")
 
 DB_PATH = os.getenv("MEDTERM4DS_DB", "/data/lookup.duckdb")
 CACHE_DIR = Path(os.getenv("MEDTERM4DS_CACHE_DIR", "/data/cache"))
-LOOKUP_DATASET = os.getenv("DEMO_LOOKUP_DATASET", "fhir4ds/medterm4ds-lookup")
+LOOKUP_DATASET = os.getenv("DEMO_LOOKUP_DATASET", "fhir4ds/terminology-demo-data")
 
 
 def ensure_lookup_db() -> None:
@@ -30,7 +30,7 @@ def ensure_lookup_db() -> None:
     if not token:
         raise RuntimeError(
             f"{DB_PATH} is missing and no DEMO_HF_TOKEN/HF_TOKEN is set. "
-            "Either attach the private dataset fhir4ds/medterm4ds-lookup as "
+            "Either attach the private dataset fhir4ds/terminology-demo-data as "
             "a read-only volume at /data/lookup.duckdb, or set a token "
             "secret with read access to that dataset."
         )

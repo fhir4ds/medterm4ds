@@ -2,7 +2,7 @@ import React, {useCallback, useEffect, useMemo, useRef, useState} from 'react';
 
 /**
  * Live terminology demo backed by the fhir4ds terminology-demo HF Space
- * (https://fhir4ds-terminology-demo.hf.space), which serves the REAL
+ * (https://fhir4ds-terminology-demo-server.hf.space), which serves the REAL
  * medterm4ds FHIR R4 terminology API. All operations below are native FHIR
  * R4 operations using FHIR Parameters request bodies:
  *
@@ -22,7 +22,7 @@ import React, {useCallback, useEffect, useMemo, useRef, useState} from 'react';
  * not-ready and re-enters the same polling loop.
  */
 
-const SPACE_URL = 'https://fhir4ds-terminology-demo.hf.space';
+const SPACE_URL = 'https://fhir4ds-terminology-demo-server.hf.space';
 
 const HEALTH_POLL_INTERVAL_MS = 2500;
 const FETCH_TIMEOUT_MS = 5000;
