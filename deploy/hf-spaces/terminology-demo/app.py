@@ -260,18 +260,14 @@ async def origin_allowlist_and_rate_limit(request: Request, call_next):
     #    NOT authentication.
     origin = request.headers.get("origin")
     if origin is not None and origin not in ALLOWED_ORIGINS:
-        # The hf.space platform edge echoes any request Origin into an
-        # Access-Control-Allow-Origin header on responses that don't set
-        # one (verified live) — including this refusal. Pre-set ACAO to a
-        # FIXED allowed origin so the edge cannot inject an echo: a
-        # browser on a stranger origin gets a non-matching ACAO and
-        # cannot read even this 403 body.
+        # Spec-correct refusal: 403 with NO access-control-allow-origin
+        # (absence IS the refusal). NOTE (verified live): the hf.space
+        # platform edge nonetheless injects an echoed ACAO onto this
+        # response — it overwrites the header even when the app pins it —
+        # so the browser sees the echo. Nothing the app sends can prevent
+        # that; the protection is the 403 itself (no data returned).
         return JSONResponse(
             status_code=403,
-            headers={
-                "Access-Control-Allow-Origin": ALLOWED_ORIGINS[0],
-                "Vary": "Origin",
-            },
             content={"detail": f"Origin {origin!r} is not allowed to call this demo API."},
         )
 
