@@ -31,6 +31,7 @@ from medterm4ds.apps._asyncutil import run_db as _run_db
 from medterm4ds.core.config import local_duckdb_config
 from medterm4ds.core.env import env_bool, env_int, env_str
 from medterm4ds.core.models import CodeRef
+from medterm4ds.core.paths import DEFAULT_FHIR4PX_BASELINE_DIR, cache_dir
 from medterm4ds.engines.duckdb import LocalDuckDBEngine
 from medterm4ds.engines.fhir import (
     SYSTEM_TO_FHIR_URI,
@@ -92,7 +93,10 @@ MAX_EXTRACT_TEXT_CHARS = int(os.getenv("MEDTERM4DS_MAX_EXTRACT_TEXT_CHARS", "500
 # against reflected XSS in EHR clients that render OperationOutcome.diagnostics
 # as HTML, and against log-injection via control chars.
 MAX_ERROR_FIELD_CHARS = 256
-DEFAULT_SEARCH_INDEX_DIR = "/mnt/d/fhir4px-model/dist/naming_bm25"
+# (AMUX-44) DEFAULT_SEARCH_INDEX_DIR is imported from medterm4ds.core.paths
+# above — cache-root-derived, byte-equal to services.search's sentinel, so
+# unpinned (auto-provisionable) detection keeps working. The historical
+# /mnt/d/fhir4px-model literal was removed.
 
 
 TRUNCATION_EXT_URL = "http://hl7.org/fhir/StructureDefinition/valueset-toocostly"
@@ -131,14 +135,16 @@ def _resolve_max_depth(default: int = 5) -> int:
         logger.warning(
             "FHIR_VS_MAX_DEPTH=%r is not a valid integer; using default %d. "
             "Set to a non-negative integer to override the descendant depth cap.",
-            raw, default,
+            raw,
+            default,
         )
         return default
     if value < 0:
         logger.warning(
             "FHIR_VS_MAX_DEPTH=%d is negative; using default %d. Negative "
             "values are not meaningful (use 0 for root-only expansion).",
-            value, default,
+            value,
+            default,
         )
         return default
     return value
@@ -160,14 +166,18 @@ def _truncation_extensions(
     if depth_cap_hit and max_depth is not None:
         reasons.append(f"depth-limited at {max_depth}")
     suffix = "; set FHIR_VS_MAX_DEPTH to override" if max_depth is not None else ""
-    return [{
-        "url": TRUNCATION_EXT_URL,
-        "valueBoolean": True,
-        "extension": [{
-            "url": "reason",
-            "valueString": ", ".join(reasons) + suffix,
-        }],
-    }]
+    return [
+        {
+            "url": TRUNCATION_EXT_URL,
+            "valueBoolean": True,
+            "extension": [
+                {
+                    "url": "reason",
+                    "valueString": ", ".join(reasons) + suffix,
+                }
+            ],
+        }
+    ]
 
 
 def expand_url_pattern(
@@ -290,11 +300,13 @@ def expand_url_pattern(
         if include_root:
             root_infos = get_code_infos([CodeRef(source, code)], engine=engine)
             if root_infos and root_infos[0]:
-                contains.append({
-                    "system": system_uri,
-                    "code": code,
-                    "display": root_infos[0].name or code,
-                })
+                contains.append(
+                    {
+                        "system": system_uri,
+                        "code": code,
+                        "display": root_infos[0].name or code,
+                    }
+                )
             else:
                 # QC-247 (MEDIUM): an unknown root code (typo'd / retired
                 # SCTID, or a non-numeric code like 'ABCDEF') previously
@@ -337,11 +349,13 @@ def expand_url_pattern(
         # count_limited: more descendants observed than fit in the budget.
         count_limited = len(relations) > descendant_budget
         for rel in relations[:descendant_budget]:
-            contains.append({
-                "system": system_uri,
-                "code": rel.target.code,
-                "display": rel.target_display or rel.target.code,
-            })
+            contains.append(
+                {
+                    "system": system_uri,
+                    "code": rel.target.code,
+                    "display": rel.target_display or rel.target.code,
+                }
+            )
         # VS-04 SKEPTIC QA-065: when max_depth=0 (operator explicitly caps
         # at root-only), the descendant walk produces no relations BUT the
         # expansion is still truncated — the client must see the toocostly
@@ -388,7 +402,10 @@ def expand_url_pattern(
         else:
             total = len(contains)
         return build_valueset_expand(
-            contains[:count], url=url, extensions=extensions, total=total,
+            contains[:count],
+            url=url,
+            extensions=extensions,
+            total=total,
         )
 
     raise ValueError(
@@ -400,9 +417,7 @@ def expand_url_pattern(
     )
 
 
-def resolve_implicit_vs_gate(
-    url: str, engine: LocalDuckDBEngine
-) -> tuple[str, str]:
+def resolve_implicit_vs_gate(url: str, engine: LocalDuckDBEngine) -> tuple[str, str]:
     """Resolve a ValueSet url to a membership gate (source, root_code).
 
     Valid forms are exactly those ``expand_url_pattern`` supports (the
@@ -459,9 +474,7 @@ def resolve_implicit_vs_gate(
             "validating against the whole code system."
         )
     if fhir_vs.lower() == "refset":
-        raise ValueError(
-            f"?fhir_vs=refset is not implemented (no refset data): {url!r}"
-        )
+        raise ValueError(f"?fhir_vs=refset is not implemented (no refset data): {url!r}")
     if query_code is None and len(path_parts) < 2:
         # Bare system form: {snomed}?fhir_vs — the WHOLE code system is
         # the set (R4 snomedct.html Implicit Value Sets). Membership =
@@ -473,15 +486,11 @@ def resolve_implicit_vs_gate(
     # an error, not an empty set.
     root_infos = get_code_infos([CodeRef("SNOMEDCT_US", code)], engine=engine)
     if not root_infos or root_infos[0] is None:
-        raise ValueError(
-            f"Unknown root concept {code!r} in ValueSet url: {url!r}"
-        )
+        raise ValueError(f"Unknown root concept {code!r} in ValueSet url: {url!r}")
     return "SNOMEDCT_US", code
 
 
-def vs_membership(
-    engine: LocalDuckDBEngine, gate: tuple[str, str], source: str, code: str
-) -> bool:
+def vs_membership(engine: LocalDuckDBEngine, gate: tuple[str, str], source: str, code: str) -> bool:
     """Membership test for an implicit ValueSet gate (V1 fix).
 
     Member iff code == root OR code is a descendant of root. Uses the
@@ -522,9 +531,7 @@ IMPLICIT_CONCEPT_MAP_URL = "urn:medterm4ds:crosswalk"
 ATHENA_CONCEPT_MAP_URL = "urn:medterm4ds:athena-conceptmap"
 
 
-def resolve_concept_map_url(
-    url: str | None, concept_map_version: str | None
-) -> None:
+def resolve_concept_map_url(url: str | None, concept_map_version: str | None) -> None:
     """Validate $translate map-selection params against the implicit map.
 
     Raises:
@@ -561,9 +568,15 @@ def resolve_concept_map_url(
 @dataclass(frozen=True)
 class FhirApiSettings:
     """FHIR facade settings."""
+
     db_path: Path
     memory_profile: str = "fast"
-    search_index_dir: str = DEFAULT_SEARCH_INDEX_DIR
+    # AMUX-44: None = unset → the search service's release-aware 'auto'
+    # resolution (terminology release → split → legacy cache) runs and
+    # provisions on first use. An explicit MEDTERM4DS_SEARCH_INDEX_DIR
+    # value pins the layout (used as-is, never auto-provisioned). The old
+    # /mnt/d/fhir4px-model default silently defeated release resolution.
+    search_index_dir: str | None = None
     prepare_cache: bool = True
     # QC-391 (MEDIUM): single source of truth per GLOBAL_RULES — the FHIR
     # surface had a hardcoded 8-source tuple omitting ATC (the QC-341
@@ -595,7 +608,7 @@ class FhirApiSettings:
         return cls(
             db_path=Path(db_path),
             memory_profile=os.getenv("MEDTERM4DS_MEMORY_PROFILE", "fast"),
-            search_index_dir=os.getenv("MEDTERM4DS_SEARCH_INDEX_DIR", DEFAULT_SEARCH_INDEX_DIR),
+            search_index_dir=os.getenv("MEDTERM4DS_SEARCH_INDEX_DIR") or None,
             # QC-390: same env contract as the MCP server (apps/mcp.py
             # McpSettings.from_env) so operators tune both surfaces once.
             sources=normalize_sources(os.getenv("MEDTERM4DS_SOURCES")),
@@ -615,6 +628,7 @@ class FhirApiSettings:
             prepare_cache=env_bool("MEDTERM4DS_PREPARE_CACHE", True),
             cache_indexes=env_bool("MEDTERM4DS_CACHE_INDEXES", False),
         )
+
 
 _FHIR_DATE_RE = re.compile(
     r"^\d{4}"
@@ -644,7 +658,9 @@ def validate_fhir_date(value: str, param_name: str) -> None:
 
 
 def reject_unsupported_version_params(
-    *, version: str | None = None, system_version: str | None = None,
+    *,
+    version: str | None = None,
+    system_version: str | None = None,
     kind: str = "code system",
 ) -> None:
     """Fail loud on version-selection params (H1 fix, N2-family).
@@ -683,14 +699,30 @@ def infer_system_uri(code: str) -> str | None:
 
 
 _EXPAND_UNSUPPORTED_PARAMS = (
-    "includeDesignations", "designation", "includeDefinition",
-    "excludeNested", "excludeNotForUI", "excludePostCoordinated",
-    "displayLanguage", "property", "useSupplement", "context",
+    "includeDesignations",
+    "designation",
+    "includeDefinition",
+    "excludeNested",
+    "excludeNotForUI",
+    "excludePostCoordinated",
+    "displayLanguage",
+    "property",
+    "useSupplement",
+    "context",
     "contextTac",
 )
 _EXPAND_KNOWN_PARAMS = frozenset(
-    ("url", "filter", "count", "offset", "activeOnly", "system",
-     "date", "valueSetVersion", "_format")
+    (
+        "url",
+        "filter",
+        "count",
+        "offset",
+        "activeOnly",
+        "system",
+        "date",
+        "valueSetVersion",
+        "_format",
+    )
     + _EXPAND_UNSUPPORTED_PARAMS
 )
 
@@ -700,34 +732,82 @@ _EXPAND_KNOWN_PARAMS = frozenset(
 # Each set = declared params + spec-declared-but-unsupported ones (which
 # fail loudly via their own checks) + _format.
 _LOOKUP_KNOWN_PARAMS = frozenset(
-    ("system", "code", "version", "systemVersion", "_format",
-     # Unsupported-but-R4-declared: rejected via the checks below.
-     "coding", "property", "date", "displayLanguage"),
+    (
+        "system",
+        "code",
+        "version",
+        "systemVersion",
+        "_format",
+        # Unsupported-but-R4-declared: rejected via the checks below.
+        "coding",
+        "property",
+        "date",
+        "displayLanguage",
+    ),
 )
 _CS_VALIDATE_KNOWN_PARAMS = frozenset(
-    ("system", "code", "version", "systemVersion", "date", "inferSystem",
-     "abstract", "display", "displayLanguage", "coding", "codeableConcept",
-     "property", "_format"),
+    (
+        "system",
+        "code",
+        "version",
+        "systemVersion",
+        "date",
+        "inferSystem",
+        "abstract",
+        "display",
+        "displayLanguage",
+        "coding",
+        "codeableConcept",
+        "property",
+        "_format",
+    ),
 )
 _VS_VALIDATE_KNOWN_PARAMS = frozenset(
-    ("system", "code", "version", "systemVersion", "date",
-     "inferSystem", "abstract", "display", "displayLanguage",
-     "coding", "codeableConcept", "property", "url",
-     "valueSetVersion", "context", "contextTac", "filter", "_format"),
+    (
+        "system",
+        "code",
+        "version",
+        "systemVersion",
+        "date",
+        "inferSystem",
+        "abstract",
+        "display",
+        "displayLanguage",
+        "coding",
+        "codeableConcept",
+        "property",
+        "url",
+        "valueSetVersion",
+        "context",
+        "contextTac",
+        "filter",
+        "_format",
+    ),
 )
 
 _SUBSUMES_KNOWN_PARAMS = frozenset(
-    ("system", "codeA", "codeB", "version", "systemVersion",
-     "codingA", "codingB", "_format"),
+    ("system", "codeA", "codeB", "version", "systemVersion", "codingA", "codingB", "_format"),
 )
 # W4 fix (TS-19): the EA family's last two ops. $translate's declared
 # params (R4 §4.9.13.1) + the aliases this server accepts (sourceCode,
 # lowercase targetsystem) + reverse (T1). $closure (§4.9.16.1): name,
 # concept, version. Both include _format.
 _TRANSLATE_KNOWN_PARAMS = frozenset(
-    ("url", "conceptMapVersion", "system", "code", "sourceCode",
-     "targetSystem", "targetsystem", "source", "targetCode", "reverse",
-     "coding", "codeableConcept", "_format"),
+    (
+        "url",
+        "conceptMapVersion",
+        "system",
+        "code",
+        "sourceCode",
+        "targetSystem",
+        "targetsystem",
+        "source",
+        "targetCode",
+        "reverse",
+        "coding",
+        "codeableConcept",
+        "_format",
+    ),
 )
 _CLOSURE_KNOWN_PARAMS = frozenset(
     ("name", "concept", "version", "_format"),
@@ -756,10 +836,7 @@ def _parameter_names_present(body: dict[str, Any]) -> set[str]:
 def _raw_parameter_value(body: dict[str, Any], name: str) -> Any:
     """First raw value[x] of a named parameter in a FHIR Parameters body."""
     for param in body.get("parameter", []) if isinstance(body, dict) else []:
-        if (
-            isinstance(param, dict)
-            and param.get("name") == name
-        ):
+        if isinstance(param, dict) and param.get("name") == name:
             for k, v in param.items():
                 if k.startswith("value"):
                     return v
@@ -767,8 +844,11 @@ def _raw_parameter_value(body: dict[str, Any], name: str) -> Any:
 
 
 def reject_unknown_query_params(
-    request: Request, known: frozenset[str], operation: str,
-    *, known_prefixes: tuple[str, ...] = (),
+    request: Request,
+    known: frozenset[str],
+    operation: str,
+    *,
+    known_prefixes: tuple[str, ...] = (),
 ) -> None:
     """400 on query params the operation does not declare (EA fix).
 
@@ -780,7 +860,8 @@ def reject_unknown_query_params(
     ``property`` accepts dotted sub-selectors like ``property.code``).
     """
     unknown = {
-        name for name in set(request.query_params) - known
+        name
+        for name in set(request.query_params) - known
         if not any(name.startswith(pfx) for pfx in known_prefixes)
     }
     if unknown:
@@ -809,7 +890,7 @@ def _terminology_lexical_dir() -> Path | None:
     return term.lexical if term.lexical.is_dir() else None
 
 
-def _load_bm25_indexes(search_dir: str) -> dict[str, Any]:
+def _load_bm25_indexes(search_dir: str | None) -> dict[str, Any]:
     """Probe the BM25 search index directory and report what's available.
 
     Does NOT load indexes into a module global — services.search.SearchService
@@ -817,11 +898,29 @@ def _load_bm25_indexes(search_dir: str) -> dict[str, Any]:
     surfaces). This function just produces a summary dict so the startup
     banner can tell operators what's available and what's missing.
 
-    Terminology-layout aware: when the legacy dir is absent but the
-    ``fhir4ds/terminology`` release serves a lexical family locally,
-    report from the release instead of warning (the fresh-install path).
+    ``search_dir`` None (AMUX-44) means the operator did not pin
+    MEDTERM4DS_SEARCH_INDEX_DIR: report from the terminology release when
+    present (the fresh-install first-use path provisions it), else from the
+    cache-derived default lexical dir. An explicit dir is reported as-is.
     """
     expected = ("condition", "lab", "medication", "procedure", "vaccine", "body_structure")
+    if search_dir is None:
+        term_dir = _terminology_lexical_dir()
+        if term_dir is not None:
+            loaded = [c for c in expected if (term_dir / f"{c}.json").exists()]
+            if loaded:
+                logger.info(
+                    "  BM25 from terminology release: %s (%s)",
+                    ", ".join(loaded),
+                    term_dir,
+                )
+                return {
+                    "loaded": loaded,
+                    "missing": [c for c in expected if c not in loaded],
+                    "flat_format": [],
+                    "dir": str(term_dir),
+                }
+        search_dir = str(cache_dir() / "lexical")
     search_path = Path(search_dir)
     if not search_path.is_dir():
         term_dir = _terminology_lexical_dir()
@@ -830,7 +929,8 @@ def _load_bm25_indexes(search_dir: str) -> dict[str, Any]:
             if loaded:
                 logger.info(
                     "  BM25 from terminology release: %s (%s)",
-                    ", ".join(loaded), term_dir,
+                    ", ".join(loaded),
+                    term_dir,
                 )
                 return {
                     "loaded": loaded,
@@ -890,10 +990,27 @@ class _PatientFriendlyCache:
         exist, silently disabling patient-friendly enrichment for three
         code systems on the $lookup surface.
         """
-        baseline = Path(os.getenv("MEDTERM4DS_FHIR4PX_BASELINE", "/mnt/d/medterm4ds/reports/fhir4px"))
+        # AMUX-44: env var → cache-derived reports root → loud WARNING when
+        # missing (the historical /mnt/d default silently disabled patient-
+        # friendly enrichment everywhere except the author's machine).
+        baseline = Path(os.getenv("MEDTERM4DS_FHIR4PX_BASELINE") or DEFAULT_FHIR4PX_BASELINE_DIR)
+        if not baseline.is_dir():
+            logger.warning(
+                "Patient-friendly baseline dir %s does not exist — "
+                "$lookup patient-friendly enrichment will be OFF. Set "
+                "MEDTERM4DS_FHIR4PX_BASELINE to the directory containing "
+                "patient_friendly_<source>.json to enable it.",
+                baseline,
+            )
         sources = (
-            "snomedct_us", "rxnorm", "icd10cm", "icd10pcs",
-            "lnc", "cpt", "hcpcs", "cvx",
+            "snomedct_us",
+            "rxnorm",
+            "icd10cm",
+            "icd10pcs",
+            "lnc",
+            "cpt",
+            "hcpcs",
+            "cvx",
         )
         loaded: list[str] = []
         missing: list[str] = []
@@ -914,7 +1031,10 @@ class _PatientFriendlyCache:
                         "Could not parse patient_friendly JSON %s (%s: %s) — "
                         "patient-friendly custom properties will be skipped for %s. "
                         "Re-generate the artifact to restore enrichment.",
-                        json_path, type(exc).__name__, exc, source_lower,
+                        json_path,
+                        type(exc).__name__,
+                        exc,
+                        source_lower,
                     )
                     missing.append(source_lower)
             else:
@@ -941,7 +1061,8 @@ def _log_startup_banner(
     if bm25_loaded:
         logger.info(
             "  BM25 search indexes: %d category/categories loaded %s",
-            len(bm25_loaded), tuple(bm25_loaded),
+            len(bm25_loaded),
+            tuple(bm25_loaded),
         )
         logger.info("    → $search lexical and hybrid modes AVAILABLE")
     else:
@@ -965,6 +1086,7 @@ def _log_startup_banner(
     sem_error: BaseException | None = None
     try:
         from medterm4ds.engines.fhir.semantic import get_semantic_engine
+
         sem_available = get_semantic_engine().is_available
     except (OSError, ImportError) as exc:
         sem_error = exc
@@ -981,7 +1103,8 @@ def _log_startup_banner(
         logger.warning(
             "  SapBERT embedding model: unavailable (%s: %s). "
             "Fix the underlying error or set MEDTERM4DS_EMBEDDING_MODEL_DIR.",
-            type(sem_error).__name__, sem_error,
+            type(sem_error).__name__,
+            sem_error,
         )
     else:
         logger.warning(
@@ -994,24 +1117,37 @@ def _log_startup_banner(
     if pf_loaded:
         logger.info(
             "  Patient-friendly names: %d source(s) loaded %s",
-            len(pf_loaded), tuple(pf_loaded),
+            len(pf_loaded),
+            tuple(pf_loaded),
         )
     if pf_missing:
         logger.info(
             "  Patient-friendly names: missing for %d source(s) %s "
             "(looked in %s; set MEDTERM4DS_FHIR4PX_BASELINE to override)",
-            len(pf_missing), tuple(pf_missing), pf_summary.get("dir"),
+            len(pf_missing),
+            tuple(pf_missing),
+            pf_summary.get("dir"),
         )
 
     _ready_host = os.getenv("MEDTERM4DS_API_HOST", "127.0.0.1")
     _ready_port = int(os.getenv("MEDTERM4DS_FHIR_API_PORT", str(DEFAULT_PORT)))
     logger.info("FHIR API ready on %s:%d", _ready_host, _ready_port)
     logger.info("  Tunable env vars (set before startup):")
-    logger.info("    FHIR_VS_MAX_DEPTH=%s   (cap on $expand?fhir_vs=isa descendant depth)", os.getenv("FHIR_VS_MAX_DEPTH", "5"))
-    logger.info("    MEDTERM4DS_MAX_EXTRACT_TEXT_CHARS=%s   (cap on $extract input length)", MAX_EXTRACT_TEXT_CHARS)
+    logger.info(
+        "    FHIR_VS_MAX_DEPTH=%s   (cap on $expand?fhir_vs=isa descendant depth)",
+        os.getenv("FHIR_VS_MAX_DEPTH", "5"),
+    )
+    logger.info(
+        "    MEDTERM4DS_MAX_EXTRACT_TEXT_CHARS=%s   (cap on $extract input length)",
+        MAX_EXTRACT_TEXT_CHARS,
+    )
     logger.info("    MEDTERM4DS_FHIR_API_PORT  | MEDTERM4DS_API_HOST  (bind config)")
-    logger.info("    MEDTERM4DS_MEMORY_PROFILE | MEDTERM4DS_MEMORY_LIMIT | MEDTERM4DS_THREADS  (engine; shared contract with MCP)")
-    logger.info("    MEDTERM4DS_SOURCES | MEDTERM4DS_PREPARE_CACHE | MEDTERM4DS_TEMP_DIR | MEDTERM4DS_QUERY_CHUNK_SIZE  (engine; shared contract with MCP)")
+    logger.info(
+        "    MEDTERM4DS_MEMORY_PROFILE | MEDTERM4DS_MEMORY_LIMIT | MEDTERM4DS_THREADS  (engine; shared contract with MCP)"
+    )
+    logger.info(
+        "    MEDTERM4DS_SOURCES | MEDTERM4DS_PREPARE_CACHE | MEDTERM4DS_TEMP_DIR | MEDTERM4DS_QUERY_CHUNK_SIZE  (engine; shared contract with MCP)"
+    )
     logger.info("    MEDTERM4DS_SEARCH_INDEX_DIR | MEDTERM4DS_EMBEDDING_MODEL_DIR  (search assets)")
     logger.info("    MEDTERM4DS_FHIR4PX_BASELINE  (patient_friendly JSONs dir)")
     logger.info("=" * 72)
@@ -1028,8 +1164,11 @@ except ImportError:
 
 
 def expand_intensional_value_set(
-    engine: Any, value_set: dict[str, Any], count: int = 1000,
-    *, include_retired: bool = False,
+    engine: Any,
+    value_set: dict[str, Any],
+    count: int = 1000,
+    *,
+    include_retired: bool = False,
 ) -> list[dict[str, Any]]:
     """Expand a ValueSet with compose.include/exclude rules.
 
@@ -1119,17 +1258,20 @@ def expand_intensional_value_set(
                 display = concept.get("display") or ""
                 if not display and code_str:
                     concept_infos = get_code_infos(
-                        [CodeRef(source, code_str)], engine=engine,
+                        [CodeRef(source, code_str)],
+                        engine=engine,
                     )
                     if concept_infos and concept_infos[0]:
                         display = concept_infos[0].name or code_str
                     else:
                         display = code_str
-                contains.append({
-                    "system": canonical_inc,
-                    "code": code_str,
-                    "display": display,
-                })
+                contains.append(
+                    {
+                        "system": canonical_inc,
+                        "code": code_str,
+                        "display": display,
+                    }
+                )
 
         # System-only include (QC-243, MEDIUM): ``compose.include[{system}]``
         # with no concept list and no filter means "all codes in the code
@@ -1161,14 +1303,17 @@ def expand_intensional_value_set(
             ).fetchall()
             sys_codes = [code for (code,) in rows if code]
             sys_infos = get_code_infos(
-                [CodeRef(source, code) for code in sys_codes], engine=engine,
+                [CodeRef(source, code) for code in sys_codes],
+                engine=engine,
             )
             for code, info in zip(sys_codes, sys_infos, strict=False):
-                contains.append({
-                    "system": canonical_inc,
-                    "code": code,
-                    "display": (info.name if info else None) or code,
-                })
+                contains.append(
+                    {
+                        "system": canonical_inc,
+                        "code": code,
+                        "display": (info.name if info else None) or code,
+                    }
+                )
 
         # Intensional filter (is-a, descendent-of)
         for filt in include.get("filter", []):
@@ -1179,17 +1324,20 @@ def expand_intensional_value_set(
             val = filt.get("value", "")
             if prop == "concept" and op in ("is-a", "descendent-of"):
                 root_code = str(val)
-                include_root = (op == "is-a")
+                include_root = op == "is-a"
                 if include_root:
                     root_infos = get_code_infos(
-                        [CodeRef(source, root_code)], engine=engine,
+                        [CodeRef(source, root_code)],
+                        engine=engine,
                     )
                     if root_infos and root_infos[0]:
-                        contains.append({
-                            "system": canonical_inc,
-                            "code": root_code,
-                            "display": root_infos[0].name or root_code,
-                        })
+                        contains.append(
+                            {
+                                "system": canonical_inc,
+                                "code": root_code,
+                                "display": root_infos[0].name or root_code,
+                            }
+                        )
                 descendants, layer_depth_capped = get_descendants_bfs(
                     CodeRef(source=source, code=root_code),
                     engine=engine,
@@ -1200,11 +1348,13 @@ def expand_intensional_value_set(
                 if layer_depth_capped:
                     depth_cap_hit = True
                 for d in descendants:
-                    contains.append({
-                        "system": canonical_inc,
-                        "code": d.target.code,
-                        "display": d.target_display or d.target.code,
-                    })
+                    contains.append(
+                        {
+                            "system": canonical_inc,
+                            "code": d.target.code,
+                            "display": d.target_display or d.target.code,
+                        }
+                    )
             else:
                 logger.debug("Unsupported filter: property=%s op=%s", prop, op)
 
@@ -1261,13 +1411,10 @@ def expand_intensional_value_set(
                 for d in exc_descendants:
                     excluded.add((canonical_exc, d.target.code))
             else:
-                logger.debug(
-                    "Unsupported exclude filter: property=%s op=%s", prop, op
-                )
+                logger.debug("Unsupported exclude filter: property=%s op=%s", prop, op)
         if excluded:
             contains = [
-                c for c in contains
-                if (c.get("system", ""), c.get("code", "")) not in excluded
+                c for c in contains if (c.get("system", ""), c.get("code", "")) not in excluded
             ]
 
     # Deduplicate by (system, code)
@@ -1311,9 +1458,7 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
             # QC-472: create_indexes follows MEDTERM4DS_CACHE_INDEXES
             # (default False) instead of a hardcoded False — the FHIR
             # surface was the only one ignoring the documented knob.
-            engine.prepare_cache(
-                app_settings.sources, create_indexes=app_settings.cache_indexes
-            )
+            engine.prepare_cache(app_settings.sources, create_indexes=app_settings.cache_indexes)
         # Per-app executors. DB work serializes on one worker (DuckDB Python
         # connections aren't thread-safe under concurrent use). NER work also
         # serializes on one worker because medspaCy pipelines aren't
@@ -1337,6 +1482,7 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
         # $search call — fine in production but breaks test isolation (one
         # test's loaded indexes pollute the next test's "should be 503" case).
         from medterm4ds.services.search import configure_search_service
+
         configure_search_service(search_index_dir=app_settings.search_index_dir)
         _log_startup_banner(app_settings, bm25_summary, pf_summary)
         try:
@@ -1406,12 +1552,8 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
     # per-operation (single-entry) path which was the systemic gap.
     @app.exception_handler(duckdb.Error)
     async def _duckdb_error_handler(request: Request, exc: duckdb.Error):
-        logger.warning(
-            "DuckDB operational failure on %s: %s", request.url.path, exc
-        )
-        return _fhir_error_response(
-            request, 503, f"Database temporarily unavailable: {exc}"
-        )
+        logger.warning("DuckDB operational failure on %s: %s", request.url.path, exc)
+        return _fhir_error_response(request, 503, f"Database temporarily unavailable: {exc}")
 
     # QC-319 (MEDIUM): framework-generated HTTPExceptions — most notably the
     # 405 Starlette's router raises for DELETE/PUT/OPTIONS/HEAD on any route —
@@ -1424,15 +1566,11 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
     # come from application code that chose a payload shape deliberately.
     # Starlette's extra headers (e.g. the 405 ``Allow`` header) are preserved.
     @app.exception_handler(StarletteHTTPException)
-    async def _fhir_http_exception_handler(
-        request: Request, exc: StarletteHTTPException
-    ):
+    async def _fhir_http_exception_handler(request: Request, exc: StarletteHTTPException):
         if isinstance(exc.detail, str):
             response = _fhir_error_response(request, exc.status_code, exc.detail)
         else:
-            response = JSONResponse(
-                {"detail": exc.detail}, status_code=exc.status_code
-            )
+            response = JSONResponse({"detail": exc.detail}, status_code=exc.status_code)
         headers = getattr(exc, "headers", None)
         if headers:
             response.headers.update(headers)
@@ -1484,9 +1622,7 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
             status=status,
         )
 
-    def _fhir_error_response(
-        request: Request, status: int, message: str
-    ) -> Response:
+    def _fhir_error_response(request: Request, status: int, message: str) -> Response:
         """Accept-aware error response builder.
 
         Per FHIR R4 §3.1.0.1.9 / §3.1.0.1.5: when a client negotiates XML via
@@ -1548,13 +1684,9 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
         # types SHALL be honored; a '+' and a space in a _format value are
         # equivalent under form decoding, so compare both spellings.
         fmt_mime = fmt.replace(" ", "+")
-        if fmt in ("xml", "text/xml", "application/xml") or fmt_mime in (
-            "application/fhir+xml",
-        ):
+        if fmt in ("xml", "text/xml", "application/xml") or fmt_mime in ("application/fhir+xml",):
             return True
-        if fmt in ("json", "application/json") or fmt_mime in (
-            "application/fhir+json",
-        ):
+        if fmt in ("json", "application/json") or fmt_mime in ("application/fhir+json",):
             return False
         # _format absent or unrecognized → fall through to Accept header.
         accept = request.headers.get("accept", "").lower()
@@ -1594,9 +1726,7 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
                 # default, so a wildcard contributes to JSON's weight.
                 if q > json_q:
                     json_q = q
-            elif media in (
-                "application/fhir+xml", "application/xml", "text/xml"
-            ):
+            elif media in ("application/fhir+xml", "application/xml", "text/xml"):
                 # QC-347 (EC-15 LOW): exact-match only. The previous
                 # ``endswith('+xml')`` heuristic classified ANY +xml media
                 # type (image/svg+xml, application/xhtml+xml, atom+xml) as
@@ -1606,9 +1736,11 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
                 # of the JSON default.
                 if q > xml_q:
                     xml_q = q
-            elif media in (
-                "application/fhir+json", "application/json", "text/json"
-            ) or media.endswith("+json") or media.endswith("/json"):
+            elif (
+                media in ("application/fhir+json", "application/json", "text/json")
+                or media.endswith("+json")
+                or media.endswith("/json")
+            ):
                 if q > json_q:
                     json_q = q
             # Unrecognized media types (e.g. application/fhir+turtle) are
@@ -1620,9 +1752,7 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
         # JSON (the server's default).
         return xml_q > json_q
 
-    def _fhir_response(
-        request: Request, payload: dict[str, Any], *, status: int = 200
-    ) -> Any:
+    def _fhir_response(request: Request, payload: dict[str, Any], *, status: int = 200) -> Any:
         """Render a FHIR resource as XML or JSON based on Accept/_format.
 
         Conformance: §4.7.1.1 item 1 requires XML and JSON support. This is
@@ -1645,7 +1775,8 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
                 # support; silent degradation would be a fallback anti-pattern.
                 logger.warning(
                     "FHIR XML serialization failed for %s: %s — returning JSON.",
-                    payload.get("resourceType", "<unknown>"), exc,
+                    payload.get("resourceType", "<unknown>"),
+                    exc,
                 )
                 return _fhir_json_response(payload, status=status)
             return Response(
@@ -1682,9 +1813,7 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
                     # Not a re-renderable FHIR body — return the original
                     # valid response unchanged (not an error swallow).
                     return payload
-                return _fhir_response(
-                    request, body_dict, status=payload.status_code
-                )
+                return _fhir_response(request, body_dict, status=payload.status_code)
             return payload
         return _fhir_response(request, payload)
 
@@ -1750,8 +1879,7 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
             ) from None
         if not 1 <= port <= 65535:
             raise ValueError(
-                f"MEDTERM4DS_FHIR_API_PORT must be an integer between 1 and "
-                f"65535; got {port!r}."
+                f"MEDTERM4DS_FHIR_API_PORT must be an integer between 1 and 65535; got {port!r}."
             )
         # Honor an explicit scheme-on-host (e.g. "https://fhir.example.com")
         # or a separate scheme env var. The prior behavior hardcoded "http://"
@@ -1803,9 +1931,8 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
         # ('[::1]:9001' or 'fhir.example.com:9001') — honor it instead of
         # appending a second one. Bracket-aware port detection: look for
         # ']:' (IPv6) or a single ':' (regular host).
-        already_ported = (
-            (host.startswith("[") and "]:" in host)
-            or (not host.startswith("[") and ":" in host)
+        already_ported = (host.startswith("[") and "]:" in host) or (
+            not host.startswith("[") and ":" in host
         )
         scheme = os.getenv("MEDTERM4DS_API_SCHEME", "http")
         if already_ported:
@@ -1905,13 +2032,15 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
         resource_type = body.get("resourceType")
         if resource_type != "Bundle":
             return _fhir_error_response(
-                request, 400,
+                request,
+                400,
                 f"POST /fhir requires a Bundle body; got resourceType={resource_type!r}.",
             )
         bundle_type = body.get("type")
         if bundle_type not in ("batch", "transaction"):
             return _fhir_error_response(
-                request, 400,
+                request,
+                400,
                 f"POST /fhir requires Bundle.type=batch (or transaction); "
                 f"got type={bundle_type!r}.",
             )
@@ -1922,15 +2051,14 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
         request_entries = body.get("entry", [])
         if not isinstance(request_entries, list):
             return _fhir_error_response(
-                request, 400,
+                request,
+                400,
                 "Bundle.entry must be a list (or omitted for an empty batch).",
             )
 
         response_entries: list[dict[str, Any]] = []
         for entry in request_entries:
-            response_entries.append(
-                await _process_batch_entry(request, entry)
-            )
+            response_entries.append(await _process_batch_entry(request, entry))
 
         return _fhir_response(
             request,
@@ -1942,9 +2070,7 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
                 # independently (read-only server, no atomicity), but the
                 # response Bundle.type must mirror the request type.
                 "type": (
-                    "transaction-response"
-                    if bundle_type == "transaction"
-                    else "batch-response"
+                    "transaction-response" if bundle_type == "transaction" else "batch-response"
                 ),
                 "entry": response_entries,
             },
@@ -1965,9 +2091,7 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
 
         req_block = entry.get("request")
         if not isinstance(req_block, dict):
-            return _batch_error_entry(
-                400, "Bundle entry missing 'request' block."
-            )
+            return _batch_error_entry(400, "Bundle entry missing 'request' block.")
         # QC-284 (HIGH): an explicit JSON null / non-string `method` bypasses
         # the `.get(method, "")` default and raised AttributeError BEFORE the
         # per-entry isolation boundary at the dispatch try/except below — the
@@ -1994,9 +2118,7 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
         # either absolute or relative.'
         path, query_string = _parse_batch_entry_url(url)
         if path is None:
-            return _batch_error_entry(
-                400, f"Unparseable entry.request.url: {url!r}."
-            )
+            return _batch_error_entry(400, f"Unparseable entry.request.url: {url!r}.")
 
         # Parameters: from query string (GET) OR from entry.resource (POST).
         # Per §3.7 GET entries pass params via query string; POST entries
@@ -2045,9 +2167,7 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
                 f"Method {method} not supported on a read-only terminology server.",
             )
         else:
-            return _batch_error_entry(
-                400, f"Unsupported method {method!r} in batch entry."
-            )
+            return _batch_error_entry(400, f"Unsupported method {method!r} in batch entry.")
 
         # Dispatch to the appropriate operation handler. The handler returns
         # either a Response (success) or a Response wrapping an
@@ -2064,7 +2184,11 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
         # QA-038). Logged at WARNING so programming bugs aren't silent.
         try:
             return await _dispatch_batch_operation(
-                request, method, path, params, body_resource,
+                request,
+                method,
+                path,
+                params,
+                body_resource,
             )
         except Exception as exc:
             # Per-entry isolation boundary. We catch broadly here because
@@ -2074,18 +2198,21 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
             # operational-error handling inside the dispatched operation;
             # at the boundary we MUST catch all to honor the spec.
             logger.warning(
-                "Batch entry raised unhandled exception (path=%s, method=%s): "
-                "%s: %s",
-                path, method, type(exc).__name__, exc,
+                "Batch entry raised unhandled exception (path=%s, method=%s): %s: %s",
+                path,
+                method,
+                type(exc).__name__,
+                exc,
             )
             return _batch_error_entry(
                 500,
-                f"Batch entry failed with an unhandled exception: "
-                f"{type(exc).__name__}: {exc}",
+                f"Batch entry failed with an unhandled exception: {type(exc).__name__}: {exc}",
             )
 
     def _batch_error_entry(
-        status: int, message: str, issue_code: str | None = None,
+        status: int,
+        message: str,
+        issue_code: str | None = None,
     ) -> dict[str, Any]:
         """Build a batch-response entry for a malformed/failed entry.
 
@@ -2130,7 +2257,7 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
         path = parsed.path
         # If absolute, the path begins with /fhir/...; strip it.
         if path.startswith("/fhir/"):
-            path = path[len("/fhir"):]
+            path = path[len("/fhir") :]
         elif not path.startswith("/"):
             # Base-relative URL like 'CodeSystem/$validate-code'.
             path = "/" + path
@@ -2177,6 +2304,7 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
             # ``params`` are the ENTRY's parsed query — expose them
             # through the shim the shared helper expects.
             if method == "GET":
+
                 class _EntryQuery:
                     def __init__(self, entry_params):
                         self.query_params = entry_params
@@ -2186,11 +2314,7 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
                         _EntryQuery(params),
                         known,
                         path,
-                        known_prefixes=(
-                            ("property.",)
-                            if path == "/CodeSystem/$lookup"
-                            else ()
-                        ),
+                        known_prefixes=(("property.",) if path == "/CodeSystem/$lookup" else ()),
                     )
                 except ValueError as exc:
                     return _batch_error_entry(400, str(exc))
@@ -2198,22 +2322,18 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
             if method == "POST" and body_resource:
                 names = _parameter_names_present(body_resource)
                 unknown = {
-                    n for n in names
+                    n
+                    for n in names
                     if not any(
                         n.startswith(pfx)
-                        for pfx in (
-                            ("property.",)
-                            if path == "/CodeSystem/$lookup"
-                            else ()
-                        )
+                        for pfx in (("property.",) if path == "/CodeSystem/$lookup" else ())
                     )
                     and n not in known
                 }
                 if unknown:
                     return _batch_error_entry(
                         400,
-                        f"Unsupported parameter(s) for {path}: "
-                        f"{', '.join(sorted(unknown))}.",
+                        f"Unsupported parameter(s) for {path}: {', '.join(sorted(unknown))}.",
                     )
             # Validation wings: version/systemVersion (H1/U4) and
             # date (EB/H4) — on whichever channel carries them.
@@ -2231,9 +2351,7 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
                         "version",
                     ),
                     (
-                        _raw_parameter_value(
-                            body_resource, "systemVersion"
-                        ),
+                        _raw_parameter_value(body_resource, "systemVersion"),
                         "systemVersion",
                     ),
                     (
@@ -2250,9 +2368,7 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
                     else:
                         reject_unsupported_version_params(
                             version=val if name == "version" else None,
-                            system_version=(
-                                val if name == "systemVersion" else None
-                            ),
+                            system_version=(val if name == "systemVersion" else None),
                             kind=path,
                         )
                 except ValueError as exc:
@@ -2290,7 +2406,9 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
         #   GET  /CodeSystem/$subsumes?system=...&codeA=...&codeB=...
         try:
             if path == "/CodeSystem/$validate-code":
-                system, code, display, codeable_pairs = _extract_validate_params(method, params, body_resource)
+                system, code, display, codeable_pairs = _extract_validate_params(
+                    method, params, body_resource
+                )
                 if system is None or code is None:
                     return _batch_error_entry(
                         400, "system and code are required for $validate-code."
@@ -2305,48 +2423,59 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
                         )
                         if params.get("date") is not None:
                             validate_fhir_date(
-                                str(params["date"]), "date",
+                                str(params["date"]),
+                                "date",
                             )
                     else:
-                        body_p = (
-                            _parse_parameters(body_resource)
-                            if body_resource else {}
-                        )
+                        body_p = _parse_parameters(body_resource) if body_resource else {}
                         reject_unsupported_version_params(
                             version=body_p.get("version"),
                             system_version=body_p.get("systemVersion"),
                         )
                         if body_p.get("date") is not None:
                             validate_fhir_date(
-                                str(body_p["date"]), "date",
+                                str(body_p["date"]),
+                                "date",
                             )
                 except ValueError as exc:
                     return _batch_error_entry(400, str(exc))
                 payload = await _run_db(
-                    executor, _do_validate, engine, system, code,
-                    display=display, codeable_concept_pairs=codeable_pairs,
+                    executor,
+                    _do_validate,
+                    engine,
+                    system,
+                    code,
+                    display=display,
+                    codeable_concept_pairs=codeable_pairs,
                 )
             elif path == "/ValueSet/$validate-code":
                 system, code, display, url_param, codeable_pairs = _extract_vs_validate_params(
-                    method, params, body_resource,
+                    method,
+                    params,
+                    body_resource,
                 )
                 if codeable_pairs is None and (system is None or code is None):
                     return _batch_error_entry(
                         400, "system and code are required for $validate-code."
                     )
                 payload = await _run_db(
-                    executor, _do_vs_validate, engine,
-                    url=url_param, code=code, system_uri=system, display=display,
+                    executor,
+                    _do_vs_validate,
+                    engine,
+                    url=url_param,
+                    code=code,
+                    system_uri=system,
+                    display=display,
                     codeable_concept_pairs=codeable_pairs,
                 )
             elif path == "/ConceptMap/$translate":
                 system, code, targetsystem = _extract_translate_params(
-                    method, params, body_resource,
+                    method,
+                    params,
+                    body_resource,
                 )
                 if system is None or code is None:
-                    return _batch_error_entry(
-                        400, "system and code are required for $translate."
-                    )
+                    return _batch_error_entry(400, "system and code are required for $translate.")
                 # N1/N2 fix: map-selection resolution inside $batch —
                 # batch entries must not bypass the direct-route contract
                 # (cross-handler-helper-wiring class).
@@ -2354,20 +2483,13 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
                     batch_url = params.get("url")
                     batch_ver = params.get("conceptMapVersion")
                 else:
-                    batch_p = (
-                        _parse_parameters(body_resource)
-                        if body_resource else {}
-                    )
+                    batch_p = _parse_parameters(body_resource) if body_resource else {}
                     batch_url = batch_p.get("url")
                     batch_ver = batch_p.get("conceptMapVersion")
                 # AS3 fix (athena-batch3): forward the athena map
                 # selection — the direct routes pass map_url since
                 # stage 4b; the batch call site was missed.
-                batch_map_url = (
-                    batch_url
-                    if batch_url == ATHENA_CONCEPT_MAP_URL
-                    else None
-                )
+                batch_map_url = batch_url if batch_url == ATHENA_CONCEPT_MAP_URL else None
                 try:
                     resolve_concept_map_url(batch_url, batch_ver)
                 except ValueError as exc:
@@ -2376,48 +2498,64 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
                 # params carry it; POST body carries valueBoolean (read
                 # raw; the scalar parse drops booleans).
                 if method == "GET":
-                    batch_reverse = (
-                        params.get("reverse", "").lower() == "true"
-                    )
+                    batch_reverse = params.get("reverse", "").lower() == "true"
                 else:
-                    _rv = (
-                        _raw_parameter_value(body_resource, "reverse")
-                        if body_resource else None
-                    )
-                    batch_reverse = _rv is True or (
-                        isinstance(_rv, str) and _rv.lower() == "true"
-                    )
+                    _rv = _raw_parameter_value(body_resource, "reverse") if body_resource else None
+                    batch_reverse = _rv is True or (isinstance(_rv, str) and _rv.lower() == "true")
                 payload = await _run_db(
-                    executor, _do_translate, engine, system, code,
-                    targetsystem, batch_reverse, batch_map_url,
+                    executor,
+                    _do_translate,
+                    engine,
+                    system,
+                    code,
+                    targetsystem,
+                    batch_reverse,
+                    batch_map_url,
                 )
             elif path == "/CodeSystem/$lookup":
                 system, code = _extract_lookup_params(method, params, body_resource)
                 if system is None or code is None:
-                    return _batch_error_entry(
-                        400, "system and code are required for $lookup."
-                    )
+                    return _batch_error_entry(400, "system and code are required for $lookup.")
                 payload = await _run_db(
-                    executor, _do_lookup, engine, pf_cache, system, code,
+                    executor,
+                    _do_lookup,
+                    engine,
+                    pf_cache,
+                    system,
+                    code,
                 )
             elif path == "/CodeSystem/$subsumes":
                 system, code_a, code_b = _extract_subsumes_params(
-                    method, params, body_resource,
+                    method,
+                    params,
+                    body_resource,
                 )
                 if system is None or code_a is None or code_b is None:
                     return _batch_error_entry(
                         400, "system, codeA, and codeB are required for $subsumes."
                     )
                 payload = await _run_db(
-                    executor, _do_subsumes, engine, system, code_a, code_b,
+                    executor,
+                    _do_subsumes,
+                    engine,
+                    system,
+                    code_a,
+                    code_b,
                 )
             elif path == "/ValueSet/$expand":
                 # Mandatory per §4.7.1.2 — found missing from batch dispatcher
                 # by HISTORIAN TS-04 QA-039 (4-tuple coverage audit).
                 (
-                    url_param, filter_text, count, system_uri, offset_val, active_only_val,
+                    url_param,
+                    filter_text,
+                    count,
+                    system_uri,
+                    offset_val,
+                    active_only_val,
                 ) = _extract_expand_params(
-                    method, params, body_resource,
+                    method,
+                    params,
+                    body_resource,
                 )
                 # QC-286 (MEDIUM): the direct POST route accepts a bare
                 # ValueSet body AND a Parameters-with-valueSet body; the
@@ -2434,10 +2572,16 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
                             body_resource,
                         )
                 payload = await _run_db(
-                    executor, _do_expand, engine,
-                    url=url_param, filter_text=filter_text, count=count,
-                    system_uri=system_uri, value_set=value_set_body,
-                    offset=offset_val, active_only=active_only_val,
+                    executor,
+                    _do_expand,
+                    engine,
+                    url=url_param,
+                    filter_text=filter_text,
+                    count=count,
+                    system_uri=system_uri,
+                    value_set=value_set_body,
+                    offset=offset_val,
+                    active_only=active_only_val,
                 )
             elif path == "/CodeSystem/$closure":
                 # Mandatory per §4.7.1.2 — found missing from batch dispatcher
@@ -2459,14 +2603,17 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
                         400,
                         "$closure requires a Parameters body (POST entries only).",
                     )
-                name_val = (params.get("name") if params else None) or \
-                    _parse_parameters(body_resource).get("name")
+                name_val = (params.get("name") if params else None) or _parse_parameters(
+                    body_resource
+                ).get("name")
                 if not name_val:
-                    return _batch_error_entry(
-                        400, "name parameter is required for $closure."
-                    )
+                    return _batch_error_entry(400, "name parameter is required for $closure.")
                 payload = await _run_db(
-                    executor, _do_closure, engine, body_resource, name_val,
+                    executor,
+                    _do_closure,
+                    engine,
+                    body_resource,
+                    name_val,
                 )
             else:
                 # QC-297 (MEDIUM): mirror the direct routes' IssueType and
@@ -2511,9 +2658,7 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
             try:
                 body_dict = json.loads(payload.body)
             except (json.JSONDecodeError, TypeError):
-                body_dict = build_operation_outcome(
-                    "error", "exception", "Batch entry failed."
-                )
+                body_dict = build_operation_outcome("error", "exception", "Batch entry failed.")
             # QC-346 (EC-15 MEDIUM): surface the OperationOutcome at
             # response.outcome so batch clients see the same diagnostics
             # the direct route returns (not just a bare status).
@@ -2592,8 +2737,11 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
         """
         if method == "GET":
             return (
-                params.get("system"), params.get("code"),
-                params.get("display"), params.get("url"), None,
+                params.get("system"),
+                params.get("code"),
+                params.get("display"),
+                params.get("url"),
+                None,
             )
         if body_resource is None:
             return None, None, None, None, None
@@ -2642,7 +2790,8 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
             # because it rode in a $batch (cross-handler-helper-wiring).
             code = params.get("code") or params.get("sourceCode")
             return (
-                params.get("system"), code,
+                params.get("system"),
+                code,
                 # V2/V3 fix: accept BOTH spellings — the R4 name is
                 # targetSystem; lowercase predates the fix.
                 params.get("targetSystem") or params.get("targetsystem"),
@@ -2748,9 +2897,7 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
                 )
             value = param["valueBoolean"]
             if not isinstance(value, bool):
-                raise ValueError(
-                    f"activeOnly must be a JSON boolean (got {value!r})."
-                )
+                raise ValueError(f"activeOnly must be a JSON boolean (got {value!r}).")
             return value
         return None
 
@@ -2769,9 +2916,7 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
             return True
         if normalized == "false":
             return False
-        raise ValueError(
-            f"activeOnly must be 'true' or 'false' (got {raw!r})."
-        )
+        raise ValueError(f"activeOnly must be 'true' or 'false' (got {raw!r}).")
 
     def _extract_expand_params(
         method: str,
@@ -2824,7 +2969,11 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
             active_only = _parse_active_only_query_param(params.get("activeOnly"))
             system_uri = params.get("system")
             return (
-                url_param, filter_text, count_val, system_uri, offset_val,
+                url_param,
+                filter_text,
+                count_val,
+                system_uri,
+                offset_val,
                 True if active_only is None else active_only,
             )
         # POST: parse Parameters body. $expand also accepts a ValueSet
@@ -2843,25 +2992,26 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
         query_active_only = _parse_active_only_query_param(params.get("activeOnly"))
         if body_resource is None:
             return (
-                None, None, query_count, None, query_offset,
+                None,
+                None,
+                query_count,
+                None,
+                query_offset,
                 True if query_active_only is None else query_active_only,
             )
         p = _parse_parameters(body_resource)
         # QC-308: body value wins over the query-string default.
         count_val = _parse_count_param(p.get("count"), default=query_count)
         if count_val is None:
-            raise ValueError(
-                f"count must be an integer in [1, 1000] (got {p.get('count')!r})."
-            )
+            raise ValueError(f"count must be an integer in [1, 1000] (got {p.get('count')!r}).")
         offset_val = _parse_offset_param(p.get("offset"), default=query_offset)
         if offset_val is None:
-            raise ValueError(
-                f"offset must be a non-negative integer (got {p.get('offset')!r})."
-            )
+            raise ValueError(f"offset must be a non-negative integer (got {p.get('offset')!r}).")
         # QC-315: body valueBoolean wins over the query-string default.
         body_active_only = _parse_active_only_body_param(body_resource)
         active_only = (
-            body_active_only if body_active_only is not None
+            body_active_only
+            if body_active_only is not None
             else (True if query_active_only is None else query_active_only)
         )
         return p.get("url"), p.get("filter"), count_val, p.get("system"), offset_val, active_only
@@ -2881,14 +3031,19 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
     @app.middleware("http")
     async def log_request_timing(request: Request, call_next):
         import time as _time
+
         t0 = _time.perf_counter()
         response = await call_next(request)
         elapsed_ms = (_time.perf_counter() - t0) * 1000
         path = request.url.path
         if elapsed_ms > 1000:
-            logger.warning("SLOW %s %s -> %d in %.0fms", request.method, path, response.status_code, elapsed_ms)
+            logger.warning(
+                "SLOW %s %s -> %d in %.0fms", request.method, path, response.status_code, elapsed_ms
+            )
         else:
-            logger.info("%s %s -> %d in %.0fms", request.method, path, response.status_code, elapsed_ms)
+            logger.info(
+                "%s %s -> %d in %.0fms", request.method, path, response.status_code, elapsed_ms
+            )
         return response
 
     # -- CodeSystem $lookup --
@@ -2903,7 +3058,9 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
         # (silent-wrong-answer). Found by SKEPTIC iteration TS-02 (QA-001).
         system: str = Query(..., min_length=1, description="FHIR system URI"),
         code: str = Query(..., min_length=1, description="The code to look up"),
-        version: str | None = Query(None, description="Code system version (rejected — single-version server, H1)"),
+        version: str | None = Query(
+            None, description="Code system version (rejected — single-version server, H1)"
+        ),
     ):
         # c-fixbatch2 (H1): uniform single-version rejection across the
         # CodeSystem operations (cross-op consistency per cs05 e40).
@@ -2918,15 +3075,20 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
             # op-scoped no more). The `property.` prefix admits R4's
             # dotted sub-selectors (property.code, property.display).
             reject_unknown_query_params(
-                request, _LOOKUP_KNOWN_PARAMS, "$lookup",
+                request,
+                _LOOKUP_KNOWN_PARAMS,
+                "$lookup",
                 known_prefixes=("property.",),
             )
         except ValueError as exc:
             return _fhir_error_response(request, 400, str(exc))
         payload = await _run_db(
-            _executor(request), _do_lookup, _engine(request),
+            _executor(request),
+            _do_lookup,
+            _engine(request),
             request.app.state.patient_friendly_cache,
-            system, code,
+            system,
+            code,
         )
         # Pass through Accept/_format negotiation. If _do_lookup returned a Response
         # (error path), return it as-is — already a FHIR-formatted Response.
@@ -2943,7 +3105,7 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
         # 'In addition, the 'coding' parameter allows a complete coding to be
         # supplied rather than the separate system and code parameters.'
         # (TS-02 HISTORIAN QA-022).
-        if (not system or not code):
+        if not system or not code:
             coding_pair = _extract_coding_from_parameters(body)
             if coding_pair is not None:
                 system, code = coding_pair
@@ -2959,9 +3121,12 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
         except ValueError as exc:
             return _fhir_error_response(request, 400, str(exc))
         payload = await _run_db(
-            _executor(request), _do_lookup, _engine(request),
+            _executor(request),
+            _do_lookup,
+            _engine(request),
             request.app.state.patient_friendly_cache,
-            system, code,
+            system,
+            code,
         )
         return _respond(request, payload)
 
@@ -3079,7 +3244,8 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
                         "sab_label_to_fhir_uri(%r) returned None — emitting raw "
                         "SAB label as canonical-system. Add %r to "
                         "engines.fhir._SAB_LABEL_TO_SOURCE to translate.",
-                        raw_sab, raw_sab.lower(),
+                        raw_sab,
+                        raw_sab.lower(),
                     )
                     custom_props["canonical-system"] = raw_sab
             if pf.get("tty"):
@@ -3094,7 +3260,10 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
                 "code=%r (expected dict, got %s) — skipping custom-property "
                 "enrichment. Re-generate the patient_friendly_%s.json "
                 "artifact to silence this warning.",
-                source, code, type(pf).__name__, source.lower(),
+                source,
+                code,
+                type(pf).__name__,
+                source.lower(),
             )
 
         return build_parameters_lookup(
@@ -3122,9 +3291,16 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
         # inferSystem is still the 400 'system is required').
         system: str | None = Query(None, min_length=1),
         code: str = Query(..., min_length=1),
-        version: str | None = Query(None, description="Code system version (rejected — single-version server, H1)"),
-        systemVersion: str | None = Query(None, description="Code system version (rejected — single-version server, H1)"),
-        date: str | None = Query(None, description="FHIR dateTime (shape-validated; versioned validation unsupported, H4)"),
+        version: str | None = Query(
+            None, description="Code system version (rejected — single-version server, H1)"
+        ),
+        systemVersion: str | None = Query(
+            None, description="Code system version (rejected — single-version server, H1)"
+        ),
+        date: str | None = Query(
+            None,
+            description="FHIR dateTime (shape-validated; versioned validation unsupported, H4)",
+        ),
         inferSystem: str | None = Query(
             None,
             description=(
@@ -3141,11 +3317,14 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
         # c-fixbatch2: §4.9.2 work-or-error on the In-param matrix.
         try:
             reject_unsupported_version_params(
-                version=version, system_version=systemVersion,
+                version=version,
+                system_version=systemVersion,
             )
             # U3 fix (TS-17): unknown-param rejection on this op too.
             reject_unknown_query_params(
-                request, _CS_VALIDATE_KNOWN_PARAMS, "$validate-code",
+                request,
+                _CS_VALIDATE_KNOWN_PARAMS,
+                "$validate-code",
             )
             # Empty-string drift PROMOTED pattern: '' means absent.
             if date:
@@ -3161,8 +3340,13 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
         except ValueError as exc:
             return _fhir_error_response(request, 400, str(exc))
         payload = await _run_db(
-            _executor(request), _do_validate, _engine(request),
-            system, code, display=display, codeable_concept_pairs=None,
+            _executor(request),
+            _do_validate,
+            _engine(request),
+            system,
+            code,
+            display=display,
+            codeable_concept_pairs=None,
         )
         return _respond(request, payload)
 
@@ -3178,7 +3362,7 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
         # (TS-02 HISTORIAN QA-023 wired `coding`; EXPLORER QA-026 wires
         # `codeableConcept` — same shape, same root cause).
         codeable_pairs: list[tuple[str, str]] | None = None
-        if (not system or not code):
+        if not system or not code:
             coding_pair = _extract_coding_from_parameters(body)
             if coding_pair is None:
                 # CodeSystem/$validate-code codeableConcept semantics (CS-03
@@ -3198,7 +3382,8 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
         # required' 400 fired).
         if "inferSystem" in _parameter_names_present(body):
             return _fhir_error_response(
-                request, 400,
+                request,
+                400,
                 "inferSystem is not a CodeSystem/$validate-code "
                 "parameter: R4 §4.8.21.2 declares it only on "
                 "ValueSet/$validate-code. Use the ValueSet operation.",
@@ -3220,8 +3405,13 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
         except ValueError as exc:
             return _fhir_error_response(request, 400, str(exc))
         payload = await _run_db(
-            _executor(request), _do_validate, _engine(request),
-            system, code, display=display, codeable_concept_pairs=codeable_pairs,
+            _executor(request),
+            _do_validate,
+            _engine(request),
+            system,
+            code,
+            display=display,
+            codeable_concept_pairs=codeable_pairs,
         )
         return _respond(request, payload)
 
@@ -3384,7 +3574,8 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
                 inferred = infer_system_uri(code)
                 if inferred is None:
                     return _fhir_error_response(
-                        request, 400,
+                        request,
+                        400,
                         f"Cannot infer a code system from code {code!r}: "
                         "only SCTID-shaped codes (6-18 digit integers) "
                         "can be inferred as SNOMED CT. Supply system "
@@ -3397,8 +3588,13 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
         # On GET, codeableConcept is a query param (string) — not usable for
         # multi-coding; the POST path carries the structured body. None here.
         payload = await _run_db(
-            _executor(request), _do_vs_validate, _engine(request),
-            url=url, code=code, system_uri=system, display=display,
+            _executor(request),
+            _do_vs_validate,
+            _engine(request),
+            url=url,
+            code=code,
+            system_uri=system,
+            display=display,
             codeable_concept_pairs=None,
         )
         return _respond(request, payload)
@@ -3429,7 +3625,7 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
         # the ALL-PAIRS helper and passes the list through to
         # ``_do_vs_validate`` for iteration.
         codeable_pairs: list[tuple[str, str]] | None = None
-        if (not code or not system_uri):
+        if not code or not system_uri:
             coding_pair = _extract_coding_from_parameters(body)
             if coding_pair is None:
                 codeable_pairs = _extract_all_coding_pairs_from_codeable_concept(body)
@@ -3449,17 +3645,25 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
             inferred = infer_system_uri(code)
             if inferred is None:
                 return _fhir_error_response(
-                    request, 400,
+                    request,
+                    400,
                     f"Cannot infer a code system from code {code!r}: "
                     "only SCTID-shaped codes (6-18 digit integers) can "
                     "be inferred as SNOMED CT. Supply system explicitly.",
                 )
             system_uri = inferred
         if not codeable_pairs and (not code or not system_uri):
-            return _fhir_error_response(request, 400, "code and system are required for $validate-code.")
+            return _fhir_error_response(
+                request, 400, "code and system are required for $validate-code."
+            )
         payload = await _run_db(
-            _executor(request), _do_vs_validate, _engine(request),
-            url=url, code=code, system_uri=system_uri, display=display,
+            _executor(request),
+            _do_vs_validate,
+            _engine(request),
+            url=url,
+            code=code,
+            system_uri=system_uri,
+            display=display,
             codeable_concept_pairs=codeable_pairs,
         )
         return _respond(request, payload)
@@ -3539,7 +3743,9 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
                     display=display,
                     code_info=matched_info,
                 )
-            first_uri = codeable_concept_pairs[0][0] if codeable_concept_pairs else (system_uri or "")
+            first_uri = (
+                codeable_concept_pairs[0][0] if codeable_concept_pairs else (system_uri or "")
+            )
             first_code = codeable_concept_pairs[0][1] if codeable_concept_pairs else (code or "")
             return build_parameters_validate(
                 False,
@@ -3673,7 +3879,9 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
         # get a 422 on GET. POST Parameters body already handles sourceCode
         # via _extract_translate_params.
         code: str | None = Query(None, min_length=1, description="Source code (shorthand)"),
-        sourceCode: str | None = Query(None, min_length=1, description="Source code (R4 spec name)"),
+        sourceCode: str | None = Query(
+            None, min_length=1, description="Source code (R4 spec name)"
+        ),
         # QC-423 (MEDIUM): min_length=1 — an empty targetsystem previously
         # fell through the `if target_uri:` truthiness check in _do_translate
         # and WIDENED to all targets, identical to omitting the parameter
@@ -3687,11 +3895,15 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
         # The declared name is now the spec's; the lowercase spelling is
         # retained as an alias for backwards compatibility.
         targetSystem: str | None = Query(
-            None, min_length=1, alias="targetSystem",
+            None,
+            min_length=1,
+            alias="targetSystem",
             description="Target system URI (R4 §4.9.13.1 name; 'targetsystem' accepted as legacy alias)",
         ),
         targetsystem: str | None = Query(
-            None, min_length=1, description="Legacy lowercase alias for targetSystem",
+            None,
+            min_length=1,
+            description="Legacy lowercase alias for targetSystem",
         ),
         source: str | None = Query(
             None,
@@ -3704,7 +3916,9 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
     ):
         actual_code = code or sourceCode
         if not actual_code:
-            return _fhir_error_response(request, 422, "Either 'code' or 'sourceCode' parameter is required.")
+            return _fhir_error_response(
+                request, 422, "Either 'code' or 'sourceCode' parameter is required."
+            )
         try:
             resolve_concept_map_url(url, conceptMapVersion)
         except ValueError as exc:
@@ -3717,7 +3931,8 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
         effective_target = targetSystem or targetsystem
         if not effective_target:
             return _fhir_error_response(
-                request, 400,
+                request,
+                400,
                 "targetSystem is required: this server translates only "
                 "against an explicit target system (R4 §4.9.13.1 declares "
                 "it 1..1). Omitting it previously widened results to every "
@@ -3727,14 +3942,25 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
         # query params (FastAPI drops undeclared ones silently).
         try:
             reject_unknown_query_params(
-                request, _TRANSLATE_KNOWN_PARAMS, "$translate",
+                request,
+                _TRANSLATE_KNOWN_PARAMS,
+                "$translate",
             )
         except ValueError as exc:
             return _fhir_error_response(request, 400, str(exc))
         # T1 fix: reverse=true consults the map from the target side.
         reverse = request.query_params.get("reverse", "").lower() == "true"
         map_url = url if url == ATHENA_CONCEPT_MAP_URL else None
-        payload = await _run_db(_executor(request), _do_translate, _engine(request), system, actual_code, effective_target, reverse, map_url)
+        payload = await _run_db(
+            _executor(request),
+            _do_translate,
+            _engine(request),
+            system,
+            actual_code,
+            effective_target,
+            reverse,
+            map_url,
+        )
         return _respond(request, payload)
 
     @app.post("/fhir/ConceptMap/$translate")
@@ -3749,14 +3975,17 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
         # ``validate_post``, ``subsumes_post``. Found by CM-01 EXPLORER
         # (QA-001).
         system, code, targetsystem = _extract_translate_params(
-            "POST", {}, body,
+            "POST",
+            {},
+            body,
         )
         if not system or not code:
             return _fhir_error_response(request, 400, "system and code are required.")
         # V3 fix (TS-18): targetSystem required on POST exactly as GET.
         if not targetsystem:
             return _fhir_error_response(
-                request, 400,
+                request,
+                400,
                 "targetSystem is required: this server translates only "
                 "against an explicit target system (R4 §4.9.13.1 declares "
                 "it 1..1).",
@@ -3767,7 +3996,8 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
         post_params = _parse_parameters(body)
         try:
             resolve_concept_map_url(
-                post_params.get("url"), post_params.get("conceptMapVersion"),
+                post_params.get("url"),
+                post_params.get("conceptMapVersion"),
             )
         except ValueError as exc:
             return _fhir_error_response(request, 400, str(exc))
@@ -3778,7 +4008,8 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
         unknown_body = _parameter_names_present(body) - _TRANSLATE_KNOWN_PARAMS
         if unknown_body:
             return _fhir_error_response(
-                request, 400,
+                request,
+                400,
                 f"Unsupported $translate parameter(s): "
                 f"{', '.join(sorted(unknown_body))}. This server declares "
                 "url, conceptMapVersion, system, code/sourceCode, "
@@ -3793,7 +4024,16 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
         )
         post_url = post_params.get("url")
         map_url = post_url if post_url == ATHENA_CONCEPT_MAP_URL else None
-        payload = await _run_db(_executor(request), _do_translate, _engine(request), system, code, targetsystem, reverse, map_url)
+        payload = await _run_db(
+            _executor(request),
+            _do_translate,
+            _engine(request),
+            system,
+            code,
+            targetsystem,
+            reverse,
+            map_url,
+        )
         return _respond(request, payload)
 
     def _do_translate_athena(
@@ -3820,8 +4060,7 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
         if reverse:
             return _fhir_error(
                 400,
-                "reverse is not supported on the athena map: the "
-                "bridge is code→concept_id only.",
+                "reverse is not supported on the athena map: the bridge is code→concept_id only.",
             )
         vocabs = [
             v
@@ -3831,8 +4070,7 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
         if not vocabs:
             return _fhir_error(
                 400,
-                f"Source system {source_uri!r} has no Athena "
-                "vocabulary correspondence.",
+                f"Source system {source_uri!r} has no Athena vocabulary correspondence.",
             )
         try:
             placeholders = ",".join("?" * len(vocabs))
@@ -3852,7 +4090,9 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
             )
         if row is None:
             return build_parameters_translate(
-                [], source_system_uri=source_uri, source_code=code,
+                [],
+                source_system_uri=source_uri,
+                source_code=code,
             )
         from medterm4ds.core.models import CodeMapping, CodeRef
         from medterm4ds.services.athena import NATIVE_IDENTITY_VOCABS
@@ -3860,10 +4100,7 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
         concept_id, name, standard, invalid, vocab = row
         if invalid and standard == "S":
             relationship = "unmatched"
-        elif (
-            vocab in NATIVE_IDENTITY_VOCABS
-            or (standard == "S" and vocab != "RxNorm Extension")
-        ):
+        elif vocab in NATIVE_IDENTITY_VOCABS or (standard == "S" and vocab != "RxNorm Extension"):
             relationship = "equivalent"
         else:
             relationship = "relatedto"
@@ -3880,14 +4117,19 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
             source_code=code,
         )
 
-    def _do_translate(engine: LocalDuckDBEngine, source_uri: str, code: str, target_uri: str | None, reverse: bool = False, map_url: str | None = None):
+    def _do_translate(
+        engine: LocalDuckDBEngine,
+        source_uri: str,
+        code: str,
+        target_uri: str | None,
+        reverse: bool = False,
+        map_url: str | None = None,
+    ):
         # Stage 4b (athena design addendum): the opt-in Athena bridge
         # map — selected ONLY by explicit url; the default crosswalk
         # path below is untouched.
         if map_url == ATHENA_CONCEPT_MAP_URL:
-            return _do_translate_athena(
-                engine, source_uri, code, target_uri, reverse
-            )
+            return _do_translate_athena(engine, source_uri, code, target_uri, reverse)
         # T1 fix (TS-02/TS-19): reverse=true asks "which codes map TO
         # this code?" instead of "what does this code map to?" The
         # engine's crosswalk is same-CUI (symmetric), so the match SET
@@ -3917,9 +4159,7 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
             # the POST Parameters body (the GET route blocks '' with
             # min_length=1). An empty value is NOT "no filter" — reject
             # instead of widening to all systems.
-            return _fhir_error(
-                400, "targetsystem must be a non-empty system URI when provided."
-            )
+            return _fhir_error(400, "targetsystem must be a non-empty system URI when provided.")
         if target_uri:
             target_source = fhir_uri_to_system(target_uri)
             if target_source is None:
@@ -3963,7 +4203,9 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
         system: str = Query(..., min_length=1),
         codeA: str = Query(..., min_length=1),
         codeB: str = Query(..., min_length=1),
-        version: str | None = Query(None, description="Code system version (rejected — single-version server, H1)"),
+        version: str | None = Query(
+            None, description="Code system version (rejected — single-version server, H1)"
+        ),
     ):
         # c-fixbatch2 (H1): uniform single-version rejection across the
         # CodeSystem operations (cross-op consistency per cs05 e40).
@@ -3975,11 +4217,15 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
             )
             # U3 fix (TS-17): unknown-param rejection on this op too.
             reject_unknown_query_params(
-                request, _SUBSUMES_KNOWN_PARAMS, "$subsumes",
+                request,
+                _SUBSUMES_KNOWN_PARAMS,
+                "$subsumes",
             )
         except ValueError as exc:
             return _fhir_error_response(request, 400, str(exc))
-        payload = await _run_db(_executor(request), _do_subsumes, _engine(request), system, codeA, codeB)
+        payload = await _run_db(
+            _executor(request), _do_subsumes, _engine(request), system, codeA, codeB
+        )
         return _respond(request, payload)
 
     @app.post("/fhir/CodeSystem/$subsumes")
@@ -4010,9 +4256,12 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
             if coding_a_pair is not None:
                 derived = coding_a_pair[0]
             if coding_b_pair is not None:
-                if derived is not None and canonical_system_uri(derived) != canonical_system_uri(coding_b_pair[0]):
+                if derived is not None and canonical_system_uri(derived) != canonical_system_uri(
+                    coding_b_pair[0]
+                ):
                     return _fhir_error_response(
-                        request, 400,
+                        request,
+                        400,
                         f"codingA system {coding_a_pair[0]!r} and codingB "
                         f"system {coding_b_pair[0]!r} differ; subsumption "
                         "requires a single code system.",
@@ -4034,7 +4283,9 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
         # code systems must be well established"). medterm4ds has no
         # cross-system relationship map today; when either coding references a
         # different system than `system`, the server SHALL error.
-        if coding_a_pair is not None and canonical_system_uri(coding_a_pair[0]) != canonical_system_uri(system):
+        if coding_a_pair is not None and canonical_system_uri(
+            coding_a_pair[0]
+        ) != canonical_system_uri(system):
             # CR-023 (v0.0.1 code review): normalize through canonical_system_uri
             # so alias URIs (urn:oid:...) and trailing-slash variants resolve to
             # the same canonical identity before the inequality check. The prior
@@ -4046,14 +4297,18 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
                 f"codingA system {coding_a_pair[0]!r} differs from subsumption "
                 f"system {system!r}; cross-system relationships are not defined.",
             )
-        if coding_b_pair is not None and canonical_system_uri(coding_b_pair[0]) != canonical_system_uri(system):
+        if coding_b_pair is not None and canonical_system_uri(
+            coding_b_pair[0]
+        ) != canonical_system_uri(system):
             return _fhir_error_response(
                 request,
                 400,
                 f"codingB system {coding_b_pair[0]!r} differs from subsumption "
                 f"system {system!r}; cross-system relationships are not defined.",
             )
-        payload = await _run_db(_executor(request), _do_subsumes, _engine(request), system, code_a, code_b)
+        payload = await _run_db(
+            _executor(request), _do_subsumes, _engine(request), system, code_a, code_b
+        )
         return _respond(request, payload)
 
     def _do_subsumes(engine: LocalDuckDBEngine, system_uri: str, code_a: str, code_b: str):
@@ -4098,9 +4353,7 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
         # contract. Off by default; parity must be measured before any
         # default change (the design's explicit instruction).
         if os.getenv("MEDTERM4DS_ATHENA_SUBSUMES", "") == "1":
-            athena_outcome = _athena_subsumes_fast_path(
-                engine, system_uri, code_a, code_b
-            )
+            athena_outcome = _athena_subsumes_fast_path(engine, system_uri, code_a, code_b)
             if athena_outcome is not None:
                 return build_parameters_subsumes(athena_outcome)
         a_ref = CodeRef(source=source, code=code_a)
@@ -4135,8 +4388,7 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
         vocabs = [
             v
             for v, uri in ATHENA_VOCAB_TO_FHIR.items()
-            if uri == system_uri
-            and v != "RxNorm Extension"
+            if uri == system_uri and v != "RxNorm Extension"
         ]
         if not vocabs:
             return None
@@ -4184,14 +4436,17 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
         # the destructive variant at the boundary.
         try:
             reject_unknown_query_params(
-                request, _CLOSURE_KNOWN_PARAMS, "$closure",
+                request,
+                _CLOSURE_KNOWN_PARAMS,
+                "$closure",
             )
         except ValueError as exc:
             return _fhir_error_response(request, 400, str(exc))
         unknown_body = _parameter_names_present(body) - _CLOSURE_KNOWN_PARAMS
         if unknown_body:
             return _fhir_error_response(
-                request, 400,
+                request,
+                400,
                 f"Unsupported $closure parameter(s): "
                 f"{', '.join(sorted(unknown_body))}. This server declares "
                 "name, concept, version.",
@@ -4249,9 +4504,7 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
                 # GET-surface contract (the exact QC-252 fix pattern).
                 source = fhir_uri_to_system(system_uri)
                 if source is None:
-                    return _fhir_error(
-                        400, f"Unrecognized system URI: {system_uri}"
-                    )
+                    return _fhir_error(400, f"Unrecognized system URI: {system_uri}")
                 concepts.append((code, source, coding.get("display", "")))
 
         if saw_concept_entry and not concepts:
@@ -4279,9 +4532,7 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
             # raw code string. Codes that resolve to no active atom are
             # rejected, mirroring $lookup's not-found contract — they could
             # never form subsumption relationships anyway.
-            infos = engine.get_code_infos(
-                [CodeRef(source, code) for code, source, _ in concepts]
-            )
+            infos = engine.get_code_infos([CodeRef(source, code) for code, source, _ in concepts])
             resolved: list[tuple[str, str, str]] = []
             for (code, source, _display), info in zip(concepts, infos, strict=False):
                 if info is None or not info.name:
@@ -4304,7 +4555,11 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
         url: str | None = Query(None, description="ValueSet canonical URL"),
         filter: str | None = Query(None, description="Text filter for code display"),
         count: int = Query(20, ge=1, le=1000),
-        offset: int = Query(0, ge=0, description="Paging offset (per FHIR R4 $expand). Passed through; not yet used to slice results."),
+        offset: int = Query(
+            0,
+            ge=0,
+            description="Paging offset (per FHIR R4 $expand). Passed through; not yet used to slice results.",
+        ),
         system: str | None = Query(None, description="System URI for filter expansion"),
         date: str | None = Query(
             None,
@@ -4335,11 +4590,12 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
         # EB: date is shape-validated (previously 'garbage' accepted).
         try:
             reject_unknown_query_params(
-                request, _EXPAND_KNOWN_PARAMS, "$expand",
+                request,
+                _EXPAND_KNOWN_PARAMS,
+                "$expand",
             )
             unsupported = [
-                p for p in _EXPAND_UNSUPPORTED_PARAMS
-                if request.query_params.get(p) is not None
+                p for p in _EXPAND_UNSUPPORTED_PARAMS if request.query_params.get(p) is not None
             ]
             if unsupported:
                 raise ValueError(
@@ -4354,9 +4610,15 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
         except ValueError as exc:
             return _fhir_error_response(request, 400, str(exc))
         payload = await _run_db(
-            _executor(request), _expand_with_params_echo, _engine(request),
-            url=url, filter_text=filter, count=count, system_uri=system,
-            offset=offset, active_only=activeOnly,
+            _executor(request),
+            _expand_with_params_echo,
+            _engine(request),
+            url=url,
+            filter_text=filter,
+            count=count,
+            system_uri=system,
+            offset=offset,
+            active_only=activeOnly,
             date_param=date or None,
         )
         return _respond(request, payload)
@@ -4394,9 +4656,12 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
         resource_type = body.get("resourceType", "")
         if resource_type == "ValueSet":
             payload = await _run_db(
-                _executor(request), _expand_with_params_echo,
+                _executor(request),
+                _expand_with_params_echo,
                 _engine(request),
-                value_set=body, count=count, offset=offset,
+                value_set=body,
+                count=count,
+                offset=offset,
                 active_only=activeOnly,
             )
             return _respond(request, payload)
@@ -4427,21 +4692,19 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
             # valueSet get them honored (mirror _parse_parameters on the
             # same body).
             inline_params = _parse_parameters(body)
-            inline_count = _parse_count_param(
-                inline_params.get("count"), default=count
-            )
+            inline_count = _parse_count_param(inline_params.get("count"), default=count)
             if inline_count is None:
                 return _fhir_error_response(
-                    request, 400,
-                    f"count must be an integer in [1, 1000] (got {inline_params.get('count')!r})."
+                    request,
+                    400,
+                    f"count must be an integer in [1, 1000] (got {inline_params.get('count')!r}).",
                 )
-            inline_offset = _parse_offset_param(
-                inline_params.get("offset"), default=offset
-            )
+            inline_offset = _parse_offset_param(inline_params.get("offset"), default=offset)
             if inline_offset is None:
                 return _fhir_error_response(
-                    request, 400,
-                    f"offset must be a non-negative integer (got {inline_params.get('offset')!r})."
+                    request,
+                    400,
+                    f"offset must be a non-negative integer (got {inline_params.get('offset')!r}).",
                 )
             # QC-315: activeOnly may be co-located in the same Parameters
             # body; body value wins over the query-string default.
@@ -4450,13 +4713,13 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
             except ValueError as exc:
                 return _fhir_error_response(request, 400, str(exc))
             payload = await _run_db(
-                _executor(request), _expand_with_params_echo,
+                _executor(request),
+                _expand_with_params_echo,
                 _engine(request),
-                value_set=inline_vs, count=inline_count, offset=inline_offset,
-                active_only=(
-                    inline_active_only if inline_active_only is not None
-                    else activeOnly
-                ),
+                value_set=inline_vs,
+                count=inline_count,
+                offset=inline_offset,
+                active_only=(inline_active_only if inline_active_only is not None else activeOnly),
             )
             return _respond(request, payload)
         # Parameters-style: extract url, filter, count, offset
@@ -4465,12 +4728,11 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
         # Unsupported declared params and unknown param NAMES fail loud
         # (previously parsed-then-dropped); date is shape-validated.
         body_names = _parameter_names_present(body)
-        unsupported = [
-            p for p in _EXPAND_UNSUPPORTED_PARAMS if p in body_names
-        ]
+        unsupported = [p for p in _EXPAND_UNSUPPORTED_PARAMS if p in body_names]
         if unsupported:
             return _fhir_error_response(
-                request, 400,
+                request,
+                400,
                 f"Unsupported $expand parameter(s): {', '.join(sorted(unsupported))}. "
                 "This server does not implement them; per FHIR R4 §4.9.2 "
                 "they are rejected rather than silently ignored.",
@@ -4479,7 +4741,8 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
         unknown = body_names - known_names
         if unknown:
             return _fhir_error_response(
-                request, 400,
+                request,
+                400,
                 f"Unknown $expand parameter(s): {', '.join(sorted(unknown))}.",
             )
         date_param = params.get("date")
@@ -4502,26 +4765,33 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
         # still wins when present.
         count = _parse_count_param(params.get("count"), default=count)
         if count is None:
-            return _fhir_error_response(request, 400, f"count must be an integer in [1, 1000] (got {params.get('count')!r}).")
+            return _fhir_error_response(
+                request,
+                400,
+                f"count must be an integer in [1, 1000] (got {params.get('count')!r}).",
+            )
         body_offset = _parse_offset_param(params.get("offset"), default=offset)
         if body_offset is None:
-            return _fhir_error_response(request, 400, f"offset must be a non-negative integer (got {params.get('offset')!r}).")
+            return _fhir_error_response(
+                request,
+                400,
+                f"offset must be a non-negative integer (got {params.get('offset')!r}).",
+            )
         # QC-315: body activeOnly (valueBoolean) wins over the query default.
         try:
             body_active_only = _parse_active_only_body_param(body)
         except ValueError as exc:
             return _fhir_error_response(request, 400, str(exc))
         payload = await _run_db(
-            _executor(request), _expand_with_params_echo, _engine(request),
+            _executor(request),
+            _expand_with_params_echo,
+            _engine(request),
             url=params.get("url"),
             filter_text=params.get("filter"),
             count=count,
             system_uri=params.get("system"),
             offset=body_offset,
-            active_only=(
-                body_active_only if body_active_only is not None
-                else activeOnly
-            ),
+            active_only=(body_active_only if body_active_only is not None else activeOnly),
             date_param=date_param,
         )
         return _respond(request, payload)
@@ -4538,8 +4808,13 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
         date_param: str | None = None,
     ):
         payload = _do_expand(
-            engine, url=url, filter_text=filter_text, count=count,
-            system_uri=system_uri, value_set=value_set, offset=offset,
+            engine,
+            url=url,
+            filter_text=filter_text,
+            count=count,
+            system_uri=system_uri,
+            value_set=value_set,
+            offset=offset,
             active_only=active_only,
         )
         # c-fixbatch2 (EC): echo the APPLIED parameter subset per R4
@@ -4629,7 +4904,10 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
         # Mode 1: Inline ValueSet with compose rules
         if value_set:
             payload = _expand_intensional(
-                engine, value_set, page_end, include_retired=include_retired,
+                engine,
+                value_set,
+                page_end,
+                include_retired=include_retired,
             )
             return _expand_slice_page(payload, offset, page_end)
 
@@ -4642,7 +4920,10 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
         # resource exists. Found by SKEPTIC iteration TS-03 (QA-032).
         if url and _is_implicit_value_set_url(url):
             payload = _expand_implicit_value_set(
-                engine, url, page_end, include_retired=include_retired,
+                engine,
+                url,
+                page_end,
+                include_retired=include_retired,
             )
             return _expand_slice_page(payload, offset, page_end)
 
@@ -4650,7 +4931,10 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
         # a code in the path: http://snomed.info/sct/<code>?fhir_vs=isa)
         if url and "fhir_vs" in url:
             payload = _expand_url_pattern(
-                engine, url, page_end, include_retired=include_retired,
+                engine,
+                url,
+                page_end,
+                include_retired=include_retired,
             )
             return _expand_slice_page(payload, offset, page_end)
 
@@ -4814,11 +5098,9 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
                 extensions = expansion.get("extension")
                 if isinstance(extensions, list) and extensions:
                     kept = [
-                        e for e in extensions
-                        if not (
-                            isinstance(e, dict)
-                            and e.get("url") == TRUNCATION_EXT_URL
-                        )
+                        e
+                        for e in extensions
+                        if not (isinstance(e, dict) and e.get("url") == TRUNCATION_EXT_URL)
                     ]
                     if kept:
                         expansion["extension"] = kept
@@ -4827,7 +5109,10 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
         return payload
 
     def _expand_intensional(
-        engine, value_set: dict[str, Any], count: int, include_retired: bool = False,
+        engine,
+        value_set: dict[str, Any],
+        count: int,
+        include_retired: bool = False,
     ):
         """Expand a ValueSet with compose.include/exclude rules.
 
@@ -4840,7 +5125,10 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
         """
         try:
             deduped, depth_cap_hit = expand_intensional_value_set(
-                engine, value_set, count, include_retired=include_retired,
+                engine,
+                value_set,
+                count,
+                include_retired=include_retired,
             )
         except ValueError as exc:
             return _fhir_error(400, str(exc))
@@ -4870,7 +5158,10 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
         )
 
     def _expand_url_pattern(
-        engine, url: str, count: int, include_retired: bool = False,
+        engine,
+        url: str,
+        count: int,
+        include_retired: bool = False,
     ):
         """HTTP-handler wrapper around the module-level expand_url_pattern.
 
@@ -4879,7 +5170,10 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
         """
         try:
             return expand_url_pattern(
-                engine, url, count=count, include_retired=include_retired,
+                engine,
+                url,
+                count=count,
+                include_retired=include_retired,
             )
         except ValueError as exc:
             return _fhir_error(400, str(exc))
@@ -4947,7 +5241,10 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
         return False
 
     def _expand_implicit_value_set(
-        engine, url: str, count: int, include_retired: bool = False,
+        engine,
+        url: str,
+        count: int,
+        include_retired: bool = False,
     ):
         """Expand a FHIR R4 §4.7.3.1 implicit value set URL.
 
@@ -5017,6 +5314,7 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
         # Per GLOBAL_RULES.md "Silent Fallbacks": catch duckdb.Error only,
         # NOT broad Exception — programming errors MUST propagate.
         import duckdb
+
         try:
             # QC-287/293 (MEDIUM): ORDER BY CODE for deterministic pages —
             # the same request previously returned disjoint random samples
@@ -5048,15 +5346,18 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
         # sequential queries and dominated the 18.7s request time.
         page_codes = [code for (code,) in rows[:count]]
         page_infos = get_code_infos(
-            [CodeRef(source, code) for code in page_codes], engine=engine,
+            [CodeRef(source, code) for code in page_codes],
+            engine=engine,
         )
         for code, info in zip(page_codes, page_infos, strict=False):
             display = (info.name if info else None) or code
-            contains.append({
-                "system": system_uri,
-                "code": code,
-                "display": display,
-            })
+            contains.append(
+                {
+                    "system": system_uri,
+                    "code": code,
+                    "display": display,
+                }
+            )
 
         count_limited = len(rows) > count
         max_depth = _resolve_max_depth()
@@ -5075,13 +5376,15 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
         # system" (§4.7.3.1), so a 0-code response for an advertised system
         # is non-conformant without a signal.
         if not contains:
-            extensions.append({
-                "url": "http://medterm4ds.org/fhir/StructureDefinition/valueset-empty-source",
-                "valueString": (
-                    f"Implicit value set {url!r} expanded to 0 codes — the "
-                    f"underlying store has no rows for source {source!r}."
-                ),
-            })
+            extensions.append(
+                {
+                    "url": "http://medterm4ds.org/fhir/StructureDefinition/valueset-empty-source",
+                    "valueString": (
+                        f"Implicit value set {url!r} expanded to 0 codes — the "
+                        f"underlying store has no rows for source {source!r}."
+                    ),
+                }
+            )
         # VS-02 SKEPTIC QA-057: pass UN-truncated ``total`` so the response
         # reflects the full expansion size (FHIR R4 §4.9.2). The implicit
         # value set path queries ``LIMIT count + 1`` so we can detect
@@ -5096,7 +5399,10 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
         # exact size and is passed through.
         untruncated_total = len(rows) if len(rows) > count else len(contains)
         payload = build_valueset_expand(
-            contains[:count], url=url, extensions=extensions, total=untruncated_total,
+            contains[:count],
+            url=url,
+            extensions=extensions,
+            total=untruncated_total,
         )
         if len(rows) > count:
             payload["expansion"].pop("total", None)
@@ -5130,13 +5436,18 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
     @app.get("/fhir/CodeSystem/$search")
     async def search_get(
         request: Request,
-        query: str = Query(..., min_length=1, max_length=MAX_SEARCH_QUERY_CHARS, description="Text to search for"),
+        query: str = Query(
+            ..., min_length=1, max_length=MAX_SEARCH_QUERY_CHARS, description="Text to search for"
+        ),
         # QC-423 (MEDIUM): min_length=1 — an empty system previously passed
         # the `if system:` check and WIDENED to all systems on $search.
         system: str | None = Query(None, min_length=1, description="Restrict to system URI"),
         count: int = Query(20, ge=1, le=200),
         searchMode: str = Query("lexical", pattern="^(lexical|hybrid|semantic|canonical)$"),
-        resultTypes: str | None = Query(None, description="Comma-separated result types for canonical mode (condition,medication,drug_class,lab,vital,procedure,vaccine,symptom)"),
+        resultTypes: str | None = Query(
+            None,
+            description="Comma-separated result types for canonical mode (condition,medication,drug_class,lab,vital,procedure,vaccine,symptom)",
+        ),
     ):
         not_ready = _check_ready(request)
         if not_ready is not None:
@@ -5146,7 +5457,16 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
         if not query.strip():
             return _fhir_error_response(request, 400, "query must not be empty or whitespace-only.")
         result_types = resultTypes.split(",") if resultTypes else None
-        payload = await _run_db(_executor(request), _do_search, _engine(request), query, system, count, searchMode, result_types)
+        payload = await _run_db(
+            _executor(request),
+            _do_search,
+            _engine(request),
+            query,
+            system,
+            count,
+            searchMode,
+            result_types,
+        )
         return _respond(request, payload)
 
     @app.post("/fhir/CodeSystem/$search")
@@ -5160,11 +5480,13 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
         # str(True)='True' coercion, but the drop made the server silently
         # use the DEFAULT mode while the client believed their value applied.
         wrong_typed = _wrong_typed_parameter(
-            body, {"query", "_query", "system", "count", "searchMode", "resultTypes"},
+            body,
+            {"query", "_query", "system", "count", "searchMode", "resultTypes"},
         )
         if wrong_typed is not None:
             return _fhir_error_response(
-                request, 400,
+                request,
+                400,
                 f"Parameter {wrong_typed!r} must carry a string/integer value "
                 "(valueString, valueUri, valueCode, or valueInteger); "
                 "other value[x] types are rejected.",
@@ -5174,7 +5496,9 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
         system = params.get("system")
         count = _parse_count_param(params.get("count"), default=20, max_value=200)
         if count is None:
-            return _fhir_error_response(request, 400, f"count must be an integer in [1, 200] (got {params.get('count')!r}).")
+            return _fhir_error_response(
+                request, 400, f"count must be an integer in [1, 200] (got {params.get('count')!r})."
+            )
         search_mode = params.get("searchMode", "lexical")
         if not query_text:
             return _fhir_error_response(request, 400, "query is required.")
@@ -5184,12 +5508,22 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
         # QC-140: POST had no query-length cap (GET had max_length).
         if len(query_text) > MAX_SEARCH_QUERY_CHARS:
             return _fhir_error_response(
-                request, 400,
+                request,
+                400,
                 f"query length {len(query_text)} exceeds max {MAX_SEARCH_QUERY_CHARS} chars.",
             )
         result_types_str = params.get("resultTypes")
         result_types = result_types_str.split(",") if result_types_str else None
-        payload = await _run_db(_executor(request), _do_search, _engine(request), str(query_text), system, count, search_mode, result_types)
+        payload = await _run_db(
+            _executor(request),
+            _do_search,
+            _engine(request),
+            str(query_text),
+            system,
+            count,
+            search_mode,
+            result_types,
+        )
         return _respond(request, payload)
 
     # -- CodeSystem $extract (custom: NER + ConText + search) --
@@ -5199,13 +5533,29 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
     @app.get("/fhir/CodeSystem/$extract")
     async def extract_get(
         request: Request,
-        text: str = Query(..., min_length=1, max_length=MAX_EXTRACT_TEXT_CHARS, description="Free text to extract concepts from"),
+        text: str = Query(
+            ...,
+            min_length=1,
+            max_length=MAX_EXTRACT_TEXT_CHARS,
+            description="Free text to extract concepts from",
+        ),
         format: str = Query("codes", pattern="^(codes|terms|annotated)$"),
-        nerLabels: str | None = Query(None, description="Comma-separated NER labels to detect (default: lab test,vital sign,panel,therapeutic agent,therapeutic class,immunization,medical intervention,disorder,symptom)"),
-        resultTypes: str | None = Query(None, description="Comma-separated result types to filter (condition,medication,drug_class,lab,vital,procedure,vaccine,symptom)"),
+        nerLabels: str | None = Query(
+            None,
+            description="Comma-separated NER labels to detect (default: lab test,vital sign,panel,therapeutic agent,therapeutic class,immunization,medical intervention,disorder,symptom)",
+        ),
+        resultTypes: str | None = Query(
+            None,
+            description="Comma-separated result types to filter (condition,medication,drug_class,lab,vital,procedure,vaccine,symptom)",
+        ),
         mode: str = Query(DEFAULT_EXTRACT_MODE, pattern="^(lexical|semantic|hybrid|canonical)$"),
-        minGrade: str = Query(DEFAULT_EXTRACT_MIN_GRADE, pattern="^(certain|exact|probable|possible|broader)$"),
-        annotationFields: str | None = Query(None, description="Comma-separated annotated-marker fields (format=annotated only; ignored otherwise): text, name, type, source_code, canonical_id, status"),
+        minGrade: str = Query(
+            DEFAULT_EXTRACT_MIN_GRADE, pattern="^(certain|exact|probable|possible|broader)$"
+        ),
+        annotationFields: str | None = Query(
+            None,
+            description="Comma-separated annotated-marker fields (format=annotated only; ignored otherwise): text, name, type, source_code, canonical_id, status",
+        ),
         includeNegated: bool = Query(False),
         includeUncertain: bool = Query(False),
         includeHistorical: bool = Query(False),
@@ -5218,9 +5568,7 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
         # QA-005: validate annotationFields pre-NER via the canonical
         # normalizer (ValueError -> 400), so garbage fails in milliseconds
         # like the other enum params instead of a 500 from the executor.
-        annotation_fields = _validate_annotation_fields_param(
-            request, annotationFields
-        )
+        annotation_fields = _validate_annotation_fields_param(request, annotationFields)
         if isinstance(annotation_fields, Response):
             return annotation_fields
         # QC-305 (MEDIUM): format=annotated returns a non-FHIR JSON document
@@ -5231,7 +5579,8 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
         # 406 (Not Acceptable) so the client knows to re-request as JSON.
         if format == "annotated" and _wants_xml(request):
             return _fhir_error_response(
-                request, 406,
+                request,
+                406,
                 "format=annotated returns a non-FHIR JSON document and "
                 "cannot be served as XML. Re-send with _format=json (or "
                 "format=codes/terms for a Bundle that serializes to XML).",
@@ -5240,9 +5589,19 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
         # Content-Type is application/fhir+json (or application/fhir+xml when
         # negotiated), not Starlette's application/json default.
         payload = await _run_db(
-            _ner_executor(request), _do_extract, text, format, nerLabels,
-            resultTypes, mode, minGrade, includeNegated, includeUncertain,
-            includeHistorical, includeFamily, annotation_fields,
+            _ner_executor(request),
+            _do_extract,
+            text,
+            format,
+            nerLabels,
+            resultTypes,
+            mode,
+            minGrade,
+            includeNegated,
+            includeUncertain,
+            includeHistorical,
+            includeFamily,
+            annotation_fields,
         )
         return _fhir_response(request, payload)
 
@@ -5263,23 +5622,27 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
         # wrong-typed contract applies to them: any scalar value[x]
         # (valueInteger, valueString, ...) is the type error and 400s.
         include_names = {
-            "includeNegated", "includeUncertain", "includeHistorical", "includeFamily",
+            "includeNegated",
+            "includeUncertain",
+            "includeHistorical",
+            "includeFamily",
         }
         wrong_typed = _wrong_typed_parameter(
             body,
-            {"text", "format", "nerLabels", "resultTypes", "mode", "minGrade",
-             "annotationFields"},
+            {"text", "format", "nerLabels", "resultTypes", "mode", "minGrade", "annotationFields"},
             boolean_names=include_names,
         )
         if wrong_typed is not None:
             if wrong_typed in include_names:
                 return _fhir_error_response(
-                    request, 400,
+                    request,
+                    400,
                     f"Parameter {wrong_typed!r} must carry a boolean value "
                     "(valueBoolean); other value[x] types are rejected.",
                 )
             return _fhir_error_response(
-                request, 400,
+                request,
+                400,
                 f"Parameter {wrong_typed!r} must carry a string/integer value "
                 "(valueString, valueUri, valueCode, or valueInteger); "
                 "other value[x] types are rejected.",
@@ -5315,14 +5678,16 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
         ):
             if not re.fullmatch(pattern, value):
                 return _fhir_error_response(
-                    request, 400,
+                    request,
+                    400,
                     f"Invalid {name} {value!r}: must match {pattern}.",
                 )
         # CR-001: see extract_get — funnel through _fhir_response.
         # QC-305: reject annotated+XML on POST too (mirror extract_get).
         if fmt == "annotated" and _wants_xml(request):
             return _fhir_error_response(
-                request, 406,
+                request,
+                406,
                 "format=annotated returns a non-FHIR JSON document and "
                 "cannot be served as XML. Re-send with _format=json (or "
                 "format=codes/terms for a Bundle that serializes to XML).",
@@ -5338,7 +5703,9 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
         if isinstance(annotation_fields, Response):
             return annotation_fields
         payload = await _run_db(
-            _ner_executor(request), _do_extract, str(text),
+            _ner_executor(request),
+            _do_extract,
+            str(text),
             fmt,
             params.get("nerLabels"),
             params.get("resultTypes"),
@@ -5359,15 +5726,24 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
         if value is None:
             return None
         from medterm4ds.services.extraction import _normalize_annotation_fields
+
         try:
             return _normalize_annotation_fields(value)
         except ValueError as exc:
             return _fhir_error_response(request, 400, str(exc))
 
     def _do_extract(
-        text, fmt, ner_labels_str, result_types_str, mode, min_grade,
-        include_negated, include_uncertain=False, include_historical=False,
-        include_family=False, annotation_fields=None,
+        text,
+        fmt,
+        ner_labels_str,
+        result_types_str,
+        mode,
+        min_grade,
+        include_negated,
+        include_uncertain=False,
+        include_historical=False,
+        include_family=False,
+        annotation_fields=None,
     ):
         from medterm4ds.services.extraction import extract as extract_service
 
@@ -5394,8 +5770,7 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
         if fmt == "annotated" and isinstance(results, dict):
             return {
                 "concepts": [
-                    c.to_dict() if hasattr(c, "to_dict") else c
-                    for c in results.get("concepts", [])
+                    c.to_dict() if hasattr(c, "to_dict") else c for c in results.get("concepts", [])
                 ],
                 "annotated_text": results.get("annotated_text", ""),
                 "spans": results.get("spans", []),
@@ -5404,14 +5779,22 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
         entries = []
         for r in results:
             d = r.to_dict()
-            entries.append({
-                "fullUrl": f"urn:uuid:{uuid4()}",
-                "resource": d,
-                "search": {"mode": "match"},
-            })
-        return {"resourceType": "Bundle", "type": "searchset", "total": len(entries), "entry": entries}
+            entries.append(
+                {
+                    "fullUrl": f"urn:uuid:{uuid4()}",
+                    "resource": d,
+                    "search": {"mode": "match"},
+                }
+            )
+        return {
+            "resourceType": "Bundle",
+            "type": "searchset",
+            "total": len(entries),
+            "entry": entries,
+        }
 
-    def _do_search(engine: LocalDuckDBEngine,
+    def _do_search(
+        engine: LocalDuckDBEngine,
         query_text: str,
         system_uri: str | None,
         count: int,
@@ -5443,16 +5826,18 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
                 entries = []
                 for r in results:
                     sys_uri = system_to_fhir_uri(r.anchor_system.upper()) or r.anchor_system
-                    entries.append({
-                        "canonical_id": r.canonical_id,
-                        "result_type": r.result_type,
-                        "code": r.anchor_code,
-                        "system": sys_uri,
-                        "display": r.patient_friendly_name,
-                        "score": r.score,
-                        "match_grade": r.match_grade,
-                        "combination_members": r.combination_members,
-                    })
+                    entries.append(
+                        {
+                            "canonical_id": r.canonical_id,
+                            "result_type": r.result_type,
+                            "code": r.anchor_code,
+                            "system": sys_uri,
+                            "display": r.patient_friendly_name,
+                            "score": r.score,
+                            "match_grade": r.match_grade,
+                            "combination_members": r.combination_members,
+                        }
+                    )
                 return build_bundle_search(entries, query=query_text, search_mode=search_mode)
 
             # Legacy modes (lexical, semantic, hybrid): probe availability.
@@ -5467,7 +5852,10 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
                 return _fhir_error(503, "Embedding model not found.")
 
             results = service.search(
-                query_text, mode=search_mode, sources=sources, count=count,
+                query_text,
+                mode=search_mode,
+                sources=sources,
+                count=count,
                 # G1 fix (TS-07/TS-41): result_types is passed on the
                 # legacy modes too — the canonical branch always forwarded
                 # it, but the legacy service.search() call omitted it, so
@@ -5504,13 +5892,15 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
         # emits the same display for the same result row.
         for r in results:
             sys_uri = system_to_fhir_uri(r.source.upper()) or r.source
-            entries.append({
-                "code": r.code,
-                "system": sys_uri,
-                "display": r.display,
-                "score": r.score,
-                "match_grade": r.match_grade,
-            })
+            entries.append(
+                {
+                    "code": r.code,
+                    "system": sys_uri,
+                    "display": r.display,
+                    "score": r.score,
+                    "match_grade": r.match_grade,
+                }
+            )
         return build_bundle_search(entries, query=query_text, search_mode=search_mode)
 
     def _parameter_entries(body: dict[str, Any]) -> list[Any]:
@@ -5554,10 +5944,7 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
             if not isinstance(param, dict):
                 continue
             name = param.get("name", "")
-            value_keys = [
-                key for key in param
-                if isinstance(key, str) and key.startswith("value")
-            ]
+            value_keys = [key for key in param if isinstance(key, str) and key.startswith("value")]
             has_other_value = bool(value_keys)
             # CR-053: FHIR R4 Parameters constraint param-1 — at most one
             # value[x] per parameter. valueBoolean:true + a stray scalar
@@ -5575,8 +5962,7 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
             if name not in names:
                 continue
             has_scalar = any(
-                key in param
-                for key in ("valueString", "valueUri", "valueCode", "valueInteger")
+                key in param for key in ("valueString", "valueUri", "valueCode", "valueInteger")
             )
             if has_other_value and not has_scalar:
                 return str(name)
@@ -6226,9 +6612,7 @@ def main() -> int:
         host = host.split(":", 1)[0]
     port = int(os.getenv("MEDTERM4DS_FHIR_API_PORT", str(DEFAULT_PORT)))
     if host not in {"127.0.0.1", "::1", "localhost"}:
-        logger.warning(
-            "Binding to %s — this exposes the FHIR API to external networks.", host
-        )
+        logger.warning("Binding to %s — this exposes the FHIR API to external networks.", host)
     uvicorn.run(
         "medterm4ds.apps.fhir_api:create_fhir_app",
         factory=True,

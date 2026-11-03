@@ -166,15 +166,16 @@ def canonical_system_uri(system_uri: str, *, source: str | None = None) -> str:
             "(source=%r) — emitting client-supplied value. If this is a new "
             "code system, add it to SYSTEM_TO_FHIR_URI in "
             "engines/fhir/__init__.py.",
-            system_uri, source,
+            system_uri,
+            source,
         )
     return system_uri
 
 
 # Lowercase raw UMLS SAB labels stored in patient-friendly JSON artifacts
-# (e.g. /mnt/d/medterm4ds/reports/fhir4px/patient_friendly_*.json) → canonical
-# internal source name. The patient-friendly `canonical_system` field uses
-# these raw labels (e.g. "icd10", "snomedct_us") rather than the canonical
+# (patient_friendly_*.json under the MEDTERM4DS_FHIR4PX_BASELINE dir) →
+# canonical internal source name. The patient-friendly `canonical_system`
+# field uses these raw labels (e.g. "icd10", "snomedct_us") rather than the canonical
 # FHIR URI; this map normalizes them before emitting in $lookup responses.
 # Per GLOBAL_RULES.md "Single Source of Truth": do NOT redefine the FHIR URI
 # map downstream — translate to internal source name first, then call
@@ -230,31 +231,35 @@ def sab_label_to_fhir_uri(sab_label: str) -> str | None:
 # Canonical R4 spec (verified 2026-07-13):
 #   https://hl7.org/fhir/R4/valueset-concept-map-equivalence.html
 #   https://hl7.org/fhir/R4/valueset.html#filter
-FHIR_R4_CONCEPT_MAP_EQUIVALENCE: frozenset[str] = frozenset({
-    "relatedto",
-    "equivalent",
-    "equal",
-    "wider",
-    "narrower",
-    "subsumes",
-    # NOTE: R4 uses ``specializes`` (NOT R5/R4B ``subsumedby``) for the
-    # reverse-of-subsumes case. CF-HISTORIAN-VS01-01.
-    "specializes",
-    "inexact",
-    "unmatched",
-    "disjoint",
-})
+FHIR_R4_CONCEPT_MAP_EQUIVALENCE: frozenset[str] = frozenset(
+    {
+        "relatedto",
+        "equivalent",
+        "equal",
+        "wider",
+        "narrower",
+        "subsumes",
+        # NOTE: R4 uses ``specializes`` (NOT R5/R4B ``subsumedby``) for the
+        # reverse-of-subsumes case. CF-HISTORIAN-VS01-01.
+        "specializes",
+        "inexact",
+        "unmatched",
+        "disjoint",
+    }
+)
 
-FHIR_R4_FILTER_OPERATORS: frozenset[str] = frozenset({
-    "=",
-    "is-a",
-    # NOTE: spec spelling is ``descendent-of`` (Latin-derived), NOT
-    # ``descendant-of`` (common English). VS-01 SKEPTIC QA-054.
-    "descendent-of",
-    "is-not-a",
-    "regex",
-    "in",
-    "not-in",
-    "generalizes",
-    "exists",
-})
+FHIR_R4_FILTER_OPERATORS: frozenset[str] = frozenset(
+    {
+        "=",
+        "is-a",
+        # NOTE: spec spelling is ``descendent-of`` (Latin-derived), NOT
+        # ``descendant-of`` (common English). VS-01 SKEPTIC QA-054.
+        "descendent-of",
+        "is-not-a",
+        "regex",
+        "in",
+        "not-in",
+        "generalizes",
+        "exists",
+    }
+)

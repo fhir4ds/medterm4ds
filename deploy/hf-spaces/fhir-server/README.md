@@ -79,9 +79,9 @@ Set at container start to tune behavior. All optional unless noted.
 
 | Var | Default | Purpose |
 |---|---|---|
-| `MEDTERM4DS_SEARCH_INDEX_DIR` | `/mnt/d/fhir4px-model/dist/naming_bm25` | Directory containing `<category>_bm25.json` (6 categories). `$search` lexical/hybrid returns 503 if missing. |
-| `MEDTERM4DS_EMBEDDING_MODEL_DIR` | `/mnt/d/fhir4px-model/data/sapbert_finetuned` | SapBERT model dir (must contain `model.safetensors` + `config.json`). `$search` semantic/hybrid returns 503 if missing. |
-| `MEDTERM4DS_FHIR4PX_BASELINE` | `/mnt/d/medterm4ds/reports/fhir4px` | Directory containing `patient_friendly_<source>.json` (5 sources). `$lookup` skips patient-friendly custom properties if missing. |
+| `MEDTERM4DS_SEARCH_INDEX_DIR` | `$MEDTERM4DS_CACHE_DIR/lexical` (else `~/.cache/medterm4ds/<rev>/lexical`) | Directory containing `<category>_bm25.json` (6 categories). With the default (unpinned) dir the service auto-provisions the `fhir4ds/terminology` release on first use; pinned dirs 503 if missing. |
+| `MEDTERM4DS_EMBEDDING_MODEL_DIR` | `$MEDTERM4DS_CACHE_DIR/semantic` (else `~/.cache/medterm4ds/<rev>/semantic`) | SapBERT model dir (must contain `model.safetensors` + `config.json`). Unpinned defaults resolve the terminology release model unit first. |
+| `MEDTERM4DS_FHIR4PX_BASELINE` | `$MEDTERM4DS_CACHE_DIR/reports/fhir4px` (cache-root derived) | Directory containing `patient_friendly_<source>.json` (5 sources). `$lookup` logs a WARNING naming this var when the dir is missing. |
 
 **Request caps:**
 
