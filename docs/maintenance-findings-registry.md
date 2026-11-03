@@ -237,6 +237,40 @@ Resolution doctrine: fix-batches land families (not rows); the
 flip-on-fix pins travel with each batch; the live re-sweep (TS-77)
 guards unpinned rows against silent drift.
 
+## v0.0.9 release loop (2026-11-03) — QC catch-up + fixbatch record
+
+The registry had fallen ~4 days behind (QC4-H1). Catch-up + this
+release's QC findings:
+
+| id | sev | found | surface | finding | pin suite (committed) |
+|---|---|---|---|---|---|
+| ALR1 ("AL1" in ts114 — ID collision with TS-35's AL1 above, hence renamed here) | MEDIUM | 2026-11-02 | $search alias recall | live release 2026.10.31.1 embeds 232,544 alias vectors (AL1-era premise drift); FIXED 2026-11-02, flipped from strict-xfail to positive regression | test_ts114_alias_recall_live_20261102.py |
+| TSB1 | LOW | 2026-11-02 | ts110 reload teardown | teardown was position-dependent, not exception-safe — setup failure between env mutation and reload poisoned sys.modules for the session; FIXED (try/finally) | test_ts110_canonical_cards_live_20261101.py |
+| QC1-T3 | HIGH | 2026-11-03 | lexical grades | AMUX-20 orphan-pass rows graded 'certain' on substring coincidences ('MS' → 'LC/MS/MS' rows) via max-idf proxy inflation; FIXED (orphan-only cap at probable unless exact) | test_search_ranking.py::TestOrphanPassGradeCap |
+| QC1-S2 | MEDIUM | 2026-11-03 | hybrid order | sort key lacked source — code collisions resolved by hash-seed set iteration (documented 'deterministic' was false); FIXED | test_hybrid_fusion.py::TestBatchAFixes |
+| QC1-S1 | MEDIUM | 2026-11-03 | hybrid fusion | duplicate (source,code) within a system kept the WORSE (last) rank; FIXED (setdefault keeps first) | test_hybrid_fusion.py::TestBatchAFixes |
+| QC1-A4 | MEDIUM | 2026-11-03 | hybrid grades | probable branch re-derived exactness weaker than AMUX-18 _row_exact (display-only, ignored indexed-name matches); FIXED (reuses lx['exact']) | test_hybrid_fusion.py::TestBatchAFixes |
+| QC1-A3 | HIGH | 2026-11-03 | fusion benchmark | 'cascade' baseline delegated to svc.hybrid == the RRF winner — self-comparison; FIXED (historical cascade reimplemented in bench; engine.rerank keeps its consumer) | benchmarks/fusion_benchmark.py |
+| QC2-S1 | HIGH | 2026-11-03 | env pins | no expanduser — '~/medcache' resolved as literal './~' relative to CWD; FIXED (paths.env_pin everywhere) | test_search_resolution.py::TestBatchBFixes |
+| QC2-H4 | MEDIUM | 2026-11-03 | sentinels | search.py recomputed DEFAULT_* — reload(search) without reload(paths) diverged the copies and misclassified pins; FIXED (paths._refresh_sentinels as a unit) | test_search_resolution.py::TestBatchBFixes |
+| QC2-H1 | MEDIUM | 2026-11-03 | guard | no-host-paths Windows regex matched TWO backslashes — never matched .py AST values; FIXED | test_search_resolution.py::TestBatchBFixes |
+| QC2-A11 | MEDIUM | 2026-11-03 | FHIR banner | startup banner prescribed pin fixes for a 503 that first-use provisioning prevents; FIXED (pinned vs unpinned wording) | (log contract; exercised live) |
+| QC3-E1 | HIGH | 2026-11-03 | demo rate limit | first XFF hop client-supplied — rotating it bypassed the limit + unbounded key memory; FIXED (last hop + key cap) | deploy/hf-spaces/terminology-demo/app.py |
+| QC3-E2 | HIGH | 2026-11-03 | demo health | failed warm-up kept /health 200 → HEALTHCHECK green, Space 'starting' forever; FIXED (503 on warm_error). Port sub-claim refuted (already 7860) | app.py /health |
+| QC3-S2 | refuted | 2026-11-03 | public lookup licensing | claimed HCPCS carries CPT Level I into the public DB — EMPIRICALLY FALSE for UMLS 2026AA (0 five-digit codes under HCPCS; 726 overlaps are all 2-char modifier codes, TTY='MP', zero shared strings); residual gate-breadth hardened | verify_lookup_db.py gates + floors |
+| QC3-S10/E8 | MEDIUM | 2026-11-03 | public lookup gate | gate checked only SAB='CPT' literal, no row floors — truncated/contaminated DB could PASS; FIXED (SAB universe, mrsat, CPT-shaped HCPCS codes, extra tables, per-source floors, atomic .building→rename) | deploy/scripts/verify_lookup_db.py |
+| QC4-H1 | MEDIUM | 2026-11-03 | this registry | ~4 days stale (six-failure triage, ts114, AMUX-44/46/49 unrecorded; AL1 ID collision) — this section is the catch-up | (this file) |
+
+Deferred (documented, not release-blocking): QC1-T1/T2 (eGFR→EGFR,
+ACS→Aase — index content, neither system recalls; changelog Known
+limitations), QC1-T4-T8 rank-shape tuning, QC1-S3 score-scale mixing
+(documented per-row by match_grade), QC1-S5 silent missing-FAISS
+category, QC2-S3 identity-sentinel refactor, QC3-A6/E10 extension-URL
+exact pin (terminologyFhir.test.ts has NO configured runner — orphaned
+test file), QC3-A10 dependency pinning, QC2-H3 stale built docs
+(regenerated at website build).
+
+
 
 ## Rules
 
