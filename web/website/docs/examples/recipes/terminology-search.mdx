@@ -8,24 +8,71 @@ import TerminologyDemo from '@site/src/components/TerminologyDemo';
 
 Try medterm4ds terminology operations right here, against a live public
 endpoint: [terminology-demo](https://fhir4ds-terminology-demo.hf.space), a
-Hugging Face Docker Space running the full stack (lexical, semantic,
-canonical and hybrid search; clinical-note extraction; cross-system
-mapping; patient-friendly translation).
+Hugging Face Docker Space running the **native medterm4ds FHIR R4
+terminology API** — the same app you can self-host, not a simplified
+convenience layer.
 
 <TerminologyDemo />
 
-## How it works
+## Native FHIR R4 operations
 
-- **Lexical** — BM25 over pre-built token indexes (exact-term matching,
-  fastest, no model needed).
-- **Semantic** — SapBERT embeddings + FAISS similarity (finds "heart
-  attack" ↔ "myocardial infarction").
-- **Canonical** — anchored value-set cards with patient-friendly names and
-  full membership.
-- **Hybrid** — lexical and semantic combined.
+Every call the component above makes is a standard FHIR R4 operation with
+a `Parameters` request body. The server's
+[CapabilityStatement](https://fhir4ds-terminology-demo.hf.space/fhir/metadata)
+lists everything it serves; the demo uses:
 
-Extraction runs GLiNER + medspaCy NER over your note, resolves each span
-to codes, and translates the found codes into patient-friendly names.
+| Operation | FHIR request | What it does |
+|---|---|---|
+| Term search | `POST /fhir/CodeSystem/$search` | `query` + `searchMode` = `lexical` \| `semantic` \| `canonical` \| `hybrid`; returns a searchset `Bundle` of `CodeSystem` codings with match-grade extensions |
+| Note extraction | `POST /fhir/CodeSystem/$extract` | `text` → a `Bundle` of concepts found by GLiNER + medspaCy NER, resolved to codes |
+| Code detail | `POST /fhir/CodeSystem/$lookup` | `system` + `code` → `Parameters` with display, name and properties (incl. the UMLS CUI) |
+| Code mapping | `POST /fhir/ConceptMap/$translate` | `system` + `code` + `targetSystem` → `Parameters` with equivalence-rated matches |
+| Capabilities | `GET /fhir/metadata` | the `CapabilityStatement` |
+
+The server also carries `$validate-code`, `$subsumes`, `$closure`,
+`ValueSet/$expand`, `ConceptMap/$translate` by id, batch/transaction
+`POST /fhir`, and resource-level reads — all unmodified from
+`medterm4ds.create_fhir_app`.
+
+### Example request and response ($search)
+
+```json
+POST /fhir/CodeSystem/$search
+{
+  "resourceType": "Parameters",
+  "parameter": [
+    {"name": "query", "valueString": "heart attack"},
+    {"name": "searchMode", "valueCode": "hybrid"},
+    {"name": "count", "valueInteger": 3}
+  ]
+}
+```
+
+```json
+{
+  "resourceType": "Bundle",
+  "type": "searchset",
+  "total": 3,
+  "entry": [
+    {
+      "fullUrl": "CodeSystem/http://snomed.info/sct-22298006",
+      "resource": {
+        "system": "http://snomed.info/sct",
+        "code": "22298006",
+        "display": "Heart Attack"
+      },
+      "search": {
+        "mode": "match",
+        "score": 1.0,
+        "extension": [
+          {"url": "http://fhir4ds.org/fhir/StructureDefinition/match-grade",
+           "valueCode": "certain"}
+        ]
+      }
+    }
+  ]
+}
+```
 
 ## The Space sleeps
 
@@ -52,15 +99,15 @@ public demo endpoint, not an access-controlled API.
 
 ## Running your own
 
-This demo is a Docker Space packaging of the `medterm4ds` FastAPI service.
+This demo is a Docker Space wrapping `medterm4ds.create_fhir_app`.
 Everything is in the repo under `deploy/hf-spaces/terminology-demo/`
-(Dockerfile, app, README with the deploy runbook and licence notices).
-See [Docker deployment](../../interfaces/docker-deployment.md) for
-self-hosting the same image, or use the
+(Dockerfile, wrapper app, README with the deploy runbook and licence
+notices). See [Docker deployment](../../interfaces/docker-deployment.md)
+for self-hosting, or use the
 [FHIR server](fhir-server.md) recipe for a FHIR-native surface.
 
 ## Rate limits & fair use
 
-The public Space allows 30 requests/minute per IP and only accepts
-browser calls from this site (origin allow-list). For anything heavier,
-self-host — the data build is reproducible from your own UMLS download.
+The public Space allows 30 requests/minute per IP. For anything heavier,
+self-host — the data build is reproducible from your own UMLS download
+(CPT excluded by design).
