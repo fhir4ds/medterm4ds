@@ -31,9 +31,11 @@ to codes, and translates the found codes into patient-friendly names.
 
 The demo runs on free-tier hardware. After **48 h without traffic the
 Space sleeps**, and the first request after sleep takes up to **~2 minutes**
-to wake it — the component above polls the Space's health endpoint and shows
-that state explicitly ("Checking the terminology server…", then "Starting
-up…"), keeping the form disabled until the Space is really ready.
+to wake — about half of that is loading the terminology models (SapBERT,
+FAISS, GLiNER). The component above polls the Space's health endpoint
+(which reports the model warm-up separately from basic liveness), keeps
+the form disabled until queries actually work, and shows that state
+explicitly ("Checking the terminology server…", then "Starting up…").
 
 ## Browser calls the Space directly (and why)
 

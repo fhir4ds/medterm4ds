@@ -18,6 +18,7 @@ Access control (Joel's "keyed" mechanism — no API keys in the browser):
 
 from __future__ import annotations
 
+import logging
 import os
 import threading
 import time
@@ -203,11 +204,33 @@ async def lifespan(app: FastAPI):
     app.state.con = con
     app.state.engine = engine
     app.state.db_executor = db_executor
-    app.state.ready = True
+    app.state.db_ready = True
+    app.state.search_ready = False
+
+    def _warm_up() -> None:
+        """Fully load the search service (lexical indexes, SapBERT, FAISS)
+        and the extraction service (GLiNER + medspaCy) in the background so
+        the first real query does not stall behind a model load. Both load
+        their heavy models lazily on first USE, so the warm-up runs a tiny
+        query through each rather than just constructing the objects."""
+        try:
+            search_service = _get_search_service()
+            search_service.semantic("warmup", count=1)
+            extraction_service = _get_extraction_service()
+            # Full extract path (NER + section detection + resolution) —
+            # more of the pipeline is lazy beyond find_terms alone.
+            extraction_service.extract("Patient has diabetes.", format="codes")
+        except Exception:
+            logging.exception("terminology-demo warm-up failed; /health stays 'starting'")
+            return
+        app.state.search_ready = True
+
+    threading.Thread(target=_warm_up, name="demo-warmup", daemon=True).start()
     try:
         yield
     finally:
-        app.state.ready = False
+        app.state.db_ready = False
+        app.state.search_ready = False
         db_executor.shutdown(wait=True, cancel_futures=True)
         con.close()
 
@@ -297,10 +320,15 @@ def _engine(request: Request) -> LocalDuckDBEngine:
 
 @app.get("/health")
 async def health(request: Request) -> dict[str, Any]:
-    ready = bool(getattr(request.app.state, "ready", False))
+    # Cheap by design: two in-memory booleans, no engine/model touch.
+    db_ready = bool(getattr(request.app.state, "db_ready", False))
+    search_ready = bool(getattr(request.app.state, "search_ready", False))
+    ready = db_ready and search_ready
     return {
-        "status": "ok" if ready else "starting",
+        "status": "ready" if ready else "starting",
         "ready": ready,
+        "db_ready": db_ready,
+        "search_ready": search_ready,
         "version": __version__,
         "service": "terminology-demo",
     }
@@ -309,15 +337,16 @@ async def health(request: Request) -> dict[str, Any]:
 @app.get("/capabilities")
 async def capabilities(request: Request) -> dict[str, Any]:
     engine = _engine(request)
-    ready = bool(getattr(request.app.state, "ready", False))
+    db_ready = bool(getattr(request.app.state, "db_ready", False))
     search_modes = list(SEARCH_MODES)
     sources: list[str] = []
-    if ready:
+    if db_ready:
         sources = sorted({r[0] for r in engine.con.execute(
             "SELECT DISTINCT SAB FROM mrconso"
         ).fetchall()})
     return {
         "version": __version__,
+        "search_warm": bool(getattr(request.app.state, "search_ready", False)),
         "endpoints": [
             "/health", "/capabilities", "/search", "/extract",
             "/map", "/translate", "/lookup", "/hierarchy",
@@ -334,8 +363,25 @@ async def capabilities(request: Request) -> dict[str, Any]:
     }
 
 
+def _require_search_warm(request: Request) -> JSONResponse | None:
+    """503 (not blocking) if the search/extraction models are still loading."""
+    if not getattr(request.app.state, "search_ready", False):
+        return JSONResponse(
+            status_code=503,
+            headers={"Retry-After": "10"},
+            content={
+                "detail": "Search models are still warming up after wake; "
+                "retry in a few seconds."
+            },
+        )
+    return None
+
+
 @app.post("/search")
 async def search(payload: SearchRequest, request: Request) -> dict[str, Any]:
+    warm_refusal = _require_search_warm(request)
+    if warm_refusal is not None:
+        return warm_refusal
     service = _get_search_service()
     results = await run_db(
         request.app.state.db_executor,
@@ -351,6 +397,9 @@ async def search(payload: SearchRequest, request: Request) -> dict[str, Any]:
 
 @app.post("/extract")
 async def extract(payload: ExtractRequest, request: Request) -> dict[str, Any]:
+    warm_refusal = _require_search_warm(request)
+    if warm_refusal is not None:
+        return warm_refusal
     service = _get_extraction_service()
     result = await run_db(
         request.app.state.db_executor,

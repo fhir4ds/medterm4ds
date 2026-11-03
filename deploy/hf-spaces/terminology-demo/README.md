@@ -22,8 +22,8 @@ Live at: **https://fhir4ds-terminology-demo.hf.space**
 
 | Endpoint | Method | Purpose |
 |---|---|---|
-| `/health` | GET | readiness + version |
-| `/capabilities` | GET | endpoints, search modes, code sources, limits |
+| `/health` | GET | readiness + version. Reports `db_ready` and `search_ready` separately (cheap: in-memory booleans only); `status: "ready"` only when both are true |
+| `/capabilities` | GET | endpoints, search modes, code sources, limits, `search_warm` |
 | `/search` | POST | `{query, mode: lexical\|semantic\|canonical\|hybrid, count?, sources?, result_types?}` |
 | `/extract` | POST | `{text}` → concepts + annotated text (GLiNER + medspaCy NER, resolved to codes) |
 | `/map` | POST | `{codes: [{source, code}], target_sources: [...]}` → cross-system mappings |
@@ -198,8 +198,18 @@ curl -s -X POST https://fhir4ds-terminology-demo.hf.space/search \
 ```
 
 Hardware: free tier (2 vCPU / 16 GB) is sufficient — everything runs on
-CPU (`MEDTERM4DS_MEMORY_PROFILE=low`, DuckDB threads=2). Cold start after
-idle sleep: up to ~60 s (health-check start-period is 120 s).
+CPU (`MEDTERM4DS_MEMORY_PROFILE=low`, DuckDB threads=2).
+
+Cold start (stopped container → query-ready, measured on 2 vCPU / 16 GB):
+- **db_ready in ~1 s** (container up, DuckDB open),
+- **search_ready in ~32 s** — a background warm-up loads the lexical
+  indexes, SapBERT, FAISS and the GLiNER/medspaCy pipeline before
+  `/health` reports `search_ready: true`. `/search` and `/extract`
+  return **503 + Retry-After** until then, rather than blocking behind
+  the model load.
+- first `/search` after `search_ready`: **<1 s**; first `/extract`: ~1 s.
+Idle-sleep wake adds Space scheduling on top; allow up to ~2 minutes.
+Health-check start-period is 120 s.
 
 ## Building the data artifacts (reproducibility)
 

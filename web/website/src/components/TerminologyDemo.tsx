@@ -108,8 +108,11 @@ function useSpaceStartup(): {
         if (!aliveRef.current) return;
         if (res.status === 503) throw new Error('starting');
         if (!res.ok) throw new Error(`health ${res.status}`);
-        const data = (await res.json()) as {ready?: boolean};
-        if (!data.ready) throw new Error('not ready yet');
+        const data = (await res.json()) as {search_ready?: boolean};
+        // Gate on search_ready (models loaded), not just db_ready — a
+        // DB-only "ready" would let the first search stall behind the
+        // SapBERT/GLiNER load.
+        if (!data.search_ready) throw new Error('not ready yet');
         // Health is up — confirm the DB/indexes actually loaded.
         const caps = await fetchWithTimeout(`${SPACE_URL}/capabilities`);
         if (!aliveRef.current) return;
@@ -124,8 +127,7 @@ function useSpaceStartup(): {
           return;
         }
         setStatus(attemptRef.current <= 2 ? 'checking' : 'starting');
-        scheduleNext(HEALTH_POLL_INTERVAL_MS);
-      }
+        scheduleNext(HEALTH_POLL_INTERVAL_MS);      }
     };
 
     void runAttempt();
@@ -255,7 +257,9 @@ export default function TerminologyDemo(): JSX.Element {
       return (
         <p className="demo-status">
           🌅 <strong>Starting up</strong> — the demo Space sleeps when idle;
-          first start can take up to about 2 minutes.
+          waking it and loading the terminology models takes about half a
+          minute, and the first start after a cold stop can take up to about
+          2 minutes.
         </p>
       );
     return (
