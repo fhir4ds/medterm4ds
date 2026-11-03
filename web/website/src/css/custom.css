@@ -404,3 +404,8 @@ thead {
 .terminology-demo__ner-hint {
   opacity: 0.6;
 }
+
+/* Breathing room between the controls and the side-by-side section */
+.terminology-demo__controls {
+  margin-bottom: 1rem;
+}
