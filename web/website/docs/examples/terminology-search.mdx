@@ -12,25 +12,7 @@ Space](https://fhir4ds-terminology-demo-server.hf.space), running the
 **native medterm4ds FHIR R4 terminology API** — the same app you can
 self-host, not a simplified convenience layer.
 
-## Search modes
-
-- **Lexical** matches the *words* you typed. Fast and exact: "heart
-  attack" finds concepts whose names contain those words — but it cannot
-  find "myocardial infarction" from "heart attack".
-- **Semantic** matches the *meaning*. An embedding model (SapBERT)
-  understands that "heart attack" and "myocardial infarction" are the
-  same thing, so it finds concepts the exact words would miss.
-- **Canonical** goes one step further: it groups codes from *different
-  code systems* that mean the same thing (SNOMED CT, ICD-10-CM, LOINC,
-  RxNorm…) into one anchored value-set card, with a patient-friendly
-  name — "heart attack" resolves to one card joining all the codes for
-  myocardial infarction.
-
-The demo below runs your query through all three at once so you can see
-the differences on your own terms (top 3 per mode, best result per mode
-highlighted). The API also offers a **hybrid** mode (lexical + semantic
-combined) — see the
-[CapabilityStatement](https://fhir4ds-terminology-demo-server.hf.space/fhir/metadata).
+## Try the demo
 
 :::note[Good to know]
 
@@ -47,16 +29,53 @@ a courtesy filter, not authentication.
 
 <TerminologyDemo />
 
-## Native FHIR R4 operations
+## What the four search modes mean (plain English)
 
-Every call the component above makes is a standard FHIR R4 operation with
-a `Parameters` request body. The server's
+### Matching the words: Lexical and Hybrid
+
+- **Lexical** matches the *words* you typed. Fast and exact: "heart
+  attack" finds concepts whose names contain those words — but it cannot
+  find "myocardial infarction" from "heart attack".
+- **Hybrid** starts from lexical matching and adds semantic ranking on
+  top, taking the best of both worlds. (The API supports it; the demo
+  grid shows the three modes below side by side.)
+
+### Matching the meaning: Semantic and Canonical
+
+- **Semantic** matches the *meaning*. An embedding model (SapBERT)
+  understands that "heart attack" and "myocardial infarction" are the
+  same thing, so it finds concepts the exact words would miss.
+- **Canonical** goes one step further: it groups codes from *different
+  code systems* that mean the same thing (SNOMED CT, ICD-10-CM, LOINC,
+  RxNorm…) into one anchored value-set card, with a patient-friendly
+  name — "heart attack" resolves to one card joining all the codes for
+  myocardial infarction.
+
+The demo runs your query through lexical, semantic and canonical at once
+so you can see the differences on your own terms (top 3 per mode, best
+result per mode highlighted). See the
+[CapabilityStatement](https://fhir4ds-terminology-demo-server.hf.space/fhir/metadata)
+for the full operation surface.
+
+### Reading the annotations
+
+Paste a clinical note and press **Extract concepts**: each identified
+term is highlighted in the note with its assertion status — mint for
+*affirmed*, lavender for *family history* (identified, but about a
+relative), rose with strikethrough for *negated* — followed by its
+resolved concept, patient-friendly name and code.
+
+## The FHIR API behind it
+
+Every call the demo makes is a standard FHIR R4 operation with a
+`Parameters` request body — no custom JSON API. The server's
 [CapabilityStatement](https://fhir4ds-terminology-demo-server.hf.space/fhir/metadata)
 lists everything it serves; the demo uses:
 
 | Operation | FHIR request | What it does |
 |---|---|---|
-| Term search | `POST /fhir/CodeSystem/$search` | `query` + `searchMode` = `lexical` \| `semantic` \| `canonical` \| `hybrid`; returns a searchset `Bundle` of codings with score + match-grade on each entry || Note extraction | `POST /fhir/CodeSystem/$extract` | `text` → a `Bundle` of concepts found by GLiNER + medspaCy NER, each with span, type, status and canonical id |
+| Term search | `POST /fhir/CodeSystem/$search` | `query` + `searchMode` = `lexical` \| `semantic` \| `canonical` \| `hybrid`; returns a searchset `Bundle` of codings with score + match-grade on each entry |
+| Note extraction | `POST /fhir/CodeSystem/$extract` | `text` → a `Bundle` of concepts found by GLiNER + medspaCy NER, each with span, type, status and canonical id |
 | Code detail | `POST /fhir/CodeSystem/$lookup` | `system` + `code` → `Parameters` with display, name and properties (incl. the UMLS CUI) |
 | Code mapping | `POST /fhir/ConceptMap/$translate` | `system` + `code` + `targetSystem` → `Parameters` with equivalence-rated matches |
 | Capabilities | `GET /fhir/metadata` | the `CapabilityStatement` |
@@ -65,7 +84,7 @@ The server also carries `$validate-code`, `$subsumes`, `$closure`,
 `ValueSet/$expand`, batch/transaction `POST /fhir`, and resource-level
 reads — all unmodified from `medterm4ds.create_fhir_app`.
 
-### Example request and response ($search)
+### Example: $search request and response
 
 ```json
 POST /fhir/CodeSystem/$search
