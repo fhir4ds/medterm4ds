@@ -12,6 +12,24 @@ Space](https://fhir4ds-terminology-demo-server.hf.space), running the
 **native medterm4ds FHIR R4 terminology API** — the same app you can
 self-host, not a simplified convenience layer.
 
+## Search modes
+
+- **Lexical** matches the *words* you typed. Fast and exact: "heart
+  attack" finds concepts whose names contain those words — but it cannot
+  find "myocardial infarction" from "heart attack".
+- **Semantic** matches the *meaning*. An embedding model (SapBERT)
+  understands that "heart attack" and "myocardial infarction" are the
+  same thing, so it finds concepts the exact words would miss.
+- **Canonical** goes one step further: it groups codes from *different
+  code systems* that mean the same thing (SNOMED CT, ICD-10-CM, LOINC,
+  RxNorm…) into one anchored value-set card, with a patient-friendly
+  name — "heart attack" resolves to one card joining all the codes for
+  myocardial infarction.
+
+The API also offers a **hybrid** mode (lexical + semantic combined) — see
+the
+[CapabilityStatement](https://fhir4ds-terminology-demo-server.hf.space/fhir/metadata).
+
 ## Try the demo
 
 :::note[Good to know]
@@ -29,25 +47,11 @@ a courtesy filter, not authentication.
 
 <TerminologyDemo />
 
-### Search modes
+### Search
 
-- **Lexical** matches the *words* you typed. Fast and exact: "heart
-  attack" finds concepts whose names contain those words — but it cannot
-  find "myocardial infarction" from "heart attack".
-- **Semantic** matches the *meaning*. An embedding model (SapBERT)
-  understands that "heart attack" and "myocardial infarction" are the
-  same thing, so it finds concepts the exact words would miss.
-- **Canonical** goes one step further: it groups codes from *different
-  code systems* that mean the same thing (SNOMED CT, ICD-10-CM, LOINC,
-  RxNorm…) into one anchored value-set card, with a patient-friendly
-  name — "heart attack" resolves to one card joining all the codes for
-  myocardial infarction.
-
-The demo runs your query through all three at once so you can see the
-differences on your own terms (top 3 per mode, best result per mode
-highlighted). The API also offers a **hybrid** mode (lexical + semantic
-combined) — see the
-[CapabilityStatement](https://fhir4ds-terminology-demo-server.hf.space/fhir/metadata).
+The demo runs your query through lexical, semantic and canonical at once
+so you can see the differences on your own terms (top 3 per mode, best
+result per mode highlighted).
 
 ### Annotations
 
