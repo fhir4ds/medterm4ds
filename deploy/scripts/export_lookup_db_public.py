@@ -47,10 +47,10 @@ from medterm4ds.services.lookup_builder import (
 )
 
 # CPT EXCLUDED: AMA license forbids CPT in publicly accessible systems.
-LOOKUP_SOURCES = (
-    "SNOMEDCT_US", "ICD10CM", "ICD10PCS", "RXNORM",
-    "LNC", "HCPCS", "CVX",
-)
+# QC3-A3: single source of truth — the public source universe is defined
+# once, in the verification gate, and imported here (and by nothing else).
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from verify_lookup_db import PUBLIC_LOOKUP_SOURCES as LOOKUP_SOURCES  # noqa: E402
 
 _ARCHIVE_MEMBERS = ("MRCONSO.RRF", "MRREL.RRF", "MRSAT.RRF")
 
@@ -177,6 +177,12 @@ def main() -> int:
 
     output_db = Path(args.output)
     output_db.parent.mkdir(parents=True, exist_ok=True)
+    # QC3-E8: build to a temp sibling and rename ATOMICALLY — an
+    # interrupted build (ENOSPC, bad RRF) must never leave a partial DB
+    # where a previously verified one stood.
+    build_db = output_db.with_suffix(output_db.suffix + ".building")
+    if build_db.exists():
+        build_db.unlink()
     if output_db.exists():
         output_db.unlink()
 
@@ -194,7 +200,11 @@ def main() -> int:
         rrf_root = rrf_path
 
     try:
-        counts = build(rrf_root, output_db)
+        counts = build(rrf_root, build_db)
+    except BaseException:
+        # A partial .building DB must never survive (QC3-E8).
+        build_db.unlink(missing_ok=True)
+        raise
     finally:
         if rrf_path.is_file() and not args.keep_scratch:
             owned = args.scratch is None
@@ -205,6 +215,8 @@ def main() -> int:
                     p = scratch / name
                     if p.exists():
                         p.unlink()
+    # Atomic publish: only a COMPLETE build replaces the output (QC3-E8).
+    build_db.rename(output_db)
 
     size_mb = output_db.stat().st_size / 1e6
     print(f"\nDone in {time.perf_counter() - total_start:.1f}s")

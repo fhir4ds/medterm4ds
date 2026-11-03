@@ -134,15 +134,32 @@ fhir_app = create_fhir_app(fhir_settings)
 class _RateLimiter:
     """Sliding-window per-IP rate limiter (demo-scale, in-memory)."""
 
-    def __init__(self, per_minute: int) -> None:
+    def __init__(self, per_minute: int, *, max_keys: int = 4096) -> None:
         self.per_minute = per_minute
+        # Key cap (QC3-E1): attacker-controlled keys (spoofed XFF values)
+        # must not grow the dict without bound on a memory-limited Space.
+        # When full, the oldest fully-expired keys are dropped wholesale;
+        # if none expire, the largest deques go first (they are doing the
+        # most work anyway).
+        self.max_keys = max_keys
         self._hits: dict[str, deque[float]] = defaultdict(deque)
         self._lock = threading.Lock()
+
+    def _evict_if_full(self, now: float) -> None:
+        if len(self._hits) < self.max_keys:
+            return
+        stale = [k for k, v in self._hits.items() if not v or now - v[-1] > 60.0]
+        for k in stale:
+            del self._hits[k]
+        while len(self._hits) >= self.max_keys:
+            victim = max(self._hits, key=lambda k: len(self._hits[k]))
+            del self._hits[victim]
 
     def allow(self, ip: str) -> tuple[bool, int]:
         """Return (allowed, retry_after_seconds)."""
         now = time.monotonic()
         with self._lock:
+            self._evict_if_full(now)
             hits = self._hits[ip]
             while hits and now - hits[0] > 60.0:
                 hits.popleft()
@@ -157,10 +174,15 @@ _rate_limiter = _RateLimiter(RATE_LIMIT_PER_MINUTE)
 
 
 def _client_ip(request: Request) -> str:
-    """Client IP behind the HF Spaces proxy (first x-forwarded-for hop)."""
+    """Client IP behind the HF Spaces proxy (QC3-E1).
+
+    The FIRST x-forwarded-for hop is client-supplied and trivially
+    spoofable (rotate it per request → fresh bucket each time). The LAST
+    hop is the one appended by the proxy we actually sit behind, so it is
+    the only hop we trust."""
     forwarded = request.headers.get("x-forwarded-for")
     if forwarded:
-        return forwarded.split(",")[0].strip()
+        return forwarded.split(",")[-1].strip()
     return request.client.host if request.client else "unknown"
 
 
@@ -290,10 +312,15 @@ async def origin_allowlist_and_rate_limit(request: Request, call_next):
 
     # 4. Model-warm gate: the FHIR $search/$extract handlers lazily load
     #    SapBERT/FAISS/GLiNER on first use; refuse with 503 + Retry-After
-    #    until the background warm-up has completed.
-    if (
-        request.url.path.rstrip("/") in _MODEL_GATED_PATHS
-    ) and not getattr(request.app.state, "search_ready", False):
+    #    until the background warm-up has completed. POST /fhir is gated
+    #    too (QC3-E3): a batch/transaction bundle can invoke $search or
+    #    $extract from inside the envelope and would otherwise stall an
+    #    event worker behind the model load the gate exists to prevent.
+    path = request.url.path.rstrip("/")
+    model_gated = path in _MODEL_GATED_PATHS or (
+        path == "/fhir" and request.method == "POST"
+    )
+    if model_gated and not getattr(request.app.state, "search_ready", False):
         return JSONResponse(
             status_code=503,
             headers={"Retry-After": "10"},
@@ -335,13 +362,13 @@ async def preflight(rest_of_path: str, request: Request):
 # ---------------------------------------------------------------------------
 
 @app.get("/health")
-async def health(request: Request) -> dict[str, Any]:
+async def health(request: Request):
     # Cheap by design: two in-memory booleans, no engine/model touch.
     db_ready = bool(getattr(request.app.state, "db_ready", False))
     search_ready = bool(getattr(request.app.state, "search_ready", False))
     warm_error = getattr(request.app.state, "warm_error", None)
     ready = db_ready and search_ready
-    return {
+    body = {
         "status": "ready" if ready else "starting",
         "ready": ready,
         "db_ready": db_ready,
@@ -352,6 +379,12 @@ async def health(request: Request) -> dict[str, Any]:
         "version": __version__,
         "service": "terminology-demo-server",
     }
+    # QC3-E2: a failed warm-up must be VISIBLE to health checks. A 200
+    # here keeps Docker HEALTHCHECK green and the Space stuck "starting"
+    # forever with no signal to anyone.
+    if warm_error:
+        return JSONResponse(status_code=503, content=body)
+    return body
 
 
 @app.get("/capabilities")

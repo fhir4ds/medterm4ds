@@ -40,6 +40,9 @@ const SPACE_URL = 'https://fhir4ds-terminology-demo-server.hf.space';
 
 const HEALTH_POLL_INTERVAL_MS = 2500;
 const FETCH_TIMEOUT_MS = 5000;
+// Data paths run real model work ($extract NER can take seconds) — 5s
+// would abort legitimate requests (QC3-E5 wiring note).
+const FETCH_TIMEOUT_DATA_MS = 30000;
 const GIVE_UP_AFTER_MS = 150000; // ~2.5 min of consecutive failures
 const COMPARE_TOP = 3; // results per search mode card
 const MAX_TERM_DETAILS = 4; // concepts enriched with patient-friendly names
@@ -52,7 +55,6 @@ const SEARCH_MODES = [
 
 const GRADE_STYLES: Record<string, string> = {
   certain: 'terminology-demo__grade terminology-demo__grade--certain',
-  exact: 'terminology-demo__grade terminology-demo__grade--certain',
   probable: 'terminology-demo__grade terminology-demo__grade--probable',
   possible: 'terminology-demo__grade terminology-demo__grade--possible',
 };
@@ -83,23 +85,52 @@ type SearchState =
 
 type ExtractState = {phase: 'idle' | 'loading'} | {phase: 'error'; message: string};
 
-function fetchWithTimeout(url: string, init?: RequestInit): Promise<Response> {
+function fetchWithTimeout(
+  url: string,
+  init?: RequestInit,
+  timeoutMs: number = FETCH_TIMEOUT_MS,
+): Promise<Response> {
   const ac = new AbortController();
-  const timer = setTimeout(() => ac.abort(), FETCH_TIMEOUT_MS);
+  const timer = setTimeout(() => ac.abort(), timeoutMs);
+  // Chain the caller's signal (search abort-on-new-click) into the
+  // timeout controller — fetch accepts ONE signal, so the outer abort
+  // must trigger ours instead of being overridden (QC3-E5).
+  const outer = init?.signal;
+  if (outer) {
+    if (outer.aborted) ac.abort();
+    else outer.addEventListener('abort', () => ac.abort());
+  }
   return fetch(url, {...init, signal: ac.signal}).finally(() => clearTimeout(timer));
 }
 
-async function postSearch(query: string, mode: string, count: number): Promise<SearchRow[]> {
-  const res = await fetch(`${SPACE_URL}/fhir/CodeSystem/$search`, {
-    method: 'POST',
-    headers: {'Content-Type': 'application/json'},
-    body: fhirParams([
-      ['query', query],
-      ['searchMode', mode],
-      ['count', count],
-    ]),
-  });
-  if (!res.ok) return [];
+async function postSearch(
+  query: string,
+  mode: string,
+  count: number,
+  signal?: AbortSignal,
+): Promise<SearchRow[]> {
+  const res = await fetchWithTimeout(
+    `${SPACE_URL}/fhir/CodeSystem/$search`,
+    {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: fhirParams([
+        ['query', query],
+        ['searchMode', mode],
+        ['count', count],
+      ]),
+      signal,
+    },
+    FETCH_TIMEOUT_DATA_MS,
+  );
+  // QC3-E4: a transport failure (429 rate limit, 403 origin, 5xx) is NOT
+  // "no results" — rendering it as an empty result set would tell the
+  // user a real term does not exist. Throw so the caller's error path
+  // shows what actually happened; a genuine 200-with-no-matches is the
+  // only shape that returns [].
+  if (!res.ok) {
+    throw new Error(`search failed (${res.status})`);
+  }
   return searchRows(await res.json());
 }
 
@@ -301,7 +332,8 @@ export function TerminologyDemoSearch(): React.JSX.Element {
       // cards. (~3 requests of the 30/min budget.)
       const results = await Promise.all(
         SEARCH_MODES.map(
-          async (m) => [m.id, await postSearch(query, m.id, COMPARE_TOP)] as const,
+          async (m) =>
+            [m.id, await postSearch(query, m.id, COMPARE_TOP, ac.signal)] as const,
         ),
       );
       if (ac.signal.aborted) return;
@@ -401,17 +433,21 @@ export function TerminologyDemoAnnotations(): React.JSX.Element {
       setTermDetails([]);
       setFirstDetail(null);
       try {
-        const res = await fetch(`${SPACE_URL}/fhir/CodeSystem/$extract`, {
-          method: 'POST',
-          headers: {'Content-Type': 'application/json'},
-          body: fhirParams([
-            ['text', noteText],
-            ['format', 'codes'],
-            // Show the full assertion picture in the demo: family-history
-            // findings are opt-in on $extract (default false).
-            ['includeFamily', true],
-          ]),
-        });
+        const res = await fetchWithTimeout(
+          `${SPACE_URL}/fhir/CodeSystem/$extract`,
+          {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: fhirParams([
+              ['text', noteText],
+              ['format', 'codes'],
+              // Show the full assertion picture in the demo: family-history
+              // findings are opt-in on $extract (default false).
+              ['includeFamily', true],
+            ]),
+          },
+          FETCH_TIMEOUT_DATA_MS,
+        );
         if (res.status === 503) {
           notReady();
           return;
