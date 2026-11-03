@@ -68,8 +68,11 @@ const sidebars: SidebarsConfig = {
       type: 'category',
       label: 'Examples',
       items: [
-        'examples/terminology-search',
-        'examples/notebooks/overview',
+        {
+          type: 'category',
+          label: 'Live Demos',
+          items: ['examples/terminology-search'],
+        },
         {
           type: 'category',
           label: 'Production Recipes',
@@ -86,6 +89,11 @@ const sidebars: SidebarsConfig = {
             'examples/recipes/valuesets',
             'examples/recipes/output-formats',
           ],
+        },
+        {
+          type: 'category',
+          label: 'Notebooks',
+          items: ['examples/notebooks/overview'],
         },
       ],
     },
