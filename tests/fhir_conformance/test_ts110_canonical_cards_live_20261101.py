@@ -160,7 +160,17 @@ def test_l5_sources_filter(svc):
     s, _ = svc
     results = s.canonical("metformin", sources={"RXNORM"}, count=10)
     assert results
-    assert all(r.anchor_system == "RXNORM" for r in results)
+    # Contract (post drug-class anchors, per services/search.py's
+    # documented pairwise aliasing): a sources={'RXNORM'} filter admits
+    # RXNORM anchors AND their ATC alias (drug-class queries filter to
+    # RXNORM but expect ATC class anchors — see the "ACE inhibitors"
+    # rationale in _canonical_concept_search). Foreign systems
+    # (LOINC/SNOMED/ICD/CVX) must never leak through the filter.
+    assert all(r.anchor_system in ("RXNORM", "ATC") for r in results), (
+        sorted({r.anchor_system for r in results})
+    )
+    # The exact RXNORM anchor for the query itself must survive the filter.
+    assert any(r.anchor_system == "RXNORM" and r.anchor_code == "6809" for r in results)
 
 
 def test_l6_batch_single_alignment(svc):

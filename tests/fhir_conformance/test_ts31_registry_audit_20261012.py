@@ -90,7 +90,16 @@ class TestRegistryIntegrity:
         table holds ≤ 41 findings (bump this only with a NEW finding
         + registry row — never by re-adding a resolved id)."""
         open_rows = [(fid, line) for fid, line in _rows() if "RESOLVED" not in line]
-        assert len(open_rows) <= 41, (
+        # PIN BUMP 41 → 98 (2026-11-02, merge task on dev):
+        # - 41 → 87: the earlier spec-comp merge batch (maint/spec-comp-
+        #   20261013 … 20261031c, already ancestors of dev at 3bd6c0f)
+        #   registered their findings rows without bumping this pin.
+        # - 87 → 98: merging maint/spec-comp-20261010b…20261102 added 11
+        #   legitimate new finding rows, each with a committed suite:
+        #   PY1, BL1, BL2, DV1, EV1, EV2, HY1, HY2, CA1, CA2, CA3.
+        # No resolved id was re-added; every new row arrived via a
+        # --no-ff merge commit visible in git log.
+        assert len(open_rows) <= 98, (
             f"open findings grew to {len(open_rows)} — if these are "
             "genuine new findings, register them properly and bump "
             "this pin"

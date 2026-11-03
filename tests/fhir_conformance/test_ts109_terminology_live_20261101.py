@@ -132,7 +132,21 @@ def test_t5_canonical_json_only(resolved):
     indexes = list(resolved.canonical.glob("*.index"))
     assert not indexes, f"canonical family must be JSON-only, found {indexes}"
     anchors_meta = json.loads((resolved.semantic / "anchors_metadata.json").read_text())
-    assert len(anchors_meta) == vs_rows, "anchors vs value_sets count drift"
+    # AL1 fix contract (release 2026.10.31.1+): the semantic family embeds
+    # alias vectors alongside primary anchors, so anchors_metadata =
+    # primary + alias. The count invariant that held pre-AL1
+    # (len(anchors) == value_sets rows) is obsolete; the new contract is:
+    # every anchor is classified (is_alias bool), primary anchors map 1:1
+    # to value_sets rows, and the alias population is present (> 0).
+    primaries = [a for a in anchors_meta if a.get("is_alias") is False]
+    aliases = [a for a in anchors_meta if a.get("is_alias") is True]
+    assert len(primaries) + len(aliases) == len(anchors_meta), (
+        "every anchor must carry a boolean is_alias classification"
+    )
+    assert len(primaries) == vs_rows, (
+        "primary anchors vs value_sets count drift"
+    )
+    assert aliases, "AL1 contract: alias vectors must be embedded (> 0)"
 
 
 def test_t6_default_release_forward_compat(tmp_path_factory):
