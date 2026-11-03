@@ -77,6 +77,11 @@ DEFAULT_CANONICAL_CONCEPTS_INDEX = str(_CACHE_DIR / "canonical" / "canonical_con
 DEFAULT_CANONICAL_CONCEPTS_META = str(_CACHE_DIR / "canonical" / "canonical_concepts_metadata.json")
 SEARCH_CATEGORIES = ("condition", "lab", "medication", "procedure", "vaccine", "body_structure")
 
+# AMUX-46 hybrid fusion constants (benchmark winner; see
+# benchmarks/fusion_benchmark.py — RRF k=10 + agreement-aware grades).
+HYBRID_FUSION_K = 10
+HYBRID_CANDIDATE_DEPTH = 100
+
 # --- Split-layout cache (Phase 3, docs/plans/artifact-governance-plan.md §4) ---
 #
 # models/<embedding_space_id>/   content-addressed model dirs (immutable)
@@ -2267,14 +2272,36 @@ class SearchService:
         count: int = 20,
         result_types: str | list[str] | None = None,
     ) -> list[SearchResult]:
-        """BM25 retrieve + SapBERT re-rank (~110ms on CPU).
+        """RRF fusion over the UNION of per-system candidates (AMUX-46).
 
-        The BM25 candidate pool is capped at ``max(50, count)`` — the former
-        hard cap of 50 silently truncated hybrid(count=N>50) requests (QC-138).
+        Replaces the cascade (BM25 pool -> SapBERT re-rank), where lexical
+        recall was a hard gate: BM25's tf-tie lottery could drop the
+        semantic best row ('lisinopril 5mg' -> 5mg tablet, 0.93 cosine)
+        from the pool entirely, making it invisible to hybrid. Either
+        system can now carry a row.
 
-        ``result_types`` restricts the category indexes searched in both the
-        BM25 stage and the semantic-only fallback (see
-        ``_restrict_categories``).
+        Ranking: reciprocal-rank fusion, sum of 1/(HYBRID_FUSION_K + rank)
+        per system over the union of the per-system top-K (K =
+        HYBRID_CANDIDATE_DEPTH). k=10 won the offline benchmark
+        (benchmarks/fusion_benchmark.py): hit@1 53.1% / hit@5 71.9% /
+        FP@1 3.1% vs cascade 46.9% / 62.5% / 9.4% on the golden families;
+        weighted-sum variants lost on precision (FP 53-59%).
+
+        Confidence (match_grade): the fused RRF score is a RANK signal,
+        not a confidence signal (measured: true/wrong top-1 score medians
+        overlap). Grades therefore require system concordance plus the
+        underlying calibrated cosine:
+          certain  — row in BOTH systems' candidates AND cosine >= 0.92
+          probable — cosine >= 0.75, or a lexical exact-surface match
+                     (AMUX-18) at lexical rank <= 3
+          possible — otherwise
+        Lexical-only rows can never be 'certain' (single-evidence
+        ceiling): lexical's old precision veto, lost when the pool gate
+        went away, returns as a grade gate. 'score' stays the calibrated
+        underlying value (cosine when the semantic system saw the row,
+        else normalized BM25) so wire consumers see [0,1] confidences.
+
+        ``result_types`` restricts the categories searched (both systems).
         """
         _validate_query(query)
         _validate_count(count)
@@ -2286,48 +2313,75 @@ class SearchService:
         if not categories:
             return []
 
-        # Stage 1: BM25 retrieve
+        depth = max(HYBRID_CANDIDATE_DEPTH, count)
         bm25_results = self.lexical(
             query,
             sources=sources,
-            count=min(count * 3, max(50, count)),
+            count=depth,
             result_types=result_types,
         )
-        if not bm25_results:
-            # Fall back to semantic-only
-            return self.semantic(
-                query, sources=sources, count=count, result_types=result_types
-            )
+        sem_raw = engine.search(query, categories=categories, top_k=depth)
 
-        # Stage 2: SapBERT re-rank
-        candidates = [{"code": r.code, "system": r.source, "display": r.display} for r in bm25_results]
-        reranked = engine.rerank(query, candidates, top_k=count)
-
-        cat_map = {(r.source, r.code): r.category for r in bm25_results}
-
-        results: list[SearchResult] = []
-        _q_key = _surface_key(query)
-        for r in reranked:
+        # Per-system evidence keyed by (source, code).
+        lex_ev: dict[tuple, dict] = {}
+        for rank, r in enumerate(bm25_results, start=1):
+            lex_ev[(r.source, r.code)] = {
+                "rank": rank, "score": r.score, "display": r.display,
+                "category": r.category, "exact": r._exact_surface,
+            }
+        sem_ev: dict[tuple, dict] = {}
+        for rank, r in enumerate(sem_raw, start=1):
             sys_name = r.get("system", "").upper()
             source = _SYSTEM_LABELS_REVERSE.get(sys_name, sys_name)
-            cat = cat_map.get((source, r["code"]), "")
-            display = r["display"]
-            results.append(SearchResult(
-                code=r["code"], source=source, display=display,
-                score=r["score"], match_grade=r["match_grade"],
-                category=cat,
-                _exact_surface=_surface_key(display) == _q_key,
-            ))
-        # Unified tie-break (same key as lexical/semantic): exact surface
-        # first, then cosine, then surface edit distance, then code.
-        results.sort(
-            key=lambda r: (
-                not r._exact_surface,
-                -r.score,
-                _surface_distance(_q_key, r.display),
-                r.code,
+            sem_ev[(source, r["code"])] = {
+                "rank": rank, "cos": float(r["score"]),
+                "display": r["display"], "category": r.get("category", ""),
+            }
+
+        union = set(lex_ev) | set(sem_ev)
+        q_key = _surface_key(query)
+        fused: list[tuple[float, SearchResult]] = []
+        for ident in union:
+            lx = lex_ev.get(ident)
+            se = sem_ev.get(ident)
+            rrf = (
+                (1.0 / (HYBRID_FUSION_K + lx["rank"]) if lx else 0.0)
+                + (1.0 / (HYBRID_FUSION_K + se["rank"]) if se else 0.0)
+            )
+            display = (lx or se)["display"]
+            cos = se["cos"] if se is not None else 0.0
+            exact = bool(lx and lx["exact"])
+            # Agreement-aware grade guard (see docstring).
+            if lx is not None and se is not None and cos >= 0.92:
+                grade = "certain"
+            elif cos >= 0.75 or (
+                lx is not None and lx["rank"] <= 3
+                and _surface_key(display) == q_key
+            ):
+                grade = "probable"
+            else:
+                grade = "possible"
+            score = cos if se is not None else (lx["score"] if lx else 0.0)
+            fused.append(
+                (rrf, SearchResult(
+                    code=ident[1], source=ident[0], display=display,
+                    score=round(score, 4), match_grade=grade,
+                    category=(lx or se)["category"],
+                    _exact_surface=exact,
+                ))
+            )
+
+        # Deterministic order: RRF desc, then the unified AMUX-49 key
+        # (exact surface, surface distance, code).
+        fused.sort(
+            key=lambda t: (
+                -t[0],
+                not t[1]._exact_surface,
+                _surface_distance(q_key, t[1].display),
+                t[1].code,
             )
         )
+        results = [r for _, r in fused]
         return self._filter_by_source(results, sources)[:count]
 
     def search(
