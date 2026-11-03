@@ -325,7 +325,7 @@ export function TerminologyDemoSearch(): React.JSX.Element {
     if (state.phase === 'loading') return <p>Searching each mode…</p>;
     if (state.phase === 'error')
       return <p className="terminology-demo__error">⚠️ {state.message}</p>;
-    if (state.phase === 'idle') return <p>Type a term and press Compare.</p>;
+    if (state.phase === 'idle') return null;
     return (
       <div className="terminology-demo__grid">
         {SEARCH_MODES.map((m) => (
