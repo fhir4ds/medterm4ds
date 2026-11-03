@@ -459,15 +459,17 @@ export default function TerminologyDemo(): React.JSX.Element {
           <mark className="terminology-demo__mark">
             {text.slice(c.span_start, c.span_end)}
           </mark>
+          {(c.display || (c.source && c.code)) && (
+            <span className="terminology-demo__code-pill">
+              {c.display}
+              {c.display !== friendlyByTerm.get(c.matched_text) &&
+              friendlyByTerm.get(c.matched_text)
+                ? ` · ${friendlyByTerm.get(c.matched_text)}`
+                : ''}
+              {c.source && c.code ? ` · ${sourceShortName(c.source)} ${c.code}` : ''}
+            </span>
+          )}
           <span className="terminology-demo__term-tag">{status}</span>
-          <span className="terminology-demo__term-detail">
-            {c.display}
-            {c.display !== friendlyByTerm.get(c.matched_text) &&
-            friendlyByTerm.get(c.matched_text)
-              ? ` · ${friendlyByTerm.get(c.matched_text)}`
-              : ''}
-            {c.source && c.code ? ` · ${sourceShortName(c.source)} ${c.code}` : ''}
-          </span>
         </span>,
       );
       cursor = c.span_end ?? cursor;
