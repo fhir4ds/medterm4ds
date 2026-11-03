@@ -5,6 +5,7 @@ import {
   lookupSummary,
   searchRows,
   SearchRow,
+  sourceShortName,
   translateMatches,
 } from './terminologyFhir';
 
@@ -55,14 +56,6 @@ const GRADE_STYLES: Record<string, string> = {
   exact: 'terminology-demo__grade terminology-demo__grade--certain',
   probable: 'terminology-demo__grade terminology-demo__grade--probable',
   possible: 'terminology-demo__grade terminology-demo__grade--possible',
-};
-
-const STATUS_STYLES: Record<string, string> = {
-  affirmed: 'terminology-demo__grade terminology-demo__grade--certain',
-  family: 'terminology-demo__grade terminology-demo__grade--family',
-  historical: 'terminology-demo__grade terminology-demo__grade--possible',
-  negated: 'terminology-demo__grade terminology-demo__grade--negated',
-  uncertain: 'terminology-demo__grade terminology-demo__grade--possible',
 };
 
 type ExtractConcept = {
@@ -444,9 +437,13 @@ export default function TerminologyDemo(): React.JSX.Element {
     );
   }, [state, modeRows]);
 
-  // Annotation viewer: the note with each identified term highlighted.
+  // Annotation viewer: the note with each identified term highlighted,
+  // status-tinted, carrying its details inline — no separate table.
   const annotatedNote = useMemo(() => {
     if (!concepts.length) return null;
+    const friendlyByTerm = new Map(
+      termDetails.map((d) => [d.concept.matched_text, d.patientFriendly]),
+    );
     const marks = concepts
       .filter((c) => c.span_start != null && c.span_end != null)
       .sort((a, b) => (a.span_start ?? 0) - (b.span_start ?? 0));
@@ -456,16 +453,28 @@ export default function TerminologyDemo(): React.JSX.Element {
     marks.forEach((c, i) => {
       if ((c.span_start ?? 0) > cursor)
         parts.push(<span key={`t${i}`}>{text.slice(cursor, c.span_start)}</span>);
+      const status = c.status ?? 'affirmed';
       parts.push(
-        <mark key={`m${i}`} className="terminology-demo__mark">
-          {text.slice(c.span_start, c.span_end)}
-        </mark>,
+        <span key={`m${i}`} className={`terminology-demo__term terminology-demo__term--${status}`}>
+          <mark className="terminology-demo__mark">
+            {text.slice(c.span_start, c.span_end)}
+          </mark>
+          <span className="terminology-demo__term-tag">{status}</span>
+          <span className="terminology-demo__term-detail">
+            {c.display}
+            {c.display !== friendlyByTerm.get(c.matched_text) &&
+            friendlyByTerm.get(c.matched_text)
+              ? ` · ${friendlyByTerm.get(c.matched_text)}`
+              : ''}
+            {c.source && c.code ? ` · ${sourceShortName(c.source)} ${c.code}` : ''}
+          </span>
+        </span>,
       );
       cursor = c.span_end ?? cursor;
     });
     if (cursor < text.length) parts.push(<span key="tail">{text.slice(cursor)}</span>);
     return <div className="terminology-demo__note">{parts}</div>;
-  }, [concepts, text]);
+  }, [concepts, termDetails, text]);
 
   return (
     <div className="terminology-demo">
@@ -517,45 +526,6 @@ export default function TerminologyDemo(): React.JSX.Element {
         <p className="terminology-demo__error">⚠️ {extractState.message}</p>
       )}
       {annotatedNote}
-      {termDetails.length > 0 && (
-        <table className="terminology-demo__terms">
-          <thead>
-            <tr>
-              <th>Term</th>
-              <th>Type</th>
-              <th>Status</th>
-              <th>Patient-friendly name</th>
-            </tr>
-          </thead>
-          <tbody>
-            {termDetails.map((d, i) => (
-              <tr key={i}>
-                <td>
-                  <strong>{d.concept.matched_text}</strong>
-                  <br />
-                  <small>
-                    <code>
-                      {d.concept.source}/{d.concept.code}
-                  </code>
-                  </small>
-                </td>
-                <td>{d.concept.result_type ?? '—'}</td>
-                <td>
-                  {d.concept.status ? (
-                    <span
-                      className={
-                        STATUS_STYLES[d.concept.status] ?? 'terminology-demo__grade'
-                      }>
-                      {d.concept.status}
-                    </span>
-                  ) : null}
-                </td>
-                <td>{d.patientFriendly ?? '—'}</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      )}
 
       {firstDetail && (firstDetail.lookup.display || firstDetail.lookup.systemName) && (
         <>

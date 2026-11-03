@@ -19,6 +19,7 @@ import {
   fhirParams,
   lookupSummary,
   searchRows,
+  sourceShortName,
   systemShortName,
   translateMatches,
 } from './terminologyFhir.ts';
@@ -113,6 +114,13 @@ test('systemShortName maps FHIR URIs to compact names', () => {
     systemShortName('https://example.org/CodeSystem/foo/'),
     'example.org/CodeSystem/foo',
   );
+});
+
+test('sourceShortName maps raw UMLS source labels to compact names', () => {
+  assert.equal(sourceShortName('SNOMEDCT_US'), 'SNOMED CT');
+  assert.equal(sourceShortName('RXNORM'), 'RxNorm');
+  assert.equal(sourceShortName('LNC'), 'LOINC');
+  assert.equal(sourceShortName('unknown_source'), 'unknown_source');
 });
 
 test('fhirParams builds a FHIR Parameters body with typed values', () => {

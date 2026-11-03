@@ -59,6 +59,25 @@ export function systemShortName(system?: string): string {
   return system.replace(/^https?:\/\//, '').replace(/\/$/, '');
 }
 
+/**
+ * Short human name for a raw UMLS source label (as carried on extracted
+ * concepts, e.g. SNOMEDCT_US / RXNORM / LNC).
+ */
+const SOURCE_SHORT_NAMES: Record<string, string> = {
+  SNOMEDCT_US: 'SNOMED CT',
+  RXNORM: 'RxNorm',
+  LNC: 'LOINC',
+  ICD10CM: 'ICD-10-CM',
+  ICD10PCS: 'ICD-10-PCS',
+  CVX: 'CVX',
+  HCPCS: 'HCPCS',
+};
+
+export function sourceShortName(source?: string): string {
+  if (!source) return '';
+  return SOURCE_SHORT_NAMES[source.toUpperCase()] ?? source;
+}
+
 export function entryScore(entry: FhirSearchEntry): number | undefined {
   return entry.search?.score;
 }

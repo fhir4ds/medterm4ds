@@ -328,3 +328,60 @@ thead {
 .terminology-demo__ner-hint {
   opacity: 0.6;
 }
+
+/* Inline annotation terms: status-tinted, detail carried inline */
+.terminology-demo__term {
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+.terminology-demo__term--affirmed .terminology-demo__mark {
+  background: rgba(142, 230, 193, 0.16);
+}
+
+.terminology-demo__term--family .terminology-demo__mark {
+  background: rgba(180, 170, 255, 0.18);
+}
+
+.terminology-demo__term--historical .terminology-demo__mark,
+.terminology-demo__term--uncertain .terminology-demo__mark {
+  background: rgba(240, 196, 110, 0.18);
+}
+
+.terminology-demo__term--negated .terminology-demo__mark {
+  background: rgba(240, 130, 130, 0.14);
+  text-decoration: line-through;
+  text-decoration-thickness: 1.5px;
+  text-decoration-color: rgba(240, 130, 130, 0.6);
+}
+
+.terminology-demo__term-tag {
+  display: inline-block;
+  margin: 0 0.15rem;
+  padding: 0 0.35rem;
+  border-radius: 999px;
+  font-size: 0.68rem;
+  vertical-align: super;
+  line-height: 1.2;
+  background: rgba(84, 198, 255, 0.08);
+  border: 1px solid rgba(84, 198, 255, 0.16);
+  opacity: 0.85;
+}
+
+.terminology-demo__term--family .terminology-demo__term-tag {
+  background: rgba(180, 170, 255, 0.12);
+  border-color: rgba(180, 170, 255, 0.25);
+}
+
+.terminology-demo__term--negated .terminology-demo__term-tag {
+  background: rgba(240, 130, 130, 0.1);
+  border-color: rgba(240, 130, 130, 0.22);
+}
+
+.terminology-demo__term-detail {
+  display: inline-block;
+  margin-left: 0.3rem;
+  font-size: 0.78rem;
+  opacity: 0.75;
+  font-style: italic;
+}
