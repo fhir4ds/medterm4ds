@@ -99,7 +99,17 @@ class TestRegistryIntegrity:
         #   PY1, BL1, BL2, DV1, EV1, EV2, HY1, HY2, CA1, CA2, CA3.
         # No resolved id was re-added; every new row arrived via a
         # --no-ff merge commit visible in git log.
-        assert len(open_rows) <= 98, (
+        # PIN BUMP 98 → 113 (2026-11-03, v0.0.9 release loop): the
+        # release-QC schedule (4 chunks × 3 personalities over the
+        # v0.0.8..v0.0.9 delta) registered 15 genuine new finding rows
+        # in the "v0.0.9 release loop" section — ALR1, TSB1, QC1-T3,
+        # QC1-S1, QC1-S2, QC1-A3, QC1-A4, QC2-S1, QC2-H1, QC2-H4,
+        # QC3-E1, QC3-E2, QC3-S2 (refuted), QC3-S10/E8, QC4-H1 — each
+        # FIXED in fixbatches A-D (b27de3d, 48ed759, 6487721, 9997134)
+        # or refuted with empirical evidence, each row naming its
+        # committed pin suite or verification artifact. No resolved id
+        # was re-added.
+        assert len(open_rows) <= 113, (
             f"open findings grew to {len(open_rows)} — if these are "
             "genuine new findings, register them properly and bump "
             "this pin"
