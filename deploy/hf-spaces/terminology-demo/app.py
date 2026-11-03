@@ -158,7 +158,13 @@ def _warm_up(app: FastAPI) -> None:
         from medterm4ds.services.extraction import get_extraction_service
         from medterm4ds.services.search import get_search_service
 
-        get_search_service().semantic("warmup", count=1)
+        # Both index families are lazy per mode: BM25 loads on the first
+        # lexical call, SapBERT+FAISS on the first semantic call. Warm both.
+        search_service = get_search_service()
+        search_service.lexical("warmup", count=1)
+        search_service.semantic("warmup", count=1)
+        # Full extract path (NER + section detection + resolution) —
+        # more of the pipeline is lazy beyond find_terms alone.
         get_extraction_service().extract("Patient has diabetes.", format="codes")
     except Exception:
         logger.exception("terminology-demo warm-up failed; /health stays 'starting'")
