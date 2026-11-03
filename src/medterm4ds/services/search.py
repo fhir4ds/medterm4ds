@@ -737,6 +737,46 @@ def _surface_key(text: str) -> str:
     return " ".join(re.findall(r"[a-z0-9]+", _strip_accents(text.lower())))
 
 
+def _surface_distance(query_key: str, text: str, cap: int = 64) -> float:
+    """NORMALIZED Damerau-Levenshtein distance between the query's
+    surface key and a candidate's surface key — the UNIFIED tie-break
+    for lexical and semantic ranking (AMUX-18 follow-up). Distance 0 IS
+    the exact-surface match, so the exact tier and the proximity tier
+    are one scale.
+
+    Normalized by the longer string's length so longer surfaces that
+    CONTAIN the query ('Tylenol PM Extra Strength Tylenol' for query
+    'Tylenol PM') rank closer than short unrelated ones
+    ('Acetaminophen') — raw edit distance is length-biased the other way.
+
+    Model-free and deterministic; only invoked for score ties, where it
+    replaces the bare-code arbiter. Inputs are capped so a pathological
+    display can't blow up the DP table.
+    """
+    a = query_key[:cap]
+    b = _surface_key(text)[:cap]
+    if a == b:
+        return 0.0
+    la, lb = len(a), len(b)
+    if la == 0 or lb == 0:
+        return 1.0
+    # Classic two-row Damerau-Levenshtein (optimal string alignment).
+    prev2: list[int] | None = None
+    prev = list(range(lb + 1))
+    for i in range(1, la + 1):
+        cur = [i] + [0] * lb
+        for j in range(1, lb + 1):
+            cost = 0 if a[i - 1] == b[j - 1] else 1
+            cur[j] = min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + cost)
+            if (
+                i > 1 and j > 1
+                and a[i - 1] == b[j - 2] and a[i - 2] == b[j - 1]
+            ):
+                cur[j] = min(cur[j], (prev2 or cur)[j - 2] + 1)  # transposition
+        prev2, prev = prev, cur
+    return prev[lb] / max(la, lb)
+
+
 def _cased_token_hits(typed_tokens: list[str], text: str) -> int:
     """Count acronym tokens appearing in ``text`` as the user typed them (AMUX-20).
 
@@ -2118,15 +2158,23 @@ class SearchService:
                 _exact=_row_exact,
                 _codes: list = rid_to_code,
                 _friendly: list = rid_to_friendly,
-            ) -> tuple[bool, float, str]:
-                """AMUX-18: exact surface match first, then BM25 score,
-                then code — a row literally named 'Tylenol' wins the tf=1
-                tie against longer combination-product rows,
+                _q_key: str = q_key,
+            ) -> tuple[bool, float, int, str]:
+                """AMUX-18 (+ unified tie-break): exact surface match
+                first, then BM25 score, then surface edit distance, then
+                code — a row literally named 'Tylenol' wins the tf=1 tie
+                against longer combination-product rows, and among
+                equal-score rows the closest surface text wins,
                 deterministically."""
                 rid, score = item
                 code = _codes[rid] if rid < len(_codes) else str(rid)
                 display = _friendly[rid] if rid < len(_friendly) else code
-                return (not _exact(rid, display), -score, str(code))
+                return (
+                    not _exact(rid, display),
+                    -score,
+                    _surface_distance(_q_key, display),
+                    str(code),
+                )
 
             for rid, score in sorted(scores.items(), key=_row_rank)[:fetch_count]:
                 code = rid_to_code[rid] if rid < len(rid_to_code) else str(rid)
@@ -2140,10 +2188,17 @@ class SearchService:
                     category=category, _exact_surface=_row_exact(rid, display),
                 ))
 
-        # AMUX-18: exact surface matches first across categories too, then
-        # score, then code — fully deterministic ordering.
+        # AMUX-18 (+ unified tie-break): exact surface matches first across
+        # categories too, then score, then surface edit distance, then code
+        # — fully deterministic ordering, identical to the semantic path.
+        _q_key_all = _surface_key(query)
         results.sort(
-            key=lambda r: (not r._exact_surface, -r.score, r.code)
+            key=lambda r: (
+                not r._exact_surface,
+                -r.score,
+                _surface_distance(_q_key_all, r.display),
+                r.code,
+            )
         )
         return self._filter_by_source(results, sources)[:count]
 
@@ -2180,11 +2235,28 @@ class SearchService:
         for r in raw:
             sys_name = r.get("system", "").upper()
             source = _SYSTEM_LABELS_REVERSE.get(sys_name, sys_name)
+            display = r["display"]
+            q_key = _surface_key(query)
             results.append(SearchResult(
-                code=r["code"], source=source, display=r["display"],
+                code=r["code"], source=source, display=display,
                 score=r["score"], match_grade=r["match_grade"],
                 category=r.get("category", ""),
+                _exact_surface=_surface_key(display) == q_key,
             ))
+        # Unified tie-break (AMUX-18 follow-up): exact surface first, then
+        # cosine score, then surface edit distance, then code — the SAME
+        # ordering contract as the lexical path, so equal-cosine rows
+        # resolve by closest surface text instead of FAISS/category
+        # iteration order.
+        _q_key = _surface_key(query)
+        results.sort(
+            key=lambda r: (
+                not r._exact_surface,
+                -r.score,
+                _surface_distance(_q_key, r.display),
+                r.code,
+            )
+        )
         return self._filter_by_source(results, sources)[:count]
 
     def hybrid(
@@ -2234,15 +2306,28 @@ class SearchService:
         cat_map = {(r.source, r.code): r.category for r in bm25_results}
 
         results: list[SearchResult] = []
+        _q_key = _surface_key(query)
         for r in reranked:
             sys_name = r.get("system", "").upper()
             source = _SYSTEM_LABELS_REVERSE.get(sys_name, sys_name)
             cat = cat_map.get((source, r["code"]), "")
+            display = r["display"]
             results.append(SearchResult(
-                code=r["code"], source=source, display=r["display"],
+                code=r["code"], source=source, display=display,
                 score=r["score"], match_grade=r["match_grade"],
                 category=cat,
+                _exact_surface=_surface_key(display) == _q_key,
             ))
+        # Unified tie-break (same key as lexical/semantic): exact surface
+        # first, then cosine, then surface edit distance, then code.
+        results.sort(
+            key=lambda r: (
+                not r._exact_surface,
+                -r.score,
+                _surface_distance(_q_key, r.display),
+                r.code,
+            )
+        )
         return self._filter_by_source(results, sources)[:count]
 
     def search(

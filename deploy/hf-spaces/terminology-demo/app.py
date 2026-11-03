@@ -60,13 +60,14 @@ if os.getenv("DEMO_PROVISION_DATA", "false").lower() == "true":
 
     ensure_data()
 
-# The FHIR app's own default search_index_dir is a PINNED developer path
-# (/mnt/d/..., fhir_api.py:95) which disables the library's terminology-
-# release resolution (services/search.py uses explicitly-passed dirs
-# "exactly as given"). Default instead to the services' UNPINNED cache
-# default so SearchService resolves the mounted release under
+# Historical note (AMUX-44 fixed at origin): the FHIR app's default
+# search_index_dir was once a PINNED developer /mnt/d path that disabled
+# the library's terminology-release resolution (services/search.py uses
+# explicitly-passed dirs "exactly as given"). The default is now unset
+# (None) = UNPINNED, so SearchService resolves the mounted release under
 # MEDTERM4DS_CACHE_DIR/terminology/<release>/ (lexical/, semantic/ and
-# model/ families) — the library's intended fresh-install path.
+# model/ families) — the library's intended fresh-install path; this
+# explicit default keeps that behavior even if the env var is absent.
 SEARCH_INDEX_DIR = os.getenv(
     "MEDTERM4DS_SEARCH_INDEX_DIR", _search_module.DEFAULT_SEARCH_INDEX_DIR
 )

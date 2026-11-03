@@ -268,3 +268,69 @@ class TestOrdinaryQueriesUnchanged:
     def test_lowercase_query_still_matches_cased_names(self, search_svc):
         results = search_svc.lexical("tylenol", count=5)
         assert results[0].code == "202433"
+
+
+# --- Unified surface-distance tie-break (lexical + semantic) ----------
+
+
+class TestSurfaceDistance:
+    def test_zero_for_exact_and_basic_edits(self):
+        from medterm4ds.services.search import _surface_distance as d
+        assert d("tylenol", "Tylenol") == 0
+        # normalized by the longer surface: 3 edits over 10 chars
+        # ('tylenol' vs 'tylenol pm' — the space is part of the key)
+        assert abs(d("tylenol", "Tylenol PM") - 3 / 10) < 1e-9
+        assert abs(d("abcd", "abdc") - 1 / 4) < 1e-9  # transposition once
+        assert d("ab", "") == 1.0 and d("", "ab") == 1.0
+
+    def test_containment_beats_short_unrelated(self):
+        from medterm4ds.services.search import _surface_distance as d
+        # normalization makes surfaces CONTAINING the query closer than
+        # short unrelated ones (raw edit distance is length-biased).
+        assert d("tylenol pm", "Tylenol PM Extra Strength Tylenol") < d(
+            "tylenol pm", "Acetaminophen"
+        )
+
+    def test_closer_surface_ranks_lower_distance(self):
+        from medterm4ds.services.search import _surface_distance as d
+        assert d("tylenol", "Tylenol PM") < d(
+            "tylenol", "Tylenol Cold Multi Symptom"
+        )
+
+
+class TestLexicalDistanceTiebreak:
+    def test_query_containing_surface_ranks_first(self, search_svc):
+        """For 'Tylenol PM' the row containing the query surface ranks
+        first (higher tf AND closest surface agree here); the
+        equal-score distance arbitration itself is pinned precisely by
+        the semantic stub test below (the key is shared code)."""
+        res = search_svc.lexical("Tylenol PM", count=3)
+        names = [r.display for r in res]
+        assert names, "fixture unexpectedly empty"
+        assert "PM" in names[0], names
+
+
+class TestSemanticUnifiedTiebreak:
+    def test_semantic_ties_resolve_by_surface_distance_then_code(self, search_svc, monkeypatch):
+        """Equal-cosine rows must order (exact, score, distance, code) —
+        the SAME key as lexical — instead of FAISS iteration order."""
+
+        class StubEngine:
+            def search(self, query, *, categories=None, top_k=20):
+                return [
+                    {"code": "9999", "system": "lnc", "display": "zzz unrelated far",
+                     "score": 0.90, "match_grade": "probable", "category": "lab"},
+                    {"code": "0001", "system": "lnc", "display": "Hemoglobin A1c Panel",
+                     "score": 0.90, "match_grade": "probable", "category": "lab"},
+                    {"code": "0002", "system": "lnc", "display": "Hemoglobin A1c",
+                     "score": 0.90, "match_grade": "probable", "category": "lab"},
+                    # exact surface with a LOWER cosine must still win (AMUX-18
+                    # semantics preserved on the semantic path).
+                    {"code": "5555", "system": "lnc", "display": "Hemoglobin A1c measurement",
+                     "score": 0.85, "match_grade": "probable", "category": "lab"},
+                ]
+
+        monkeypatch.setattr(search_svc, "_ensure_semantic", lambda: StubEngine())
+        res = search_svc.semantic("Hemoglobin A1c", count=4)
+        codes = [r.code for r in res]
+        assert codes == ["0002", "0001", "9999", "5555"], codes
