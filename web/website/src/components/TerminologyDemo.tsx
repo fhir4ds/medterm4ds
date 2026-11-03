@@ -275,12 +275,18 @@ function ModeCard({
   );
 }
 
-/** The search half: startup banner, query input, side-by-side mode cards. */
+/** Live status of the demo Space: checking / starting / ready / failed. */
+export function TerminologyDemoStatus(): React.JSX.Element {
+  const {status: startup, retry} = useSpaceStartup();
+  return <StartupBanner startup={startup} retry={retry} />;
+}
+
+/** The search half: query input, side-by-side mode cards. */
 export function TerminologyDemoSearch(): React.JSX.Element {
   const [query, setQuery] = useState('myocardial infarction');
   const [state, setState] = useState<SearchState>({phase: 'idle'});
   const [modeRows, setModeRows] = useState<Record<string, SearchRow[]>>({});
-  const {status: startup, notReady, retry} = useSpaceStartup();
+  const {status: startup, notReady} = useSpaceStartup();
   const abortRef = useRef<AbortController | null>(null);
 
   const runSearch = useCallback(async () => {
@@ -331,7 +337,6 @@ export function TerminologyDemoSearch(): React.JSX.Element {
 
   return (
     <div className="terminology-demo">
-      <StartupBanner startup={startup} retry={retry} />
       <div className="terminology-demo__controls">
         <input
           type="text"
@@ -516,15 +521,6 @@ export function TerminologyDemoAnnotations(): React.JSX.Element {
 
   return (
     <div className="terminology-demo">
-      {startup !== 'ready' && (
-        <p className="terminology-demo__status">
-          {startup === 'failed'
-            ? '⚠️ The demo Space is unreachable — see the Search section above to retry.'
-            : startup === 'checking'
-              ? '🔎 Waiting for the terminology server…'
-              : '🌅 The demo Space is starting up — extraction unlocks when it is ready.'}
-        </p>
-      )}
       <div className="terminology-demo__controls terminology-demo__controls--column">
         <textarea
           className="terminology-demo__input"

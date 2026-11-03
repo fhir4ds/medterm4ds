@@ -5,6 +5,7 @@ title: Terminology Search
 import {
   TerminologyDemoAnnotations,
   TerminologyDemoSearch,
+  TerminologyDemoStatus,
 } from '@site/src/components/TerminologyDemo';
 
 # Terminology Search
@@ -48,13 +49,15 @@ a courtesy filter, not authentication.
 
 :::
 
-### Search
+<TerminologyDemoStatus />
 
-<TerminologyDemoSearch />
+### Search
 
 The demo runs your query through lexical, semantic and canonical at once
 so you can see the differences on your own terms (top 3 per mode, best
 result per mode highlighted).
+
+<TerminologyDemoSearch />
 
 ### Annotations
 
