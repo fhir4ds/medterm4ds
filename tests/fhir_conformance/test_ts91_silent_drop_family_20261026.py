@@ -82,7 +82,17 @@ class TestSilentDropFamilyAlive:
             "/fhir/ValueSet/$expand",
             params={"url": DM_ISA_URL, "system": LOINC_URI},
         ).content
-        assert base == with_sys
+        # $expand stamps a per-response expansion.timestamp; two calls can
+        # straddle a second boundary, so byte-identity holds only with the
+        # volatile stamp normalized (same normalization ts76 p16 uses).
+        import re
+
+        def _normalized(b: bytes) -> bytes:
+            return re.sub(
+                rb'"timestamp":"[^"]*"', b'"timestamp":"T"', b
+            )
+
+        assert _normalized(base) == _normalized(with_sys)
 
     def test_s13_cv2_concept_system_disagreement(
         self, fhir_client
