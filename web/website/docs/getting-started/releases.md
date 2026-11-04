@@ -36,7 +36,7 @@ release (the startup banner says so instead of prescribing a fix for a
 New: a live **HF Spaces terminology demo** with side-by-side
 search-mode comparison and clinical-note annotation, driven entirely by
 documented FHIR R4 operations — see
-[the demo page](../examples/terminology-search.md). Demo hardening in
+[the demo page](../examples/terminology-search.mdx). Demo hardening in
 this release: proxy-trustworthy rate limiting, health checks that fail
 visibly when warm-up fails, and hardened license gates on the public
 lookup dataset (CPT exclusion verified by content scan, not just
