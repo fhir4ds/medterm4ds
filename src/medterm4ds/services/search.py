@@ -9,8 +9,10 @@ Data sources:
   - SapBERT model + FAISS indexes: fine-tuned embeddings + ANN search
 
 Both are lazy-loaded on first use. BM25 loads from MEDTERM4DS_SEARCH_INDEX_DIR
-(default: /mnt/d/fhir4px-model/dist/naming_bm25). SapBERT loads from
-MEDTERM4DS_EMBEDDING_MODEL_DIR (default: /mnt/d/fhir4px-model/data/sapbert_finetuned).
+and SapBERT from MEDTERM4DS_EMBEDDING_MODEL_DIR; unset env means the
+release-aware 'auto' resolution over the artifact cache root
+(MEDTERM4DS_CACHE_DIR, else ~/.cache/medterm4ds/<rev>) — never a
+machine-specific path (see medterm4ds.core.paths).
 
 No GPU required. Runs on CPU (~1ms lexical, ~100ms semantic).
 """
@@ -27,10 +29,10 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
+from medterm4ds.core import paths as _paths
 from medterm4ds.core.models import CodeRef
 from medterm4ds.core.normalize import SOURCE_LABELS
-
-logger = logging.getLogger(__name__)
+from medterm4ds.core.paths import env_pin, terminology_root
 
 logger = logging.getLogger(__name__)
 
@@ -41,8 +43,6 @@ logger = logging.getLogger(__name__)
 # (v0.0.5 = 2026-08-27 canonical build: shorthand class aliases — SGLT2i/
 # DPP4i/PPI/ARB, CDC vaccine groups, lab SNOMED crosswalk, ICD-10-PCS,
 # guard hardening; v0.0.2 = Aug-2026 canonical indexes with CID corrections).
-_HF_REPO_ID = os.getenv("MEDTERM4DS_HF_REPO_ID", "fhir4ds/medterm4ds")
-_HF_REVISION = os.getenv("MEDTERM4DS_HF_REVISION", "v0.0.5")
 
 # Artifact cache layout. Two modes:
 #
@@ -56,36 +56,38 @@ _HF_REVISION = os.getenv("MEDTERM4DS_HF_REVISION", "v0.0.5")
 # as-is, without revision keying — the deploy.sh/data-dir contract where
 # artifacts are placed by an external pipeline. Files must exist; nothing
 # is re-checked or re-keyed.
-_cache_root_env = os.getenv("MEDTERM4DS_CACHE_DIR")
-if _cache_root_env:
-    _CACHE_DIR = Path(_cache_root_env)
-    _CACHE_REVISION_KEYED = False
-else:
-    _CACHE_DIR = (Path.home() / ".cache" / "medterm4ds") / _HF_REVISION
-    _CACHE_REVISION_KEYED = True
-    # Pre-revision cache detection (root-level family dirs): it cannot be
-    # attributed to a revision, so it is never silently adopted. Tell the
-    # operator instead of re-downloading behind their back.
-    _legacy_root = Path.home() / ".cache" / "medterm4ds"
-    if _CACHE_DIR != _legacy_root and any(
-        (_legacy_root / fam).is_dir()
-        for fam in ("canonical", "semantic", "lexical")
-    ) and not (_CACHE_DIR / "canonical").is_dir():
-        logger.warning(
-            "Pre-revision artifact cache detected at %s (canonical/semantic/"
-            "lexical at the cache root). It will NOT be used because cached "
-            "artifacts cannot be attributed to revision %s. Run "
-            "`medterm4ds data cache-refresh` to fetch this revision, then "
-            "delete the root-level copies.",
-            _legacy_root, _HF_REVISION,
-        )
+# AMUX-44: cache-root resolution lives in medterm4ds.core.paths (single
+# source of truth; the historical /mnt/d machine-specific defaults were
+# removed). QC2-H4: the frozen sentinels are REFRESHED AS A UNIT here —
+# reloading this module under a patched env (the documented test pattern)
+# also refreshes paths' sentinels, so pin detection below always compares
+# against the same defaults the caller's constants came from.
+_paths._refresh_sentinels()
+_CACHE_DIR = _paths.CACHE_DIR
+_CACHE_REVISION_KEYED = _paths.CACHE_REVISION_KEYED
+_HF_REPO_ID = _paths.HF_REPO_ID
+_HF_REVISION = _paths.HF_REVISION
 
-DEFAULT_SEARCH_INDEX_DIR = str(_CACHE_DIR / "lexical")
-DEFAULT_EMBEDDING_MODEL_DIR = str(_CACHE_DIR / "semantic")
-DEFAULT_CANONICAL_VALUE_SETS_PATH = str(_CACHE_DIR / "canonical" / "canonical_anchor_value_sets.json")
-DEFAULT_CANONICAL_CONCEPTS_INDEX = str(_CACHE_DIR / "canonical" / "canonical_concepts_faiss.index")
-DEFAULT_CANONICAL_CONCEPTS_META = str(_CACHE_DIR / "canonical" / "canonical_concepts_metadata.json")
+DEFAULT_SEARCH_INDEX_DIR = _paths.DEFAULT_SEARCH_INDEX_DIR
+DEFAULT_EMBEDDING_MODEL_DIR = _paths.DEFAULT_EMBEDDING_MODEL_DIR
+DEFAULT_CANONICAL_VALUE_SETS_PATH = _paths.DEFAULT_CANONICAL_VALUE_SETS_PATH
+DEFAULT_CANONICAL_CONCEPTS_INDEX = _paths.DEFAULT_CANONICAL_CONCEPTS_INDEX
+DEFAULT_CANONICAL_CONCEPTS_META = _paths.DEFAULT_CANONICAL_CONCEPTS_META
 SEARCH_CATEGORIES = ("condition", "lab", "medication", "procedure", "vaccine", "body_structure")
+
+# AMUX-46 hybrid fusion constants (benchmark winner; see
+# benchmarks/fusion_benchmark.py — RRF k=10 + agreement-aware grades).
+HYBRID_FUSION_K = 10
+HYBRID_CANDIDATE_DEPTH = 100
+
+# Grade-authority cutoffs for agreement-aware grading (AMUX-46): the
+# cosine bands beneath 'certain' and 'probable'. These mirror
+# engines/fhir/semantic._cosine_to_grade (the ENGINE-layer authority —
+# engines must not import services, so each layer holds one definition
+# and they cross-reference). Benchmark tooling imports THESE values; do
+# not inline the numbers at call sites.
+GRADE_CERTAIN_COSINE = 0.92
+GRADE_PROBABLE_COSINE = 0.75
 
 # --- Split-layout cache (Phase 3, docs/plans/artifact-governance-plan.md §4) ---
 #
@@ -104,7 +106,7 @@ _LAYOUT_ENV = os.getenv("MEDTERM4DS_LAYOUT", "auto").strip().lower()
 _LAYOUT_TERMINOLOGY = _LAYOUT_ENV in ("auto", "terminology")
 MODELS_DIRNAME = "models"
 DATA_DIRNAME = "data"
-_SPLIT_ROOT = _CACHE_DIR if not _CACHE_REVISION_KEYED else (Path.home() / ".cache" / "medterm4ds")
+_SPLIT_ROOT = _paths.TERMINOLOGY_ROOT if not _CACHE_REVISION_KEYED else (Path.home() / ".cache" / "medterm4ds")
 _LAYOUT_FORCED_LEGACY = _LAYOUT_ENV == "legacy"
 _DATA_REVISION_ENV = os.getenv("MEDTERM4DS_DATA_REVISION") or None
 
@@ -193,9 +195,7 @@ def _local_artifacts_present() -> bool:
 
 def _terminology_root() -> Path:
     """Cache root holding ``terminology/<release>/`` (shared across revisions)."""
-    if _CACHE_REVISION_KEYED:
-        return Path.home() / ".cache" / "medterm4ds"
-    return _CACHE_DIR
+    return terminology_root()
 
 
 def _resolve_terminology(download: bool = True):
@@ -507,6 +507,10 @@ class SearchResult:
     score: float  # 0.0–1.0
     match_grade: str  # "certain" | "probable" | "possible"
     category: str = ""  # "condition", "medication", etc.
+    # AMUX-18: query surface equals the row's indexed name or friendly
+    # display (computed in lexical; carry-only everywhere else). Excluded
+    # from repr/compare and from to_dict — ranking metadata, not contract.
+    _exact_surface: bool = field(default=False, repr=False, compare=False)
 
     @property
     def system_label(self) -> str:
@@ -693,16 +697,115 @@ def _strip_accents(text: str) -> str:
 
 
 def _query_tokens(query: str) -> list[str]:
-    """Tokenize a free-text query for BM25 lookup (QC-329).
+    """Tokenize a free-text query for BM25 lookup (QC-329, AMUX-20).
 
-    Mirrors the index-build tokenizer (ASCII alphanumeric runs of >= 3
-    chars, lowercased, accents folded): hyphens and other punctuation split
-    tokens the same way the build split them, and accented characters fold
-    to their unaccented base instead of acting as token boundaries. Index
-    postings only contain build-token keys, so shorter/digit-only runs could
-    never match anyway.
+    Accents fold and punctuation splits exactly like the index-build
+    tokenizer (QC-329), but alphanumeric runs of >= 2 chars are kept —
+    the build tokenizer (ASCII ``[a-zA-Z]{3,}``) digitized acronyms and
+    alphanumerics out of the postings (A1c, HbA1c, MI, PE, PT), so the
+    query side must preserve them for the posting-candidate fallback
+    (letter runs, e.g. 'hba1c' -> 'hba') and the surface-name pass in
+    ``SearchService.lexical``. Tokens that can never match a posting key
+    are harmless: lookup simply yields no candidates for them.
     """
-    return re.findall(r"[a-z0-9]{3,}", _strip_accents(query.lower()))
+    return re.findall(r"[a-z0-9]{2,}", _strip_accents(query.lower()))
+
+
+# ASCII letter runs of >= 3 chars — the shape of every posting key in the
+# pre-built BM25 indexes (build tokenizer was ``[a-zA-Z]{3,}``).
+_LETTER_RUN_RE = re.compile(r"[a-z]{3,}")
+
+
+def _posting_candidates(token: str, postings: dict) -> list[str]:
+    """Posting keys a query token can look up (AMUX-20).
+
+    The index build lowercased + kept ASCII letter runs of >= 3 chars, so
+    posting keys never contain digits and are never shorter than 3 chars.
+    A pure >= 3-letter token maps to itself (stem fallback as before);
+    an alphanumeric or 2-char token maps to its >= 3-letter runs
+    ('hba1c' -> 'hba'). Tokens with no run (a1c, mi, pe, pt, b12)
+    return [] — the lexical surface pass covers those.
+    """
+    if token.isalpha() and len(token) >= 3:
+        runs = [token]
+    else:
+        runs = _LETTER_RUN_RE.findall(token)
+    cands: list[str] = []
+    for run in runs:
+        cands.append(run)
+        stemmed = _stem_token(run)
+        if stemmed != run:
+            cands.append(stemmed)
+    return [c for c in dict.fromkeys(cands) if c in postings]
+
+
+def _surface_key(text: str) -> str:
+    """Normalization for exact surface comparison (AMUX-18).
+
+    Accents folded, lowercased, non-alphanumerics dropped, whitespace
+    collapsed — the same family as _query_tokens, so 'Tylenol',
+    'tylenol ' and 'TYLENOL' all normalize identically.
+    """
+    return " ".join(re.findall(r"[a-z0-9]+", _strip_accents(text.lower())))
+
+
+def _surface_distance(query_key: str, text: str, cap: int = 64) -> float:
+    """NORMALIZED Damerau-Levenshtein distance between the query's
+    surface key and a candidate's surface key — the UNIFIED tie-break
+    for lexical and semantic ranking (AMUX-18 follow-up). Distance 0 IS
+    the exact-surface match, so the exact tier and the proximity tier
+    are one scale.
+
+    Normalized by the longer string's length so longer surfaces that
+    CONTAIN the query ('Tylenol PM Extra Strength Tylenol' for query
+    'Tylenol PM') rank closer than short unrelated ones
+    ('Acetaminophen') — raw edit distance is length-biased the other way.
+
+    Model-free and deterministic; invoked as a sort-key component on every
+    candidate row (not only score ties — it ranks the proximity tier
+    after the exact tier), so inputs are capped to bound the DP cost.
+    """
+    a = query_key[:cap]
+    b = _surface_key(text)[:cap]
+    if a == b:
+        return 0.0
+    la, lb = len(a), len(b)
+    if la == 0 or lb == 0:
+        return 1.0
+    # Classic two-row Damerau-Levenshtein (optimal string alignment).
+    prev2: list[int] | None = None
+    prev = list(range(lb + 1))
+    for i in range(1, la + 1):
+        cur = [i] + [0] * lb
+        for j in range(1, lb + 1):
+            cost = 0 if a[i - 1] == b[j - 1] else 1
+            cur[j] = min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + cost)
+            if (
+                i > 1 and j > 1
+                and a[i - 1] == b[j - 2] and a[i - 2] == b[j - 1]
+            ):
+                cur[j] = min(cur[j], (prev2 or cur)[j - 2] + 1)  # transposition
+        prev2, prev = prev, cur
+    return prev[lb] / max(la, lb)
+
+
+def _cased_token_hits(typed_tokens: list[str], text: str) -> int:
+    """Count acronym tokens appearing in ``text`` as the user typed them (AMUX-20).
+
+    Only tokens the user typed with casing ('MI', 'PT', 'A1c') corroborate,
+    matched as a whole word either in the typed form or fully uppercased:
+    '(MI)', 'Prothrombin Time (PT) Test', 'HbA1c' hit; 'Mi-2 Ab',
+    'Mi-Acid Gas Relief', 'New Pt 10mins' never do. Lowercase-typed tokens
+    corroborate nothing (no signal). Deterministic, model-free.
+    """
+    hits = 0
+    for typed in typed_tokens:
+        if typed == typed.lower():
+            continue
+        pattern = rf"\b(?:{re.escape(typed)}|{re.escape(typed.upper())})\b"
+        if re.search(pattern, _strip_accents(text)):
+            hits += 1
+    return hits
 
 
 def _stem_token(token: str) -> str:
@@ -772,26 +875,54 @@ class SearchService:
     def __init__(
         self,
         *,
-        search_index_dir: str = DEFAULT_SEARCH_INDEX_DIR,
-        embedding_model_dir: str = DEFAULT_EMBEDDING_MODEL_DIR,
-        canonical_path: str = DEFAULT_CANONICAL_VALUE_SETS_PATH,
-        canonical_concepts_index: str = DEFAULT_CANONICAL_CONCEPTS_INDEX,
-        canonical_concepts_meta: str = DEFAULT_CANONICAL_CONCEPTS_META,
+        search_index_dir: str | None = None,
+        embedding_model_dir: str | None = None,
+        canonical_path: str | None = None,
+        canonical_concepts_index: str | None = None,
+        canonical_concepts_meta: str | None = None,
     ):
-        self._bm25_dir = Path(search_index_dir)
-        self._model_dir = Path(embedding_model_dir)
-        self._canonical_path = Path(canonical_path)
-        self._concepts_index_path = Path(canonical_concepts_index)
-        self._concepts_meta_path = Path(canonical_concepts_meta)
+        # AMUX-44 acquisition story (one story, three surfaces):
+        #   explicit value (env pin / operator arg) -> pinned, used as-is;
+        #   None (env unset) -> release-aware 'auto' resolution:
+        #     terminology release -> split -> legacy cache dir, with
+        #     first-use provisioning (never a machine-specific path).
+        # The DEFAULT_* constants only name where 'auto' provisioning lands
+        # (cache-root derived) and double as unpinned sentinels for legacy
+        # callers passing them explicitly.
+        self._bm25_dir_pinned = (
+            search_index_dir is not None
+            and search_index_dir != DEFAULT_SEARCH_INDEX_DIR
+        )
+        self._model_dir_pinned = (
+            embedding_model_dir is not None
+            and embedding_model_dir != DEFAULT_EMBEDDING_MODEL_DIR
+        )
+        self._bm25_dir = Path(search_index_dir or DEFAULT_SEARCH_INDEX_DIR)
+        self._model_dir = Path(embedding_model_dir or DEFAULT_EMBEDDING_MODEL_DIR)
+        self._canonical_path = Path(canonical_path or DEFAULT_CANONICAL_VALUE_SETS_PATH)
+        self._concepts_index_path = Path(
+            canonical_concepts_index or DEFAULT_CANONICAL_CONCEPTS_INDEX
+        )
+        self._concepts_meta_path = Path(
+            canonical_concepts_meta or DEFAULT_CANONICAL_CONCEPTS_META
+        )
         # Split-layout resolution only applies to DEFAULT (unpinned) paths —
         # explicitly passed dirs (operator contracts, fhir4ds
         # FHIR4DS_TERMINOLOGY_SEARCH_INDEX_DIR passthrough, provision flows)
         # are used exactly as given (plan §6.2).
-        self._model_dir_pinned = embedding_model_dir != DEFAULT_EMBEDDING_MODEL_DIR
         self._paths_pinned = (
-            canonical_path != DEFAULT_CANONICAL_VALUE_SETS_PATH
-            or canonical_concepts_index != DEFAULT_CANONICAL_CONCEPTS_INDEX
-            or canonical_concepts_meta != DEFAULT_CANONICAL_CONCEPTS_META
+            (
+                canonical_path is not None
+                and canonical_path != DEFAULT_CANONICAL_VALUE_SETS_PATH
+            )
+            or (
+                canonical_concepts_index is not None
+                and canonical_concepts_index != DEFAULT_CANONICAL_CONCEPTS_INDEX
+            )
+            or (
+                canonical_concepts_meta is not None
+                and canonical_concepts_meta != DEFAULT_CANONICAL_CONCEPTS_META
+            )
         )
         self._resolved_index_dir: str | None = None
         self._concepts_data_dir: Path | None = None
@@ -821,7 +952,7 @@ class SearchService:
         """
         if self.lexical_available:
             return True
-        if self._bm25_dir != Path(DEFAULT_SEARCH_INDEX_DIR):
+        if self._bm25_dir_pinned:
             return False
         try:
             self._ensure_bm25()
@@ -862,7 +993,7 @@ class SearchService:
             return True
         if self._bm25_dir.is_dir() and any(self._bm25_dir.glob("*_bm25.json")):
             return True
-        if self._bm25_dir == Path(DEFAULT_SEARCH_INDEX_DIR):
+        if not self._bm25_dir_pinned:
             term = _resolve_terminology(download=False)
             if term is not None and any(term.lexical.glob("*.json")):
                 return True
@@ -891,7 +1022,7 @@ class SearchService:
             return
         # Terminology layout: <family>/<release>/<category>.json — resolved
         # before the legacy download so the new default source wins.
-        if self._bm25_dir == Path(DEFAULT_SEARCH_INDEX_DIR):
+        if not self._bm25_dir_pinned:
             term = _resolve_terminology()
             if term is not None:
                 self._bm25_dir = term.lexical
@@ -1547,15 +1678,31 @@ class SearchService:
                 snomed_codes.append((r.code, r.score))
 
         # Walk UP ancestors for each candidate via closure table (bulk query).
-        # UMLS DB location: prefer MEDTERM4DS_UMLS_DB env var, fall back to
-        # default location in medterm4ds/data/.
-        db_path = os.environ.get(
-            "MEDTERM4DS_UMLS_DB",
-            "/mnt/d/medterm4ds/data/umls_2026aa.duckdb",
+        # UMLS DB location: MEDTERM4DS_UMLS_DB, then MEDTERM4DS_DB; with
+        # neither set the fallback is disabled LOUDLY (AMUX-44: the old
+        # /mnt/d machine default silently returned [] on every machine
+        # but the author's).
+        db_path = (
+            os.environ.get("MEDTERM4DS_UMLS_DB")
+            or os.environ.get("MEDTERM4DS_DB")
         )
+        if not db_path:
+            logger.warning(
+                "Ancestor fallback disabled: no UMLS DB configured. Set "
+                "MEDTERM4DS_UMLS_DB (or MEDTERM4DS_DB) to the DuckDB file "
+                "with mt4ds.walk_closure_limited to enable broader-result "
+                "fallback for semantic queries."
+            )
+            return []
         try:
             con = duckdb.connect(db_path, read_only=True)
-        except Exception:
+        except Exception as exc:
+            logger.warning(
+                "Ancestor fallback disabled: cannot open UMLS DB at %s "
+                "(%s: %s). Set MEDTERM4DS_UMLS_DB to a valid DuckDB file "
+                "with mt4ds.walk_closure_limited.",
+                db_path, type(exc).__name__, exc,
+            )
             return []
 
         codes_str = ','.join(f"'{c}'" for c, _ in snomed_codes)
@@ -1884,6 +2031,12 @@ class SearchService:
         query_tokens = _query_tokens(query)
         if not query_tokens:
             return []
+        # Original-case form of each query token (first occurrence wins),
+        # for acronym corroboration in the surface pass (AMUX-20): a token
+        # typed 'MI' only corroborates names carrying uppercase 'MI'.
+        _typed_by_lower: dict[str, str] = {}
+        for typed in re.findall(r"[A-Za-z0-9]{2,}", _strip_accents(query)):
+            _typed_by_lower.setdefault(typed.lower(), typed)
         # QC-124: over-fetch per category when a source filter is set so the
         # filter doesn't drop the top-N slice down to 0 cross-source hits
         # (e.g., 'insulin' sources=['RXNORM'] count=1: the first RXNORM hit
@@ -1907,37 +2060,185 @@ class SearchService:
             rid_to_system = index.get("rid_to_system", [])
 
             scores: dict[int, float] = {}
+            # Per-query-token idf actually used (for the shared score
+            # denominator). Orphan tokens (no posting candidates — 2-char
+            # acronyms, digit-bearing runs with no >= 3-letter run) are
+            # scored by the surface pass below with the index's max idf as
+            # a rarity proxy, and contribute that same proxy to the
+            # denominator so surface-only rows grade honestly (AMUX-20).
+            matched_idfs: list[float] = []
+            orphan_tokens: list[str] = []
             for raw_token in query_tokens:
-                token = raw_token if raw_token in postings else _stem_token(raw_token)
-                if token not in postings:
+                keys = _posting_candidates(raw_token, postings)
+                if not keys:
+                    orphan_tokens.append(raw_token)
                     continue
-                token_idf = idf.get(token, idf.get(raw_token, 1.0))
-                for entry in postings[token]:
-                    if not (isinstance(entry, list) and len(entry) >= 2):
+                # idf of the strongest matching key (pre-fix behavior for
+                # ordinary >= 3-letter queries: idf.get(stem, idf.get(raw))).
+                matched_idfs.append(max(idf.get(k, 1.0) for k in keys))
+                for token in keys:
+                    token_idf = idf.get(token, 1.0)
+                    for entry in postings[token]:
+                        if not (isinstance(entry, list) and len(entry) >= 2):
+                            continue
+                        rid, tf = int(entry[0]), float(entry[1])
+                        doc_len = doc_lengths[rid] if rid < len(doc_lengths) else avg_doc_length
+                        k1, b = 1.5, 0.75
+                        tf_comp = (tf * (k1 + 1)) / (tf + k1 * (1 - b + b * doc_len / avg_doc_length))
+                        scores[rid] = scores.get(rid, 0.0) + token_idf * tf_comp
+
+            if orphan_tokens:
+                # AMUX-20 surface pass: tokens the index build digitized or
+                # length-truncated out of the postings (MI, PE, PT, A1c)
+                # are recovered from the row's indexed name text and
+                # friendly display, which carry them verbatim ('Acute
+                # Myocardial Infarction (MI)'). A row matches when its
+                # tokenized surfaces contain EVERY query token —
+                # full-query coverage keeps the pass precise. Scoring
+                # mirrors a tf=1 BM25 hit with max idf as the rarity
+                # proxy: deterministic, model-free, and lands in the same
+                # normalization pipeline as posting hits.
+                orphan_idf = max(idf.values(), default=1.0)
+                matched_idfs.extend([orphan_idf] * len(orphan_tokens))
+                posting_rids = set(scores)
+                orphan_touched: set[int] = set()
+                k1, b = 1.5, 0.75
+                q_token_set = set(query_tokens)
+                names_raw = index.get("names") or []
+                typed_orphans = [_typed_by_lower.get(t, t) for t in orphan_tokens]
+                for rid in range(max(len(names_raw), len(rid_to_friendly))):
+                    name_raw = names_raw[rid] if rid < len(names_raw) else ""
+                    friendly = rid_to_friendly[rid] if rid < len(rid_to_friendly) else ""
+                    if not (name_raw or friendly):
                         continue
-                    rid, tf = int(entry[0]), float(entry[1])
+                    # Cheap substring prefilter before tokenizing — a row
+                    # whose combined surfaces don't even contain each query
+                    # token as a substring cannot cover the token set.
+                    # (Plain lower(); the exact coverage check below
+                    # applies the full accent-folding tokenizer.)
+                    combined = f"{name_raw} {friendly}"
+                    low = combined.lower()
+                    if not all(t in low for t in q_token_set):
+                        continue
+                    # Token coverage over the indexed name document AND
+                    # the friendly display — the two surfaces a row is
+                    # known by. (Space separator: no token can span it.)
+                    if not q_token_set <= set(_query_tokens(combined)):
+                        continue
                     doc_len = doc_lengths[rid] if rid < len(doc_lengths) else avg_doc_length
-                    k1, b = 1.5, 0.75
-                    tf_comp = (tf * (k1 + 1)) / (tf + k1 * (1 - b + b * doc_len / avg_doc_length))
-                    scores[rid] = scores.get(rid, 0.0) + token_idf * tf_comp
+                    tf_comp = (k1 + 1) / (1 + k1 * (1 - b + b * doc_len / avg_doc_length))
+                    # Acronym corroboration: an orphan token typed with
+                    # casing that appears in the surface as typed or fully
+                    # uppercased ('(MI)', 'Prothrombin Time (PT) Test',
+                    # 'HbA1c') is the sense the user typed; plain-word hits
+                    # ('Mi-2 Ab', 'New Pt 10mins') keep the base score and
+                    # rank below.
+                    cased_hits = max(
+                        _cased_token_hits(typed_orphans, name_raw),
+                        _cased_token_hits(typed_orphans, friendly),
+                    )
+                    boost = 1.0 + 0.5 * cased_hits
+                    scores[rid] = scores.get(rid, 0.0) + (
+                        orphan_idf * tf_comp * len(orphan_tokens) * boost
+                    )
+                    orphan_touched.add(rid)
+            else:
+                orphan_touched = set()
+            # Rows scored ONLY by the orphan pass (no posting matched the
+            # query): their evidence is substring-level surface coverage,
+            # not a term match — graded below (QC1-T3: 'MS' hits
+            # '(0.58-0.68 MS)' microsphere notation and 'Morphine'
+            # substrings; without the cap these graded 'certain').
+            if orphan_tokens:
+                orphan_only_rids = orphan_touched - posting_rids
+            else:
+                orphan_only_rids = set()
 
             # Hoist the IDF denominator out of the per-result loop — it depends
-            # only on query_tokens and idf, both of which are constant across
-            # the top-N results. Previously recomputed once per result.
-            idf_denom = sum(idf.get(_stem_token(t), idf.get(t, 1.0)) for t in query_tokens) * 2.5 + 0.001
-            for rid, score in sorted(scores.items(), key=lambda x: -x[1])[:fetch_count]:
+            # only on the idfs used above, constant across the top-N results.
+            idf_denom = sum(matched_idfs) * 2.5 + 0.001
+            q_key = _surface_key(query)
+            name_list = index.get("names") or []
+
+            # Default-arg binding: these closures must not capture the
+            # category-loop variables (B023).
+            def _row_exact(
+                rid: int,
+                display: str,
+                q_key: str = q_key,
+                name_list: list = name_list,
+            ) -> bool:
+                """AMUX-18: exact surface = the query normalized equals
+                EITHER the row's indexed name document ('Tylenol', the
+                synonym the postings matched) or its friendly display."""
+                if _surface_key(display) == q_key:
+                    return True
+                return (
+                    rid < len(name_list)
+                    and bool(name_list[rid])
+                    and _surface_key(name_list[rid]) == q_key
+                )
+
+            def _row_rank(
+                item: tuple[int, float],
+                _exact=_row_exact,
+                _codes: list = rid_to_code,
+                _friendly: list = rid_to_friendly,
+                _q_key: str = q_key,
+            ) -> tuple[bool, float, int, str]:
+                """AMUX-18 (+ unified tie-break): exact surface match
+                first, then BM25 score, then surface edit distance, then
+                code — a row literally named 'Tylenol' wins the tf=1 tie
+                against longer combination-product rows, and among
+                equal-score rows the closest surface text wins,
+                deterministically."""
+                rid, score = item
+                code = _codes[rid] if rid < len(_codes) else str(rid)
+                display = _friendly[rid] if rid < len(_friendly) else code
+                return (
+                    not _exact(rid, display),
+                    -score,
+                    _surface_distance(_q_key, display),
+                    str(code),
+                )
+
+            for rid, score in sorted(scores.items(), key=_row_rank)[:fetch_count]:
                 code = rid_to_code[rid] if rid < len(rid_to_code) else str(rid)
                 display = rid_to_friendly[rid] if rid < len(rid_to_friendly) else code
                 sys_name = (rid_to_system[rid] if rid < len(rid_to_system) else "").upper()
                 source = _SYSTEM_LABELS_REVERSE.get(sys_name, sys_name)
                 normalized = min(score / idf_denom, 1.0)
+                row_exact = _row_exact(rid, display)
+                # Orphan-pass-only rows (no posting matched the query)
+                # cap at 'probable': substring surface coverage is weaker
+                # evidence than a posting match, and the max-idf proxy
+                # inflates the normalized score (QC1-T3). Exact-surface
+                # rows are exempt — the surface IS the query.
+                grade = _score_to_grade(normalized)
+                if (
+                    rid in orphan_only_rids
+                    and grade == "certain"
+                    and not row_exact
+                ):
+                    grade = "probable"
                 results.append(SearchResult(
                     code=str(code), source=source, display=display,
-                    score=round(normalized, 4), match_grade=_score_to_grade(normalized),
-                    category=category,
+                    score=round(normalized, 4), match_grade=grade,
+                    category=category, _exact_surface=row_exact,
                 ))
 
-        results.sort(key=lambda r: r.score, reverse=True)
+        # AMUX-18 (+ unified tie-break): exact surface matches first across
+        # categories too, then score, then surface edit distance, then code
+        # — fully deterministic ordering, identical to the semantic path.
+        _q_key_all = _surface_key(query)
+        results.sort(
+            key=lambda r: (
+                not r._exact_surface,
+                -r.score,
+                _surface_distance(_q_key_all, r.display),
+                r.code,
+            )
+        )
         return self._filter_by_source(results, sources)[:count]
 
     def semantic(
@@ -1973,11 +2274,28 @@ class SearchService:
         for r in raw:
             sys_name = r.get("system", "").upper()
             source = _SYSTEM_LABELS_REVERSE.get(sys_name, sys_name)
+            display = r["display"]
+            q_key = _surface_key(query)
             results.append(SearchResult(
-                code=r["code"], source=source, display=r["display"],
+                code=r["code"], source=source, display=display,
                 score=r["score"], match_grade=r["match_grade"],
                 category=r.get("category", ""),
+                _exact_surface=_surface_key(display) == q_key,
             ))
+        # Unified tie-break (AMUX-18 follow-up): exact surface first, then
+        # cosine score, then surface edit distance, then code — the SAME
+        # ordering contract as the lexical path, so equal-cosine rows
+        # resolve by closest surface text instead of FAISS/category
+        # iteration order.
+        _q_key = _surface_key(query)
+        results.sort(
+            key=lambda r: (
+                not r._exact_surface,
+                -r.score,
+                _surface_distance(_q_key, r.display),
+                r.code,
+            )
+        )
         return self._filter_by_source(results, sources)[:count]
 
     def hybrid(
@@ -1988,54 +2306,125 @@ class SearchService:
         count: int = 20,
         result_types: str | list[str] | None = None,
     ) -> list[SearchResult]:
-        """BM25 retrieve + SapBERT re-rank (~110ms on CPU).
+        """RRF fusion over the UNION of per-system candidates (AMUX-46).
 
-        The BM25 candidate pool is capped at ``max(50, count)`` — the former
-        hard cap of 50 silently truncated hybrid(count=N>50) requests (QC-138).
+        Replaces the cascade (BM25 pool -> SapBERT re-rank), where lexical
+        recall was a hard gate: BM25's tf-tie lottery could drop the
+        semantic best row ('lisinopril 5mg' -> 5mg tablet, 0.93 cosine)
+        from the pool entirely, making it invisible to hybrid. Either
+        system can now carry a row.
 
-        ``result_types`` restricts the category indexes searched in both the
-        BM25 stage and the semantic-only fallback (see
-        ``_restrict_categories``).
+        Ranking: reciprocal-rank fusion, sum of 1/(HYBRID_FUSION_K + rank)
+        per system over the union of the per-system top-K (K =
+        HYBRID_CANDIDATE_DEPTH). k=10 won the offline benchmark
+        (benchmarks/fusion_benchmark.py): hit@1 53.1% / hit@5 71.9% /
+        FP@1 3.1% vs cascade 46.9% / 62.5% / 9.4% on the golden families;
+        weighted-sum variants lost on precision (FP 53-59%).
+
+        Confidence (match_grade): the fused RRF score is a RANK signal,
+        not a confidence signal (measured: true/wrong top-1 score medians
+        overlap). Grades therefore require system concordance plus the
+        underlying calibrated cosine:
+          certain  — row in BOTH systems' candidates AND cosine >= 0.92
+          probable — cosine >= 0.75, or a lexical exact-surface match
+                     (AMUX-18) at lexical rank <= 3
+          possible — otherwise
+        Lexical-only rows can never be 'certain' (single-evidence
+        ceiling): lexical's old precision veto, lost when the pool gate
+        went away, returns as a grade gate. 'score' stays the calibrated
+        underlying value (cosine when the semantic system saw the row,
+        else normalized BM25) so wire consumers see [0,1] confidences.
+
+        ``result_types`` restricts the categories searched (both systems).
         """
         _validate_query(query)
         _validate_count(count)
-        self._ensure_bm25()
-        engine = self._ensure_semantic()
         categories = self._restrict_categories(
             self._resolve_categories(sources), result_types
         )
         if not categories:
             return []
+        self._ensure_bm25()
+        engine = self._ensure_semantic()
 
-        # Stage 1: BM25 retrieve
+        depth = max(HYBRID_CANDIDATE_DEPTH, count)
         bm25_results = self.lexical(
             query,
             sources=sources,
-            count=min(count * 3, max(50, count)),
+            count=depth,
             result_types=result_types,
         )
-        if not bm25_results:
-            # Fall back to semantic-only
-            return self.semantic(
-                query, sources=sources, count=count, result_types=result_types
-            )
+        sem_raw = engine.search(query, categories=categories, top_k=depth)
 
-        # Stage 2: SapBERT re-rank
-        candidates = [{"code": r.code, "system": r.source, "display": r.display} for r in bm25_results]
-        reranked = engine.rerank(query, candidates, top_k=count)
-
-        cat_map = {(r.source, r.code): r.category for r in bm25_results}
-
-        results: list[SearchResult] = []
-        for r in reranked:
+        # Per-system evidence keyed by (source, code). setdefault keeps
+        # the FIRST (best-ranked) occurrence of a duplicate identity — a
+        # code indexed under two categories must not lose its better
+        # rank to the later, worse one (QC1-S1).
+        lex_ev: dict[tuple, dict] = {}
+        for rank, r in enumerate(bm25_results, start=1):
+            lex_ev.setdefault((r.source, r.code), {
+                "rank": rank, "score": r.score, "display": r.display,
+                "category": r.category, "exact": r._exact_surface,
+            })
+        sem_ev: dict[tuple, dict] = {}
+        for rank, r in enumerate(sem_raw, start=1):
             sys_name = r.get("system", "").upper()
             source = _SYSTEM_LABELS_REVERSE.get(sys_name, sys_name)
-            cat = cat_map.get((source, r["code"]), "")
-            results.append(SearchResult(
-                code=r["code"], source=source, display=r["display"],
-                score=r["score"], match_grade=r["match_grade"],
-                category=cat,
-            ))
+            sem_ev.setdefault((source, r["code"]), {
+                "rank": rank, "cos": float(r["score"]),
+                "display": r["display"], "category": r.get("category", ""),
+            })
+
+        union = set(lex_ev) | set(sem_ev)
+        q_key = _surface_key(query)
+        fused: list[tuple[float, SearchResult]] = []
+        for ident in union:
+            lx = lex_ev.get(ident)
+            se = sem_ev.get(ident)
+            rrf = (
+                (1.0 / (HYBRID_FUSION_K + lx["rank"]) if lx else 0.0)
+                + (1.0 / (HYBRID_FUSION_K + se["rank"]) if se else 0.0)
+            )
+            display = (lx or se)["display"]
+            cos = se["cos"] if se is not None else 0.0
+            # AMUX-18 exactness as lexical defined it (display OR indexed
+            # name document equals the query) — reusing the carried flag,
+            # not re-deriving a weaker display-only check (QC1-A4).
+            exact = bool(lx and lx["exact"])
+            # Agreement-aware grade guard (see docstring).
+            if lx is not None and se is not None and cos >= GRADE_CERTAIN_COSINE:
+                grade = "certain"
+            elif cos >= GRADE_PROBABLE_COSINE or (
+                lx is not None and lx["rank"] <= 3 and exact
+            ):
+                grade = "probable"
+            else:
+                grade = "possible"
+            score = cos if se is not None else (lx["score"] if lx else 0.0)
+            fused.append(
+                (rrf, SearchResult(
+                    code=ident[1], source=ident[0], display=display,
+                    score=round(score, 4), match_grade=grade,
+                    category=(lx or se)["category"],
+                    _exact_surface=exact,
+                ))
+            )
+
+        # Deterministic order: RRF desc, then the unified AMUX-49 key
+        # (exact surface, surface distance, code, source). The trailing
+        # source term makes the key a total order — two rows colliding
+        # on code across systems must not fall back to hash-seed-dependent
+        # set iteration order (QC1-S2).
+        fused.sort(
+            key=lambda t: (
+                -t[0],
+                not t[1]._exact_surface,
+                _surface_distance(q_key, t[1].display),
+                t[1].code,
+                t[1].source,
+            )
+        )
+        results = [r for _, r in fused]
         return self._filter_by_source(results, sources)[:count]
 
     def search(
@@ -2113,8 +2502,8 @@ def get_search_service() -> SearchService:
     global _service
     if _service is None:
         _service = SearchService(
-            search_index_dir=os.getenv("MEDTERM4DS_SEARCH_INDEX_DIR", DEFAULT_SEARCH_INDEX_DIR),
-            embedding_model_dir=os.getenv("MEDTERM4DS_EMBEDDING_MODEL_DIR", DEFAULT_EMBEDDING_MODEL_DIR),
+            search_index_dir=env_pin("MEDTERM4DS_SEARCH_INDEX_DIR"),
+            embedding_model_dir=env_pin("MEDTERM4DS_EMBEDDING_MODEL_DIR"),
             canonical_path=os.getenv("MEDTERM4DS_CANONICAL_PATH", DEFAULT_CANONICAL_VALUE_SETS_PATH),
             canonical_concepts_index=os.getenv("MEDTERM4DS_CANONICAL_INDEX", DEFAULT_CANONICAL_CONCEPTS_INDEX),
             canonical_concepts_meta=os.getenv("MEDTERM4DS_CANONICAL_META", DEFAULT_CANONICAL_CONCEPTS_META),
@@ -2135,8 +2524,8 @@ def configure_search_service(
     """
     global _service
     _service = SearchService(
-        search_index_dir=search_index_dir or os.getenv("MEDTERM4DS_SEARCH_INDEX_DIR", DEFAULT_SEARCH_INDEX_DIR),
-        embedding_model_dir=embedding_model_dir or os.getenv("MEDTERM4DS_EMBEDDING_MODEL_DIR", DEFAULT_EMBEDDING_MODEL_DIR),
+        search_index_dir=search_index_dir or env_pin("MEDTERM4DS_SEARCH_INDEX_DIR"),
+        embedding_model_dir=embedding_model_dir or env_pin("MEDTERM4DS_EMBEDDING_MODEL_DIR"),
     )
     return _service
 
@@ -2162,7 +2551,7 @@ def search(
     Parameters
     ----------
     query : Free text to search for (e.g., "high blood sugar").
-    mode : 'lexical' (BM25, ~1ms), 'semantic' (SapBERT, ~100ms), or 'hybrid' (cascade, ~110ms).
+    mode : 'lexical' (BM25, ~1ms), 'semantic' (SapBERT, ~100ms), or 'hybrid' (RRF union fusion of both systems, AMUX-46).
     sources : Restrict to specific source systems (e.g., ["SNOMEDCT_US"]). None = all.
     count : Maximum results to return.
     engine : Optional terminology engine. When provided, legacy-mode result

@@ -7,6 +7,81 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.9] - 2026-11-03
+
+### Changed
+
+- **Hybrid search is now reciprocal-rank fusion over the UNION of both
+  systems' candidates** (AMUX-46). The previous cascade (BM25 pool →
+  SapBERT re-rank) made lexical recall a hard gate: BM25's tf-tie
+  lottery could drop the semantic best row ('lisinopril 5mg' → the
+  5mg-tablet row at 0.93 cosine) from the pool entirely. Ranking is now
+  `sum 1/(10 + rank)` per system over the union of the per-system
+  top-100; ties break by the unified surface key. Confidence
+  (`match_grade`) is agreement-aware: `certain` requires BOTH systems to
+  carry the row AND cosine ≥ 0.92; `probable` requires cosine ≥ 0.75 or
+  a lexical exact-surface match at lexical rank ≤ 3; lexical-only rows
+  can never be `certain` (single-evidence ceiling). Benchmark evidence:
+  `benchmarks/results_fusion_benchmark.md` (hit@1 53.1% / hit@5 71.9% /
+  FP@1 3.1% vs cascade 46.9% / 62.5% / 9.4%; weighted-sum fusion
+  rejected — false positives 53–59%). The `score` field stays the
+  calibrated underlying value (cosine when semantic saw the row, else
+  normalized BM25) — two scales, documented per-row by `match_grade`.
+- **Lexical ranking gains an exact-surface tier and unified
+  surface-distance tie-break** (AMUX-18/49), and **two-character
+  acronyms and alphanumeric tokens are searchable** (AMUX-20): tokens
+  the index build digitized out of the postings (MI, PE, PT, HbA1c) are
+  recovered by a surface pass over indexed names. Rows matched ONLY by
+  that pass cap at `probable` — substring coincidences ('MS' matching
+  'LC/MS/MS' mass-spec notation) must never grade `certain`.
+- **Machine-specific path defaults are gone; one acquisition story**
+  (AMUX-44). `MEDTERM4DS_CACHE_DIR`-derived defaults resolve through
+  `medterm4ds.core.paths` (single source; `~` in env pins expands);
+  unset pins mean first-use auto-provisioning from the terminology
+  release, and the FHIR startup banner now says so instead of telling
+  operators to fix a 503 that would not happen.
+
+### Fixed
+
+- **Hybrid determinism**: the fused sort key now ends with `source`,
+  making it a total order — code collisions across systems no longer
+  resolve by hash-seed-dependent iteration order. Duplicate identities
+  within one system's candidate list keep their best (first) rank.
+- **Demo Space hardening**: the rate limiter keys on the
+  proxy-appended `x-forwarded-for` hop (the first hop is
+  client-supplied and was trivially rotatable to bypass the limit) with
+  a key cap against memory exhaustion; a failed model warm-up now
+  returns HTTP 503 from `/health` (previously 200 forever, invisible to
+  health checks); `POST /fhir` batch envelopes join the model-warm
+  gate; the demo web page reports transport errors (429/403/5xx) as
+  errors instead of "no results", and its request abort/timeout wiring
+  actually takes effect.
+- **Public lookup DB gate hardened** (`deploy/scripts/
+  verify_lookup_db.py`): the SAB universe must equal the public source
+  list (CPT under any label fails), `mrsat` is scanned, 5-digit
+  CPT-shaped codes under HCPCS must be zero, unexpected tables fail,
+  and per-source row floors make a truncated extract fail loudly. The
+  public export builds atomically (`.building` → rename) so an
+  interrupted build can never replace a verified DB. (Empirically
+  verified: UMLS 2026AA's HCPCS carries zero CPT Level I content — only
+  Level II alpha codes and 2-char modifier codes.)
+
+### Added
+
+- **HF Spaces terminology demo** (`deploy/hf-spaces/terminology-demo/`)
+  with a live demo page on the website: side-by-side search-mode
+  comparison, clinical-note annotation, driven entirely by documented
+  FHIR R4 operations. Public lookup export tooling
+  (`deploy/scripts/export_lookup_db_public.py`) builds the
+  CPT-excluded, open-licensed dataset for it.
+
+### Known limitations
+
+- Brand-name queries ('Tylenol') abstain on the atom surface — alias
+  vectors live on the canonical surface; `canonical()` mode resolves
+  them. Acronym recall for some expansions (ACS, eGFR → renal GFR labs)
+  is bounded by the release index content, not by ranking.
+
 ## [0.0.8] - 2026-10-31
 
 ### Changed

@@ -31,6 +31,7 @@ from medterm4ds.apps._asyncutil import run_db as _run_db
 from medterm4ds.core.config import local_duckdb_config
 from medterm4ds.core.env import env_bool, env_int, env_str
 from medterm4ds.core.models import CodeRef
+from medterm4ds.core.paths import DEFAULT_FHIR4PX_BASELINE_DIR, cache_dir, env_pin
 from medterm4ds.engines.duckdb import LocalDuckDBEngine
 from medterm4ds.engines.fhir import (
     SYSTEM_TO_FHIR_URI,
@@ -92,7 +93,6 @@ MAX_EXTRACT_TEXT_CHARS = int(os.getenv("MEDTERM4DS_MAX_EXTRACT_TEXT_CHARS", "500
 # against reflected XSS in EHR clients that render OperationOutcome.diagnostics
 # as HTML, and against log-injection via control chars.
 MAX_ERROR_FIELD_CHARS = 256
-DEFAULT_SEARCH_INDEX_DIR = "/mnt/d/fhir4px-model/dist/naming_bm25"
 
 
 TRUNCATION_EXT_URL = "http://hl7.org/fhir/StructureDefinition/valueset-toocostly"
@@ -563,7 +563,12 @@ class FhirApiSettings:
     """FHIR facade settings."""
     db_path: Path
     memory_profile: str = "fast"
-    search_index_dir: str = DEFAULT_SEARCH_INDEX_DIR
+    # AMUX-44: None = unset -> the search service's release-aware 'auto'
+    # resolution runs and provisions on first use; an explicit
+    # MEDTERM4DS_SEARCH_INDEX_DIR value pins the layout (used as-is, never
+    # auto-provisioned). The old /mnt/d/fhir4px-model default silently
+    # defeated release resolution.
+    search_index_dir: str | None = None
     prepare_cache: bool = True
     # QC-391 (MEDIUM): single source of truth per GLOBAL_RULES — the FHIR
     # surface had a hardcoded 8-source tuple omitting ATC (the QC-341
@@ -595,7 +600,7 @@ class FhirApiSettings:
         return cls(
             db_path=Path(db_path),
             memory_profile=os.getenv("MEDTERM4DS_MEMORY_PROFILE", "fast"),
-            search_index_dir=os.getenv("MEDTERM4DS_SEARCH_INDEX_DIR", DEFAULT_SEARCH_INDEX_DIR),
+            search_index_dir=env_pin("MEDTERM4DS_SEARCH_INDEX_DIR"),
             # QC-390: same env contract as the MCP server (apps/mcp.py
             # McpSettings.from_env) so operators tune both surfaces once.
             sources=normalize_sources(os.getenv("MEDTERM4DS_SOURCES")),
@@ -809,7 +814,7 @@ def _terminology_lexical_dir() -> Path | None:
     return term.lexical if term.lexical.is_dir() else None
 
 
-def _load_bm25_indexes(search_dir: str) -> dict[str, Any]:
+def _load_bm25_indexes(search_dir: str | None) -> dict[str, Any]:
     """Probe the BM25 search index directory and report what's available.
 
     Does NOT load indexes into a module global — services.search.SearchService
@@ -817,11 +822,28 @@ def _load_bm25_indexes(search_dir: str) -> dict[str, Any]:
     surfaces). This function just produces a summary dict so the startup
     banner can tell operators what's available and what's missing.
 
-    Terminology-layout aware: when the legacy dir is absent but the
-    ``fhir4ds/terminology`` release serves a lexical family locally,
-    report from the release instead of warning (the fresh-install path).
+    search_dir None (AMUX-44) means the operator did not pin
+    MEDTERM4DS_SEARCH_INDEX_DIR: report from the terminology release when
+    present (the fresh-install first-use path provisions it), else from the
+    cache-derived default lexical dir. An explicit dir is reported as-is.
     """
     expected = ("condition", "lab", "medication", "procedure", "vaccine", "body_structure")
+    if search_dir is None:
+        term_dir = _terminology_lexical_dir()
+        if term_dir is not None:
+            loaded = [c for c in expected if (term_dir / f"{c}.json").exists()]
+            if loaded:
+                logger.info(
+                    "  BM25 from terminology release: %s (%s)",
+                    ", ".join(loaded), term_dir,
+                )
+                return {
+                    "loaded": loaded,
+                    "missing": [c for c in expected if c not in loaded],
+                    "flat_format": [],
+                    "dir": str(term_dir),
+                }
+        search_dir = str(cache_dir() / "lexical")
     search_path = Path(search_dir)
     if not search_path.is_dir():
         term_dir = _terminology_lexical_dir()
@@ -890,7 +912,21 @@ class _PatientFriendlyCache:
         exist, silently disabling patient-friendly enrichment for three
         code systems on the $lookup surface.
         """
-        baseline = Path(os.getenv("MEDTERM4DS_FHIR4PX_BASELINE", "/mnt/d/medterm4ds/reports/fhir4px"))
+        # AMUX-44: env var -> cache-derived reports root -> loud WARNING when
+        # missing (the historical /mnt/d default silently disabled patient-
+        # friendly enrichment everywhere except the author's machine).
+        baseline = Path(
+            env_pin("MEDTERM4DS_FHIR4PX_BASELINE")
+            or DEFAULT_FHIR4PX_BASELINE_DIR
+        )
+        if not baseline.is_dir():
+            logger.warning(
+                "Patient-friendly baseline dir %s does not exist - "
+                "$lookup patient-friendly enrichment will be OFF. Set "
+                "MEDTERM4DS_FHIR4PX_BASELINE to the directory containing "
+                "patient_friendly_<source>.json to enable it.",
+                baseline,
+            )
         sources = (
             "snomedct_us", "rxnorm", "icd10cm", "icd10pcs",
             "lnc", "cpt", "hcpcs", "cvx",
@@ -949,11 +985,21 @@ def _log_startup_banner(
             "  BM25 search indexes: NONE loaded (looked in %s)",
             bm25_summary.get("dir"),
         )
-        logger.warning(
-            "    → $search lexical/hybrid will return 503. "
-            "Set MEDTERM4DS_SEARCH_INDEX_DIR to the directory containing "
-            "<category>_bm25.json files.",
-        )
+        # QC2-A11: distinguish the two contracts. UNPINNED (no env): the
+        # $search gate auto-provisions the terminology release on first
+        # request — no operator action, no 503. PINNED: the gate 503s
+        # until the operator points the pin at real files.
+        if env_pin("MEDTERM4DS_SEARCH_INDEX_DIR") is None:
+            logger.info(
+                "    → no BM25 dir pinned: $search lexical/hybrid will "
+                "auto-provision the terminology release on first use",
+            )
+        else:
+            logger.warning(
+                "    → $search lexical/hybrid will return 503. "
+                "Set MEDTERM4DS_SEARCH_INDEX_DIR to the directory containing "
+                "<category>_bm25.json files.",
+            )
     if bm25_missing and bm25_loaded:
         logger.info("    (missing categories: %s)", tuple(bm25_missing))
 
@@ -984,10 +1030,20 @@ def _log_startup_banner(
             type(sem_error).__name__, sem_error,
         )
     else:
-        logger.warning(
-            "  SapBERT embedding model: not found. "
-            "Set MEDTERM4DS_EMBEDDING_MODEL_DIR to enable $search semantic mode.",
-        )
+        # QC2-A11: unpinned means first-use provisioning resolves the
+        # model from the terminology release; only a pinned-but-missing
+        # dir needs operator action.
+        if env_pin("MEDTERM4DS_EMBEDDING_MODEL_DIR") is None:
+            logger.info(
+                "  SapBERT embedding model: not loaded yet. "
+                "Unpinned → $search semantic mode will provision from the "
+                "terminology release on first use.",
+            )
+        else:
+            logger.warning(
+                "  SapBERT embedding model: not found. "
+                "Set MEDTERM4DS_EMBEDDING_MODEL_DIR to enable $search semantic mode.",
+            )
 
     pf_loaded = pf_summary.get("loaded", [])
     pf_missing = pf_summary.get("missing", [])

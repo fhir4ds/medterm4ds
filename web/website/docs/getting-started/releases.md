@@ -4,6 +4,44 @@ title: Releases
 
 This page tracks Medical Terminology for Data Science package releases.
 
+## 0.0.9
+
+Hybrid search fusion + demo Space. No breaking API changes.
+
+Search quality (the headline change):
+
+- **Hybrid mode is reciprocal-rank fusion over the union of both
+  systems' candidates** — either system can now carry a row. The old
+  cascade gated hybrid results behind BM25 recall, hiding the semantic
+  best answer whenever the lexical pool missed it (the
+  'lisinopril 5mg' demo failure). Measured on the golden families:
+  hit@1 53.1% / hit@5 71.9% / false-positive@1 3.1%, vs cascade
+  46.9% / 62.5% / 9.4%.
+- **Match grades are agreement-aware**: `certain` requires both
+  systems plus cosine ≥ 0.92; `probable` requires cosine ≥ 0.75 or a
+  lexical exact-surface match; single-evidence rows can never be
+  `certain`. The fused rank score is a ranking signal, not a
+  confidence — grades come from system concordance.
+- **Acronyms and alphanumeric tokens are searchable** (MI, PE, PT,
+  HbA1c), with an exact-surface tier and a unified surface-distance
+  tie-break across all three modes; substring-only matches cap at
+  `probable`.
+
+Portability (AMUX-44): machine-specific path defaults are gone — one
+acquisition story via `medterm4ds.core.paths`, `~` expands in env pins,
+and unset pins mean first-use auto-provisioning from the terminology
+release (the startup banner says so instead of prescribing a fix for a
+503 that no longer happens).
+
+New: a live **HF Spaces terminology demo** with side-by-side
+search-mode comparison and clinical-note annotation, driven entirely by
+documented FHIR R4 operations — see
+[the demo page](../examples/terminology-search.mdx). Demo hardening in
+this release: proxy-trustworthy rate limiting, health checks that fail
+visibly when warm-up fails, and hardened license gates on the public
+lookup dataset (CPT exclusion verified by content scan, not just
+source labels).
+
 ## 0.0.8
 
 Terminology artifact repoint — the search stack now serves from the

@@ -11,12 +11,13 @@ facade needs for runtime operations:
 
 Usage:
   python3 deploy/scripts/export_lookup_db.py
-  python3 deploy/scripts/export_lookup_db.py --db /mnt/d/medterm4ds/data/umls_current.duckdb --output /tmp/lookup.duckdb
+  python3 deploy/scripts/export_lookup_db.py --db $MEDTERM4DS_DB --output /tmp/lookup.duckdb
 """
 
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 import time
 from pathlib import Path
@@ -31,9 +32,13 @@ SOURCES = (
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--db", default="/mnt/d/medterm4ds/data/umls_current.duckdb")
+    # AMUX-44: no machine-specific default — MEDTERM4DS_DB env or explicit
+    # --db (the old /mnt/d default silently broke on every other machine).
+    parser.add_argument("--db", default=os.environ.get("MEDTERM4DS_DB"))
     parser.add_argument("--output", default="lookup.duckdb")
     args = parser.parse_args()
+    if not args.db:
+        parser.error("--db is required (or set MEDTERM4DS_DB)")
 
     source_db = Path(args.db)
     output_db = Path(args.output)

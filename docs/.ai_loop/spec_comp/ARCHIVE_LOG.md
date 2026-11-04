@@ -141,3 +141,83 @@
   skipped / 2 xfailed (27:33); unit 850 passed / 11 skipped (5:40);
   ruff clean + formatted.
 - Zero production changes (findings-only; fixes left to a fixbatch).
+
+## 2026-11-01 — TS-109 terminology repoint LIVE integration (worktree maint/spec-comp-20261101)
+
+- Surface: the repoint (cce25c6) shipped with mocked-download unit
+  tests only; no conformance test exercised the PUBLISHED
+  fhir4ds/terminology repo through the runtime's own resolver. This
+  sweep pins the live contract against release 2026.10.31.1 (the
+  current published tag — NEWER than the handoff's v2026.11.1).
+- RESULT: ZERO FINDINGS — controls-only (21st clean surface). 5/5
+  live probes PASS (T6 skipped: default release == live release):
+  fingerprint recomputes to esp_468d01ebbab03648 from the shipped
+  model; manifest single-stamp across families; lexical pairing
+  exact under the new filename contract; semantic pairing exact (6
+  categories); canonical JSON-only with value_sets == anchors ==
+  manifest rows. OBSERVATION (not a defect): the 2026.10.31.1
+  manifest's lexical family declares 'records' where v2026.11.1
+  declared 'rows' — manifest-shape drift worth a changelog note from
+  the model team.
+- Network-gated + cache-isolated (own /tmp cache root; operator
+  cache untouched).
+- Gates (fresh, serial): conformance 8110 passed / 0 failed / 20
+  skipped / 2 xfailed (25:48); unit 860 passed / 11 skipped (7:33);
+  ruff clean + formatted.
+- Zero production changes. No registry edit (findings-only run).
+## 2026-11-01 — TS-110 canonical card fidelity on terminology layout, LIVE (worktree maint/spec-comp-20261101b)
+
+- Surface: the 54c49f2 canonical_batch card-field fallbacks were
+  pinned only at unit level (3-concept synthetic release); never
+  probed against the PUBLISHED release end-to-end.
+- RESULT: ZERO FINDINGS — controls-only (22nd clean surface). 6/6
+  live probes PASS against release 2026.10.31.1: metformin card
+  byte-equal to the live value_sets row; condition/lab cards
+  complete; result_types + sources filters hold; batch/single top-1
+  aligned. OBSERVATIONS (documented in-test, not defects): filtered
+  queries over-fetch only count*5 (min 50) neighbors — window
+  starvation is possible in principle (verified benign live: the
+  starved 'diabetes'→VAL-MED neighbor scores 0.43, below the 0.70
+  floor that makes empty filtered results trustworthy).
+- Gates (fresh, serial): conformance 8111 / 0 / 19 + 2 xfailed
+  (24:30); unit 860 / 11 (7:34); ruff clean + formatted.
+## 2026-11-01 — TS-111 cache-refresh --terminology live + refusal symmetry (worktree maint/spec-comp-20261101c)
+
+- Surface: the cache-refresh --terminology migration path (rmtree +
+  atomic re-download + summary) shipped in the repoint with NO test
+  at any level — unit or conformance.
+- RESULT: ZERO FINDINGS — controls-only (23rd clean surface). 5/5
+  live probes PASS: refresh downloads the default release with full
+  summary; resolvable post-refresh; stale/corrupt family files
+  REPLACED (rmtree semantics verified by byte-size restore);
+  operator-managed refusal holds for default AND explicit
+  terminology refreshes; MEDTERM4DS_LAYOUT=legacy disables with a
+  named error; CLI round-trip exit 0 with API-matching JSON. DESIGN
+  FACT pinned: operator-managed refusal fires BEFORE the layout
+  check — pipeline-managed files are never deletable by
+  cache-refresh under MEDTERM4DS_CACHE_DIR.
+- PROCESS LESSON (recorded in-test): the first in-process draft
+  reloaded search/artifact_cache modules and its HOME monkeypatch
+  polluted subsequent suite files (19 cross-file failures that
+  passed in isolation — ordering pollution, not contention). Fixed
+  by running every probe in a subprocess with isolated env; probes
+  that mutate module state must never reload in-process.
+- Gates (fresh, serial): conformance 8110 / 0 / 19 + 2 xfailed
+  (32:40); unit 860 / 11 (8:22); ruff clean + formatted.
+## 2026-11-02 — TS-112 $search first-use provisioning LIVE (worktree maint/spec-comp-20261102)
+
+- Surface: the 2dfca85 fix (first-use $search provisioning +
+  terminology-aware availability gates) shipped with FAKE-service
+  tests only. First live end-to-end verification: fresh HOME, no
+  pins, terminology default.
+- RESULT: ZERO FINDINGS — controls-only (24th clean surface). 2/2
+  live probes PASS: first lexical $search provisions the full
+  release in-call (~150s including download) and serves 200; hybrid
+  follows 200 warm. Pinned empty dir keeps the 503 contract (no
+  auto-provision under operator pins). PROBE GOTCHA recorded:
+  settings.search_index_dir must default (env-resolved) — an
+  explicitly passed dir IS a pin and legitimately keeps 503 (my
+  first probe defeated itself that way).
+- Gates (fresh, serial): conformance 8107 / 0 / 19 + 2 xfailed
+  (27:49); unit 860 / 11 (16:23); ruff clean + formatted.
+- Zero production changes. No registry edit.

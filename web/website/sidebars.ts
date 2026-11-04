@@ -68,6 +68,7 @@ const sidebars: SidebarsConfig = {
       type: 'category',
       label: 'Examples',
       items: [
+        'examples/terminology-search',
         'examples/notebooks/overview',
         {
           type: 'category',

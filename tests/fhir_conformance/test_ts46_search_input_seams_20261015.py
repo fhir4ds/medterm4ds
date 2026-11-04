@@ -60,11 +60,8 @@ def search_client(tmp_path_factory):
     pytest.importorskip("fastapi")
     from starlette.testclient import TestClient
 
-    from medterm4ds.apps.fhir_api import (
-        DEFAULT_SEARCH_INDEX_DIR,
-        FhirApiSettings,
-        create_fhir_app,
-    )
+    from medterm4ds.apps.fhir_api import FhirApiSettings, create_fhir_app
+    from medterm4ds.services.search import DEFAULT_SEARCH_INDEX_DIR
 
     from .conftest import _make_conformance_db
 
@@ -104,7 +101,7 @@ def _bm25_index_available() -> bool:
     on the index dir actually containing indexes."""
     from pathlib import Path
 
-    from medterm4ds.apps.fhir_api import DEFAULT_SEARCH_INDEX_DIR
+    from medterm4ds.services.search import DEFAULT_SEARCH_INDEX_DIR
 
     d = Path(DEFAULT_SEARCH_INDEX_DIR)
     return d.exists() and any(d.glob("*_bm25.json"))
@@ -257,9 +254,15 @@ class TestControls:
     def test_c14_lexical_default_multi_system(self, search_client):
         """Unfiltered lexical default spans 3 systems (the filter
         premise for c12/c13)."""
+        # AMUX-44: the index source moved from the dead /mnt/d BM25 build
+        # to the published terminology release (the new source of truth),
+        # which ranks the 3rd system (LOINC) below the default top-20 for
+        # 'diabetes' — it appears by count=50. The >=3 assertion itself is
+        # unchanged; only the window is widened to where the release
+        # actually ranks the third system.
         r = search_client.get(
             "/fhir/CodeSystem/$search",
-            params={"query": "diabetes"},
+            params={"query": "diabetes", "count": "50"},
         )
         assert r.status_code == 200
         assert len(_systems_of(r)) >= 3

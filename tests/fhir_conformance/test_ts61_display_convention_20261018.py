@@ -79,7 +79,7 @@ def _bm25_index_available() -> bool:
     on the index dir actually containing indexes."""
     from pathlib import Path
 
-    from medterm4ds.apps.fhir_api import DEFAULT_SEARCH_INDEX_DIR
+    from medterm4ds.services.search import DEFAULT_SEARCH_INDEX_DIR
 
     d = Path(DEFAULT_SEARCH_INDEX_DIR)
     return d.exists() and any(d.glob("*_bm25.json"))

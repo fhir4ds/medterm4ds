@@ -172,7 +172,7 @@ def canonical_system_uri(system_uri: str, *, source: str | None = None) -> str:
 
 
 # Lowercase raw UMLS SAB labels stored in patient-friendly JSON artifacts
-# (e.g. /mnt/d/medterm4ds/reports/fhir4px/patient_friendly_*.json) → canonical
+# (patient_friendly_*.json under the MEDTERM4DS_FHIR4PX_BASELINE dir) → canonical
 # internal source name. The patient-friendly `canonical_system` field uses
 # these raw labels (e.g. "icd10", "snomedct_us") rather than the canonical
 # FHIR URI; this map normalizes them before emitting in $lookup responses.

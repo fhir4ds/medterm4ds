@@ -49,7 +49,13 @@ class TestLedgerGuards:
             "### Resolved"
         )[0]
         rows = re.findall(r"^\| [A-Z0-9-]+ \|", open_section, re.M)
-        assert len(rows) <= 110
+        # PIN BUMP 110 → 113 (2026-11-02, merge task on dev): merging
+        # maint/spec-comp-20261010b…20261102 (12 --no-ff merges into dev)
+        # added 11 legitimate new open finding rows (PY1, BL1, BL2, DV1,
+        # EV1, EV2, HY1, HY2, CA1, CA2, CA3), each registered with its
+        # committed suite. No resolved id re-added; growth is visible in
+        # the merge commits a6e0e4d…1a7bc8d.
+        assert len(rows) <= 113
 
     def test_l12_no_duplicate_ids(self):
         """Ids may repeat ACROSS the open table and resolved-mechanism

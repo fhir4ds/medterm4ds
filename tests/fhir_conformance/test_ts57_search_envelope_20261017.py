@@ -52,11 +52,8 @@ def search_client(tmp_path_factory):
     pytest.importorskip("fastapi")
     from starlette.testclient import TestClient
 
-    from medterm4ds.apps.fhir_api import (
-        DEFAULT_SEARCH_INDEX_DIR,
-        FhirApiSettings,
-        create_fhir_app,
-    )
+    from medterm4ds.apps.fhir_api import FhirApiSettings, create_fhir_app
+    from medterm4ds.services.search import DEFAULT_SEARCH_INDEX_DIR
 
     from .conftest import _make_conformance_db
 
@@ -90,7 +87,7 @@ def _bm25_index_available() -> bool:
     on the index dir actually containing indexes."""
     from pathlib import Path
 
-    from medterm4ds.apps.fhir_api import DEFAULT_SEARCH_INDEX_DIR
+    from medterm4ds.services.search import DEFAULT_SEARCH_INDEX_DIR
 
     d = Path(DEFAULT_SEARCH_INDEX_DIR)
     return d.exists() and any(d.glob("*_bm25.json"))
