@@ -2144,7 +2144,9 @@ class SearchService:
                 # that corroborates nothing is dropped and the token
                 # falls through to the orphan surface pass — v2 behavior
                 # for 2-char tokens. Only affects keys v2 could never
-                # have; lowercase-typed tokens corroborate nothing.
+                # have; a lowercase-typed token corroborates only rows
+                # carrying it verbatim-lowercase ('(mi)') or uppercased
+                # ('(MI)') — cased acronyms need cased queries.
                 # CR-001 (review follow-up): the cased 2-char words are
                 # precomputed once per index (same lazy pattern as
                 # _orphan_surfaces_lower) — the per-query corroboration
