@@ -2094,6 +2094,9 @@ class SearchService:
 
             postings = index["postings"]
             idf = index.get("idf", {})
+            # Bound once per category (CR-002 hoist): the 2-char casing
+            # guard and the orphan pass both read the raw name documents.
+            names_raw = index.get("names") or []
             doc_lengths = index.get("doc_lengths", [])
             avg_doc_length = index.get("avg_doc_length", 20.0) or 20.0
             rid_to_code = index.get("rid_to_code", [])
@@ -2142,7 +2145,6 @@ class SearchService:
                 # falls through to the orphan surface pass — v2 behavior
                 # for 2-char tokens. Only affects keys v2 could never
                 # have; lowercase-typed tokens corroborate nothing.
-                names_raw = index.get("names") or []
                 guarded_rids: dict[str, set[int]] = {}
                 for k in list(keys):
                     if len(k) == 2 and k.isalpha():
@@ -2201,7 +2203,6 @@ class SearchService:
                 # fastest, and later checks are skipped entirely.
                 q_tokens = sorted(q_token_set, key=len, reverse=True)
                 q_tokens_rest = q_tokens[1:]
-                names_raw = index.get("names") or []
                 typed_orphans = [_typed_by_lower.get(t, t) for t in orphan_tokens]
                 # AMUX-63: the lowercase combined surface is identical on
                 # every query, so it is precomputed once per index and
@@ -2280,23 +2281,36 @@ class SearchService:
             name_list = index.get("names") or []
 
             # Default-arg binding: these closures must not capture the
-            # category-loop variables (B023).
+            # category-loop variables (B023). CR-003: display is a pure
+            # function of rid (derived from rid_to_friendly), so the
+            # exact-surface flag is memoized per rid for this query —
+            # the cheap key, the full rank key and the emit loop all
+            # ask for the same rows.
+            _exact_cache: dict[int, bool] = {}
+
             def _row_exact(
                 rid: int,
                 display: str,
                 q_key: str = q_key,
                 name_list: list = name_list,
+                _cache: dict = _exact_cache,
             ) -> bool:
                 """AMUX-18: exact surface = the query normalized equals
                 EITHER the row's indexed name document ('Tylenol', the
                 synonym the postings matched) or its friendly display."""
-                if _surface_key(display) == q_key:
-                    return True
-                return (
-                    rid < len(name_list)
-                    and bool(name_list[rid])
-                    and _surface_key(name_list[rid]) == q_key
+                hit = _cache.get(rid)
+                if hit is not None:
+                    return hit
+                result = (
+                    _surface_key(display) == q_key
+                    or (
+                        rid < len(name_list)
+                        and bool(name_list[rid])
+                        and _surface_key(name_list[rid]) == q_key
+                    )
                 )
+                _cache[rid] = result
+                return result
 
             def _row_rank(
                 item: tuple[int, float],
