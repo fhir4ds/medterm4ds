@@ -2145,20 +2145,41 @@ class SearchService:
                 # falls through to the orphan surface pass — v2 behavior
                 # for 2-char tokens. Only affects keys v2 could never
                 # have; lowercase-typed tokens corroborate nothing.
+                # CR-001 (review follow-up): the cased 2-char words are
+                # precomputed once per index (same lazy pattern as
+                # _orphan_surfaces_lower) — the per-query corroboration
+                # is then pure set work, no regex over the posting.
+                two_char = index.get("_two_char_cased")
+                if two_char is None:
+                    two_char = {}
+                    for tc_key, tc_posting in postings.items():
+                        if len(tc_key) != 2 or not tc_key.isalpha():
+                            continue
+                        cased_words: list[tuple[int, str]] = []
+                        for e in tc_posting:
+                            if not (isinstance(e, list) and len(e) >= 2):
+                                continue
+                            e_rid = int(e[0])
+                            if e_rid >= len(names_raw):
+                                continue
+                            for w in re.findall(
+                                r"\b[a-zA-Z]{2}\b",
+                                _strip_accents(names_raw[e_rid] or ""),
+                            ):
+                                if w.lower() == tc_key:
+                                    cased_words.append((e_rid, w))
+                        two_char[tc_key] = cased_words
+                    index["_two_char_cased"] = two_char
                 guarded_rids: dict[str, set[int]] = {}
                 for k in list(keys):
                     if len(k) == 2 and k.isalpha():
                         typed = _typed_by_lower.get(k, k)
-                        pattern = rf"\b(?:{re.escape(typed)}|{re.escape(typed.upper())})\b"
-                        rids: set[int] = set()
-                        for e in postings[k]:
-                            if not (isinstance(e, list) and len(e) >= 2):
-                                continue
-                            e_rid = int(e[0])
-                            if e_rid < len(names_raw) and re.search(
-                                pattern, _strip_accents(names_raw[e_rid])
-                            ):
-                                rids.add(e_rid)
+                        typed_upper = typed.upper()
+                        rids: set[int] = {
+                            rid
+                            for rid, w in two_char.get(k, ())
+                            if w == typed or w == typed_upper
+                        }
                         if rids:
                             guarded_rids[k] = rids
                         else:

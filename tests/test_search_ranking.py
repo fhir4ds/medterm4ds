@@ -520,15 +520,19 @@ class TestTwoCharAlphaCasingGuard:
 
     @pytest.fixture()
     def mi_svc(self, tmp_path: Path) -> SearchService:
-        idx = _build_index(
-            "condition",
-            [
-                {"code": "I21", "system": "icd10cm", "name": "Acute Myocardial Infarction (MI)"},
-                {"code": "C1", "system": "lnc", "name": "Mi-2 Ab"},
-            ],
-            avg_doc_length=20.0,
-        )
-        # hand-inject a v3-style 2-char posting both rows hit at tf=1
+        # Filler rows matter: with only 2 records the v3 df-prune
+        # (df > 15% of num_records) drops the 'mi' key BEFORE the
+        # casing guard runs. 20 fillers keep df = 2/22 <= 15% so these
+        # tests exercise the guard, not the orphan pass.
+        docs = [
+            {"code": "I21", "system": "icd10cm", "name": "Acute Myocardial Infarction (MI)"},
+            {"code": "C1", "system": "lnc", "name": "Mi-2 Ab"},
+        ] + [
+            {"code": f"F{i}", "system": "snomed", "name": f"Filler condition {i}"}
+            for i in range(20)
+        ]
+        idx = _build_index("condition", docs, avg_doc_length=20.0)
+        # hand-inject a v3-style 2-char posting both target rows hit at tf=1
         idx["postings"]["mi"] = [[0, 1.0], [1, 1.0]]
         idx["idf"]["mi"] = 5.0
         (tmp_path / "condition_bm25.json").write_text(json.dumps(idx))
@@ -547,3 +551,101 @@ class TestTwoCharAlphaCasingGuard:
         # key and the query resolves via the orphan surface pass.
         results = mi_svc.lexical("mi", count=5)
         assert results  # rows still found via surface coverage
+
+    def test_mixed_case_typed_token_corroborates_typed_and_upper(self, mi_svc):
+        # 'Mi' as typed hits C1 ('Mi-2 Ab') and, via the uppercased
+        # variant, I21 ('(MI)') — both rows score on the posting key.
+        results = mi_svc.lexical("Mi", count=5)
+        codes = [r.code for r in results]
+        assert {"I21", "C1"} <= set(codes)
+
+    def test_repeated_queries_identical_after_cache_fill(self, mi_svc):
+        # CR-001: the cased-word precompute is cached per index
+        # (_two_char_cased); the second query must replay the first
+        # exactly from the cache.
+        first = mi_svc.lexical("MI", count=5)
+        assert mi_svc._bm25_indexes["condition"].get("_two_char_cased")
+        second = mi_svc.lexical("MI", count=5)
+        assert [(r.code, r.score) for r in first] == [
+            (r.code, r.score) for r in second
+        ]
+
+    def test_word_boundary_semantics_substring_does_not_corroborate(
+        self, tmp_path: Path
+    ):
+        # 'MI' inside a longer word ('MIA', 'Mitral') is not
+        # word-bounded and must not corroborate the key — only the
+        # standalone '(MI)' row scores.
+        idx = _build_index(
+            "condition",
+            [
+                {"code": "X1", "system": "snomed", "name": "MIA overlap syndrome"},
+                {"code": "X2", "system": "snomed", "name": "Mitral valve issues"},
+                {"code": "X3", "system": "snomed", "name": "Markers (MI) panel"},
+            ]
+            + [
+                {"code": f"F{i}", "system": "snomed", "name": f"Filler condition {i}"}
+                for i in range(20)
+            ],
+            avg_doc_length=20.0,
+        )
+        idx["postings"]["mi"] = [[0, 1.0], [1, 1.0], [2, 1.0]]
+        idx["idf"]["mi"] = 5.0
+        (tmp_path / "condition_bm25.json").write_text(json.dumps(idx))
+        svc = SearchService(
+            search_index_dir=str(tmp_path), embedding_model_dir=str(tmp_path / "no_model")
+        )
+        results = svc.lexical("MI", count=5)
+        codes = [r.code for r in results]
+        assert "X3" in codes
+        assert "X1" not in codes
+        assert "X2" not in codes
+
+    def test_accented_surface_corroborates_after_strip(self, tmp_path: Path):
+        # The precompute strips accents before extracting cased words:
+        # '(Mí)' corroborates a 'Mi' query exactly like the old regex.
+        idx = _build_index(
+            "condition",
+            [
+                {"code": "A1", "system": "snomed", "name": "Síndrome (Mí) crónico"},
+                {"code": "A2", "system": "snomed", "name": "Unrelated row"},
+            ]
+            + [
+                {"code": f"F{i}", "system": "snomed", "name": f"Filler condition {i}"}
+                for i in range(20)
+            ],
+            avg_doc_length=20.0,
+        )
+        idx["postings"]["mi"] = [[0, 1.0], [1, 1.0]]
+        idx["idf"]["mi"] = 5.0
+        (tmp_path / "condition_bm25.json").write_text(json.dumps(idx))
+        svc = SearchService(
+            search_index_dir=str(tmp_path), embedding_model_dir=str(tmp_path / "no_model")
+        )
+        codes = [r.code for r in svc.lexical("Mi", count=5)]
+        assert "A1" in codes
+        assert "A2" not in codes
+
+    def test_malformed_posting_entries_ignored(self, tmp_path: Path):
+        # Non-list / short entries in a guarded posting must be skipped
+        # by the precompute without breaking the query.
+        idx = _build_index(
+            "condition",
+            [
+                {"code": "B1", "system": "snomed", "name": "Acute MI"},
+                {"code": "B2", "system": "snomed", "name": "Other row"},
+            ]
+            + [
+                {"code": f"F{i}", "system": "snomed", "name": f"Filler condition {i}"}
+                for i in range(20)
+            ],
+            avg_doc_length=20.0,
+        )
+        idx["postings"]["mi"] = [["bad"], 7, [0, 1.0], [1, 1.0]]
+        idx["idf"]["mi"] = 5.0
+        (tmp_path / "condition_bm25.json").write_text(json.dumps(idx))
+        svc = SearchService(
+            search_index_dir=str(tmp_path), embedding_model_dir=str(tmp_path / "no_model")
+        )
+        codes = [r.code for r in svc.lexical("MI", count=5)]
+        assert "B1" in codes
