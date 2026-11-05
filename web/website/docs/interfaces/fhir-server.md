@@ -167,7 +167,7 @@ curl "http://127.0.0.1:8001/fhir/CodeSystem/\$search?query=diabetes&searchMode=l
 curl "http://127.0.0.1:8001/fhir/CodeSystem/\$search?query=high+blood+sugar&searchMode=semantic"
 # → Hyperglycemia (0.80), Elevated Blood Glucose Level (0.80)
 
-# Hybrid (BM25 + SapBERT re-rank, ~80ms warm)
+# Hybrid (reciprocal-rank fusion, ~130-170ms warm)
 curl "http://127.0.0.1:8001/fhir/CodeSystem/\$search?query=metformin+pill&searchMode=hybrid"
 # → Metformin Pill (1.00, certain)
 ```

@@ -27,7 +27,7 @@ for r in results:
 # → 0.80 probable  80394007     Hyperglycemia
 # → 0.79 probable  R73.9        Hyperglycemia
 
-# Hybrid: best accuracy (BM25 + SapBERT re-rank)
+# Hybrid: best accuracy (reciprocal-rank fusion)
 results = mt.search("chest pain when lying down", mode="hybrid")
 ```
 

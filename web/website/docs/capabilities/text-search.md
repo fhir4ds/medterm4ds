@@ -34,7 +34,7 @@ results = mt.search("metformin pill", mode="hybrid")
 |---|---|---|---|
 | **`lexical`** (default) | BM25 inverted index | ~1ms | Known medical terms ("diabetes", "metformin") |
 | **`semantic`** | SapBERT embeddings + FAISS | ~70ms warm | Novel phrasings ("high blood sugar" → Hyperglycemia) |
-| **`hybrid`** | BM25 retrieve → SapBERT re-rank | ~80ms warm | Best accuracy (default for extraction) |
+| **`hybrid`** | Reciprocal-rank fusion of lexical + semantic pools | ~130-170ms warm | Best accuracy (default for extraction) |
 
 First semantic call in a process pays a one-time model load (~1 min
 cold, including the split-layout fetch). Numbers are v0.0.5
@@ -49,7 +49,7 @@ steady-state medians (see the releases page benchmark section).
 
 **Semantic** (SapBERT) catches these by embedding the query and finding nearby medical concepts in vector space. But it's 100x slower per query.
 
-**Hybrid** runs BM25 first (retrieve 50 candidates), then SapBERT re-ranks them. Gets the speed of BM25 with the semantic understanding of SapBERT.
+**Hybrid** fuses the lexical and semantic candidate pools by reciprocal rank — either system can carry a row, so a lexical miss no longer hides the semantic best answer (the old cascade failure).
 
 ## Match grades
 
