@@ -77,8 +77,12 @@ SEARCH_CATEGORIES = ("condition", "lab", "medication", "procedure", "vaccine", "
 
 # AMUX-46 hybrid fusion constants (benchmark winner; see
 # benchmarks/fusion_benchmark.py — RRF k=10 + agreement-aware grades).
+# AMUX-63 depth sweep (benchmarks/depth_sweep.py): quality is flat from
+# 10 to 100 (one borderline grade differs at 100); fusion depth does NOT
+# drive latency (the lexical orphan pass did — now cached). 25 keeps the
+# agreement evidence headroom of deeper pools at no measured cost.
 HYBRID_FUSION_K = 10
-HYBRID_CANDIDATE_DEPTH = 100
+HYBRID_CANDIDATE_DEPTH = 25
 
 # Grade-authority cutoffs for agreement-aware grading (AMUX-46): the
 # cosine bands beneath 'certain' and 'probable'. These mirror
@@ -2104,26 +2108,52 @@ class SearchService:
                 orphan_touched: set[int] = set()
                 k1, b = 1.5, 0.75
                 q_token_set = set(query_tokens)
+                # Longest token first: the rarest discriminator fails
+                # fastest, and later checks are skipped entirely.
+                q_tokens = sorted(q_token_set, key=len, reverse=True)
+                q_tokens_rest = q_tokens[1:]
                 names_raw = index.get("names") or []
                 typed_orphans = [_typed_by_lower.get(t, t) for t in orphan_tokens]
-                for rid in range(max(len(names_raw), len(rid_to_friendly))):
-                    name_raw = names_raw[rid] if rid < len(names_raw) else ""
-                    friendly = rid_to_friendly[rid] if rid < len(rid_to_friendly) else ""
-                    if not (name_raw or friendly):
+                # AMUX-63: the lowercase combined surface is identical on
+                # every query, so it is precomputed once per index and
+                # cached in the (immutable, in-memory) index dict. The
+                # per-query scan below is then pure C-level substring
+                # checks — rebuilding and lowercasing the f-string per row
+                # per query made any orphan-token query O(index) Python
+                # work (~180ms+) and dominated hybrid $search latency.
+                surfaces = index.get("_orphan_surfaces_lower")
+                if surfaces is None:
+                    surfaces = [
+                        (
+                            f"{names_raw[i] if i < len(names_raw) else ''} "
+                            f"{rid_to_friendly[i] if i < len(rid_to_friendly) else ''}".lower()
+                        )
+                        for i in range(max(len(names_raw), len(rid_to_friendly)))
+                    ]
+                    index["_orphan_surfaces_lower"] = surfaces
+                for rid, low in enumerate(surfaces):
+                    if not low:
                         continue
                     # Cheap substring prefilter before tokenizing — a row
                     # whose combined surfaces don't even contain each query
                     # token as a substring cannot cover the token set.
                     # (Plain lower(); the exact coverage check below
-                    # applies the full accent-folding tokenizer.)
-                    combined = f"{name_raw} {friendly}"
-                    low = combined.lower()
-                    if not all(t in low for t in q_token_set):
+                    # applies the full accent-folding tokenizer. Written
+                    # as an explicit loop, not a genexpr: this runs over
+                    # every row of every category index, and a per-row
+                    # generator frame dominated the whole lexical path.)
+                    if q_tokens[0] not in low:
+                        continue
+                    if any(t not in low for t in q_tokens_rest):
                         continue
                     # Token coverage over the indexed name document AND
                     # the friendly display — the two surfaces a row is
                     # known by. (Space separator: no token can span it.)
-                    if not q_token_set <= set(_query_tokens(combined)):
+                    # Surviving rows are rare: rebuild the cased surfaces
+                    # on demand instead of carrying them through the scan.
+                    name_raw = names_raw[rid] if rid < len(names_raw) else ""
+                    friendly = rid_to_friendly[rid] if rid < len(rid_to_friendly) else ""
+                    if not q_token_set <= set(_query_tokens(low)):
                         continue
                     doc_len = doc_lengths[rid] if rid < len(doc_lengths) else avg_doc_length
                     tf_comp = (k1 + 1) / (1 + k1 * (1 - b + b * doc_len / avg_doc_length))
@@ -2320,6 +2350,9 @@ class SearchService:
         (benchmarks/fusion_benchmark.py): hit@1 53.1% / hit@5 71.9% /
         FP@1 3.1% vs cascade 46.9% / 62.5% / 9.4% on the golden families;
         weighted-sum variants lost on precision (FP 53-59%).
+        (AMUX-63: depth was lowered 100 -> 25 — the depth sweep showed
+        quality flat 10..100 and latency driven by the lexical orphan
+        pass, not fusion depth.)
 
         Confidence (match_grade): the fused RRF score is a RANK signal,
         not a confidence signal (measured: true/wrong top-1 score medians

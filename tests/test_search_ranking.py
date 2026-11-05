@@ -411,3 +411,48 @@ class TestOrphanPassGradeCap:
         by_code = {r.code: r for r in results}
         # Exact-surface rows are exempt from the cap: 'MS' IS the query.
         assert by_code["E1"].match_grade == "certain"
+
+
+class TestOrphanSurfaceCache:
+    """AMUX-63: the orphan pass precomputes each index's lowercase
+    combined surfaces once and caches them in the index dict (the
+    per-query f-string + lower() over every row dominated hybrid
+    $search latency). The cache must be exact and stable: repeated
+    orphan-token queries must return identical results to the
+    cache-building first call."""
+
+    def test_repeated_orphan_queries_identical(self, search_svc):
+        first = search_svc.lexical("PT", count=10)
+        for _ in range(3):
+            again = search_svc.lexical("PT", count=10)
+            assert [(r.code, r.score, r.match_grade) for r in again] == [
+                (r.code, r.score, r.match_grade) for r in first
+            ]
+
+    def test_cache_matches_derived_surfaces(self, search_svc):
+        # 'pt' (2 chars) never reaches the postings — a true orphan token,
+        # so this query builds the cache for every category index.
+        search_svc.lexical("PT", count=10)
+        svc_idx = search_svc._bm25_indexes
+        for cat, index in svc_idx.items():
+            surfaces = index.get("_orphan_surfaces_lower")
+            assert surfaces is not None, f"cache missing for {cat}"
+            names = index.get("names") or []
+            friendly = index.get("rid_to_friendly_name") or []
+            expected = [
+                (
+                    f"{names[i] if i < len(names) else ''} "
+                    f"{friendly[i] if i < len(friendly) else ''}".lower()
+                )
+                for i in range(max(len(names), len(friendly)))
+            ]
+            assert surfaces == expected
+
+    def test_multi_token_orphan_query_longest_first(self, search_svc):
+        # 'pt' has no posting (2-char build drop) while 'time' does —
+        # the orphan path runs for the query with BOTH tokens, and the
+        # row covering BOTH must still be found (token-set coverage is
+        # unchanged by the longest-first prefilter ordering, which puts
+        # the longer token 'measurement'-style discriminator first).
+        results = search_svc.lexical("PT time", count=10)
+        assert any(r.code == "L4" for r in results)
