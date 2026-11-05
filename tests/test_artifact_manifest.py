@@ -262,5 +262,20 @@ class TestHelpers:
         assert (target / "a.index").exists() and (target / "b.json").exists()
         assert not tmp.exists()
 
+    def test_atomic_rename_replaces_existing_target(self, tmp_path: Path):
+        # Regression (2026-11-05): rename(2) onto a non-empty dir is
+        # ENOTEMPTY — re-provisioning over an existing family dir must
+        # replace it, not crash.
+        target = tmp_path / "lexical"
+        target.mkdir()
+        (target / "stale.json").write_text("{}")
+        tmp = tmp_path / ".tmp-lexical-1"
+        tmp.mkdir()
+        (tmp / "fresh.json").write_text("{}")
+        atomic_rename_dir(tmp, target)
+        assert (target / "fresh.json").exists()
+        assert not (target / "stale.json").exists()
+        assert not tmp.exists()
+
     def test_accepted_schema_versions_current(self):
         assert 1 in ACCEPTED_MANIFEST_SCHEMA_VERSIONS

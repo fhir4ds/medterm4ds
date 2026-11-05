@@ -228,7 +228,14 @@ def _resolve_terminology(download: bool = True):
     if key in _TERM_CACHE:
         return _TERM_CACHE[key]  # type: ignore[return-value]
     paths = _term.resolve(root, space_id=space)
-    if paths is None and download and not _local_artifacts_present():
+    # An explicitly pinned release is an operator contract: fetch it even
+    # when a servable local cache exists (which otherwise keeps serving in
+    # 'auto' mode until cache-refresh — the silent-fallthrough guard).
+    if (
+        paths is None
+        and download
+        and (_term.release_explicitly_pinned() or not _local_artifacts_present())
+    ):
         try:
             paths = _term.download(root, space_id=space)
         except _term.TerminologyLayoutError:
