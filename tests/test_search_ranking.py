@@ -510,3 +510,40 @@ class TestOrphanSurfaceCache:
         # the longer token 'measurement'-style discriminator first).
         results = search_svc.lexical("PT time", count=10)
         assert any(r.code == "L4" for r in results)
+
+
+class TestTwoCharAlphaCasingGuard:
+    """Joel ruling (AMUX-22): 2-char alpha posting keys (v3-only shape)
+    score ONLY rows whose indexed surface carries the token as typed or
+    uppercased — 'MI' must rank 'Acute Myocardial Infarction (MI)' over
+    'Mi-2 Ab', and a lowercase 'mi' query corroborates nothing."""
+
+    @pytest.fixture()
+    def mi_svc(self, tmp_path: Path) -> SearchService:
+        idx = _build_index(
+            "condition",
+            [
+                {"code": "I21", "system": "icd10cm", "name": "Acute Myocardial Infarction (MI)"},
+                {"code": "C1", "system": "lnc", "name": "Mi-2 Ab"},
+            ],
+            avg_doc_length=20.0,
+        )
+        # hand-inject a v3-style 2-char posting both rows hit at tf=1
+        idx["postings"]["mi"] = [[0, 1.0], [1, 1.0]]
+        idx["idf"]["mi"] = 5.0
+        (tmp_path / "condition_bm25.json").write_text(json.dumps(idx))
+        return SearchService(
+            search_index_dir=str(tmp_path), embedding_model_dir=str(tmp_path / "no_model")
+        )
+
+    def test_uppercased_query_prefers_cased_surface(self, mi_svc):
+        results = mi_svc.lexical("MI", count=5)
+        codes = [r.code for r in results]
+        assert "I21" in codes
+        assert codes.index("I21") < codes.index("C1") if "C1" in codes else True
+
+    def test_lowercase_query_no_corroboration_no_boost(self, mi_svc):
+        # 'mi' typed lowercase corroborates nothing: the guard drops the
+        # key and the query resolves via the orphan surface pass.
+        results = mi_svc.lexical("mi", count=5)
+        assert results  # rows still found via surface coverage

@@ -2131,6 +2131,39 @@ class SearchService:
                 if not keys:
                     orphan_tokens.append(raw_token)
                     continue
+                # 2-char alpha casing guard (Joel ruling, AMUX-22): a
+                # 2-char posting key exists only in v3 and is an acronym
+                # by construction — raw tf/idf on it mis-ranks ('MI' ->
+                # 'Mi-2 Ab' rows, short lab docs, BM25-length-boosted,
+                # outrank 'Acute Myocardial Infarction (MI)'). Such a key
+                # only scores rows whose indexed surface carries the
+                # token AS TYPED or uppercased ('(MI)', 'HbA1c'); a key
+                # that corroborates nothing is dropped and the token
+                # falls through to the orphan surface pass — v2 behavior
+                # for 2-char tokens. Only affects keys v2 could never
+                # have; lowercase-typed tokens corroborate nothing.
+                names_raw = index.get("names") or []
+                guarded_rids: dict[str, set[int]] = {}
+                for k in list(keys):
+                    if len(k) == 2 and k.isalpha():
+                        typed = _typed_by_lower.get(k, k)
+                        pattern = rf"\b(?:{re.escape(typed)}|{re.escape(typed.upper())})\b"
+                        rids: set[int] = set()
+                        for e in postings[k]:
+                            if not (isinstance(e, list) and len(e) >= 2):
+                                continue
+                            e_rid = int(e[0])
+                            if e_rid < len(names_raw) and re.search(
+                                pattern, _strip_accents(names_raw[e_rid])
+                            ):
+                                rids.add(e_rid)
+                        if rids:
+                            guarded_rids[k] = rids
+                        else:
+                            keys.remove(k)
+                if not keys:
+                    orphan_tokens.append(raw_token)
+                    continue
                 # idf of the strongest matching key (pre-fix behavior for
                 # ordinary >= 3-letter queries: idf.get(stem, idf.get(raw))).
                 matched_idfs.append(max(idf.get(k, 1.0) for k in keys))
@@ -2140,6 +2173,8 @@ class SearchService:
                         if not (isinstance(entry, list) and len(entry) >= 2):
                             continue
                         rid, tf = int(entry[0]), float(entry[1])
+                        if token in guarded_rids and rid not in guarded_rids[token]:
+                            continue
                         doc_len = doc_lengths[rid] if rid < len(doc_lengths) else avg_doc_length
                         k1, b = 1.5, 0.75
                         tf_comp = (tf * (k1 + 1)) / (tf + k1 * (1 - b + b * doc_len / avg_doc_length))

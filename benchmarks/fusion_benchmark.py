@@ -59,17 +59,20 @@ def _g(accept_displays=(), accept_codes=(), contains=()):
 
 GOLDEN: dict[str, list[tuple[str, dict]]] = {
     "brands": [
+        # Joel ruling (AMUX-22, 2026-11-04): brand/product rows are GOOD
+        # answers for brand queries — each brand's own surface-key is
+        # accepted alongside the ingredient truths.
         ("Tylenol", _g(
-            ["acetaminophen", "acetaminophen oral product",
+            ["tylenol", "acetaminophen", "acetaminophen oral product",
              "acetaminophen oral liquid product"])),
-        ("Adbry", _g(["tralokinumab", "tralokinumab injectable product"])),
+        ("Adbry", _g(["adbry", "tralokinumab", "tralokinumab injectable product"])),
         ("Motrin", _g(
-            ["ibuprofen", "ibuprofen oral product",
+            ["motrin", "ibuprofen", "ibuprofen oral product",
              "ibuprofen oral liquid product"])),
-        ("Lipitor", _g(["atorvastatin", "atorvastatin oral product"])),
-        ("Januvia", _g(["sitagliptin", "sitagliptin oral product"])),
-        ("Farxiga", _g(["dapagliflozin", "dapagliflozin oral product"])),
-        ("Trulicity", _g(["dulaglutide", "dulaglutide injectable product"])),
+        ("Lipitor", _g(["lipitor", "atorvastatin", "atorvastatin oral product"])),
+        ("Januvia", _g(["januvia", "sitagliptin", "sitagliptin oral product"])),
+        ("Farxiga", _g(["farxiga", "dapagliflozin", "dapagliflozin oral product"])),
+        ("Trulicity", _g(["trulicity", "dulaglutide", "dulaglutide injectable product"])),
     ],
     "acronyms": [
         ("MI", _g(["acute myocardial infarction mi"])),
