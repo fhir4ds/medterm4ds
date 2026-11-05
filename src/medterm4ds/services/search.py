@@ -721,20 +721,29 @@ _LETTER_RUN_RE = re.compile(r"[a-z]{3,}")
 
 
 def _posting_candidates(token: str, postings: dict) -> list[str]:
-    """Posting keys a query token can look up (AMUX-20).
+    """Posting keys a query token can look up (AMUX-20, v3-aware).
 
-    The index build lowercased + kept ASCII letter runs of >= 3 chars, so
-    posting keys never contain digits and are never shorter than 3 chars.
-    A pure >= 3-letter token maps to itself (stem fallback as before);
-    an alphanumeric or 2-char token maps to its >= 3-letter runs
+    v3 indexes (AMUX-69) tokenize alphanumeric terms, so an exact
+    posting-key hit is tried FIRST and short-circuits everything else —
+    'hba1c' must look up 'hba1c', not its letter runs, when the index
+    carries the full term. On v2 indexes (letter runs of >= 3 chars
+    only) the exact key misses and behavior is unchanged: a pure >=
+    3-letter token maps to itself (stem fallback as before); an
+    alphanumeric or 2-char token maps to its >= 3-letter runs
     ('hba1c' -> 'hba'). Tokens with no run (a1c, mi, pe, pt, b12)
     return [] — the lexical surface pass covers those.
     """
+    cands: list[str] = []
+    if token in postings and not (token.isalpha() and len(token) >= 3):
+        # v3 alphanumeric/short posting key — exact evidence; letter-run
+        # and stem fallbacks must not dilute it ('hba1c' -> 'hba').
+        # Pure >= 3-letter tokens keep the historical dual-candidate
+        # behavior below (self + stem), which v2 ranking relies on.
+        return [token]
     if token.isalpha() and len(token) >= 3:
         runs = [token]
     else:
         runs = _LETTER_RUN_RE.findall(token)
-    cands: list[str] = []
     for run in runs:
         cands.append(run)
         stemmed = _stem_token(run)
@@ -751,6 +760,34 @@ def _surface_key(text: str) -> str:
     'tylenol ' and 'TYLENOL' all normalize identically.
     """
     return " ".join(re.findall(r"[a-z0-9]+", _strip_accents(text.lower())))
+
+
+def _sorted_lazy_surface_tiebreak(rows, cheap_key, full_key, count):
+    """sorted(rows, key=full_key) with the expensive surface-distance
+    tier computed only where it can matter (AMUX-63/v3: real alphanumeric
+    postings enlarge the scored set to thousands of rows and the
+    O(len^2) edit distance per row dominated the whole lexical path).
+
+    Exact-equivalent to ``sorted(rows, key=full_key)`` restricted to the
+    rows that can reach the top ``count``, PROVIDED full_key's leading
+    components are exactly cheap_key (a tuple prefix). Sort by the cheap
+    prefix, keep the top ``count`` rows PLUS every row tied with the
+    boundary row (rows strictly worse on the prefix can never enter the
+    top count of the full order), then apply the full key to that slice.
+    The returned list may exceed ``count`` by the boundary ties; callers
+    slice as before.
+    """
+    ordered = sorted(rows, key=cheap_key)
+    if len(ordered) <= count:
+        ordered.sort(key=full_key)
+        return ordered
+    boundary = cheap_key(ordered[count - 1])
+    end = count
+    while end < len(ordered) and cheap_key(ordered[end]) == boundary:
+        end += 1
+    kept = ordered[:end]
+    kept.sort(key=full_key)
+    return kept
 
 
 def _surface_distance(query_key: str, text: str, cap: int = 64) -> float:
@@ -2074,6 +2111,23 @@ class SearchService:
             orphan_tokens: list[str] = []
             for raw_token in query_tokens:
                 keys = _posting_candidates(raw_token, postings)
+                # v3 df-prune (AMUX-63 validation): v3 indexes post
+                # near-stopword alphanumeric/2-char terms ('mg' hits 40%
+                # of medication rows) whose per-query enumeration costs
+                # more than their evidence is worth. Keys that could
+                # never exist in a v2 index are pruned at a 15%
+                # document-frequency ceiling — pure >= 3-letter keys are
+                # NEVER pruned, so scoring on v2 indexes and for
+                # ordinary words is bit-identical. A token whose keys
+                # are all pruned falls through to the orphan surface
+                # pass, exactly where v2 left it.
+                n_records = index.get("num_records") or 0
+                if n_records:
+                    keys = [
+                        k for k in keys
+                        if k.isalpha() and len(k) >= 3
+                        or len(postings.get(k, ())) <= 0.15 * n_records
+                    ]
                 if not keys:
                     orphan_tokens.append(raw_token)
                     continue
@@ -2232,7 +2286,20 @@ class SearchService:
                     str(code),
                 )
 
-            for rid, score in sorted(scores.items(), key=_row_rank)[:fetch_count]:
+            for rid, score in _sorted_lazy_surface_tiebreak(
+                scores.items(),
+                lambda item: (
+                    not _row_exact(
+                        item[0],
+                        rid_to_friendly[item[0]]
+                        if item[0] < len(rid_to_friendly)
+                        else str(item[0]),
+                    ),
+                    -item[1],
+                ),
+                _row_rank,
+                fetch_count,
+            )[:fetch_count]:
                 code = rid_to_code[rid] if rid < len(rid_to_code) else str(rid)
                 display = rid_to_friendly[rid] if rid < len(rid_to_friendly) else code
                 sys_name = (rid_to_system[rid] if rid < len(rid_to_system) else "").upper()

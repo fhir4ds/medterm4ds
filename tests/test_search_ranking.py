@@ -154,6 +154,60 @@ class TestPostingCandidates:
         postings = {"tylenol": [[0, 1.0]]}
         assert _posting_candidates("tylenol", postings) == ["tylenol"]
 
+
+class TestLazySurfaceTiebreak:
+    """AMUX-63/v3: the expensive surface-distance tier must only be
+    computed for rows that can reach the cut — and the result must be
+    EXACTLY the full sort's top rows, boundary ties included."""
+
+    def test_matches_full_sort_with_ties(self):
+        import random
+
+        from medterm4ds.services.search import _sorted_lazy_surface_tiebreak
+
+        rng = random.Random(42)
+        rows = [(i, rng.choice([1.0, 2.0, 3.0])) for i in range(500)]
+        cheap = lambda it: (-it[1], it[0] % 3)
+        # full key extends the cheap prefix with an expensive component
+        full = lambda it: (-it[1], it[0] % 3, (it[0] * 7919) % 100, it[0])
+        for count in (1, 5, 20, 499, 500, 600):
+            lazy = _sorted_lazy_surface_tiebreak(rows, cheap, full, count)[:count]
+            eager = sorted(rows, key=full)[:count]
+            assert lazy == eager, count
+
+    def test_boundary_ties_kept_beyond_count(self):
+        from medterm4ds.services.search import _sorted_lazy_surface_tiebreak
+
+        # 10 rows tied on the cheap prefix; count=3 must still order ALL
+        # tied rows that could reach the cut via the full key.
+        rows = [(i, 1.0) for i in range(10)]
+        cheap = lambda it: -it[1]
+        full = lambda it: (-it[1], it[0])
+        out = _sorted_lazy_surface_tiebreak(rows, cheap, full, 3)
+        # all rows tie on the cheap prefix, so none can be excluded
+        assert out == sorted(rows, key=full)
+
+    def test_v3_alnum_key_wins_over_letter_runs(self):
+        # AMUX-69 v3: the full alphanumeric term is its own posting key;
+        # the letter-run fallback must not dilute or replace it.
+        postings = {"hba1c": [[0, 1.0]], "hba": [[1, 1.0]]}
+        assert _posting_candidates("hba1c", postings) == ["hba1c"]
+
+    def test_v3_short_acronym_key_exact(self):
+        postings = {"mi": [[0, 1.0]], "mis": [[1, 1.0]]}
+        assert _posting_candidates("mi", postings) == ["mi"]
+
+    def test_v2_index_fallback_unchanged(self):
+        # No alnum key (v2 shape): letter-run fallback as before.
+        postings = {"hba": [[0, 1.0]]}
+        assert _posting_candidates("hba1c", postings) == ["hba"]
+
+    def test_pure_alpha_keeps_self_and_stem(self):
+        # v2 ranking relies on the dual candidate (self + stem); the v3
+        # short-circuit must not drop the stem variant.
+        postings = {"tablets": [[0, 1.0]], "tablet": [[1, 1.0]]}
+        assert _posting_candidates("tablets", postings) == ["tablets", "tablet"]
+
     def test_alphanumeric_falls_back_to_letter_runs(self):
         postings = {"hba": [[0, 1.0]]}
         assert _posting_candidates("hba1c", postings) == ["hba"]
