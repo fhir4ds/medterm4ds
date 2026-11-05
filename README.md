@@ -213,7 +213,7 @@ docker run -p 7860:7860 \
 
 - **`lexical`** (default): BM25 token matching (~1ms). Covers 80-90% of queries.
 - **`semantic`**: Fine-tuned SapBERT embeddings + FAISS ANN (~100ms). Catches novel phrasings like "high blood sugar" → Hyperglycemia.
-- **`hybrid`**: BM25 retrieve top-50 + SapBERT re-rank (~110ms). Best accuracy.
+- **`hybrid`**: Reciprocal-rank fusion of the lexical and semantic candidate pools (~130-170ms). Best accuracy.
 
 Results include a match-grade (`certain` / `probable` / `possible`), modeled after FHIR Patient `$match`.
 
