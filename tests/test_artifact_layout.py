@@ -513,7 +513,7 @@ class TestExplicitReleasePinForcesDownload:
         )
         monkeypatch.setattr(mod, "_local_artifacts_present", lambda: True)
         mod._TERM_CACHE.clear()
-        result = mod._resolve_terminology()
+        mod._resolve_terminology()
         assert calls, "explicit pin must download despite local artifacts"
 
     def test_default_release_does_not_download_over_local_artifacts(
