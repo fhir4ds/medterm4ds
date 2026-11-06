@@ -167,9 +167,14 @@ class TestLazySurfaceTiebreak:
 
         rng = random.Random(42)
         rows = [(i, rng.choice([1.0, 2.0, 3.0])) for i in range(500)]
-        cheap = lambda it: (-it[1], it[0] % 3)
+
+        def cheap(it):
+            return (-it[1], it[0] % 3)
+
         # full key extends the cheap prefix with an expensive component
-        full = lambda it: (-it[1], it[0] % 3, (it[0] * 7919) % 100, it[0])
+        def full(it):
+            return (-it[1], it[0] % 3, (it[0] * 7919) % 100, it[0])
+
         for count in (1, 5, 20, 499, 500, 600):
             lazy = _sorted_lazy_surface_tiebreak(rows, cheap, full, count)[:count]
             eager = sorted(rows, key=full)[:count]
@@ -181,8 +186,13 @@ class TestLazySurfaceTiebreak:
         # 10 rows tied on the cheap prefix; count=3 must still order ALL
         # tied rows that could reach the cut via the full key.
         rows = [(i, 1.0) for i in range(10)]
-        cheap = lambda it: -it[1]
-        full = lambda it: (-it[1], it[0])
+
+        def cheap(it):
+            return -it[1]
+
+        def full(it):
+            return (-it[1], it[0])
+
         out = _sorted_lazy_surface_tiebreak(rows, cheap, full, 3)
         # all rows tie on the cheap prefix, so none can be excluded
         assert out == sorted(rows, key=full)

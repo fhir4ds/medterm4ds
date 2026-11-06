@@ -2365,17 +2365,25 @@ class SearchService:
                     str(code),
                 )
 
-            for rid, score in _sorted_lazy_surface_tiebreak(
-                scores.items(),
-                lambda item: (
-                    not _row_exact(
-                        item[0],
-                        rid_to_friendly[item[0]]
-                        if item[0] < len(rid_to_friendly)
-                        else str(item[0]),
+            def _cheap_key(
+                item: tuple[int, float],
+                _exact=_row_exact,
+                _friendly: list = rid_to_friendly,
+            ) -> tuple[bool, float]:
+                # B023: _friendly bound as a default arg, not a closure
+                # over the category-loop variable.
+                rid_ = item[0]
+                return (
+                    not _exact(
+                        rid_,
+                        _friendly[rid_] if rid_ < len(_friendly) else str(rid_),
                     ),
                     -item[1],
-                ),
+                )
+
+            for rid, score in _sorted_lazy_surface_tiebreak(
+                scores.items(),
+                _cheap_key,
                 _row_rank,
                 fetch_count,
             )[:fetch_count]:
