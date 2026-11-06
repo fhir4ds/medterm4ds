@@ -39,6 +39,7 @@ import hashlib
 import json
 import logging
 import os
+import shutil
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -438,4 +439,9 @@ def atomic_rename_dir(tmp_dir: str | Path, target_dir: str | Path) -> None:
     tmp = Path(tmp_dir)
     target = Path(target_dir)
     target.parent.mkdir(parents=True, exist_ok=True)
+    if target.exists():
+        # rename(2) onto a non-empty dir is ENOTEMPTY (seen live when the
+        # legacy fallback re-provisioned over an existing family dir,
+        # 2026-11-05). Same replace semantics as terminology.download.
+        shutil.rmtree(target)
     tmp.rename(target)

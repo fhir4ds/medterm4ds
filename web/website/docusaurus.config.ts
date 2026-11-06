@@ -101,7 +101,7 @@ const config: Config = {
         {to: '/docs/capabilities/code-lookup', label: 'Capabilities', position: 'left'},
         {to: '/docs/interfaces/python', label: 'Interfaces', position: 'left'},
         {to: '/docs/api-reference/medterm4ds', label: 'API', position: 'left'},
-        {to: '/docs/examples/notebooks/overview', label: 'Examples', position: 'left'},
+        {to: '/docs/examples/terminology-search', label: 'Examples', position: 'left'},
         {
           href: 'https://github.com/fhir4ds/medterm4ds',
           position: 'right',

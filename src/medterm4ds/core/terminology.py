@@ -33,7 +33,7 @@ logger = logging.getLogger(__name__)
 
 TERMINOLOGY_DIRNAME = "terminology"
 DEFAULT_TERMINOLOGY_REPO_ID = "fhir4ds/terminology"
-DEFAULT_TERMINOLOGY_RELEASE = "2026.10.31.1"
+DEFAULT_TERMINOLOGY_RELEASE = "2026.11.05.1"
 
 # Canonical render policy of the published release. It is a property of the
 # canonical build that produced the embedded texts (docs/plans/
@@ -82,6 +82,17 @@ def repo_id() -> str:
 
 def release() -> str:
     return os.getenv("MEDTERM4DS_TERMINOLOGY_RELEASE", DEFAULT_TERMINOLOGY_RELEASE)
+
+
+def release_explicitly_pinned() -> bool:
+    """True when the operator pinned MEDTERM4DS_TERMINOLOGY_RELEASE.
+
+    An explicit pin is an operator contract: the pinned release must be
+    fetched and served even when a servable legacy/split cache exists
+    locally (otherwise the pin silently falls through to the local
+    artifacts — seen live during the 2026.11.05.1 flip, 2026-11-05).
+    """
+    return bool(os.getenv("MEDTERM4DS_TERMINOLOGY_RELEASE"))
 
 
 def render_policy_version() -> str:
@@ -196,7 +207,13 @@ def resolve(
     if not is_present(base):
         return None
     manifest = _read_manifest(base)
-    if manifest.get("release") != rel:
+    if os.getenv("MEDTERM4DS_TERMINOLOGY_DIR") and manifest.get("release"):
+        # The operator pinned the release DIRECTORY — its manifest is the
+        # release identity. Demanding release() to agree made the binding
+        # brittle across default-release bumps (ts110 binding contract,
+        # 2026-11-05 flip).
+        rel = manifest["release"]
+    elif manifest.get("release") != rel:
         raise TerminologyLayoutError(
             f"terminology manifest at {base} declares release "
             f"{manifest.get('release')!r}, expected {rel!r}"

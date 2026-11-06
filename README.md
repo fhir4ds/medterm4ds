@@ -129,7 +129,7 @@ Search/extract artifacts are cached from the `fhir4ds/terminology` HF repo
 Three layouts are accepted; the release layout is preferred:
 
 - **Release (current default)** — one self-contained release per dated tag
-  (`2026.10.31.1` today): `canonical/<release>/value_sets.json` +
+  (the default release tag, `2026.11.05.1` today): `canonical/<release>/value_sets.json` +
   `claimant_details.json` + `decomposition_links.json`,
   `lexical/<release>/<category>.json`, `semantic/<release>/<category>.faiss`
   + metadata plus `anchors.faiss`/`anchors_metadata.json` (the canonical
@@ -150,7 +150,7 @@ Environment knobs:
 - `MEDTERM4DS_LAYOUT` — `auto` (default: release → split → legacy),
   `terminology`, `split`, or `legacy` (instant rollback kill-switch)
 - `MEDTERM4DS_TERMINOLOGY_RELEASE` — release to serve (default
-  `2026.10.31.1`; must exist as a tag in the terminology repo)
+  the default release tag; must exist as a tag in the terminology repo)
 - `MEDTERM4DS_TERMINOLOGY_REPO_ID` — override the artifact repo
   (default `fhir4ds/terminology`)
 - `MEDTERM4DS_TERMINOLOGY_DIR` — operator-managed release directory (used
@@ -213,7 +213,7 @@ docker run -p 7860:7860 \
 
 - **`lexical`** (default): BM25 token matching (~1ms). Covers 80-90% of queries.
 - **`semantic`**: Fine-tuned SapBERT embeddings + FAISS ANN (~100ms). Catches novel phrasings like "high blood sugar" → Hyperglycemia.
-- **`hybrid`**: BM25 retrieve top-50 + SapBERT re-rank (~110ms). Best accuracy.
+- **`hybrid`**: Reciprocal-rank fusion of the lexical and semantic candidate pools (~130-170ms). Best accuracy.
 
 Results include a match-grade (`certain` / `probable` / `possible`), modeled after FHIR Patient `$match`.
 

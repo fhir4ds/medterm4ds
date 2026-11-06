@@ -489,3 +489,58 @@ class TestBareServiceOffline:
         svc = mod.SearchService()
         assert svc._canonical_by_id == {}
         assert not svc.semantic_available
+
+
+class TestExplicitReleasePinForcesDownload:
+    """Regression (2026-11-05, 2026.11.05.1 flip): an explicitly pinned
+    MEDTERM4DS_TERMINOLOGY_RELEASE is an operator contract — the release
+    must be downloaded even when a servable local cache exists (which
+    otherwise keeps serving in 'auto' mode until cache-refresh)."""
+
+    def test_pinned_release_downloads_despite_local_artifacts(
+        self, monkeypatch, tmp_path
+    ):
+        monkeypatch.setenv("MEDTERM4DS_CACHE_DIR", str(tmp_path))
+        monkeypatch.setenv("MEDTERM4DS_LAYOUT", "auto")
+        monkeypatch.setenv("MEDTERM4DS_TERMINOLOGY_RELEASE", "2099.01.01.1")
+        mod = _reload_search(monkeypatch)
+        from medterm4ds.core import terminology as term
+
+        monkeypatch.setattr(term, "resolve", lambda *a, **k: None)
+        calls = []
+        monkeypatch.setattr(
+            term, "download", lambda *a, **k: calls.append(1) or _FakePaths()
+        )
+        monkeypatch.setattr(mod, "_local_artifacts_present", lambda: True)
+        mod._TERM_CACHE.clear()
+        mod._resolve_terminology()
+        assert calls, "explicit pin must download despite local artifacts"
+
+    def test_default_release_does_not_download_over_local_artifacts(
+        self, monkeypatch, tmp_path
+    ):
+        monkeypatch.setenv("MEDTERM4DS_CACHE_DIR", str(tmp_path))
+        monkeypatch.setenv("MEDTERM4DS_LAYOUT", "auto")
+        monkeypatch.delenv("MEDTERM4DS_TERMINOLOGY_RELEASE", raising=False)
+        mod = _reload_search(monkeypatch)
+        from medterm4ds.core import terminology as term
+
+        monkeypatch.setattr(term, "resolve", lambda *a, **k: None)
+        calls = []
+        monkeypatch.setattr(
+            term, "download", lambda *a, **k: calls.append(1) or _FakePaths()
+        )
+        monkeypatch.setattr(mod, "_local_artifacts_present", lambda: True)
+        mod._TERM_CACHE.clear()
+        result = mod._resolve_terminology()
+        assert not calls, "auto mode keeps serving local artifacts"
+        assert result is None
+
+
+class _FakePaths:
+    """Minimal TerminologyPaths stand-in (lexical path only)."""
+
+    def __init__(self):
+        from pathlib import Path
+
+        self.lexical = Path("/nonexistent-lexical")

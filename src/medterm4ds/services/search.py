@@ -77,8 +77,12 @@ SEARCH_CATEGORIES = ("condition", "lab", "medication", "procedure", "vaccine", "
 
 # AMUX-46 hybrid fusion constants (benchmark winner; see
 # benchmarks/fusion_benchmark.py — RRF k=10 + agreement-aware grades).
+# AMUX-63 depth sweep (benchmarks/depth_sweep.py): quality is flat from
+# 10 to 100 (one borderline grade differs at 100); fusion depth does NOT
+# drive latency (the lexical orphan pass did — now cached). 25 keeps the
+# agreement evidence headroom of deeper pools at no measured cost.
 HYBRID_FUSION_K = 10
-HYBRID_CANDIDATE_DEPTH = 100
+HYBRID_CANDIDATE_DEPTH = 25
 
 # Grade-authority cutoffs for agreement-aware grading (AMUX-46): the
 # cosine bands beneath 'certain' and 'probable'. These mirror
@@ -224,7 +228,14 @@ def _resolve_terminology(download: bool = True):
     if key in _TERM_CACHE:
         return _TERM_CACHE[key]  # type: ignore[return-value]
     paths = _term.resolve(root, space_id=space)
-    if paths is None and download and not _local_artifacts_present():
+    # An explicitly pinned release is an operator contract: fetch it even
+    # when a servable local cache exists (which otherwise keeps serving in
+    # 'auto' mode until cache-refresh — the silent-fallthrough guard).
+    if (
+        paths is None
+        and download
+        and (_term.release_explicitly_pinned() or not _local_artifacts_present())
+    ):
         try:
             paths = _term.download(root, space_id=space)
         except _term.TerminologyLayoutError:
@@ -717,20 +728,29 @@ _LETTER_RUN_RE = re.compile(r"[a-z]{3,}")
 
 
 def _posting_candidates(token: str, postings: dict) -> list[str]:
-    """Posting keys a query token can look up (AMUX-20).
+    """Posting keys a query token can look up (AMUX-20, v3-aware).
 
-    The index build lowercased + kept ASCII letter runs of >= 3 chars, so
-    posting keys never contain digits and are never shorter than 3 chars.
-    A pure >= 3-letter token maps to itself (stem fallback as before);
-    an alphanumeric or 2-char token maps to its >= 3-letter runs
+    v3 indexes (AMUX-69) tokenize alphanumeric terms, so an exact
+    posting-key hit is tried FIRST and short-circuits everything else —
+    'hba1c' must look up 'hba1c', not its letter runs, when the index
+    carries the full term. On v2 indexes (letter runs of >= 3 chars
+    only) the exact key misses and behavior is unchanged: a pure >=
+    3-letter token maps to itself (stem fallback as before); an
+    alphanumeric or 2-char token maps to its >= 3-letter runs
     ('hba1c' -> 'hba'). Tokens with no run (a1c, mi, pe, pt, b12)
     return [] — the lexical surface pass covers those.
     """
+    cands: list[str] = []
+    if token in postings and not (token.isalpha() and len(token) >= 3):
+        # v3 alphanumeric/short posting key — exact evidence; letter-run
+        # and stem fallbacks must not dilute it ('hba1c' -> 'hba').
+        # Pure >= 3-letter tokens keep the historical dual-candidate
+        # behavior below (self + stem), which v2 ranking relies on.
+        return [token]
     if token.isalpha() and len(token) >= 3:
         runs = [token]
     else:
         runs = _LETTER_RUN_RE.findall(token)
-    cands: list[str] = []
     for run in runs:
         cands.append(run)
         stemmed = _stem_token(run)
@@ -747,6 +767,34 @@ def _surface_key(text: str) -> str:
     'tylenol ' and 'TYLENOL' all normalize identically.
     """
     return " ".join(re.findall(r"[a-z0-9]+", _strip_accents(text.lower())))
+
+
+def _sorted_lazy_surface_tiebreak(rows, cheap_key, full_key, count):
+    """sorted(rows, key=full_key) with the expensive surface-distance
+    tier computed only where it can matter (AMUX-63/v3: real alphanumeric
+    postings enlarge the scored set to thousands of rows and the
+    O(len^2) edit distance per row dominated the whole lexical path).
+
+    Exact-equivalent to ``sorted(rows, key=full_key)`` restricted to the
+    rows that can reach the top ``count``, PROVIDED full_key's leading
+    components are exactly cheap_key (a tuple prefix). Sort by the cheap
+    prefix, keep the top ``count`` rows PLUS every row tied with the
+    boundary row (rows strictly worse on the prefix can never enter the
+    top count of the full order), then apply the full key to that slice.
+    The returned list may exceed ``count`` by the boundary ties; callers
+    slice as before.
+    """
+    ordered = sorted(rows, key=cheap_key)
+    if len(ordered) <= count:
+        ordered.sort(key=full_key)
+        return ordered
+    boundary = cheap_key(ordered[count - 1])
+    end = count
+    while end < len(ordered) and cheap_key(ordered[end]) == boundary:
+        end += 1
+    kept = ordered[:end]
+    kept.sort(key=full_key)
+    return kept
 
 
 def _surface_distance(query_key: str, text: str, cap: int = 64) -> float:
@@ -2053,6 +2101,9 @@ class SearchService:
 
             postings = index["postings"]
             idf = index.get("idf", {})
+            # Bound once per category (CR-002 hoist): the 2-char casing
+            # guard and the orphan pass both read the raw name documents.
+            names_raw = index.get("names") or []
             doc_lengths = index.get("doc_lengths", [])
             avg_doc_length = index.get("avg_doc_length", 20.0) or 20.0
             rid_to_code = index.get("rid_to_code", [])
@@ -2070,6 +2121,78 @@ class SearchService:
             orphan_tokens: list[str] = []
             for raw_token in query_tokens:
                 keys = _posting_candidates(raw_token, postings)
+                # v3 df-prune (AMUX-63 validation): v3 indexes post
+                # near-stopword alphanumeric/2-char terms ('mg' hits 40%
+                # of medication rows) whose per-query enumeration costs
+                # more than their evidence is worth. Keys that could
+                # never exist in a v2 index are pruned at a 15%
+                # document-frequency ceiling — pure >= 3-letter keys are
+                # NEVER pruned, so scoring on v2 indexes and for
+                # ordinary words is bit-identical. A token whose keys
+                # are all pruned falls through to the orphan surface
+                # pass, exactly where v2 left it.
+                n_records = index.get("num_records") or 0
+                if n_records:
+                    keys = [
+                        k for k in keys
+                        if k.isalpha() and len(k) >= 3
+                        or len(postings.get(k, ())) <= 0.15 * n_records
+                    ]
+                if not keys:
+                    orphan_tokens.append(raw_token)
+                    continue
+                # 2-char alpha casing guard (Joel ruling, AMUX-22): a
+                # 2-char posting key exists only in v3 and is an acronym
+                # by construction — raw tf/idf on it mis-ranks ('MI' ->
+                # 'Mi-2 Ab' rows, short lab docs, BM25-length-boosted,
+                # outrank 'Acute Myocardial Infarction (MI)'). Such a key
+                # only scores rows whose indexed surface carries the
+                # token AS TYPED or uppercased ('(MI)', 'HbA1c'); a key
+                # that corroborates nothing is dropped and the token
+                # falls through to the orphan surface pass — v2 behavior
+                # for 2-char tokens. Only affects keys v2 could never
+                # have; a lowercase-typed token corroborates only rows
+                # carrying it verbatim-lowercase ('(mi)') or uppercased
+                # ('(MI)') — cased acronyms need cased queries.
+                # CR-001 (review follow-up): the cased 2-char words are
+                # precomputed once per index (same lazy pattern as
+                # _orphan_surfaces_lower) — the per-query corroboration
+                # is then pure set work, no regex over the posting.
+                two_char = index.get("_two_char_cased")
+                if two_char is None:
+                    two_char = {}
+                    for tc_key, tc_posting in postings.items():
+                        if len(tc_key) != 2 or not tc_key.isalpha():
+                            continue
+                        cased_words: list[tuple[int, str]] = []
+                        for e in tc_posting:
+                            if not (isinstance(e, list) and len(e) >= 2):
+                                continue
+                            e_rid = int(e[0])
+                            if e_rid >= len(names_raw):
+                                continue
+                            for w in re.findall(
+                                r"\b[a-zA-Z]{2}\b",
+                                _strip_accents(names_raw[e_rid] or ""),
+                            ):
+                                if w.lower() == tc_key:
+                                    cased_words.append((e_rid, w))
+                        two_char[tc_key] = cased_words
+                    index["_two_char_cased"] = two_char
+                guarded_rids: dict[str, set[int]] = {}
+                for k in list(keys):
+                    if len(k) == 2 and k.isalpha():
+                        typed = _typed_by_lower.get(k, k)
+                        typed_upper = typed.upper()
+                        rids: set[int] = {
+                            rid
+                            for rid, w in two_char.get(k, ())
+                            if w == typed or w == typed_upper
+                        }
+                        if rids:
+                            guarded_rids[k] = rids
+                        else:
+                            keys.remove(k)
                 if not keys:
                     orphan_tokens.append(raw_token)
                     continue
@@ -2082,6 +2205,8 @@ class SearchService:
                         if not (isinstance(entry, list) and len(entry) >= 2):
                             continue
                         rid, tf = int(entry[0]), float(entry[1])
+                        if token in guarded_rids and rid not in guarded_rids[token]:
+                            continue
                         doc_len = doc_lengths[rid] if rid < len(doc_lengths) else avg_doc_length
                         k1, b = 1.5, 0.75
                         tf_comp = (tf * (k1 + 1)) / (tf + k1 * (1 - b + b * doc_len / avg_doc_length))
@@ -2104,26 +2229,51 @@ class SearchService:
                 orphan_touched: set[int] = set()
                 k1, b = 1.5, 0.75
                 q_token_set = set(query_tokens)
-                names_raw = index.get("names") or []
+                # Longest token first: the rarest discriminator fails
+                # fastest, and later checks are skipped entirely.
+                q_tokens = sorted(q_token_set, key=len, reverse=True)
+                q_tokens_rest = q_tokens[1:]
                 typed_orphans = [_typed_by_lower.get(t, t) for t in orphan_tokens]
-                for rid in range(max(len(names_raw), len(rid_to_friendly))):
-                    name_raw = names_raw[rid] if rid < len(names_raw) else ""
-                    friendly = rid_to_friendly[rid] if rid < len(rid_to_friendly) else ""
-                    if not (name_raw or friendly):
+                # AMUX-63: the lowercase combined surface is identical on
+                # every query, so it is precomputed once per index and
+                # cached in the (immutable, in-memory) index dict. The
+                # per-query scan below is then pure C-level substring
+                # checks — rebuilding and lowercasing the f-string per row
+                # per query made any orphan-token query O(index) Python
+                # work (~180ms+) and dominated hybrid $search latency.
+                surfaces = index.get("_orphan_surfaces_lower")
+                if surfaces is None:
+                    surfaces = [
+                        (
+                            f"{names_raw[i] if i < len(names_raw) else ''} "
+                            f"{rid_to_friendly[i] if i < len(rid_to_friendly) else ''}".lower()
+                        )
+                        for i in range(max(len(names_raw), len(rid_to_friendly)))
+                    ]
+                    index["_orphan_surfaces_lower"] = surfaces
+                for rid, low in enumerate(surfaces):
+                    if not low:
                         continue
                     # Cheap substring prefilter before tokenizing — a row
                     # whose combined surfaces don't even contain each query
                     # token as a substring cannot cover the token set.
                     # (Plain lower(); the exact coverage check below
-                    # applies the full accent-folding tokenizer.)
-                    combined = f"{name_raw} {friendly}"
-                    low = combined.lower()
-                    if not all(t in low for t in q_token_set):
+                    # applies the full accent-folding tokenizer. Written
+                    # as an explicit loop, not a genexpr: this runs over
+                    # every row of every category index, and a per-row
+                    # generator frame dominated the whole lexical path.)
+                    if q_tokens[0] not in low:
+                        continue
+                    if any(t not in low for t in q_tokens_rest):
                         continue
                     # Token coverage over the indexed name document AND
                     # the friendly display — the two surfaces a row is
                     # known by. (Space separator: no token can span it.)
-                    if not q_token_set <= set(_query_tokens(combined)):
+                    # Surviving rows are rare: rebuild the cased surfaces
+                    # on demand instead of carrying them through the scan.
+                    name_raw = names_raw[rid] if rid < len(names_raw) else ""
+                    friendly = rid_to_friendly[rid] if rid < len(rid_to_friendly) else ""
+                    if not q_token_set <= set(_query_tokens(low)):
                         continue
                     doc_len = doc_lengths[rid] if rid < len(doc_lengths) else avg_doc_length
                     tf_comp = (k1 + 1) / (1 + k1 * (1 - b + b * doc_len / avg_doc_length))
@@ -2161,23 +2311,36 @@ class SearchService:
             name_list = index.get("names") or []
 
             # Default-arg binding: these closures must not capture the
-            # category-loop variables (B023).
+            # category-loop variables (B023). CR-003: display is a pure
+            # function of rid (derived from rid_to_friendly), so the
+            # exact-surface flag is memoized per rid for this query —
+            # the cheap key, the full rank key and the emit loop all
+            # ask for the same rows.
+            _exact_cache: dict[int, bool] = {}
+
             def _row_exact(
                 rid: int,
                 display: str,
                 q_key: str = q_key,
                 name_list: list = name_list,
+                _cache: dict = _exact_cache,
             ) -> bool:
                 """AMUX-18: exact surface = the query normalized equals
                 EITHER the row's indexed name document ('Tylenol', the
                 synonym the postings matched) or its friendly display."""
-                if _surface_key(display) == q_key:
-                    return True
-                return (
-                    rid < len(name_list)
-                    and bool(name_list[rid])
-                    and _surface_key(name_list[rid]) == q_key
+                hit = _cache.get(rid)
+                if hit is not None:
+                    return hit
+                result = (
+                    _surface_key(display) == q_key
+                    or (
+                        rid < len(name_list)
+                        and bool(name_list[rid])
+                        and _surface_key(name_list[rid]) == q_key
+                    )
                 )
+                _cache[rid] = result
+                return result
 
             def _row_rank(
                 item: tuple[int, float],
@@ -2202,7 +2365,28 @@ class SearchService:
                     str(code),
                 )
 
-            for rid, score in sorted(scores.items(), key=_row_rank)[:fetch_count]:
+            def _cheap_key(
+                item: tuple[int, float],
+                _exact=_row_exact,
+                _friendly: list = rid_to_friendly,
+            ) -> tuple[bool, float]:
+                # B023: _friendly bound as a default arg, not a closure
+                # over the category-loop variable.
+                rid_ = item[0]
+                return (
+                    not _exact(
+                        rid_,
+                        _friendly[rid_] if rid_ < len(_friendly) else str(rid_),
+                    ),
+                    -item[1],
+                )
+
+            for rid, score in _sorted_lazy_surface_tiebreak(
+                scores.items(),
+                _cheap_key,
+                _row_rank,
+                fetch_count,
+            )[:fetch_count]:
                 code = rid_to_code[rid] if rid < len(rid_to_code) else str(rid)
                 display = rid_to_friendly[rid] if rid < len(rid_to_friendly) else code
                 sys_name = (rid_to_system[rid] if rid < len(rid_to_system) else "").upper()
@@ -2320,6 +2504,9 @@ class SearchService:
         (benchmarks/fusion_benchmark.py): hit@1 53.1% / hit@5 71.9% /
         FP@1 3.1% vs cascade 46.9% / 62.5% / 9.4% on the golden families;
         weighted-sum variants lost on precision (FP 53-59%).
+        (AMUX-63: depth was lowered 100 -> 25 — the depth sweep showed
+        quality flat 10..100 and latency driven by the lexical orphan
+        pass, not fusion depth.)
 
         Confidence (match_grade): the fused RRF score is a RANK signal,
         not a confidence signal (measured: true/wrong top-1 score medians

@@ -4,6 +4,33 @@ title: Releases
 
 This page tracks Medical Terminology for Data Science package releases.
 
+## 0.0.10
+
+Lexical performance + BM25 v3 indexes (terminology release 2026.11.05.1).
+No breaking API changes.
+
+Latency (the headline change):
+
+- **The lexical orphan-surface pass is cached per index** — queries that
+  previously rebuilt every row's combined surface text (180–256ms) now
+  precompute it once and prefilter with plain substring checks
+  (12–56ms). Hybrid $search drops from ~360ms to ~130–170ms.
+- **Hybrid candidate depth lowered 100 → 25** — a depth sweep showed
+  retrieval quality flat from depth 10 to 100; the fused top-1 is
+  provably depth-invariant.
+
+Lexical quality (BM25 v3, terminology 2026.11.05.1):
+
+- **Alphanumeric and 2-character tokens are searchable** (hba1c, 5mg,
+  b12, MI) — v3 indexes post alnum ≥2-char keys, and a casing guard
+  scores 2-char acronyms only on rows carrying them as typed or
+  uppercased. Golden families: hit@1 unchanged, false-positive@1
+  15.6% → 12.5% (hit@5 85.2% → 81.5%, the ruled-on 'Tylenol'
+  combo-product case).
+- v2 terminology releases keep serving bit-identically; existing
+  installs upgrade via `data cache-refresh --terminology` (fresh
+  installs fetch 2026.11.05.1 eagerly).
+
 ## 0.0.9
 
 Hybrid search fusion + demo Space. No breaking API changes.

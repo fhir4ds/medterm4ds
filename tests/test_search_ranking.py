@@ -154,6 +154,70 @@ class TestPostingCandidates:
         postings = {"tylenol": [[0, 1.0]]}
         assert _posting_candidates("tylenol", postings) == ["tylenol"]
 
+
+class TestLazySurfaceTiebreak:
+    """AMUX-63/v3: the expensive surface-distance tier must only be
+    computed for rows that can reach the cut — and the result must be
+    EXACTLY the full sort's top rows, boundary ties included."""
+
+    def test_matches_full_sort_with_ties(self):
+        import random
+
+        from medterm4ds.services.search import _sorted_lazy_surface_tiebreak
+
+        rng = random.Random(42)
+        rows = [(i, rng.choice([1.0, 2.0, 3.0])) for i in range(500)]
+
+        def cheap(it):
+            return (-it[1], it[0] % 3)
+
+        # full key extends the cheap prefix with an expensive component
+        def full(it):
+            return (-it[1], it[0] % 3, (it[0] * 7919) % 100, it[0])
+
+        for count in (1, 5, 20, 499, 500, 600):
+            lazy = _sorted_lazy_surface_tiebreak(rows, cheap, full, count)[:count]
+            eager = sorted(rows, key=full)[:count]
+            assert lazy == eager, count
+
+    def test_boundary_ties_kept_beyond_count(self):
+        from medterm4ds.services.search import _sorted_lazy_surface_tiebreak
+
+        # 10 rows tied on the cheap prefix; count=3 must still order ALL
+        # tied rows that could reach the cut via the full key.
+        rows = [(i, 1.0) for i in range(10)]
+
+        def cheap(it):
+            return -it[1]
+
+        def full(it):
+            return (-it[1], it[0])
+
+        out = _sorted_lazy_surface_tiebreak(rows, cheap, full, 3)
+        # all rows tie on the cheap prefix, so none can be excluded
+        assert out == sorted(rows, key=full)
+
+    def test_v3_alnum_key_wins_over_letter_runs(self):
+        # AMUX-69 v3: the full alphanumeric term is its own posting key;
+        # the letter-run fallback must not dilute or replace it.
+        postings = {"hba1c": [[0, 1.0]], "hba": [[1, 1.0]]}
+        assert _posting_candidates("hba1c", postings) == ["hba1c"]
+
+    def test_v3_short_acronym_key_exact(self):
+        postings = {"mi": [[0, 1.0]], "mis": [[1, 1.0]]}
+        assert _posting_candidates("mi", postings) == ["mi"]
+
+    def test_v2_index_fallback_unchanged(self):
+        # No alnum key (v2 shape): letter-run fallback as before.
+        postings = {"hba": [[0, 1.0]]}
+        assert _posting_candidates("hba1c", postings) == ["hba"]
+
+    def test_pure_alpha_keeps_self_and_stem(self):
+        # v2 ranking relies on the dual candidate (self + stem); the v3
+        # short-circuit must not drop the stem variant.
+        postings = {"tablets": [[0, 1.0]], "tablet": [[1, 1.0]]}
+        assert _posting_candidates("tablets", postings) == ["tablets", "tablet"]
+
     def test_alphanumeric_falls_back_to_letter_runs(self):
         postings = {"hba": [[0, 1.0]]}
         assert _posting_candidates("hba1c", postings) == ["hba"]
@@ -411,3 +475,187 @@ class TestOrphanPassGradeCap:
         by_code = {r.code: r for r in results}
         # Exact-surface rows are exempt from the cap: 'MS' IS the query.
         assert by_code["E1"].match_grade == "certain"
+
+
+class TestOrphanSurfaceCache:
+    """AMUX-63: the orphan pass precomputes each index's lowercase
+    combined surfaces once and caches them in the index dict (the
+    per-query f-string + lower() over every row dominated hybrid
+    $search latency). The cache must be exact and stable: repeated
+    orphan-token queries must return identical results to the
+    cache-building first call."""
+
+    def test_repeated_orphan_queries_identical(self, search_svc):
+        first = search_svc.lexical("PT", count=10)
+        for _ in range(3):
+            again = search_svc.lexical("PT", count=10)
+            assert [(r.code, r.score, r.match_grade) for r in again] == [
+                (r.code, r.score, r.match_grade) for r in first
+            ]
+
+    def test_cache_matches_derived_surfaces(self, search_svc):
+        # 'pt' (2 chars) never reaches the postings — a true orphan token,
+        # so this query builds the cache for every category index.
+        search_svc.lexical("PT", count=10)
+        svc_idx = search_svc._bm25_indexes
+        for cat, index in svc_idx.items():
+            surfaces = index.get("_orphan_surfaces_lower")
+            assert surfaces is not None, f"cache missing for {cat}"
+            names = index.get("names") or []
+            friendly = index.get("rid_to_friendly_name") or []
+            expected = [
+                (
+                    f"{names[i] if i < len(names) else ''} "
+                    f"{friendly[i] if i < len(friendly) else ''}".lower()
+                )
+                for i in range(max(len(names), len(friendly)))
+            ]
+            assert surfaces == expected
+
+    def test_multi_token_orphan_query_longest_first(self, search_svc):
+        # 'pt' has no posting (2-char build drop) while 'time' does —
+        # the orphan path runs for the query with BOTH tokens, and the
+        # row covering BOTH must still be found (token-set coverage is
+        # unchanged by the longest-first prefilter ordering, which puts
+        # the longer token 'measurement'-style discriminator first).
+        results = search_svc.lexical("PT time", count=10)
+        assert any(r.code == "L4" for r in results)
+
+
+class TestTwoCharAlphaCasingGuard:
+    """Joel ruling (AMUX-22): 2-char alpha posting keys (v3-only shape)
+    score ONLY rows whose indexed surface carries the token as typed or
+    uppercased — 'MI' must rank 'Acute Myocardial Infarction (MI)' over
+    'Mi-2 Ab', and a lowercase 'mi' query corroborates nothing."""
+
+    @pytest.fixture()
+    def mi_svc(self, tmp_path: Path) -> SearchService:
+        # Filler rows matter: with only 2 records the v3 df-prune
+        # (df > 15% of num_records) drops the 'mi' key BEFORE the
+        # casing guard runs. 20 fillers keep df = 2/22 <= 15% so these
+        # tests exercise the guard, not the orphan pass.
+        docs = [
+            {"code": "I21", "system": "icd10cm", "name": "Acute Myocardial Infarction (MI)"},
+            {"code": "C1", "system": "lnc", "name": "Mi-2 Ab"},
+        ] + [
+            {"code": f"F{i}", "system": "snomed", "name": f"Filler condition {i}"}
+            for i in range(20)
+        ]
+        idx = _build_index("condition", docs, avg_doc_length=20.0)
+        # hand-inject a v3-style 2-char posting both target rows hit at tf=1
+        idx["postings"]["mi"] = [[0, 1.0], [1, 1.0]]
+        idx["idf"]["mi"] = 5.0
+        (tmp_path / "condition_bm25.json").write_text(json.dumps(idx))
+        return SearchService(
+            search_index_dir=str(tmp_path), embedding_model_dir=str(tmp_path / "no_model")
+        )
+
+    def test_uppercased_query_prefers_cased_surface(self, mi_svc):
+        results = mi_svc.lexical("MI", count=5)
+        codes = [r.code for r in results]
+        assert "I21" in codes
+        assert codes.index("I21") < codes.index("C1") if "C1" in codes else True
+
+    def test_lowercase_query_no_corroboration_no_boost(self, mi_svc):
+        # 'mi' typed lowercase corroborates nothing: the guard drops the
+        # key and the query resolves via the orphan surface pass.
+        results = mi_svc.lexical("mi", count=5)
+        assert results  # rows still found via surface coverage
+
+    def test_mixed_case_typed_token_corroborates_typed_and_upper(self, mi_svc):
+        # 'Mi' as typed hits C1 ('Mi-2 Ab') and, via the uppercased
+        # variant, I21 ('(MI)') — both rows score on the posting key.
+        results = mi_svc.lexical("Mi", count=5)
+        codes = [r.code for r in results]
+        assert {"I21", "C1"} <= set(codes)
+
+    def test_repeated_queries_identical_after_cache_fill(self, mi_svc):
+        # CR-001: the cased-word precompute is cached per index
+        # (_two_char_cased); the second query must replay the first
+        # exactly from the cache.
+        first = mi_svc.lexical("MI", count=5)
+        assert mi_svc._bm25_indexes["condition"].get("_two_char_cased")
+        second = mi_svc.lexical("MI", count=5)
+        assert [(r.code, r.score) for r in first] == [
+            (r.code, r.score) for r in second
+        ]
+
+    def test_word_boundary_semantics_substring_does_not_corroborate(
+        self, tmp_path: Path
+    ):
+        # 'MI' inside a longer word ('MIA', 'Mitral') is not
+        # word-bounded and must not corroborate the key — only the
+        # standalone '(MI)' row scores.
+        idx = _build_index(
+            "condition",
+            [
+                {"code": "X1", "system": "snomed", "name": "MIA overlap syndrome"},
+                {"code": "X2", "system": "snomed", "name": "Mitral valve issues"},
+                {"code": "X3", "system": "snomed", "name": "Markers (MI) panel"},
+            ]
+            + [
+                {"code": f"F{i}", "system": "snomed", "name": f"Filler condition {i}"}
+                for i in range(20)
+            ],
+            avg_doc_length=20.0,
+        )
+        idx["postings"]["mi"] = [[0, 1.0], [1, 1.0], [2, 1.0]]
+        idx["idf"]["mi"] = 5.0
+        (tmp_path / "condition_bm25.json").write_text(json.dumps(idx))
+        svc = SearchService(
+            search_index_dir=str(tmp_path), embedding_model_dir=str(tmp_path / "no_model")
+        )
+        results = svc.lexical("MI", count=5)
+        codes = [r.code for r in results]
+        assert "X3" in codes
+        assert "X1" not in codes
+        assert "X2" not in codes
+
+    def test_accented_surface_corroborates_after_strip(self, tmp_path: Path):
+        # The precompute strips accents before extracting cased words:
+        # '(Mí)' corroborates a 'Mi' query exactly like the old regex.
+        idx = _build_index(
+            "condition",
+            [
+                {"code": "A1", "system": "snomed", "name": "Síndrome (Mí) crónico"},
+                {"code": "A2", "system": "snomed", "name": "Unrelated row"},
+            ]
+            + [
+                {"code": f"F{i}", "system": "snomed", "name": f"Filler condition {i}"}
+                for i in range(20)
+            ],
+            avg_doc_length=20.0,
+        )
+        idx["postings"]["mi"] = [[0, 1.0], [1, 1.0]]
+        idx["idf"]["mi"] = 5.0
+        (tmp_path / "condition_bm25.json").write_text(json.dumps(idx))
+        svc = SearchService(
+            search_index_dir=str(tmp_path), embedding_model_dir=str(tmp_path / "no_model")
+        )
+        codes = [r.code for r in svc.lexical("Mi", count=5)]
+        assert "A1" in codes
+        assert "A2" not in codes
+
+    def test_malformed_posting_entries_ignored(self, tmp_path: Path):
+        # Non-list / short entries in a guarded posting must be skipped
+        # by the precompute without breaking the query.
+        idx = _build_index(
+            "condition",
+            [
+                {"code": "B1", "system": "snomed", "name": "Acute MI"},
+                {"code": "B2", "system": "snomed", "name": "Other row"},
+            ]
+            + [
+                {"code": f"F{i}", "system": "snomed", "name": f"Filler condition {i}"}
+                for i in range(20)
+            ],
+            avg_doc_length=20.0,
+        )
+        idx["postings"]["mi"] = [["bad"], 7, [0, 1.0], [1, 1.0]]
+        idx["idf"]["mi"] = 5.0
+        (tmp_path / "condition_bm25.json").write_text(json.dumps(idx))
+        svc = SearchService(
+            search_index_dir=str(tmp_path), embedding_model_dir=str(tmp_path / "no_model")
+        )
+        codes = [r.code for r in svc.lexical("MI", count=5)]
+        assert "B1" in codes

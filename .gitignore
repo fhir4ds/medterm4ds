@@ -72,3 +72,6 @@ docs/.ai_loop/
 # Standalone Canonical ValueSet Anchors Project (ignored for separate repo migration)
 canonical_anchors/
 
+
+# secrets (never commit)
+.env

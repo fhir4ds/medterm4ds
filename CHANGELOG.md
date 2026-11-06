@@ -7,6 +7,51 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.10] - 2026-11-05
+
+### Changed
+
+- **Lexical orphan-surface pass is cached per index** (AMUX-63). The
+  pass rebuilt `f"{name} {friendly}"` and lowercased it per row on
+  every query (180–256ms of pure string construction); it now builds
+  `_orphan_surfaces_lower` once per index and pre-filters with a
+  longest-token-first plain substring check. Lexical query latency
+  180–256ms → 12–56ms.
+- **`HYBRID_CANDIDATE_DEPTH` lowered 100 → 25** (AMUX-63). A depth
+  sweep (benchmarks/results_depth_sweep.md) showed retrieval quality
+  flat from depth 10 to 100 while latency is depth-independent;
+  25 keeps headroom. Hybrid $search latency ~360ms → ~130–170ms.
+- **Lexical posting lookups are v3-index ready** (AMUX-22). Exact
+  alphanumeric posting keys are tried first (v2 pure ≥3-letter keys
+  keep their self+stem dual lookup unchanged); the expensive
+  surface-distance sort tier is computed only for rows reaching the
+  cut (`_sorted_lazy_surface_tiebreak`, exact-equivalent by boundary
+  tie extension); v3 keys not matching the v2 shape with df > 15% are
+  pruned from scoring and fall to the orphan pass ('mg' at 40% df).
+- **2-character alpha posting keys carry a casing guard** (AMUX-22,
+  Joel ruling: keep the postings). A 2-char alpha token ('mi', 'iv')
+  only scores rows carrying it as-typed or uppercased ('(MI)'); with
+  no corroboration the token falls to the orphan pass. Benchmark
+  evidence on the v3 candidate indexes vs serving v2: hit@1 63.0%
+  unchanged, FP 15.6% → 12.5%, hit@5 85.2% → 81.5% (single residual
+  'Tylenol' combo-product case — optional model-side follow-up).
+- Golden truth in benchmarks/fusion_benchmark.py accepts brand/product
+  rows for brand queries (Joel ruling 2026-10-30: brand rows are the
+  correct truth for brand queries).
+
+### Known limitations
+
+- **v3 df-prune ceiling is df-only** (fhir4ds peer review, 2026-11-05):
+  a genuinely discriminative alphanumeric term with document frequency
+  above 15% (an 'h1n1'-class term in a flu-heavy corpus) is pruned from
+  posting-key scoring to the orphan surface pass, changing its rank. Not
+  reachable on v2 indexes; revisit with an idf floor alongside the df
+  ceiling when v3 serving accumulates real corpora (backlog card,
+  v3-serving follow-up).
+- `_typed_by_lower` is first-occurrence-wins: a query repeating a token
+  in different casings ('mi MI') uses the first spelling for the 2-char
+  casing guard. Edge-of-edge; tracked with the CR polish backlog.
+
 ## [0.0.9] - 2026-11-03
 
 ### Changed
