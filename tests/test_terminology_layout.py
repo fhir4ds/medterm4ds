@@ -333,3 +333,19 @@ class TestDownloadGating:
         )
         with pytest.raises(RuntimeError, match="network down"):
             search._resolve_terminology()
+
+
+class TestTerminologyDirOverrideAdoptsManifestRelease:
+    """Regression (2026-11-05 default flip): with MEDTERM4DS_TERMINOLOGY_DIR
+    pointing directly at a release dir, the manifest IS the release identity
+    — resolve must not demand release() agreement (ts110 binding contract)."""
+
+    def test_override_dir_with_foreign_default_release_resolves(self, tmp_path, monkeypatch):
+        built = _build_release(tmp_path, release="2001.01.01.1")
+        release_dir = built["base"]
+        monkeypatch.setenv("MEDTERM4DS_TERMINOLOGY_DIR", str(release_dir))
+        monkeypatch.delenv("MEDTERM4DS_TERMINOLOGY_RELEASE", raising=False)
+        resolved = term.resolve(tmp_path, space_id=built["space"])
+        assert resolved is not None
+        assert resolved.release == "2001.01.01.1"
+        assert resolved.lexical == release_dir / "lexical" / "2001.01.01.1"
