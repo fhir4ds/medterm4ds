@@ -1439,3 +1439,35 @@ class _StubSearch:
 
     def canonical(self, text, **_kwargs):
         return self._mapping.get(text, [])
+
+
+class TestFusedDoseNotComposed:
+    """Regression (ts99 extract-filter gate, 2026-11-07): a fused dose
+    token ('500mg') is ONE alnum token, so the neutral-fragment check
+    missed it and 'metformin' + '500mg' composed into 'metformin 500mg',
+    resolving to the glyburide/metformin COMBINATION anchor instead of
+    plain metformin."""
+
+    def test_fused_dose_is_neutral(self):
+        from medterm4ds.services.extraction import _is_neutral_fragment
+
+        for frag in ("500mg", "5 mg", "7.2%", "120/80", "20/12.5 mg", "2.5mcg"):
+            assert _is_neutral_fragment(frag), frag
+        for frag in ("metformin", "b12", "lisinopril", "HbA1c"):
+            assert not _is_neutral_fragment(frag), frag
+
+    def test_drug_and_fused_dose_do_not_compose(self):
+        from medterm4ds.services.extraction import (
+            FilteredSpan,
+            _compose_compound_spans,
+        )
+
+        text = "Patient takes metformin 500mg and has diabetes."
+        spans = [
+            FilteredSpan(text="metformin", entity_type="therapeutic agent",
+                         span_start=14, span_end=23),
+            FilteredSpan(text="500mg", entity_type="therapeutic agent",
+                         span_start=24, span_end=29),
+        ]
+        out = _compose_compound_spans(spans, text)
+        assert [s.text for s in out] == ["metformin", "500mg"]

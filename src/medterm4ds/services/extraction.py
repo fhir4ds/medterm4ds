@@ -913,12 +913,27 @@ def _is_assertion_fragment(text: str) -> bool:
     return bool(_ASSERTION_FRAGMENT_RE.match(text.strip()))
 
 
+# Fused dose/value tokens ('500mg', '7.2%', '120/80') survive _TOKEN_RE as
+# ONE alnum token, so isdigit()/set membership never classify them —
+# measured regression (ts99): 'metformin' + '500mg' composed into
+# 'metformin 500mg' and resolved to the glyburide/metformin combination
+# anchor instead of plain metformin.
+_FUSED_VALUE_TOKEN_RE = re.compile(
+    r"^\d+(?:\.\d+)?(?:[a-z]+(?:/[a-z]+)?|%)$", re.IGNORECASE
+)
+
+
 def _is_neutral_fragment(text: str) -> bool:
     """True when a fragment is only values/units/dosing (never composed)."""
     tokens = _TOKEN_RE.findall(text.lower())
     if not tokens:
         return True
-    return all(t.isdigit() or t in _NEUTRAL_FRAGMENT_TOKENS for t in tokens)
+    return all(
+        t.isdigit()
+        or t in _NEUTRAL_FRAGMENT_TOKENS
+        or _FUSED_VALUE_TOKEN_RE.match(t)
+        for t in tokens
+    )
 
 
 def _compose_compound_spans(spans: list, text: str) -> list:
