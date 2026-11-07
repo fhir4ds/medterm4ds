@@ -1058,6 +1058,15 @@ _ABBREVIATION_STOPLIST = frozenset({
     "npo", "nkda", "nka", "md", "hedis", "cms", "fda", "cdc",
     "icd", "icd-10", "icd10", "cpt", "loinc", "ndc", "drg", "snomed",
     "umls", "rxnorm", "hcpcs",
+    # Bare units/dosing/frequency tokens (2026-11-07 verification): a
+    # lone 'mg' resolved to Myasthenia Gravis in 'lisinopril/HCTZ
+    # 20/12.5 mg daily'. A unit is never a concept — drop it.
+    "mg", "mcg", "ug", "ng", "g", "kg", "ml", "cc", "dl", "l",
+    "iu", "meq", "unit", "units", "mmol", "mol", "percent", "%",
+    "tab", "tabs", "tablet", "tablets", "cap", "caps", "capsule",
+    "capsules", "pill", "pills", "drop", "drops", "puff", "puffs",
+    "po", "iv", "im", "sq", "prn", "bid", "tid", "qid", "qd", "qhs",
+    "hs", "q6h", "q8h", "q12h", "q24h", "daily", "nightly", "weekly",
 })
 # Bare billing/terminology codes that leak as spans ('99213' CPT,
 # 'E11.9' ICD, '4548-4' LOINC) carry no clinical surface text to

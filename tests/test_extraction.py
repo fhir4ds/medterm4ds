@@ -1471,3 +1471,18 @@ class TestFusedDoseNotComposed:
         ]
         out = _compose_compound_spans(spans, text)
         assert [s.text for s in out] == ["metformin", "500mg"]
+
+
+class TestUnitStoplist:
+    """Unit/dose/frequency tokens are never concepts (2026-11-07
+    verification): a lone 'mg' resolved to Myasthenia Gravis."""
+
+    def test_unit_tokens_dropped(self):
+        from medterm4ds.services.extraction import _is_false_positive
+
+        for span in ("mg", "mcg", "ml", "units", "q6h", "bid", "prn",
+                     "tab", "Tabs", "IU", "mmol"):
+            assert _is_false_positive(span), span
+        # real entity names survive
+        for span in ("metformin", "Myasthenia Gravis", "b12", "insulin"):
+            assert not _is_false_positive(span), span
