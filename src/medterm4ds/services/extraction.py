@@ -515,12 +515,35 @@ _TRAILING_VALUE_RE = re.compile(
 def _strip_trailing_values(text: str) -> str:
     """Strip trailing numeric values and units from a span for search.
 
+    Also strips LEADING laterality/descriptor furniture (2026-11-07
+    adversarial battery: 'bilateral pneumonia', 'upper GI bleed', 'left
+    arm pain' resolve only once the qualifier is out of the query; the
+    qualifier words themselves are not part of the concept surface).
+    Only whole leading tokens from the closed qualifier set are removed —
+    'Goodpasture syndrome' keeps 'Goodpasture', 'b12' stays intact.
+
     "heart rate 80" → "heart rate"
     "BP 120/80" → "BP"
     "HbA1c 7.2%" → "HbA1c"
     "temperature" → "temperature" (unchanged — no trailing value)
+    "Bilateral pneumonia" → "pneumonia"
     """
-    return _TRAILING_VALUE_RE.sub('', text).strip()
+    text = _TRAILING_VALUE_RE.sub('', text).strip()
+    while True:
+        m = _LEADING_QUALIFIER_RE.match(text)
+        if not m:
+            return text
+        rest = text[m.end():].strip()
+        if not rest:
+            return text
+        text = rest
+
+
+_LEADING_QUALIFIER_RE = re.compile(
+    r"^(?:left|right|bilateral|unilateral|upper|lower|"
+    r"history\s+of|hx\s+of|status\s+post|s/p)\s+",
+    re.IGNORECASE,
+)
 
 
 # Conjunction patterns for splitting compound spans.
@@ -611,9 +634,17 @@ _POST_ENTITY_NEGATION_RE = re.compile(
 # only line of defense and missed it. These cues are checked in the
 # sentence tail AFTER a span whose status would otherwise be affirmed.
 _POST_SPAN_CUE_RE = re.compile(
-    r"^\s*(?:was\s+|is\s+|are\s+|has\s+been\s+|have\s+been\s+|now\s+)?"
+    r"^\s*[(\[\"\u201c]?\s*(?:was\s+|is\s+|are\s+|has\s+been\s+|have\s+been\s+|now\s+)?"
     r"(?:ruled\s+out|rules\s+out|excluded|not\s+seen|not\s+appreciated|"
     r"negative\s+for|free\s+of|denied|denies)\b",
+    re.IGNORECASE,
+)
+# Post-span uncertainty cues — the same parenthetical form ('Sepsis
+# (possible)', 'Pneumonia (suspected)'). Uncertain, not negated.
+_POST_SPAN_UNCERTAINTY_RE = re.compile(
+    r"^\s*[(\[\"\u201c]?\s*(?:possible|possibly|suspected|suspect|"
+    r"likely|concerning\s+for|cannot\s+rule\s+out|can't\s+rule\s+out|"
+    r"cannot\s+exclude)\b",
     re.IGNORECASE,
 )
 # How far past the span end a post-span cue may sit and still bind to it
@@ -641,7 +672,7 @@ _PRE_SPAN_UNCERTAINTY_RE = re.compile(
     re.IGNORECASE,
 )
 _PRE_SPAN_NEGATION_RE = re.compile(
-    r"\b(?:neither|denies|denied|negative\s+for|free\s+of)\s*$",
+    r"\b(?:neither|nor|denies|denied|negative\s+for|free\s+of)\s*$",
     re.IGNORECASE,
 )
 _PRE_SPAN_HISTORICAL_RE = re.compile(
@@ -701,6 +732,20 @@ def _post_span_negation_cue(text: str, span_end: int, doc) -> bool:
     limit = min(span_end + _POST_SPAN_CUE_WINDOW, sent_end or len(text))
     tail = text[span_end:limit]
     return bool(_POST_SPAN_CUE_RE.match(tail))
+
+
+def _post_span_uncertainty_cue(text: str, span_end: int, doc) -> bool:
+    """True when an uncertainty cue sits just after the span ('X (possible)')."""
+    sent_end = None
+    try:
+        for sent in doc.sents:
+            if sent.start_char <= span_end <= sent.end_char:
+                sent_end = sent.end_char
+                break
+    except Exception:  # noqa: BLE001
+        sent_end = None
+    limit = min(span_end + _POST_SPAN_CUE_WINDOW, sent_end or len(text))
+    return bool(_POST_SPAN_UNCERTAINTY_RE.match(text[span_end:limit]))
 
 
 # Strong clause boundaries for the ConText scope guard. Comma is
@@ -833,7 +878,32 @@ def _is_false_positive(text: str) -> bool:
     # Filter single-character spans (bullet chars, punctuation, etc.)
     if len(lower) <= 1:
         return True
+    # Abbreviation/code/markup stoplist (2026-11-07 adversarial battery):
+    # non-clinical shorthand resolved to confident wrong answers
+    # ('NPO' -> Narcissistic Personality Disorder, 'HEDIS' -> hypermobile
+    # EDS, 'MD' -> Multicore Myopathy, '<b>' -> 'B').
+    if lower in _ABBREVIATION_STOPLIST:
+        return True
+    if _CODE_PATTERN_RE.fullmatch(lower):
+        return True
+    if re.search(r"[<>{}]|&[a-z]+;", lower):
+        return True
     return False
+
+
+_ABBREVIATION_STOPLIST = frozenset({
+    "npo", "nkda", "nka", "md", "hedis", "cms", "fda", "cdc",
+    "icd", "icd-10", "icd10", "cpt", "loinc", "ndc", "drg", "snomed",
+    "umls", "rxnorm", "hcpcs",
+})
+# Bare billing/terminology codes that leak as spans ('99213' CPT,
+# 'E11.9' ICD, '4548-4' LOINC) carry no clinical surface text to
+# resolve. Deliberately NOT matching short alnum clinical tokens:
+# 'b12'/'a1c' stay extractable (the alnum ICD form requires a decimal).
+_CODE_PATTERN_RE = re.compile(
+    r"(?:[a-z]\d{2}\.\d+|\d{4,5}-\d|\d{5}|\d{1,3}\.\d+)",
+    re.IGNORECASE,
+)
 
 
 @dataclass
@@ -1327,15 +1397,13 @@ class NlpPipeline:
                     status = "uncertain"
                 elif status == "affirmed" and pre_cue:
                     status = {"uncertainty": "uncertain", "negation": "negated", "historical": "historical"}[pre_cue]
-                # Sentence-local post-span cue (2026-11-07 NER battery):
-                # ConText had its chance and left the span affirmed — a
-                # 'ruled out / excluded / negative for ...' cue directly
-                # after the span, in the same sentence, negates it.
-                if (
-                    status == "affirmed"
-                    and _post_span_negation_cue(text, end, doc)
-                ):
-                    status = "negated"
+                # Sentence-local post-span cues (2026-11-07): negation and
+                # uncertainty may follow the span, parenthetical or bare.
+                if status == "affirmed":
+                    if _post_span_negation_cue(text, end, doc):
+                        status = "negated"
+                    elif _post_span_uncertainty_cue(text, end, doc):
+                        status = "uncertain"
                 display_text = ent_text
 
             spans.append(FilteredSpan(

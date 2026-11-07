@@ -1228,3 +1228,65 @@ class TestPostSpanClauseBinding:
         assert _clause_negation_supported(
             "Denies chest pain, arm pain now.", 18, 26
         )
+
+
+class TestParentheticalAndStoplist20261107:
+    """Model-team verification round 2 (2026-11-07): parenthetical
+    assertion cues, neither/nor residual, abbreviation stoplist, and
+    leading-qualifier query stripping."""
+
+    def test_parenthetical_negation_and_uncertainty(self):
+        from medterm4ds.services.extraction import (
+            _post_span_negation_cue, _post_span_uncertainty_cue,
+        )
+
+        class _Sent:
+            def __init__(self, s, e):
+                self.start_char, self.end_char = s, e
+
+        class _Doc:
+            def __init__(self, *sents):
+                self.sents = list(sents)
+
+        text1 = "Pneumonia (ruled out)."
+        doc1 = _Doc(_Sent(0, len(text1)))
+        assert _post_span_negation_cue(text1, text1.index("(") - 1, doc1)
+
+        text2 = "Sepsis (possible)."
+        doc2 = _Doc(_Sent(0, len(text2)))
+        assert _post_span_uncertainty_cue(text2, text2.index("(") - 1, doc2)
+        assert not _post_span_negation_cue(text2, text2.index("(") - 1, doc2)
+
+    def test_nor_pre_span_negation(self):
+        from medterm4ds.services.extraction import _pre_span_cue
+
+        class _Sent:
+            def __init__(self, s, e):
+                self.start_char, self.end_char = s, e
+
+        class _Doc:
+            def __init__(self, s):
+                self.sents = [_Sent(0, len(s))]
+
+        text = "Neither pneumonia nor pulmonary embolism."
+        assert _pre_span_cue(text, text.index("pulmonary embolism"), _Doc(text)) == "negation"
+
+    def test_abbreviation_stoplist(self):
+        from medterm4ds.services.extraction import _is_false_positive
+        for span in ("NPO", "NKDA", "MD", "HEDIS", "<b>", "99213",
+                     "E11.9", "4548-4", "7.2"):
+            assert _is_false_positive(span), span
+        # clinical alnum tokens survive
+        for span in ("b12", "a1c", "HbA1c 7.2%", "metformin"):
+            assert not _is_false_positive(span), span
+
+    def test_leading_qualifier_stripping(self):
+        from medterm4ds.services.extraction import _strip_trailing_values
+        assert _strip_trailing_values("Bilateral pneumonia") == "pneumonia"
+        assert _strip_trailing_values("Upper GI bleed") == "GI bleed"
+        assert _strip_trailing_values("Left arm pain") == "arm pain"
+        assert _strip_trailing_values("s/p CABG") == "CABG"
+        # specificity-preserving: severity words and disease-name tokens stay
+        assert _strip_trailing_values("Goodpasture syndrome") == "Goodpasture syndrome"
+        assert _strip_trailing_values("Chronic kidney disease") == "Chronic kidney disease"
+        assert _strip_trailing_values("HbA1c 7.2%") == "HbA1c"
