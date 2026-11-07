@@ -1,0 +1,56 @@
+{
+  "_comment": "Robustness: misspellings, British spellings, plurals/inflections, case variants, dose-before-drug order, routes/forms, regimen acronyms, biomarker qualifiers, and contradiction. These measure how the resolver degrades rather than whether a rule is right.",
+  "cases": [
+    {"id": "rb-spell-01", "family": "misspelling", "text": "Metforman 500 mg BID.", "mentions": [{"text": "Metforman", "expect": ["metformin"], "mode": "any"}]},
+    {"id": "rb-spell-02", "family": "misspelling", "text": "Lisinipril 10 mg daily.", "mentions": [{"text": "Lisinipril", "expect": ["lisinopril"], "mode": "any"}]},
+    {"id": "rb-spell-03", "family": "misspelling", "text": "Diabetis mellitus type 2.", "mentions": [{"text": "Diabetis mellitus", "expect": ["diabetes"], "mode": "any"}]},
+    {"id": "rb-spell-04", "family": "misspelling", "text": "Hypertention noted.", "mentions": [{"text": "Hypertention", "expect": ["hypertension"], "mode": "any"}]},
+    {"id": "rb-spell-05", "family": "misspelling", "text": "Atorvastantin 40 mg.", "mentions": [{"text": "Atorvastantin", "expect": ["atorvastatin"], "mode": "any"}]},
+
+    {"id": "rb-brit-01", "family": "british", "text": "Haemoglobin 9.2, oedema present.", "mentions": [{"text": "Haemoglobin", "expect": ["hemoglobin", "haemoglobin"], "mode": "any", "type": "lab"}, {"text": "oedema", "expect": ["edema", "oedema"], "mode": "any"}]},
+    {"id": "rb-brit-02", "family": "british", "text": "Tumour of the colon.", "mentions": [{"text": "Tumour", "expect": ["tumor", "tumour", "neoplasm"], "mode": "any"}]},
+    {"id": "rb-brit-03", "family": "british", "text": "Analgesia given for pain.", "mentions": [{"text": "Analgesia", "expect": ["analgesia", "analgesic"], "mode": "any"}]},
+
+    {"id": "rb-plural-01", "family": "plural", "text": "Multiple stents placed.", "mentions": [{"text": "stents", "expect": ["stent"], "mode": "any"}]},
+    {"id": "rb-plural-02", "family": "plural", "text": "On statins and beta blockers.", "mentions": [{"text": "statins", "expect": ["statin"], "mode": "any"}, {"text": "beta blockers", "expect": ["beta"], "mode": "any"}]},
+    {"id": "rb-plural-03", "family": "plural", "text": "Bilateral cataracts.", "mentions": [{"text": "cataracts", "expect": ["cataract"], "mode": "any"}]},
+
+    {"id": "rb-case-01", "family": "case_variant", "text": "METFORMIN 1000 MG BID.", "mentions": [{"text": "METFORMIN", "expect": ["metformin"], "mode": "any"}]},
+    {"id": "rb-case-02", "family": "case_variant", "text": "MetFormin 500 mg.", "mentions": [{"text": "MetFormin", "expect": ["metformin"], "mode": "any"}]},
+    {"id": "rb-case-03", "family": "case_variant", "text": "ms symptoms worse.", "mentions": [], "noise": ["ms"]},
+
+    {"id": "rb-order-01", "family": "dose_before_drug", "text": "40 mg atorvastatin nightly.", "mentions": [{"text": "atorvastatin", "expect": ["atorvastatin"], "mode": "any"}]},
+    {"id": "rb-order-02", "family": "dose_before_drug", "text": "500 mg metformin BID.", "mentions": [{"text": "metformin", "expect": ["metformin"], "mode": "any"}]},
+
+    {"id": "rb-route-01", "family": "route_form", "text": "Topical hydrocortisone 2.5% cream.", "mentions": [{"text": "hydrocortisone", "expect": ["hydrocortisone"], "mode": "any"}]},
+    {"id": "rb-route-02", "family": "route_form", "text": "Inhaled albuterol PRN.", "mentions": [{"text": "albuterol", "expect": ["albuterol"], "mode": "any"}]},
+    {"id": "rb-route-03", "family": "route_form", "text": "Ophthalmic timolol drops BID.", "mentions": [{"text": "timolol", "expect": ["timolol"], "mode": "any"}]},
+    {"id": "rb-route-04", "family": "route_form", "text": "Metoprolol succinate 50 mg daily.", "mentions": [{"text": "Metoprolol succinate", "expect": ["metoprolol"], "mode": "any"}]},
+    {"id": "rb-route-05", "family": "route_form", "text": "Insulin 100 units/mL vial.", "mentions": [{"text": "Insulin", "expect": ["insulin"], "mode": "any"}]},
+    {"id": "rb-route-06", "family": "route_form", "text": "Insulin sliding scale before meals.", "mentions": [{"text": "Insulin", "expect": ["insulin"], "mode": "any"}]},
+
+    {"id": "rb-regimen-01", "family": "regimen", "text": "Started FOLFOX cycle 2.", "mentions": [{"text": "FOLFOX", "expect": ["folfox", "oxaliplatin", "fluorouracil"], "mode": "any"}]},
+    {"id": "rb-regimen-02", "family": "regimen", "text": "R-CHOP initiated.", "mentions": [{"text": "R-CHOP", "expect": ["rituximab", "chop"], "mode": "any"}]},
+    {"id": "rb-regimen-03", "family": "regimen", "text": "XRT to left breast completed.", "mentions": [{"text": "XRT", "expect": ["radiation", "radiotherapy"], "mode": "any"}]},
+
+    {"id": "rb-biomarker-01", "family": "biomarker_qualifier", "text": "ER/PR positive, HER2 negative.", "mentions": [{"text": "ER/PR", "expect": ["estrogen", "progesterone", "receptor"], "mode": "any"}, {"text": "HER2", "expect": ["her2"], "mode": "any"}]},
+    {"id": "rb-biomarker-02", "family": "biomarker_qualifier", "text": "PD-L1 40%, MSI-stable.", "mentions": [{"text": "PD-L1", "expect": ["pd-l1", "programmed death"], "mode": "any"}]},
+    {"id": "rb-biomarker-03", "family": "biomarker_qualifier", "text": "KRAS wild-type.", "mentions": [{"text": "KRAS", "expect": ["kras"], "mode": "any"}]},
+
+    {"id": "rb-trend-01", "family": "lab_trend", "text": "Creatinine trended down from 2.1 to 1.4.", "mentions": [{"text": "Creatinine", "expect": ["creatinine"], "mode": "any", "type": "lab"}]},
+    {"id": "rb-trend-02", "family": "lab_trend", "text": "Potassium 6.8, critical value called.", "mentions": [{"text": "Potassium", "expect": ["potassium"], "mode": "any", "type": "lab"}]},
+
+    {"id": "rb-micro-01", "family": "microbiology", "text": "Blood cultures positive for MRSA.", "mentions": [{"text": "MRSA", "expect": ["mrsa", "staphylococcus"], "mode": "any"}]},
+    {"id": "rb-micro-02", "family": "microbiology", "text": "Urine culture grew E. coli.", "mentions": [{"text": "E. coli", "expect": ["escherichia coli", "coli"], "mode": "any"}]},
+
+    {"id": "rb-imaging-01", "family": "imaging_finding", "text": "Opacity concerning for pneumonia.", "mentions": [{"text": "Opacity", "expect": ["opacity"], "mode": "any"}, {"text": "pneumonia", "expect": ["pneumonia"], "mode": "any"}]},
+    {"id": "rb-imaging-02", "family": "imaging_finding", "text": "Mild cardiomegaly, no effusion.", "mentions": [{"text": "cardiomegaly", "expect": ["cardiomegaly"], "mode": "any"}]},
+
+    {"id": "rb-contra-01", "family": "contradiction", "text": "No allergies; allergic to penicillin.", "mentions": [{"text": "penicillin", "expect": ["penicillin"], "mode": "any"}]},
+    {"id": "rb-contra-02", "family": "contradiction", "text": "Nonsmoker who smokes socially.", "mentions": [], "noise": ["Nonsmoker"]},
+
+    {"id": "rb-emptyish-01", "family": "emptyish", "text": "OK.", "mentions": [], "noise": ["OK"]},
+    {"id": "rb-emptyish-02", "family": "emptyish", "text": "  ", "mentions": []},
+    {"id": "rb-emptyish-03", "family": "emptyish", "text": "No complaints.", "mentions": [], "noise": ["complaints"]}
+  ]
+}

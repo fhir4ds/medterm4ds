@@ -26,7 +26,7 @@ import logging
 import os
 import re
 import threading
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any
 
 from medterm4ds.core.env import env_int
@@ -841,6 +841,131 @@ def _stitch_drug_fragments(spans: list, text: str) -> list:
     return out
 
 
+# Compound-span composition (2026-11-07 NER battery, model team findings 1/3).
+# GLiNER fragments compound mentions ('CBC' + 'with differential',
+# 'lisinopril' + 'HCTZ'); only the COMPOSED phrase carries the qualifier into
+# search, and search on the head noun alone is what produced the inverted
+# 'CBC' -> 'Hemogram ... WITHOUT Differential' answer.
+#
+# Linkers only: '/', '-', whitespace, parentheses, with/without/w-of/of.
+# Comma and 'and' are NEVER linkers: 'metformin, glipizide, and insulin' is a
+# co-prescription list and must stay three mentions (measured false merge).
+_COMPOSE_GAP_RE = re.compile(
+    r"^\s*(?:(?:with|without|w/|w/o|of)\s*|[/\-()]\s*|\s+)*$", re.IGNORECASE
+)
+_MAX_COMPOSE_GAP = 18  # chars between fragments; longer gaps are separate mentions
+
+# Fragments that never compose: values, units, dosing, frequency, note verbs.
+_NEUTRAL_FRAGMENT_TOKENS = frozenset({
+    "mg", "mcg", "ug", "g", "kg", "ml", "cc", "l", "iu", "unit", "units",
+    "meq", "tab", "tabs", "tablet", "tablets", "cap", "caps", "capsule",
+    "capsules", "pill", "pills", "drop", "drops", "puff", "puffs",
+    "po", "iv", "im", "sq", "prn", "bid", "tid", "qid", "qd", "hs",
+    "daily", "nightly", "weekly", "meals", "food", "today", "tomorrow",
+    "ordered", "continue", "continue.", "start", "stop", "take", "takes",
+    "given", "dose", "dosing", "mg/dl", "mmol/l", "mmhg",
+    # dosing/taper verbs and single-letter units (2026-11-07 port):
+    # 'Titrate lisinopril' and 'Temperature 38.2 C' must not compose.
+    "titrate", "titration", "taper", "from", "to", "c", "f",
+})
+_COMPOSE_STOPWORDS = frozenset({"with", "without", "of", "the", "w", "o", "and"})
+_TOKEN_RE = re.compile(r"[a-z0-9]+")
+
+
+_ASSERTION_FRAGMENT_RE = re.compile(
+    r"^(?:ruled?\s+out|rules?\s+out|excluded?|not\s+seen|not\s+appreciated"
+    r"|negative(?:\s+for)?|denies?|denied|free\s+of|no\s+evidence(?:\s+of)?"
+    r"|cannot|suspect(?:ed)?|possible|possibly|likely)\b",
+    re.IGNORECASE,
+)
+
+
+def _is_assertion_fragment(text: str) -> bool:
+    """True when a fragment is an assertion cue, not a compound modifier.
+
+    'Pneumonia' + 'ruled out' must never compose: the cue carries status,
+    not meaning, and composing it turned a negated mention into an
+    unresolvable span (2026-11-07 port regression).
+    """
+    return bool(_ASSERTION_FRAGMENT_RE.match(text.strip()))
+
+
+def _is_neutral_fragment(text: str) -> bool:
+    """True when a fragment is only values/units/dosing (never composed)."""
+    tokens = _TOKEN_RE.findall(text.lower())
+    if not tokens:
+        return True
+    return all(t.isdigit() or t in _NEUTRAL_FRAGMENT_TOKENS for t in tokens)
+
+
+def _compose_compound_spans(spans: list, text: str) -> list:
+    """Merge adjacent same-label spans separated by linker-only gaps.
+
+    'CBC' + 'with differential' -> 'CBC with differential' (the phrase that
+    carries the qualifier into search). Only affirmed spans in the same
+    section, same GLiNER label, and neither side numeric/unit/dosing.
+    The merged span keeps the head's offsets start and records every merged
+    fragment in ``composed_from`` so resolution can rank candidates by
+    fragment completeness.
+    """
+    if len(spans) < 2:
+        return spans
+    out: list = []
+    for span in spans:
+        prev = out[-1] if out else None
+        if prev is None:
+            out.append(span)
+            continue
+        gap = text[prev.span_end:span.span_start]
+        if not (
+            prev.status == "affirmed"
+            and span.status == "affirmed"
+            and prev.section == span.section
+            and prev.entity_type == span.entity_type
+            and 0 < span.span_start - prev.span_end <= _MAX_COMPOSE_GAP
+            and _COMPOSE_GAP_RE.match(gap)
+            and not _is_neutral_fragment(prev.text)
+            and not _is_neutral_fragment(span.text)
+            and not _is_assertion_fragment(prev.text)
+            and not _is_assertion_fragment(span.text)
+        ):
+            out.append(span)
+            continue
+        fragments = list(prev.composed_from or [prev.text])
+        fragments.append(span.text)
+        prev.text = " ".join(text[prev.span_start:span.span_end].split())
+        prev.span_end = span.span_end
+        prev.ner_confidence = max(prev.ner_confidence, span.ner_confidence)
+        prev.composed_from = fragments
+        continue
+    return out
+
+
+def _fragment_completeness(span, result) -> bool:
+    """True when a candidate represents every fragment of a composed span.
+
+    A combination anchor whose combination_members cover the fragment count
+    is complete by construction ('lisinopril/HCTZ' -> 'hydrochlorothiazide /
+    lisinopril'); otherwise each fragment must contribute a content token to
+    the display ('CBC with differential' -> 'CBC with Manual Differential').
+    """
+    fragments = getattr(span, "composed_from", None) or []
+    if len(fragments) < 2:
+        return True
+    members = getattr(result, "combination_members", None) or []
+    if len(members) >= len(fragments):
+        return True
+    display_tokens = set(_TOKEN_RE.findall((result.display or "").lower()))
+    for fragment in fragments:
+        tokens = [
+            t for t in _TOKEN_RE.findall(fragment.lower())
+            if not t.isdigit() and t not in _COMPOSE_STOPWORDS
+        ]
+        if tokens and not all(t in display_tokens for t in tokens):
+            return False
+    return True
+
+
 def _detect_inline_trigger(entity_text: str) -> tuple[str, str]:
     """Check if entity text starts with a negation/uncertainty/historical trigger.
 
@@ -923,6 +1048,9 @@ class FilteredSpan:
     # mapping stands). Captured at find_terms time because resolve_spans
     # runs without medspaCy loaded. Internal only — omitted from to_dict.
     context_categories: list[str] | None = None
+    # Fragments merged into this span by _compose_compound_spans, head first.
+    # None for ordinary spans. Internal only — omitted from to_dict.
+    composed_from: list[str] | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -1416,7 +1544,7 @@ class NlpPipeline:
                 context_categories=context_categories,
             ))
 
-        return _stitch_drug_fragments(spans, text)
+        return _compose_compound_spans(_stitch_drug_fragments(spans, text), text)
 
 
 # Inline-marker field vocabulary for format="annotated". source_code is the
@@ -1525,6 +1653,7 @@ def _first_matching_concept(
     *,
     result_type_prefixes: set[str] | None,
     grade_threshold: str,
+    composed: bool = False,
 ) -> ExtractedConcept | None:
     """First search result passing the span's source/category/grade filters.
 
@@ -1553,9 +1682,14 @@ def _first_matching_concept(
         None if result_type_prefixes
         else _categories_to_prefixes(_span_search_categories(span))
     )
-    prefix_attempts: list[set[str] | None] = (
-        [label_prefixes, None] if label_prefixes else [None]
-    )
+    # Composed spans never take the unfiltered fallback: a composed phrase may
+    # only resolve within its label's categories (same result_type — iteration
+    # (c) lesson: label-only constraints reintroduced type drift on mislabeled
+    # spans when the fallback was allowed).
+    if composed and label_prefixes:
+        prefix_attempts: list[set[str] | None] = [label_prefixes]
+    else:
+        prefix_attempts = [label_prefixes, None] if label_prefixes else [None]
     for label_pf in prefix_attempts:
         for r in results:
             # Qualifier-inversion guard (2026-11-07 NER battery): a
@@ -1583,6 +1717,13 @@ def _first_matching_concept(
             # Grade filter
             if _GRADE_ORDER.get(r.match_grade, 2) > _GRADE_ORDER.get(grade_threshold, 0):
                 continue
+            # Composed spans: candidate must represent every fragment, and clear
+            # the 'probable' floor regardless of the caller's min_grade.
+            if composed:
+                if _GRADE_ORDER.get(r.match_grade, 2) > _GRADE_ORDER["probable"]:
+                    continue
+                if not _fragment_completeness(span, r):
+                    continue
             canonical_id = getattr(r, "canonical_id", "") or ""
             combination_members = getattr(r, "combination_members", None) or []
             return ExtractedConcept(
@@ -1594,6 +1735,47 @@ def _first_matching_concept(
                 canonical_id=canonical_id,
                 combination_members=combination_members,
             )
+    return None
+
+
+def _resolve_composed_or_head(
+    span: FilteredSpan,
+    results: list,
+    ss: tuple[str, ...] | None,
+    *,
+    search,
+    result_type_prefixes: set[str] | None,
+    grade_threshold: str,
+) -> ExtractedConcept | None:
+    """Resolve a span, composing fragments but never losing the head concept.
+
+    A composed span that fails completeness/type/grade falls back to the head
+    fragment's own resolution, so composition can only add specificity — it
+    can never turn a previously-resolvable mention into a missing one.
+    """
+    composed = bool(span.composed_from)
+    matched = _first_matching_concept(
+        span, results, ss,
+        result_type_prefixes=result_type_prefixes,
+        grade_threshold=grade_threshold,
+        composed=composed,
+    )
+    if matched is not None or not composed:
+        return matched
+    for head_text in span.composed_from:
+        head_span = replace(
+            span, text=head_text, composed_from=None,
+            span_end=span.span_start + len(head_text),
+        )
+        head_results = search.canonical(_strip_trailing_values(head_text), count=10)
+        matched = _first_matching_concept(
+            head_span, head_results, ss,
+            result_type_prefixes=result_type_prefixes,
+            grade_threshold=grade_threshold,
+            composed=False,
+        )
+        if matched is not None:
+            return matched
     return None
 
 
@@ -1824,8 +2006,9 @@ class ExtractionService:
 
             for span, results in zip(spans, batch_results, strict=False):
                 ss = _LABEL_TO_SOURCES.get(span.entity_type.lower())
-                matched = _first_matching_concept(
+                matched = _resolve_composed_or_head(
                     span, results, ss,
+                    search=search,
                     result_type_prefixes=result_type_prefixes,
                     grade_threshold=grade_threshold,
                 )
@@ -1885,6 +2068,25 @@ class ExtractionService:
             else None
         )
         concepts = []
+        # Composition guard (2026-11-07 port): a composed span resolves under
+        # the same completeness/type/grade rules as the batch paths, with the
+        # head fallback, so composition can add specificity but never lose a
+        # previously-resolvable mention.
+        if search_mode == "canonical" and any(s.composed_from for s in spans):
+            for span in spans:
+                if not span.composed_from:
+                    continue  # ordinary spans keep the existing per-span path
+                ss = _LABEL_TO_SOURCES.get(span.entity_type.lower())
+                results = search.canonical(_strip_trailing_values(span.text), count=10)
+                matched = _resolve_composed_or_head(
+                    span, results, ss,
+                    search=search,
+                    result_type_prefixes=result_type_prefixes,
+                    grade_threshold=grade_threshold,
+                )
+                if matched is not None:
+                    concepts.append(matched)
+
         # QC-172: legacy modes ran one full search PER SPAN with zero dedup —
         # a 10K-char note with 310 spans / 26 distinct texts did 11.9x
         # redundant SapBERT+BM25 work (108.6s where ~12s needed). Cache search
@@ -1913,6 +2115,8 @@ class ExtractionService:
             return r
 
         for span in spans:
+            if span.composed_from:
+                continue  # resolved by the composed pre-pass above
             search_text = _strip_trailing_values(span.text)
             ss = _LABEL_TO_SOURCES.get(span.entity_type.lower())
             ss_key = ",".join(ss) if ss else ""
@@ -2057,8 +2261,9 @@ class ExtractionService:
             concepts: list[ExtractedConcept] = []
             for span, t in zip(spans, texts, strict=False):
                 ss = _LABEL_TO_SOURCES.get(span.entity_type.lower())
-                matched = _first_matching_concept(
+                matched = _resolve_composed_or_head(
                     span, results_by_text.get(t, []), ss,
+                    search=search,
                     result_type_prefixes=result_type_prefixes,
                     grade_threshold=grade_threshold,
                 )

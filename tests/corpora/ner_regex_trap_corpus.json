@@ -1,0 +1,623 @@
+{
+  "_comment": "Attacks the pipeline's own regex heuristics: trailing-value stripping (_strip_trailing_values), qualifier stripping (less/greater/high/low/normal/abnormal), the false-positive blocklist (left/right/upper/lower/normal/stable/well/good/child), the stage-N and single-character filters, conjunction splitting, and inline negation triggers at span start.",
+  "cases": [
+    {
+      "id": "re-tv-01",
+      "family": "trailing_value",
+      "text": "Type 2 diabetes mellitus.",
+      "mentions": [
+        {
+          "text": "Type 2 diabetes mellitus",
+          "expect": [
+            "diabetes"
+          ],
+          "mode": "any",
+          "type": "condition"
+        }
+      ]
+    },
+    {
+      "id": "re-tv-02",
+      "family": "trailing_value",
+      "text": "Vitamin B12 deficiency anemia.",
+      "mentions": [
+        {
+          "text": "Vitamin B12 deficiency anemia",
+          "expect": [
+            "b12",
+            "cobalamin",
+            "anemia"
+          ],
+          "mode": "any"
+        }
+      ]
+    },
+    {
+      "id": "re-tv-03",
+      "family": "trailing_value",
+      "text": "Hepatitis C infection.",
+      "mentions": [
+        {
+          "text": "Hepatitis C infection",
+          "expect": [
+            "hepatitis c"
+          ],
+          "mode": "any"
+        }
+      ]
+    },
+    {
+      "id": "re-tv-04",
+      "family": "trailing_value",
+      "text": "Factor VIII deficiency.",
+      "mentions": [
+        {
+          "text": "Factor VIII deficiency",
+          "expect": [
+            "factor viii",
+            "hemophilia"
+          ],
+          "mode": "any"
+        }
+      ]
+    },
+    {
+      "id": "re-tv-05",
+      "family": "trailing_value",
+      "text": "IL-6 elevated.",
+      "mentions": [
+        {
+          "text": "IL-6",
+          "expect": [
+            "interleukin",
+            "il-6"
+          ],
+          "mode": "any",
+          "type": "lab"
+        }
+      ]
+    },
+    {
+      "id": "re-tv-06",
+      "family": "trailing_value",
+      "text": "CA-125 pending.",
+      "mentions": [
+        {
+          "text": "CA-125",
+          "expect": [
+            "ca-125",
+            "ca 125",
+            "cancer antigen"
+          ],
+          "mode": "any",
+          "type": "lab"
+        }
+      ]
+    },
+    {
+      "id": "re-tv-07",
+      "family": "trailing_value",
+      "text": "Omega-3 fatty acids 2 g daily.",
+      "mentions": [
+        {
+          "text": "Omega-3 fatty acids",
+          "expect": [
+            "omega",
+            "fatty acid"
+          ],
+          "mode": "any"
+        }
+      ]
+    },
+    {
+      "id": "re-tv-08",
+      "family": "trailing_value",
+      "text": "T3 and T4 normal.",
+      "mentions": [
+        {
+          "text": "T3",
+          "expect": [
+            "triiodothyronine",
+            "t3"
+          ],
+          "mode": "any"
+        },
+        {
+          "text": "T4",
+          "expect": [
+            "thyroxine",
+            "t4"
+          ],
+          "mode": "any"
+        }
+      ]
+    },
+    {
+      "id": "re-tv-09",
+      "family": "trailing_value",
+      "text": "Low density lipoprotein 160.",
+      "mentions": [
+        {
+          "text": "Low density lipoprotein",
+          "expect": [
+            "low density lipoprotein",
+            "ldl"
+          ],
+          "mode": "any"
+        }
+      ]
+    },
+    {
+      "id": "re-tv-10",
+      "family": "trailing_value",
+      "text": "High sensitivity troponin 18.",
+      "mentions": [
+        {
+          "text": "High sensitivity troponin",
+          "expect": [
+            "troponin"
+          ],
+          "mode": "any",
+          "type": "lab"
+        }
+      ]
+    },
+    {
+      "id": "re-tv-11",
+      "family": "trailing_value",
+      "text": "Normal saline bolus 1 L.",
+      "mentions": [
+        {
+          "text": "Normal saline",
+          "expect": [
+            "saline",
+            "sodium chloride"
+          ],
+          "mode": "any"
+        }
+      ]
+    },
+    {
+      "id": "re-tv-12",
+      "family": "trailing_value",
+      "text": "Stage 2 pressure ulcer.",
+      "mentions": [
+        {
+          "text": "pressure ulcer",
+          "expect": [
+            "pressure ulcer",
+            "ulcer"
+          ],
+          "mode": "any"
+        }
+      ]
+    },
+    {
+      "id": "re-fp-01",
+      "family": "blocklist_trap",
+      "text": "Left ventricular hypertrophy on ECG.",
+      "mentions": [
+        {
+          "text": "Left ventricular hypertrophy",
+          "expect": [
+            "ventricular hypertrophy",
+            "hypertrophy"
+          ],
+          "mode": "any",
+          "type": "condition"
+        }
+      ]
+    },
+    {
+      "id": "re-fp-02",
+      "family": "blocklist_trap",
+      "text": "Right heart failure.",
+      "mentions": [
+        {
+          "text": "Right heart failure",
+          "expect": [
+            "heart failure"
+          ],
+          "mode": "any"
+        }
+      ]
+    },
+    {
+      "id": "re-fp-03",
+      "family": "blocklist_trap",
+      "text": "Upper GI bleed requiring transfusion.",
+      "mentions": [
+        {
+          "text": "Upper GI bleed",
+          "expect": [
+            "gastrointestinal bleed",
+            "bleed"
+          ],
+          "mode": "any"
+        }
+      ]
+    },
+    {
+      "id": "re-fp-04",
+      "family": "blocklist_trap",
+      "text": "Lower extremity edema.",
+      "mentions": [
+        {
+          "text": "Lower extremity edema",
+          "expect": [
+            "edema"
+          ],
+          "mode": "any"
+        }
+      ]
+    },
+    {
+      "id": "re-fp-05",
+      "family": "blocklist_trap",
+      "text": "Normal pressure hydrocephalus.",
+      "mentions": [
+        {
+          "text": "Normal pressure hydrocephalus",
+          "expect": [
+            "hydrocephalus"
+          ],
+          "mode": "any"
+        }
+      ]
+    },
+    {
+      "id": "re-fp-06",
+      "family": "blocklist_trap",
+      "text": "Stable angina, CCS class II.",
+      "mentions": [
+        {
+          "text": "Stable angina",
+          "expect": [
+            "angina"
+          ],
+          "mode": "any"
+        }
+      ]
+    },
+    {
+      "id": "re-fp-07",
+      "family": "blocklist_trap",
+      "text": "Well-differentiated adenocarcinoma.",
+      "mentions": [
+        {
+          "text": "Well-differentiated adenocarcinoma",
+          "expect": [
+            "adenocarcinoma"
+          ],
+          "mode": "any"
+        }
+      ]
+    },
+    {
+      "id": "re-fp-08",
+      "family": "blocklist_trap",
+      "text": "Goodpasture syndrome suspected.",
+      "mentions": [
+        {
+          "text": "Goodpasture syndrome",
+          "expect": [
+            "goodpasture"
+          ],
+          "mode": "any"
+        }
+      ]
+    },
+    {
+      "id": "re-fp-09",
+      "family": "blocklist_trap",
+      "text": "Bilateral pneumonia.",
+      "mentions": [
+        {
+          "text": "Bilateral pneumonia",
+          "expect": [
+            "pneumonia"
+          ],
+          "mode": "any"
+        }
+      ]
+    },
+    {
+      "id": "re-fp-10",
+      "family": "blocklist_trap",
+      "text": "Child with asthma.",
+      "mentions": [
+        {
+          "text": "asthma",
+          "expect": [
+            "asthma"
+          ],
+          "mode": "any"
+        }
+      ]
+    },
+    {
+      "id": "re-fp-11",
+      "family": "blocklist_trap",
+      "text": "Male pattern baldness.",
+      "mentions": [
+        {
+          "text": "Male pattern baldness",
+          "expect": [
+            "baldness",
+            "alopecia"
+          ],
+          "mode": "any"
+        }
+      ]
+    },
+    {
+      "id": "re-inline-01",
+      "family": "inline_trigger_trap",
+      "text": "Nocturnal dyspnea and orthopnea.",
+      "mentions": [
+        {
+          "text": "Nocturnal dyspnea",
+          "expect": [
+            "dyspnea",
+            "breathlessness"
+          ],
+          "mode": "any"
+        }
+      ]
+    },
+    {
+      "id": "re-inline-02",
+      "family": "inline_trigger_trap",
+      "text": "Absence seizure disorder.",
+      "mentions": [
+        {
+          "text": "Absence seizure",
+          "expect": [
+            "seizure"
+          ],
+          "mode": "any"
+        }
+      ]
+    },
+    {
+      "id": "re-inline-03",
+      "family": "inline_trigger_trap",
+      "text": "Non-Hodgkin lymphoma.",
+      "mentions": [
+        {
+          "text": "Non-Hodgkin lymphoma",
+          "expect": [
+            "lymphoma"
+          ],
+          "mode": "any"
+        }
+      ]
+    },
+    {
+      "id": "re-inline-04",
+      "family": "inline_trigger_trap",
+      "text": "Nonsmoker, no alcohol.",
+      "mentions": [],
+      "noise": [
+        "Nonsmoker",
+        "no alcohol"
+      ]
+    },
+    {
+      "id": "re-inline-05",
+      "family": "inline_trigger_trap",
+      "text": "History of falls, no fractures.",
+      "mentions": [
+        {
+          "text": "fractures",
+          "expect": [
+            "fracture"
+          ],
+          "mode": "any"
+        }
+      ]
+    },
+    {
+      "id": "re-inline-06",
+      "family": "inline_trigger_trap",
+      "text": "Free thyroxine 1.1.",
+      "mentions": [
+        {
+          "text": "Free thyroxine",
+          "expect": [
+            "thyroxine",
+            "free t4"
+          ],
+          "mode": "any",
+          "type": "lab"
+        }
+      ]
+    },
+    {
+      "id": "re-inline-07",
+      "family": "inline_trigger_trap",
+      "text": "Negative pressure wound therapy.",
+      "mentions": [
+        {
+          "text": "Negative pressure wound therapy",
+          "expect": [
+            "wound therapy",
+            "negative pressure"
+          ],
+          "mode": "any"
+        }
+      ]
+    },
+    {
+      "id": "re-inline-08",
+      "family": "inline_trigger_trap",
+      "text": "Without contrast CT head normal.",
+      "mentions": [],
+      "noise": [
+        "Without contrast"
+      ]
+    },
+    {
+      "id": "re-split-01",
+      "family": "conjunction_split",
+      "text": "TMP-SMX DS BID.",
+      "mentions": [
+        {
+          "text": "TMP-SMX",
+          "expect": [
+            "sulfamethoxazole",
+            "trimethoprim"
+          ],
+          "mode": "any"
+        }
+      ]
+    },
+    {
+      "id": "re-split-02",
+      "family": "conjunction_split",
+      "text": "Metformin/glipizide combination.",
+      "mentions": [
+        {
+          "text": "Metformin/glipizide",
+          "expect": [
+            "metformin",
+            "glipizide"
+          ],
+          "mode": "all"
+        }
+      ]
+    },
+    {
+      "id": "re-split-03",
+      "family": "conjunction_split",
+      "text": "Lupus anticoagulant/anticardiolipin positive.",
+      "mentions": [
+        {
+          "text": "Lupus anticoagulant",
+          "expect": [
+            "lupus anticoagulant"
+          ],
+          "mode": "any"
+        }
+      ]
+    },
+    {
+      "id": "re-split-04",
+      "family": "conjunction_split",
+      "text": "5-ASA 1.2 g daily.",
+      "mentions": [
+        {
+          "text": "5-ASA",
+          "expect": [
+            "mesalamine",
+            "aminosalicylate",
+            "5-asa"
+          ],
+          "mode": "any"
+        }
+      ]
+    },
+    {
+      "id": "re-split-05",
+      "family": "conjunction_split",
+      "text": "AST/ALT ratio 1.2.",
+      "mentions": [
+        {
+          "text": "AST",
+          "expect": [
+            "aspartate"
+          ],
+          "mode": "any"
+        },
+        {
+          "text": "ALT",
+          "expect": [
+            "alanine"
+          ],
+          "mode": "any"
+        }
+      ]
+    },
+    {
+      "id": "re-dup-01",
+      "family": "duplicate",
+      "text": "Diabetes. Diabetes managed with metformin.",
+      "mentions": [
+        {
+          "text": "Diabetes",
+          "expect": [
+            "diabetes"
+          ],
+          "mode": "any"
+        }
+      ]
+    },
+    {
+      "id": "re-dup-02",
+      "family": "duplicate",
+      "text": "MI in 2019. MI ruled out today.",
+      "mentions": [
+        {
+          "text": "MI",
+          "expect": [
+            "myocardial infarction"
+          ],
+          "mode": "any"
+        }
+      ]
+    },
+    {
+      "id": "re-len-01",
+      "family": "short_token",
+      "text": "S/p appendectomy.",
+      "mentions": [
+        {
+          "text": "appendectomy",
+          "expect": [
+            "appendectomy"
+          ],
+          "mode": "any"
+        }
+      ]
+    },
+    {
+      "id": "re-len-02",
+      "family": "short_token",
+      "text": "A1c 7.2.",
+      "mentions": [
+        {
+          "text": "A1c",
+          "expect": [
+            "a1c",
+            "hemoglobin a1c"
+          ],
+          "mode": "any",
+          "type": "lab"
+        }
+      ]
+    },
+    {
+      "id": "re-len-03",
+      "family": "short_token",
+      "text": "INR 2.5 on warfarin.",
+      "mentions": [
+        {
+          "text": "INR",
+          "expect": [
+            "inr",
+            "prothrombin"
+          ],
+          "mode": "any",
+          "type": "lab"
+        },
+        {
+          "text": "warfarin",
+          "expect": [
+            "warfarin"
+          ],
+          "mode": "any"
+        }
+      ]
+    }
+  ]
+}
