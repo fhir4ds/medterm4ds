@@ -110,6 +110,7 @@
     "ner_assertion_scope_corpus:as-status-02: 'acute distress'",
     "ner_battery_corpus:noise-03: 'follow up'",
     "ner_battery_corpus:noise-04: 'prn'",
+    "ner_edge_corpus:edge-fused-dose-04: 'mg'",
     "ner_edge_corpus:noise-13: 'risks'",
     "ner_edge_corpus:noise-14: 'Follow-up'",
     "ner_edge_corpus:noise-15: 'Objective'"

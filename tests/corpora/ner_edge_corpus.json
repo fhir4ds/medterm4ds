@@ -1508,6 +1508,78 @@
           "type": "condition"
         }
       ]
+    },
+    {
+      "id": "edge-fused-dose-01",
+      "family": "fused_dose",
+      "text": "Patient takes metformin 500mg and has diabetes.",
+      "mentions": [
+        {
+          "text": "metformin",
+          "expect": [
+            "metformin"
+          ],
+          "mode": "any",
+          "type": "medication"
+        },
+        {
+          "text": "diabetes",
+          "expect": [
+            "diabetes"
+          ],
+          "mode": "any",
+          "type": "condition"
+        }
+      ]
+    },
+    {
+      "id": "edge-fused-dose-02",
+      "family": "fused_dose",
+      "text": "atorvastatin 40mg nightly.",
+      "mentions": [
+        {
+          "text": "atorvastatin",
+          "expect": [
+            "atorvastatin"
+          ],
+          "mode": "any",
+          "type": "medication"
+        }
+      ]
+    },
+    {
+      "id": "edge-fused-dose-03",
+      "family": "fused_dose",
+      "text": "HbA1c 7.2% today.",
+      "mentions": [
+        {
+          "text": "HbA1c",
+          "expect": [
+            "hemoglobin a1c",
+            "a1c"
+          ],
+          "mode": "any",
+          "type": "lab"
+        }
+      ]
+    },
+    {
+      "id": "edge-fused-dose-04",
+      "family": "fused_dose",
+      "text": "lisinopril/HCTZ 20/12.5 mg daily.",
+      "mentions": [
+        {
+          "text": "lisinopril/HCTZ",
+          "expect": [
+            "lisinopril",
+            "hydrochlorothiazide"
+          ],
+          "mode": "all"
+        }
+      ],
+      "noise": [
+        "mg"
+      ]
     }
   ]
 }
