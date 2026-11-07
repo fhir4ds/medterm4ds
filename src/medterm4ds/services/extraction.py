@@ -621,6 +621,64 @@ _POST_SPAN_CUE_RE = re.compile(
 # mention directly).
 _POST_SPAN_CUE_WINDOW = 32
 
+# Pre-span cues (2026-11-07 edge corpus): cues that sit immediately
+# BEFORE a span GLiNER left bare. Two safety classes:
+#   PSEUDONEGATION — 'Cannot rule out pneumonia': medspaCy ConText reads
+#   'rule out' as a forward NEGATION and marks the span negated, but the
+#   'cannot' inverts it — the finding is UNCERTAIN, and a negated status
+#   would silently drop a possible diagnosis.
+#   UNCERTAINTY — 'Suspected urinary tract infection': ConText missed the
+#   forward uncertainty cue; the span affirmed.
+_PRE_SPAN_PSEUDONEGATION_RE = re.compile(
+    r"\b(?:cannot|can't|could\s+not|unable\s+to|not\s+able\s+to)\s+"
+    r"(?:rule\s+out|exclude|be\s+ruled\s+out|be\s+excluded)\s*$",
+    re.IGNORECASE,
+)
+_PRE_SPAN_UNCERTAINTY_RE = re.compile(
+    r"\b(?:suspected|suspect|possibly|possible|concerning\s+for|"
+    r"likely|question\s+of|cannot\s+rule\s+out|can't\s+rule\s+out|"
+    r"cannot\s+exclude|unable\s+to\s+exclude)\s+(?:a|an|the)?\s*$",
+    re.IGNORECASE,
+)
+_PRE_SPAN_NEGATION_RE = re.compile(
+    r"\b(?:neither|denies|denied|negative\s+for|free\s+of)\s*$",
+    re.IGNORECASE,
+)
+_PRE_SPAN_HISTORICAL_RE = re.compile(
+    r"\b(?:history\s+of|hx\s+of|hx|prior|previous|past)\s+(?:hx\s+of\s+)?"
+    r"(?:a|an|the)?\s*$",
+    re.IGNORECASE,
+)
+_PRE_SPAN_WINDOW = 48
+
+
+def _pre_span_cue(text: str, span_start: int, doc) -> str | None:
+    """Cue immediately before a span, in its sentence.
+
+    Returns 'pseudo_negation' | 'uncertainty' | 'negation' |
+    'historical' | None. Only the text directly adjacent to the span
+    (anchored with $) matches — a cue from a previous clause never binds.
+    """
+    sent_start = None
+    try:
+        for sent in doc.sents:
+            if sent.start_char <= span_start < sent.end_char:
+                sent_start = sent.start_char
+                break
+    except Exception:  # noqa: BLE001 — no sentence iterator → window only
+        sent_start = None
+    begin = max(span_start - _PRE_SPAN_WINDOW, sent_start or 0)
+    head = text[begin:span_start]
+    if _PRE_SPAN_PSEUDONEGATION_RE.search(head):
+        return "pseudo_negation"
+    if _PRE_SPAN_UNCERTAINTY_RE.search(head):
+        return "uncertainty"
+    if _PRE_SPAN_NEGATION_RE.search(head):
+        return "negation"
+    if _PRE_SPAN_HISTORICAL_RE.search(head):
+        return "historical"
+    return None
+
 
 def _post_span_negation_cue(text: str, span_end: int, doc) -> bool:
     """True when a negation cue sits just after the span, in its sentence.
@@ -655,12 +713,12 @@ _DRUG_NER_LABELS = frozenset({
 # ONLY across a bare '/' — 'flu and covid vaccine' must never merge.
 _MISLABELED_DRUG_LABELS = frozenset({"immunization"})
 _STITCH_SLASH_GAP_RE = re.compile(r"^/$")
-# Gap that may sit between two stitchable fragments: separators only
-# ('/', '-', ',', 'and', 'or' + whitespace). Any other token (dosage,
-# frequency like 'q6h', qualifiers) blocks the stitch.
-_STITCH_GAP_RE = re.compile(
-    r"^\s*(?:/|\\|-|,|\band\b|\bor\b)\s*$", re.IGNORECASE
-)
+# Gap that may sit between two stitchable fragments: SLASH or HYPHEN
+# separators only (2026-11-07 edge corpus: ',' and 'and' are co-
+# prescription LIST separators — 'Home meds: metformin, glipizide, and
+# insulin.' must stay three mentions, not become a fake combination
+# product). Hyphen stays: 'lisinopril-HCTZ' is a genuine compound.
+_STITCH_GAP_RE = re.compile(r"^\s*(?:/|\\|-)\s*$")
 
 
 def _stitch_drug_fragments(spans: list, text: str) -> list:
@@ -1220,6 +1278,15 @@ class NlpPipeline:
                 display_text = cleaned_text
             else:
                 status = context_status or "affirmed"
+                # Pre-span cues (2026-11-07 edge corpus). PSEUDONEGATION
+                # overrides even a ConText negation ('cannot rule out X' is
+                # uncertain, never negated); the weaker cues only lift an
+                # otherwise-affirmed span.
+                pre_cue = _pre_span_cue(text, start, doc)
+                if pre_cue == "pseudo_negation" and status in ("affirmed", "negated"):
+                    status = "uncertain"
+                elif status == "affirmed" and pre_cue:
+                    status = {"uncertainty": "uncertain", "negation": "negated", "historical": "historical"}[pre_cue]
                 # Sentence-local post-span cue (2026-11-07 NER battery):
                 # ConText had its chance and left the span affirmed — a
                 # 'ruled out / excluded / negative for ...' cue directly

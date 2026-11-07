@@ -1092,3 +1092,83 @@ class TestNerBattery20261107:
                          span_start=8, span_end=14),
         ]
         assert len(_stitch_drug_fragments(spans, "aspirin/plavix")) == 2
+
+
+class TestNerEdgeCorpus20261107:
+    """Model-team expanded edge corpus (2026-11-07, ~202 cases): the
+    list false-merge side effect, pseudonegation, and pre-span cues."""
+
+    def test_coprescription_list_never_merges(self):
+        # 'Home meds: metformin, glipizide, and insulin.' — three
+        # mentions, NOT the fake combination 'metformin/glipizide'.
+        from medterm4ds.services.extraction import (
+            FilteredSpan, _stitch_drug_fragments,
+        )
+        text = "Home meds: metformin, glipizide, and insulin."
+        spans = [
+            FilteredSpan(text="metformin", entity_type="therapeutic agent",
+                         span_start=11, span_end=20),
+            FilteredSpan(text="glipizide", entity_type="therapeutic agent",
+                         span_start=22, span_end=31),
+            FilteredSpan(text="insulin", entity_type="therapeutic agent",
+                         span_start=37, span_end=44),
+        ]
+        out = _stitch_drug_fragments(spans, text)
+        assert [s.text for s in out] == ["metformin", "glipizide", "insulin"]
+
+    def test_hyphen_compound_still_stitches(self):
+        from medterm4ds.services.extraction import (
+            FilteredSpan, _stitch_drug_fragments,
+        )
+        text = "lisinopril-HCTZ 20/12.5 mg daily"
+        spans = [
+            FilteredSpan(text="lisinopril", entity_type="therapeutic agent",
+                         span_start=0, span_end=10),
+            FilteredSpan(text="HCTZ", entity_type="therapeutic agent",
+                         span_start=11, span_end=15),
+        ]
+        out = _stitch_drug_fragments(spans, text)
+        assert len(out) == 1 and out[0].text == "lisinopril/HCTZ"
+
+    def test_pre_span_cue_classes(self):
+        from medterm4ds.services.extraction import _pre_span_cue
+
+        class _Sent:
+            def __init__(self, s, e):
+                self.start_char, self.end_char = s, e
+
+        class _Doc:
+            def __init__(self, *sents):
+                self.sents = list(sents)
+
+        def cue(text, start, doc=None):
+            return _pre_span_cue(text, start, doc or _Doc(_Sent(0, len(text))))
+
+        # pseudonegation — 'cannot rule out X' is UNCERTAIN, never negated
+        assert cue("Cannot rule out pneumonia.", "Cannot rule out pneumonia.".index("pneumonia")) == "pseudo_negation"
+        assert cue("We cannot exclude pulmonary embolism.", "We cannot exclude pulmonary embolism.".index("pulmonary")) == "pseudo_negation"
+        assert cue("Unable to exclude malignancy.", "Unable to exclude malignancy.".index("malignancy")) == "pseudo_negation"
+        # plain uncertainty rescue
+        assert cue("Suspected urinary tract infection.", "Suspected urinary tract infection.".index("urinary")) == "uncertainty"
+        assert cue("Possibly gout.", "Possibly gout.".index("gout")) == "uncertainty"
+        # neither/nor negation
+        assert cue("Neither pneumonia nor pulmonary embolism.", "Neither pneumonia nor pulmonary embolism.".index("pneumonia")) == "negation"
+        # historical
+        assert cue("Prior MI, now on dual antiplatelet therapy.", "Prior MI, now on dual antiplatelet therapy.".index("MI")) == "historical"
+        # a cue from an EARLIER clause never binds (anchored adjacency)
+        assert cue("We ruled out the flu. Pneumonia noted today.", "We ruled out the flu. Pneumonia noted today.".index("Pneumonia")) is None
+
+    def test_post_span_cue_still_negates(self):
+        # the original battery fix keeps working alongside the new guards
+        from medterm4ds.services.extraction import _post_span_negation_cue
+
+        class _Sent:
+            def __init__(self, s, e):
+                self.start_char, self.end_char = s, e
+
+        class _Doc:
+            def __init__(self, *sents):
+                self.sents = list(sents)
+
+        text = "Breast cancer ruled out."
+        assert _post_span_negation_cue(text, 13, _Doc(_Sent(0, len(text))))
