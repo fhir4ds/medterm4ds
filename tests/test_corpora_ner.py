@@ -125,9 +125,13 @@ def test_corpus_mentions_resolve(service, path):
             expected = [t.lower() for t in mention.get("expect", [])]
             if not expected:
                 continue
+            # Fragment fallbacks report the fragment as matched_text, so a
+            # concept relates to the mention when either string contains the
+            # other — not only when it equals the span text.
             related = [
                 c for c in concepts
-                if _norm(c.matched_text) in span_texts
+                if (_norm(c.matched_text) in span_texts
+                    or _norm(c.matched_text) in _norm(mention["text"]))
                 and (_norm(c.matched_text) in _norm(mention["text"])
                      or _norm(mention["text"]) in _norm(c.matched_text))
             ]

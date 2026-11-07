@@ -1385,19 +1385,37 @@ class TestFragmentCompositionRanking:
         assert _fragment_completeness(span, combo) is True
 
     def test_failed_composition_falls_back_to_head(self):
-        from medterm4ds.services.extraction import _resolve_composed_or_head
+        from medterm4ds.services.extraction import _resolve_composed_multi
 
         span = self._span("CBC with differential", "lab test", 0, 21)
         span.composed_from = ["CBC", "differential"]
         inverted = _StubHit("Hemogram and Platelets Without Differential Panel")
         head_hit = _StubHit("Complete Blood Count")
         search = _StubSearch({"CBC with differential": [inverted], "CBC": [head_hit]})
-        concept = _resolve_composed_or_head(
-            span, [inverted], None,
-            search=search, result_type_prefixes=None, grade_threshold="probable",
+        concepts = _resolve_composed_multi(
+            span, search.canonical, None,
+            result_type_prefixes=None, grade_threshold="probable",
         )
-        assert concept is not None
-        assert concept.display == "Complete Blood Count"
+        assert [c.display for c in concepts] == ["Complete Blood Count"]
+
+    def test_siblings_survive_failed_composition(self):
+        """'Pneumonia with sepsis' must yield BOTH concepts (review blocker 1)."""
+        from medterm4ds.services.extraction import _resolve_composed_multi
+
+        span = self._span("Pneumonia with sepsis", "disorder", 0, 21)
+        span.composed_from = ["Pneumonia", "sepsis"]
+        pneumonia = _StubHit("Pneumonia", canonical_id="VAL-COND-SNOMED-1")
+        sepsis = _StubHit("Sepsis", canonical_id="VAL-COND-SNOMED-2")
+        search = _StubSearch({
+            "Pneumonia with sepsis": [pneumonia],  # no single anchor covers both
+            "Pneumonia": [pneumonia],
+            "sepsis": [sepsis],
+        })
+        concepts = _resolve_composed_multi(
+            span, search.canonical, None,
+            result_type_prefixes=None, grade_threshold="probable",
+        )
+        assert sorted(c.display for c in concepts) == ["Pneumonia", "Sepsis"]
 
 
 class _StubHit:

@@ -1485,6 +1485,29 @@
         "plan",
         "Agree"
       ]
+    },
+    {
+      "id": "edge-sibling-01",
+      "family": "composition_siblings",
+      "text": "Pneumonia with sepsis.",
+      "mentions": [
+        {
+          "text": "Pneumonia",
+          "expect": [
+            "pneumonia"
+          ],
+          "mode": "any",
+          "type": "condition"
+        },
+        {
+          "text": "sepsis",
+          "expect": [
+            "sepsis"
+          ],
+          "mode": "any",
+          "type": "condition"
+        }
+      ]
     }
   ]
 }
