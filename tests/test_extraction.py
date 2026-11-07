@@ -1178,3 +1178,53 @@ class TestNerEdgeCorpus20261107:
 
         text = "Breast cancer ruled out."
         assert _post_span_negation_cue(text, 13, _Doc(_Sent(0, len(text))))
+
+
+class TestPostSpanClauseBinding:
+    """Adversarial corpus (model team, 2026-11-07, as-window-01/03,
+    as-mixed-01, as-scope-03): the post-span cue and ConText scope must
+    not cross clause boundaries — false negations delete real findings."""
+
+    def test_post_span_cue_blocked_by_clause_boundary(self):
+        from medterm4ds.services.extraction import _post_span_negation_cue
+
+        class _Sent:
+            def __init__(self, s, e):
+                self.start_char, self.end_char = s, e
+
+        class _Doc:
+            def __init__(self, *sents):
+                self.sents = list(sents)
+
+        def negated(text, span_text):
+            return _post_span_negation_cue(
+                text, text.index(span_text) + len(span_text),
+                _Doc(_Sent(0, len(text))),
+            )
+
+        # cue in a DIFFERENT clause -> must NOT negate
+        assert not negated("Hypertension, negative for proteinuria.", "Hypertension")
+        assert not negated("Asthma; free of symptoms today.", "Asthma")
+        assert not negated(
+            "Positive for fever and cough; negative for dyspnea.", "cough"
+        )
+        # cue in the SAME clause, directly after -> still negates
+        assert negated("Breast cancer ruled out.", "Breast cancer")
+        assert negated("Chest pain was ruled out today.", "Chest pain")
+
+    def test_context_negation_needs_clause_support(self):
+        from medterm4ds.services.extraction import _clause_negation_supported
+
+        # sepsis clause ('started ceftriaxone for sepsis') has no cue
+        text = "No evidence of pneumonia; started ceftriaxone for sepsis."
+        assert not _clause_negation_supported(
+            text, text.index("sepsis"), text.index("sepsis") + len("sepsis")
+        )
+        # cue in the same clause -> supported
+        assert _clause_negation_supported(
+            "Denies chest pain at rest.", 7, 17
+        )
+        # comma is NOT a boundary: the list item keeps its support
+        assert _clause_negation_supported(
+            "Denies chest pain, arm pain now.", 18, 26
+        )

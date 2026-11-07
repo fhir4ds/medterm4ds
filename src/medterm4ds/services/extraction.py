@@ -611,7 +611,7 @@ _POST_ENTITY_NEGATION_RE = re.compile(
 # only line of defense and missed it. These cues are checked in the
 # sentence tail AFTER a span whose status would otherwise be affirmed.
 _POST_SPAN_CUE_RE = re.compile(
-    r"^\W*(?:was\s+|is\s+|are\s+|has\s+been\s+|have\s+been\s+|now\s+)?"
+    r"^\s*(?:was\s+|is\s+|are\s+|has\s+been\s+|have\s+been\s+|now\s+)?"
     r"(?:ruled\s+out|rules\s+out|excluded|not\s+seen|not\s+appreciated|"
     r"negative\s+for|free\s+of|denied|denies)\b",
     re.IGNORECASE,
@@ -685,6 +685,10 @@ def _post_span_negation_cue(text: str, span_end: int, doc) -> bool:
 
     Only consulted when inline triggers and ConText both left the status
     affirmed (the ConText safety net already having had its chance).
+    The cue must follow the span across WHITESPACE ONLY — a clause
+    boundary (',' ';') between span and cue means the cue belongs to a
+    different clause ('Hypertension, negative for proteinuria' must not
+    negate Hypertension; adversarial corpus as-window-01, 2026-11-07).
     """
     sent_end = None
     try:
@@ -697,6 +701,33 @@ def _post_span_negation_cue(text: str, span_end: int, doc) -> bool:
     limit = min(span_end + _POST_SPAN_CUE_WINDOW, sent_end or len(text))
     tail = text[span_end:limit]
     return bool(_POST_SPAN_CUE_RE.match(tail))
+
+
+# Strong clause boundaries for the ConText scope guard. Comma is
+# deliberately NOT a boundary: 'denies chest pain, arm pain' keeps its
+# negation for the second item. Semicolon/colon/dash/' but ' separate
+# independent clauses whose cues must not leak ('No evidence of
+# pneumonia; started ceftriaxone for sepsis' — sepsis is not negated).
+_CLAUSE_BOUNDARY_RE = re.compile(r"[;:\u2014]|\bbut\b", re.IGNORECASE)
+_CLAUSE_NEGATION_SUPPORT_RE = re.compile(
+    r"\b(?:no|not|non-|denies|denied|deny|negative|without|absent|free|"
+    r"neither|nor|ruled\s+out|rules\s+out|negative\s+for)\b",
+    re.IGNORECASE,
+)
+
+
+def _clause_negation_supported(text: str, span_start: int, span_end: int) -> bool:
+    """True when the span's own clause carries a negation cue.
+
+    Guards against ConText's token-window scope crossing clause
+    boundaries: a 'negated' ConText verdict is only trusted when the
+    span's clause (strong boundaries only) itself supports it.
+    """
+    boundary = 0
+    for m in _CLAUSE_BOUNDARY_RE.finditer(text[:span_start]):
+        boundary = m.end()
+    clause = text[boundary:span_end]
+    return bool(_CLAUSE_NEGATION_SUPPORT_RE.search(clause))
 
 
 # Drug-ish GLiNER labels whose fragments may be stitched (2026-11-07 NER
@@ -1278,6 +1309,15 @@ class NlpPipeline:
                 display_text = cleaned_text
             else:
                 status = context_status or "affirmed"
+                # ConText clause-scope guard (adversarial corpus as-scope-03,
+                # 2026-11-07): ConText's token window can cross a ';'/':'
+                # boundary — a 'negated' verdict is only trusted when the
+                # span's own clause carries a negation cue.
+                if (
+                    status == "negated"
+                    and not _clause_negation_supported(text, start, end)
+                ):
+                    status = "affirmed"
                 # Pre-span cues (2026-11-07 edge corpus). PSEUDONEGATION
                 # overrides even a ConText negation ('cannot rule out X' is
                 # uncertain, never negated); the weaker cues only lift an
