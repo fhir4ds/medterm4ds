@@ -605,6 +605,107 @@ _POST_ENTITY_NEGATION_RE = re.compile(
     re.IGNORECASE,
 )
 
+# Sentence-local post-span negation cues (2026-11-07 NER battery, model
+# team finding 1): when GLiNER leaves the trigger OUTSIDE the span
+# ('Breast cancer ruled out.' → span 'Breast cancer'), ConText is the
+# only line of defense and missed it. These cues are checked in the
+# sentence tail AFTER a span whose status would otherwise be affirmed.
+_POST_SPAN_CUE_RE = re.compile(
+    r"^\W*(?:was\s+|is\s+|are\s+|has\s+been\s+|have\s+been\s+|now\s+)?"
+    r"(?:ruled\s+out|rules\s+out|excluded|not\s+seen|not\s+appreciated|"
+    r"negative\s+for|free\s+of|denied|denies)\b",
+    re.IGNORECASE,
+)
+# How far past the span end a post-span cue may sit and still bind to it
+# (same sentence; conservative window — cue must effectively follow the
+# mention directly).
+_POST_SPAN_CUE_WINDOW = 32
+
+
+def _post_span_negation_cue(text: str, span_end: int, doc) -> bool:
+    """True when a negation cue sits just after the span, in its sentence.
+
+    Only consulted when inline triggers and ConText both left the status
+    affirmed (the ConText safety net already having had its chance).
+    """
+    sent_end = None
+    try:
+        for sent in doc.sents:
+            if sent.start_char <= span_end <= sent.end_char:
+                sent_end = sent.end_char
+                break
+    except Exception:  # noqa: BLE001 — no sentence iterator → window only
+        sent_end = None
+    limit = min(span_end + _POST_SPAN_CUE_WINDOW, sent_end or len(text))
+    tail = text[span_end:limit]
+    return bool(_POST_SPAN_CUE_RE.match(tail))
+
+
+# Drug-ish GLiNER labels whose fragments may be stitched (2026-11-07 NER
+# battery, model team finding 3): GLiNER fragments compound drug mentions
+# ('lisinopril/HCTZ' → 'lisinopril' + 'HCTZ'), and resolving the FULL
+# mention is what returns the correct combination anchor (measured:
+# lisinopril/HCTZ → 'hydrochlorothiazide / lisinopril' 0.917 rank 1).
+# STITCH ONLY THESE — blind stitching merged 'Norco' with 'q6h'.
+_DRUG_NER_LABELS = frozenset({
+    "therapeutic agent", "therapeutic class", "medication", "drug",
+})
+# Battery finding #5: 'immunization' is GLiNER's dominant mislabel for
+# oral-drug fragments ('lisinopril', 'HCTZ'). These may join a stitch
+# ONLY across a bare '/' — 'flu and covid vaccine' must never merge.
+_MISLABELED_DRUG_LABELS = frozenset({"immunization"})
+_STITCH_SLASH_GAP_RE = re.compile(r"^/$")
+# Gap that may sit between two stitchable fragments: separators only
+# ('/', '-', ',', 'and', 'or' + whitespace). Any other token (dosage,
+# frequency like 'q6h', qualifiers) blocks the stitch.
+_STITCH_GAP_RE = re.compile(
+    r"^\s*(?:/|\\|-|,|\band\b|\bor\b)\s*$", re.IGNORECASE
+)
+
+
+def _stitch_drug_fragments(spans: list, text: str) -> list:
+    """Merge adjacent drug-label fragments separated only by separators.
+
+    'lisinopril' + '/' + 'HCTZ' (two GLiNER spans) becomes one span
+    'lisinopril/HCTZ' — the combination-mention text the resolver needs
+    to find the combination anchor. Non-drug neighbours, statuses other
+    than affirmed, and gaps containing any real token are never stitched.
+    """
+    if len(spans) < 2:
+        return spans
+    out: list = []
+    for span in spans:
+        prev = out[-1] if out else None
+        if prev is None:
+            out.append(span)
+            continue
+        gap = text[prev.span_end:span.span_start]
+        prev_drug = prev.entity_type in _DRUG_NER_LABELS
+        span_drug = span.entity_type in _DRUG_NER_LABELS
+        prev_mis = prev.entity_type in _MISLABELED_DRUG_LABELS
+        span_mis = span.entity_type in _MISLABELED_DRUG_LABELS
+        eligible = (
+            (prev_drug and span_drug)
+            # a mislabeled fragment may only join through a bare '/'
+            or (prev_drug and span_mis and _STITCH_SLASH_GAP_RE.match(gap))
+            or (prev_mis and span_drug and _STITCH_SLASH_GAP_RE.match(gap))
+            or (prev_mis and span_mis and _STITCH_SLASH_GAP_RE.match(gap))
+        )
+        if (
+            eligible
+            and prev.status == "affirmed"
+            and span.status == "affirmed"
+            and prev.section == span.section
+            and 0 < span.span_start - prev.span_end <= 8
+            and _STITCH_GAP_RE.match(gap)
+        ):
+            prev.text = f"{prev.text}/{span.text}"
+            prev.span_end = span.span_end
+            prev.ner_confidence = max(prev.ner_confidence, span.ner_confidence)
+            continue
+        out.append(span)
+    return out
+
 
 def _detect_inline_trigger(entity_text: str) -> tuple[str, str]:
     """Check if entity text starts with a negation/uncertainty/historical trigger.
@@ -1119,6 +1220,15 @@ class NlpPipeline:
                 display_text = cleaned_text
             else:
                 status = context_status or "affirmed"
+                # Sentence-local post-span cue (2026-11-07 NER battery):
+                # ConText had its chance and left the span affirmed — a
+                # 'ruled out / excluded / negative for ...' cue directly
+                # after the span, in the same sentence, negates it.
+                if (
+                    status == "affirmed"
+                    and _post_span_negation_cue(text, end, doc)
+                ):
+                    status = "negated"
                 display_text = ent_text
 
             spans.append(FilteredSpan(
@@ -1131,7 +1241,7 @@ class NlpPipeline:
                 context_categories=context_categories,
             ))
 
-        return spans
+        return _stitch_drug_fragments(spans, text)
 
 
 # Inline-marker field vocabulary for format="annotated". source_code is the
@@ -1213,6 +1323,26 @@ def _annotation_marker_values(
     return values
 
 
+def _qualifier_inverted(query: str, display: str) -> bool:
+    """True when a result's with/without qualifier inverts the query's.
+
+    2026-11-07 NER battery, model team finding 2 ('CBC with differential'
+    resolving to 'Hemogram and Platelets WITHOUT Differential'): right
+    family, inverted meaning — a wrong answer, not a near-miss. Only a
+    with↔without flip on the SAME qualifier token counts; other tokens
+    are irrelevant.
+    """
+    qual_re = re.compile(r"\b(without|with)\s+([a-z]{3,})\b", re.IGNORECASE)
+    q_quals = {tok.lower(): q for q, tok in qual_re.findall(query)}
+    if not q_quals:
+        return False
+    for q, tok in qual_re.findall(display):
+        q_tok = q_quals.get(tok.lower())
+        if q_tok is not None and {q_tok, q} == {"with", "without"}:
+            return True
+    return False
+
+
 def _first_matching_concept(
     span: FilteredSpan,
     results: list,
@@ -1253,6 +1383,12 @@ def _first_matching_concept(
     )
     for label_pf in prefix_attempts:
         for r in results:
+            # Qualifier-inversion guard (2026-11-07 NER battery): a
+            # with/without flip on the same token is a wrong answer, not
+            # a lower-grade match — skip it and let the next candidate
+            # (or abstention) win.
+            if _qualifier_inverted(span.text, r.display):
+                continue
             # Source filter
             if source_set and r.anchor_system not in source_set:
                 continue

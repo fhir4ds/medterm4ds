@@ -949,3 +949,146 @@ class TestBatchExtract:
                     f"score drift beyond float noise for text {i}: "
                     f"{sa.ner_confidence} vs {sb.ner_confidence}"
                 )
+
+
+class TestNerBattery20261107:
+    """Model-team 50-case NER battery (2026-11-07): three deterministic
+    consumer-side fixes. Evidence: fhir4px-model docs/experiments/
+    drug-ner-diagnostics.md."""
+
+    # --- 1. sentence-local post-span negation ('Breast cancer ruled out.') ---
+
+    def test_post_span_cue_regex_binds_directly_after_span(self):
+        from medterm4ds.services.extraction import _POST_SPAN_CUE_RE
+        for tail in (" ruled out.", " was ruled out.", " excluded;",
+                     " not seen in the follow-up", " negative for disease",
+                     " denied."):
+            assert _POST_SPAN_CUE_RE.match(tail), tail
+        for tail in (" reported.", " ruled", " routine screening.",
+                     " was noted"):
+            assert not _POST_SPAN_CUE_RE.match(tail), tail
+
+    def test_post_span_cue_sentence_limited(self):
+        from medterm4ds.services.extraction import _post_span_negation_cue
+
+        class _Sent:
+            def __init__(self, s, e):
+                self.start_char, self.end_char = s, e
+
+        class _Doc:
+            def __init__(self, *sents):
+                self.sents = list(sents)
+
+        # cue inside the same sentence, within the window -> binds
+        text = "Breast cancer ruled out. Continue screening."
+        doc = _Doc(_Sent(0, 26))
+        assert _post_span_negation_cue(text, 13, doc)
+        # cue in the NEXT sentence -> does not bind (sentence 1 has no cue)
+        text2 = "Breast cancer is present. It was ruled out later."
+        doc2 = _Doc(_Sent(0, 26), _Sent(26, len(text2)))
+        assert not _post_span_negation_cue(text2, 13, doc2)
+        # no sentence info -> window fallback still binds a direct cue
+        class _NoSents:
+            sents = ()
+            def __iter__(self):
+                return iter(())
+        assert _post_span_negation_cue("Chest pain excluded.", 10, _NoSents())
+
+    # --- 2. with/without qualifier inversion ('CBC with differential') ---
+
+    def test_qualifier_inverted_pairs(self):
+        from medterm4ds.services.extraction import _qualifier_inverted
+        assert _qualifier_inverted(
+            "CBC with differential",
+            "Hemogram and Platelets without Differential",
+        )
+        assert _qualifier_inverted(
+            "panel without differential", "CBC with Differential",
+        )
+        assert not _qualifier_inverted(
+            "CBC with differential", "CBC with Differential",
+        )
+        # different qualifier tokens, or no qualifier on either side
+        assert not _qualifier_inverted("CBC with differential", "chest pain")
+        assert not _qualifier_inverted("chest pain", "Basic metabolic panel")
+
+    def test_resolve_skips_inverted_qualifier_result(self, monkeypatch):
+        from medterm4ds.services import extraction as ex
+        from medterm4ds.services.search import CanonicalSearchResult
+
+        good = CanonicalSearchResult(
+            canonical_id="LAB-1", domain="Lab", anchor_system="LOINC",
+            anchor_code="57021-2", patient_friendly_name="CBC W Differential",
+            score=0.80, match_grade="probable",
+            matched_via_code="57021-2", matched_via_display="CBC W Differential",
+            total_member_count=1,
+        )
+        inverted = CanonicalSearchResult(
+            canonical_id="LAB-2", domain="Lab", anchor_system="LOINC",
+            anchor_code="58410-2",
+            patient_friendly_name="Hemogram and Platelets without Differential",
+            score=0.95, match_grade="probable",
+            matched_via_code="58410-2", matched_via_display="Hemogram",
+            total_member_count=1,
+        )
+        span = ex.FilteredSpan(text="CBC with differential", entity_type="panel")
+        got = ex._first_matching_concept(
+            span, [inverted, good], None,
+            result_type_prefixes=None, grade_threshold="probable",
+        )
+        assert got is not None and got.code == "57021-2"
+
+    # --- 3. drug-fragment stitching (lisinopril/HCTZ) ---
+
+    def test_stitch_drug_fragments_slash_and_dash(self):
+        from medterm4ds.services.extraction import (
+            FilteredSpan, _stitch_drug_fragments,
+        )
+        spans = [
+            FilteredSpan(text="lisinopril", entity_type="therapeutic agent",
+                         span_start=0, span_end=10, ner_confidence=0.8),
+            FilteredSpan(text="HCTZ", entity_type="therapeutic agent",
+                         span_start=11, span_end=15, ner_confidence=0.7),
+        ]
+        out = _stitch_drug_fragments(spans, "lisinopril/HCTZ")
+        assert len(out) == 1
+        assert out[0].text == "lisinopril/HCTZ"
+        assert (out[0].span_start, out[0].span_end) == (0, 15)
+
+    def test_stitch_blocked_by_non_separator_gap(self):
+        # 'Norco q6h' — the frequency token blocks the merge (measured
+        # regression in the model team's blind-stitch prototype)
+        from medterm4ds.services.extraction import (
+            FilteredSpan, _stitch_drug_fragments,
+        )
+        spans = [
+            FilteredSpan(text="Norco", entity_type="therapeutic agent",
+                         span_start=0, span_end=5),
+            FilteredSpan(text="q6h", entity_type="therapeutic agent",
+                         span_start=6, span_end=9),
+        ]
+        assert len(_stitch_drug_fragments(spans, "Norco q6h")) == 2
+
+    def test_stitch_only_drug_labels(self):
+        from medterm4ds.services.extraction import (
+            FilteredSpan, _stitch_drug_fragments,
+        )
+        spans = [
+            FilteredSpan(text="chest", entity_type="disorder",
+                         span_start=0, span_end=5),
+            FilteredSpan(text="pain", entity_type="disorder",
+                         span_start=6, span_end=10),
+        ]
+        assert len(_stitch_drug_fragments(spans, "chest/pain")) == 2
+
+    def test_stitch_blocked_across_statuses(self):
+        from medterm4ds.services.extraction import (
+            FilteredSpan, _stitch_drug_fragments,
+        )
+        spans = [
+            FilteredSpan(text="aspirin", entity_type="medication",
+                         span_start=0, span_end=7, status="negated"),
+            FilteredSpan(text="plavix", entity_type="medication",
+                         span_start=8, span_end=14),
+        ]
+        assert len(_stitch_drug_fragments(spans, "aspirin/plavix")) == 2
