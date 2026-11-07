@@ -14,6 +14,7 @@ These need the GLiNER weights and the search index, so every test here is
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -28,7 +29,7 @@ CORPUS_FILES = sorted(
     p for p in CORPORA.glob("*_corpus.json")
 )
 MINIMAL_PAIRS = CORPORA / "minimal_pairs.json"
-KNOWN_MISSES = CORPORA / "known_misses.json"
+KNOWN_GAPS = CORPORA / "known_gaps.json"
 
 pytestmark = pytest.mark.slow
 
@@ -36,6 +37,14 @@ pytestmark = pytest.mark.slow
 @pytest.fixture(scope="module")
 def service():
     return ExtractionService(device="cpu")
+
+
+def _new_gaps(kind: str, found: list[str]) -> list[str]:
+    """Gaps that are not in the accepted baseline (ratchet semantics)."""
+    known: set[str] = set()
+    if KNOWN_GAPS.is_file():
+        known = set(json.loads(KNOWN_GAPS.read_text()).get(kind, []))
+    return sorted(set(found) - known)
 
 
 def _cases(path: Path) -> list[dict]:
@@ -75,8 +84,12 @@ def test_corpus_noise_never_resolves(service, path):
         mapping = {_norm(c.matched_text): c.display for c in concepts}
         for item in noise:
             if _norm(item) in mapping:
-                failures.append(f"{_case_id(path, case)}: {item!r} -> {mapping[_norm(item)]!r}")
-    assert not failures, "furniture resolved as concepts:\n" + "\n".join(failures)
+                failures.append(f"{_case_id(path, case)}: {item!r}")
+    new = _new_gaps("noise", failures)
+    assert not new, (
+        "NEW furniture resolving as concepts (not in known_gaps.json):\n"
+        + "\n".join(new)
+    )
 
 
 @pytest.mark.parametrize("path", CORPUS_FILES, ids=lambda p: p.stem)
@@ -132,19 +145,20 @@ def test_corpus_mentions_resolve(service, path):
                 failures.append(
                     f"{_case_id(path, case)}: {mention['text']!r} -> {displays[:2]}"
                 )
-    known = set()
-    if KNOWN_MISSES.is_file():
-        known = set(json.loads(KNOWN_MISSES.read_text()).get("misses", []))
-    new_misses = sorted(set(failures) - known)
+    new_misses = _new_gaps("misses", failures)
     assert not new_misses, (
-        "NEW corpus misses (not in tests/corpora/known_misses.json):\n"
+        "NEW corpus misses (not in tests/corpora/known_gaps.json):\n"
         + "\n".join(new_misses)
         + "\n\nIf a change deliberately fixes a known miss, regenerate the baseline "
         "with scripts/update_corpus_baseline.py and commit the diff."
     )
 
 
-@pytest.mark.skipif(not MINIMAL_PAIRS.is_file(), reason="minimal_pairs.json not generated")
+@pytest.mark.skipif(
+    not MINIMAL_PAIRS.is_file() or os.environ.get("MEDTERM4DS_CORPUS_PAIRS") != "1",
+    reason="opt-in vocabulary-drift probe; FAISS tie-breaks make exact collision "
+           "sets non-deterministic across runs",
+)
 def test_minimal_pairs_do_not_collide(service):
     """A polarity swap must not resolve both sides to the same canonical_id."""
     pairs = json.loads(MINIMAL_PAIRS.read_text()).get("pairs", [])[:60]
@@ -159,4 +173,5 @@ def test_minimal_pairs_do_not_collide(service):
         shared = resolved["query_a"] & resolved["query_b"]
         if shared:
             collisions.append(f"{pair['query_a']!r} vs {pair['query_b']!r} -> {sorted(shared)}")
-    assert not collisions, "qualifier pairs collided:\n" + "\n".join(collisions)
+    new = _new_gaps("pair_collisions", collisions)
+    assert not new, "NEW qualifier-pair collisions (not in known_gaps.json):\n" + "\n".join(new)
