@@ -1237,7 +1237,8 @@ class TestParentheticalAndStoplist20261107:
 
     def test_parenthetical_negation_and_uncertainty(self):
         from medterm4ds.services.extraction import (
-            _post_span_negation_cue, _post_span_uncertainty_cue,
+            _post_span_negation_cue,
+            _post_span_uncertainty_cue,
         )
 
         class _Sent:
