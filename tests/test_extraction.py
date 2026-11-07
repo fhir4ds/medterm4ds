@@ -1042,7 +1042,8 @@ class TestNerBattery20261107:
 
     def test_stitch_drug_fragments_slash_and_dash(self):
         from medterm4ds.services.extraction import (
-            FilteredSpan, _stitch_drug_fragments,
+            FilteredSpan,
+            _stitch_drug_fragments,
         )
         spans = [
             FilteredSpan(text="lisinopril", entity_type="therapeutic agent",
@@ -1059,7 +1060,8 @@ class TestNerBattery20261107:
         # 'Norco q6h' — the frequency token blocks the merge (measured
         # regression in the model team's blind-stitch prototype)
         from medterm4ds.services.extraction import (
-            FilteredSpan, _stitch_drug_fragments,
+            FilteredSpan,
+            _stitch_drug_fragments,
         )
         spans = [
             FilteredSpan(text="Norco", entity_type="therapeutic agent",
@@ -1071,7 +1073,8 @@ class TestNerBattery20261107:
 
     def test_stitch_only_drug_labels(self):
         from medterm4ds.services.extraction import (
-            FilteredSpan, _stitch_drug_fragments,
+            FilteredSpan,
+            _stitch_drug_fragments,
         )
         spans = [
             FilteredSpan(text="chest", entity_type="disorder",
@@ -1083,7 +1086,8 @@ class TestNerBattery20261107:
 
     def test_stitch_blocked_across_statuses(self):
         from medterm4ds.services.extraction import (
-            FilteredSpan, _stitch_drug_fragments,
+            FilteredSpan,
+            _stitch_drug_fragments,
         )
         spans = [
             FilteredSpan(text="aspirin", entity_type="medication",
@@ -1102,7 +1106,8 @@ class TestNerEdgeCorpus20261107:
         # 'Home meds: metformin, glipizide, and insulin.' — three
         # mentions, NOT the fake combination 'metformin/glipizide'.
         from medterm4ds.services.extraction import (
-            FilteredSpan, _stitch_drug_fragments,
+            FilteredSpan,
+            _stitch_drug_fragments,
         )
         text = "Home meds: metformin, glipizide, and insulin."
         spans = [
@@ -1118,7 +1123,8 @@ class TestNerEdgeCorpus20261107:
 
     def test_hyphen_compound_still_stitches(self):
         from medterm4ds.services.extraction import (
-            FilteredSpan, _stitch_drug_fragments,
+            FilteredSpan,
+            _stitch_drug_fragments,
         )
         text = "lisinopril-HCTZ 20/12.5 mg daily"
         spans = [
