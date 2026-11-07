@@ -1290,3 +1290,133 @@ class TestParentheticalAndStoplist20261107:
         assert _strip_trailing_values("Goodpasture syndrome") == "Goodpasture syndrome"
         assert _strip_trailing_values("Chronic kidney disease") == "Chronic kidney disease"
         assert _strip_trailing_values("HbA1c 7.2%") == "HbA1c"
+class TestFragmentCompositionRanking:
+    """Compound-span composition + fragment-completeness ranking (2026-11-07).
+
+    Model-team finding: GLiNER emits 'CBC' and 'differential' as separate
+    spans, the resolver is queried with 'CBC' alone, and the top hit is
+    'Hemogram and Platelets WITHOUT Differential' — an inverted answer.
+    Composition carries the qualifier into search; completeness ranking
+    rejects candidates that drop a fragment; a failed composition always
+    falls back to the head concept.
+    """
+
+    @staticmethod
+    def _span(text, label, start, end):
+        return FilteredSpan(
+            text=text, entity_type=label, span_start=start, span_end=end,
+            ner_confidence=0.5,
+        )
+
+    def test_composes_across_qualifier_linker(self):
+        from medterm4ds.services.extraction import _compose_compound_spans
+
+        text = "CBC with differential ordered."
+        spans = [
+            self._span("CBC", "lab test", 0, 3),
+            self._span("differential", "lab test", 9, 21),
+        ]
+        merged = _compose_compound_spans(spans, text)
+        assert len(merged) == 1
+        assert merged[0].text == "CBC with differential"
+        assert merged[0].composed_from == ["CBC", "differential"]
+
+    def test_never_merges_across_comma(self):
+        from medterm4ds.services.extraction import _compose_compound_spans
+
+        text = "Home meds: metformin, glipizide."
+        spans = [
+            self._span("metformin", "therapeutic agent", 11, 20),
+            self._span("glipizide", "therapeutic agent", 22, 31),
+        ]
+        assert len(_compose_compound_spans(spans, text)) == 2
+
+    def test_never_merges_across_and(self):
+        from medterm4ds.services.extraction import _compose_compound_spans
+
+        text = "metformin and glipizide"
+        spans = [
+            self._span("metformin", "therapeutic agent", 0, 9),
+            self._span("glipizide", "therapeutic agent", 14, 23),
+        ]
+        assert len(_compose_compound_spans(spans, text)) == 2
+
+    def test_never_merges_numeric_or_unit_fragment(self):
+        from medterm4ds.services.extraction import _compose_compound_spans
+
+        text = "metformin 500 mg"
+        spans = [
+            self._span("metformin", "therapeutic agent", 0, 9),
+            self._span("500 mg", "lab test", 10, 16),
+        ]
+        assert len(_compose_compound_spans(spans, text)) == 2
+
+    def test_never_merges_across_labels(self):
+        from medterm4ds.services.extraction import _compose_compound_spans
+
+        text = "CBC pain"
+        spans = [
+            self._span("CBC", "lab test", 0, 3),
+            self._span("pain", "symptom", 4, 8),
+        ]
+        assert len(_compose_compound_spans(spans, text)) == 2
+
+    def test_completeness_rejects_dropped_fragment(self):
+        from medterm4ds.services.extraction import _fragment_completeness
+
+        span = self._span("CBC with differential", "lab test", 0, 21)
+        span.composed_from = ["CBC", "differential"]
+        inverted = _StubHit("Hemogram and Platelets Without Differential Panel")
+        complete = _StubHit("CBC with Manual Differential Panel")
+        assert _fragment_completeness(span, complete) is True
+        assert _fragment_completeness(span, inverted) is False
+
+    def test_completeness_accepts_combination_members(self):
+        from medterm4ds.services.extraction import _fragment_completeness
+
+        span = self._span("lisinopril/HCTZ", "immunization", 0, 15)
+        span.composed_from = ["lisinopril", "HCTZ"]
+        combo = _StubHit(
+            "hydrochlorothiazide / lisinopril",
+            canonical_id="VAL-MED-RXNORM-1",
+            members=[{"canonical_id": "VAL-MED-RXNORM-2"}, {"canonical_id": "VAL-MED-RXNORM-3"}],
+        )
+        assert _fragment_completeness(span, combo) is True
+
+    def test_failed_composition_falls_back_to_head(self):
+        from medterm4ds.services.extraction import _resolve_composed_or_head
+
+        span = self._span("CBC with differential", "lab test", 0, 21)
+        span.composed_from = ["CBC", "differential"]
+        inverted = _StubHit("Hemogram and Platelets Without Differential Panel")
+        head_hit = _StubHit("Complete Blood Count")
+        search = _StubSearch({"CBC with differential": [inverted], "CBC": [head_hit]})
+        concept = _resolve_composed_or_head(
+            span, [inverted], None,
+            search=search, result_type_prefixes=None, grade_threshold="probable",
+        )
+        assert concept is not None
+        assert concept.display == "Complete Blood Count"
+
+
+class _StubHit:
+    """Minimal SearchResult stand-in for resolution-unit tests."""
+
+    def __init__(self, display, *, canonical_id="VAL-LAB-LOINC-1", grade="exact",
+                 members=None, score=1.0):
+        self.display = display
+        self.canonical_id = canonical_id
+        self.match_grade = grade
+        self.combination_members = members or []
+        self.code = canonical_id.rsplit("-", 1)[-1]
+        self.source = "LOINC"
+        self.anchor_system = "LOINC"
+        self.score = score
+
+
+class _StubSearch:
+    def __init__(self, mapping):
+        self._mapping = mapping
+
+    def canonical(self, text, **_kwargs):
+        return self._mapping.get(text, [])

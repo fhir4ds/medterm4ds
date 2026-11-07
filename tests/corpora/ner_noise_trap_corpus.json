@@ -1,0 +1,47 @@
+{
+  "_comment": "Note furniture and numeric/symbol traps that should NOT become clinical concepts: billing codes, reference ranges, ordinals, times, obstetric notation, TNM staging, quality-measure names, code status, symbols, HTML/markdown, and patient-speech slang that is not an anchor.",
+  "cases": [
+    {"id": "nz-code-01", "family": "codes", "text": "ICD-10 I10, E11.9 assigned.", "mentions": [], "noise": ["ICD-10", "I10", "E11.9"]},
+    {"id": "nz-code-02", "family": "codes", "text": "CPT 99213 billed.", "mentions": [], "noise": ["CPT", "99213"]},
+    {"id": "nz-code-03", "family": "codes", "text": "LOINC 2823-3 resulted.", "mentions": [], "noise": ["LOINC", "2823-3"]},
+    {"id": "nz-code-04", "family": "codes", "text": "NDC 00093-7146-01 dispensed.", "mentions": [], "noise": ["NDC", "00093-7146-01"]},
+    {"id": "nz-code-05", "family": "codes", "text": "DRG 291, MS-DRG assigned.", "mentions": [], "noise": ["DRG", "291", "MS-DRG"]},
+
+    {"id": "nz-range-01", "family": "reference_range", "text": "Sodium 138 (135-145).", "mentions": [{"text": "Sodium", "expect": ["sodium"], "mode": "any"}], "noise": ["135-145"]},
+    {"id": "nz-range-02", "family": "reference_range", "text": "WBC 7.2 (4.0-11.0) K/uL.", "mentions": [], "noise": ["(4.0-11.0)", "K/uL"]},
+    {"id": "nz-range-03", "family": "reference_range", "text": "INR goal 2-3.", "mentions": [], "noise": ["2-3"]},
+
+    {"id": "nz-ord-01", "family": "ordinal", "text": "First visit, second episode, third trimester.", "mentions": [], "noise": ["First", "second", "third"]},
+    {"id": "nz-ord-02", "family": "ordinal", "text": "Last dose 3 days ago.", "mentions": [], "noise": ["Last", "3 days"]},
+
+    {"id": "nz-time-01", "family": "time", "text": "Since 2019, daily for 2 weeks, x3 days.", "mentions": [], "noise": ["Since", "2 weeks", "x3"]},
+    {"id": "nz-time-02", "family": "time", "text": "At 08:00 and 20:00.", "mentions": [], "noise": ["08:00", "20:00"]},
+
+    {"id": "nz-ob-01", "family": "obstetric", "text": "G2P1, currently pregnant at 28 weeks.", "mentions": [], "noise": ["G2P1", "28 weeks"]},
+    {"id": "nz-tnm-01", "family": "tumor_staging", "text": "T2N1M0 adenocarcinoma.", "mentions": [], "noise": ["T2N1M0"]},
+
+    {"id": "nz-qm-01", "family": "quality_measure", "text": "Colonoscopy screening due; mammogram overdue.", "mentions": [{"text": "Colonoscopy", "expect": ["colonoscopy"], "mode": "any"}, {"text": "mammogram", "expect": ["mammogram", "mammography"], "mode": "any"}]},
+    {"id": "nz-qm-02", "family": "quality_measure", "text": "HEDIS measure met, HBA1C poor control.", "mentions": [], "noise": ["HEDIS"]},
+
+    {"id": "nz-symbol-01", "family": "symbols", "text": "Hb 9.2 \u2193, plt 140 \u2192.", "mentions": [], "noise": ["\u2193", "\u2192"]},
+    {"id": "nz-symbol-02", "family": "symbols", "text": "Aspirin 81 mg \u00b1 PPI.", "mentions": [], "noise": ["\u00b1"]},
+    {"id": "nz-symbol-03", "family": "symbols", "text": "Plan: \u2020 not started. * see note.", "mentions": [], "noise": ["\u2020", "*"]},
+
+    {"id": "nz-markup-01", "family": "markup", "text": "<b>Diabetes</b> documented.", "mentions": [{"text": "Diabetes", "expect": ["diabetes"], "mode": "any"}], "noise": ["<b>", "</b>"]},
+    {"id": "nz-markup-02", "family": "markup", "text": "**Hypertension** and *asthma*.", "mentions": [{"text": "Hypertension", "expect": ["hypertension"], "mode": "any"}, {"text": "asthma", "expect": ["asthma"], "mode": "any"}], "noise": ["**", "*"]},
+
+    {"id": "nz-admin-01", "family": "administration", "text": "Seen by Dr. Jane Doe, MD at General Hospital.", "mentions": [], "noise": ["Dr. Jane Doe", "MD", "General Hospital"]},
+    {"id": "nz-admin-02", "family": "administration", "text": "Consent obtained; interpreter used.", "mentions": [], "noise": ["Consent", "interpreter"]},
+    {"id": "nz-admin-03", "family": "administration", "text": "Copay discussed with billing department.", "mentions": [], "noise": ["Copay", "billing department"]},
+
+    {"id": "nz-slang-01", "family": "patient_speech", "text": "Feels like a heart attack, but it is just heartburn.", "mentions": [{"text": "heart attack", "expect": ["myocardial infarction", "heart attack"], "mode": "any"}, {"text": "heartburn", "expect": ["heartburn", "reflux"], "mode": "any"}]},
+    {"id": "nz-slang-02", "family": "patient_speech", "text": "Takes a water pill and a blood thinner.", "mentions": [{"text": "water pill", "expect": ["diuretic"], "mode": "any"}, {"text": "blood thinner", "expect": ["anticoagulant"], "mode": "any"}]},
+    {"id": "nz-slang-03", "family": "patient_speech", "text": "Sugar is a little high lately.", "mentions": [{"text": "Sugar", "expect": ["glucose"], "mode": "any"}]},
+
+    {"id": "nz-misc-01", "family": "misc", "text": "NPO after midnight.", "mentions": [], "noise": ["NPO", "midnight"]},
+    {"id": "nz-misc-02", "family": "misc", "text": "Ambulated in hallway without difficulty.", "mentions": [], "noise": ["hallway", "difficulty"]},
+    {"id": "nz-misc-03", "family": "misc", "text": "Return precautions reviewed.", "mentions": [], "noise": ["return precautions"]},
+    {"id": "nz-misc-04", "family": "misc", "text": "Vitals: 98.6, 88, 120/80, 18.", "mentions": [], "noise": ["98.6", "88", "120/80", "18"]},
+    {"id": "nz-misc-05", "family": "misc", "text": "BMI 31.2 kg/m2, weight loss 10 lbs.", "mentions": [{"text": "BMI", "expect": ["body mass index", "bmi"], "mode": "any"}], "noise": ["kg/m2", "10 lbs"]}
+  ]
+}
