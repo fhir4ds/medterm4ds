@@ -1282,15 +1282,26 @@ class TestParentheticalAndStoplist20261107:
             assert not _is_false_positive(span), span
 
     def test_leading_qualifier_stripping(self):
-        from medterm4ds.services.extraction import _strip_trailing_values
-        assert _strip_trailing_values("Bilateral pneumonia") == "pneumonia"
-        assert _strip_trailing_values("Upper GI bleed") == "GI bleed"
-        assert _strip_trailing_values("Left arm pain") == "arm pain"
-        assert _strip_trailing_values("s/p CABG") == "CABG"
-        # specificity-preserving: severity words and disease-name tokens stay
-        assert _strip_trailing_values("Goodpasture syndrome") == "Goodpasture syndrome"
-        assert _strip_trailing_values("Chronic kidney disease") == "Chronic kidney disease"
+        """CR-301: leading qualifiers are now a FALLBACK query, not the
+        primary one — the qualifier is part of the concept for terms like
+        'left ventricular hypertrophy' and furniture for 'bilateral
+        pneumonia'."""
+        from medterm4ds.services.extraction import (
+            _leading_qualifier_fallback,
+            _strip_trailing_values,
+        )
+        # primary text keeps the qualifier
+        assert _strip_trailing_values("Bilateral pneumonia") == "Bilateral pneumonia"
         assert _strip_trailing_values("HbA1c 7.2%") == "HbA1c"
+        # the fallback carries the stripped variant
+        assert _leading_qualifier_fallback("Bilateral pneumonia") == "pneumonia"
+        assert _leading_qualifier_fallback("Upper GI bleed") == "GI bleed"
+        assert _leading_qualifier_fallback("Left arm pain") == "arm pain"
+        assert _leading_qualifier_fallback("s/p CABG") == "CABG"
+        # no qualifier -> no fallback (original text is used alone)
+        assert _leading_qualifier_fallback("metformin") is None
+        assert _leading_qualifier_fallback("Goodpasture syndrome") is None
+        assert _leading_qualifier_fallback("Chronic kidney disease") is None
 class TestFragmentCompositionRanking:
     """Compound-span composition + fragment-completeness ranking (2026-11-07).
 
@@ -1486,3 +1497,23 @@ class TestUnitStoplist:
         # real entity names survive
         for span in ("metformin", "Myasthenia Gravis", "b12", "insulin"):
             assert not _is_false_positive(span), span
+
+
+class TestQualifierFallbackNotPrimary:
+    """CR-301 regression (focused review, 2026-11-09): the leading
+    qualifier must NOT be stripped from the primary query — measured
+    'Left ventricular hypertrophy' -> 'Ventricular Hypertrophy' and
+    'Upper respiratory infection' -> 'Respiratory Tract Infection'."""
+
+    def test_primary_query_keeps_qualifier(self):
+        from medterm4ds.services.extraction import _strip_trailing_values
+        assert _strip_trailing_values("Left ventricular hypertrophy") == (
+            "Left ventricular hypertrophy"
+        )
+        assert _strip_trailing_values("Upper respiratory infection") == (
+            "Upper respiratory infection"
+        )
+
+    def test_fallback_rescues_bilateral(self):
+        from medterm4ds.services.extraction import _leading_qualifier_fallback
+        assert _leading_qualifier_fallback("Bilateral pneumonia") == "pneumonia"

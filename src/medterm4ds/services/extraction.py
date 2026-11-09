@@ -515,20 +515,29 @@ _TRAILING_VALUE_RE = re.compile(
 def _strip_trailing_values(text: str) -> str:
     """Strip trailing numeric values and units from a span for search.
 
-    Also strips LEADING laterality/descriptor furniture (2026-11-07
-    adversarial battery: 'bilateral pneumonia', 'upper GI bleed', 'left
-    arm pain' resolve only once the qualifier is out of the query; the
-    qualifier words themselves are not part of the concept surface).
-    Only whole leading tokens from the closed qualifier set are removed —
-    'Goodpasture syndrome' keeps 'Goodpasture', 'b12' stays intact.
-
     "heart rate 80" → "heart rate"
     "BP 120/80" → "BP"
     "HbA1c 7.2%" → "HbA1c"
     "temperature" → "temperature" (unchanged — no trailing value)
-    "Bilateral pneumonia" → "pneumonia"
+
+    Leading qualifiers are NOT removed here: the qualifier is part of the
+    concept for some terms ('left ventricular hypertrophy', 'upper
+    respiratory infection') and furniture for others ('bilateral
+    pneumonia'). They are tried as a FALLBACK query instead (CR-301) —
+    see ``_leading_qualifier_fallback``.
     """
-    text = _TRAILING_VALUE_RE.sub('', text).strip()
+    return _TRAILING_VALUE_RE.sub('', text).strip()
+
+
+_LEADING_QUALIFIER_RE = re.compile(
+    r"^(?:left|right|bilateral|unilateral|upper|lower|"
+    r"history\s+of|hx\s+of|status\s+post|s/p)\s+",
+    re.IGNORECASE,
+)
+
+
+def _strip_leading_qualifiers(text: str) -> str:
+    """Remove leading laterality/descriptor furniture from a query."""
     while True:
         m = _LEADING_QUALIFIER_RE.match(text)
         if not m:
@@ -539,11 +548,14 @@ def _strip_trailing_values(text: str) -> str:
         text = rest
 
 
-_LEADING_QUALIFIER_RE = re.compile(
-    r"^(?:left|right|bilateral|unilateral|upper|lower|"
-    r"history\s+of|hx\s+of|status\s+post|s/p)\s+",
-    re.IGNORECASE,
-)
+def _leading_qualifier_fallback(text: str) -> str | None:
+    """The stripped variant to retry when the primary query finds nothing.
+
+    Returns None when stripping would not change the query.
+    """
+    base = _strip_trailing_values(text)
+    stripped = _strip_leading_qualifiers(base)
+    return stripped if stripped and stripped != base else None
 
 
 # Conjunction patterns for splitting compound spans.
@@ -2094,6 +2106,18 @@ class ExtractionService:
                 if matched is not None:
                     concepts.append(matched)
                     continue
+                # CR-301: leading-qualifier FALLBACK — only after the
+                # primary query (qualifier intact) found nothing.
+                variant = _leading_qualifier_fallback(span.text)
+                if variant:
+                    matched = _first_matching_concept(
+                        span, search.canonical(variant, count=10), ss,
+                        result_type_prefixes=result_type_prefixes,
+                        grade_threshold=grade_threshold,
+                    )
+                    if matched is not None:
+                        concepts.append(matched)
+                        continue
 
                 # Conjunction split on failure (individual search for split parts)
                 search_text = _strip_trailing_values(span.text)
@@ -2221,25 +2245,38 @@ class ExtractionService:
                 rt = _span_search_categories(span)
                 rt_attempts = [rt, None] if rt is not None else [None]
 
+            # CR-301: leading-qualifier FALLBACK — retry the stripped
+            # query only when the primary one finds nothing.
+            variant = _leading_qualifier_fallback(span.text)
+            if variant:
+                search_texts = [search_text, variant]
+            else:
+                search_texts = [search_text]
+
             resolved = False
-            for rt in rt_attempts:
-                results = _search_span_texts(search_text, ss_key, ss, rt)
-                for r in results:
-                    if _GRADE_ORDER.get(r.match_grade, 2) > _GRADE_ORDER.get(grade_threshold, 0):
-                        continue
-                    canonical_id = getattr(r, "canonical_id", "") or ""
-                    combination_members = getattr(r, "combination_members", None) or []
-                    concepts.append(ExtractedConcept(
-                        code=r.code, source=r.source, display=r.display,
-                        matched_text=span.text, status=span.status,
-                        section=span.section, confidence=r.score,
-                        match_grade=r.match_grade, ner_label=span.entity_type,
-                        span_start=span.span_start, span_end=span.span_end,
-                        canonical_id=canonical_id,
-                        combination_members=combination_members,
-                    ))
-                    resolved = True
+            for candidate_text in search_texts:
+                if resolved:
                     break
+                for rt in rt_attempts:
+                    if resolved:
+                        break
+                    results = _search_span_texts(candidate_text, ss_key, ss, rt)
+                    for r in results:
+                        if _GRADE_ORDER.get(r.match_grade, 2) > _GRADE_ORDER.get(grade_threshold, 0):
+                            continue
+                        canonical_id = getattr(r, "canonical_id", "") or ""
+                        combination_members = getattr(r, "combination_members", None) or []
+                        concepts.append(ExtractedConcept(
+                            code=r.code, source=r.source, display=r.display,
+                            matched_text=span.text, status=span.status,
+                            section=span.section, confidence=r.score,
+                            match_grade=r.match_grade, ner_label=span.entity_type,
+                            span_start=span.span_start, span_end=span.span_end,
+                            canonical_id=canonical_id,
+                            combination_members=combination_members,
+                        ))
+                        resolved = True
+                        break
                 if resolved:
                     break
 
@@ -2372,6 +2409,17 @@ class ExtractionService:
                 if matched is not None:
                     concepts.append(matched)
                     continue
+                # CR-301: leading-qualifier FALLBACK (see single-batch path).
+                variant = _leading_qualifier_fallback(span.text)
+                if variant:
+                    matched = _first_matching_concept(
+                        span, search.canonical(variant, count=10), ss,
+                        result_type_prefixes=result_type_prefixes,
+                        grade_threshold=grade_threshold,
+                    )
+                    if matched is not None:
+                        concepts.append(matched)
+                        continue
                 parts = _split_on_conjunction(t)
                 if parts:
                     rt_attempts: list[str | list[str] | None]
