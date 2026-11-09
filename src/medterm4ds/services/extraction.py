@@ -1850,6 +1850,18 @@ def _resolve_composed_multi(
             composed=False,
         )
         if matched is None:
+            # CR-301 sibling parity: a fragment may need the leading-qualifier
+            # fallback too ('Bilateral pneumonia' must still resolve when the
+            # composed pair does not — measured loss of the pneumonia mention).
+            variant = _leading_qualifier_fallback(fragment)
+            if variant:
+                matched = _first_matching_concept(
+                    fragment_span, fetch(variant), ss,
+                    result_type_prefixes=result_type_prefixes,
+                    grade_threshold=grade_threshold,
+                    composed=False,
+                )
+        if matched is None:
             continue
         key = matched.canonical_id or f"{matched.source}:{matched.code}"
         if key in seen:
