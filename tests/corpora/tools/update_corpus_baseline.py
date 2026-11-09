@@ -11,7 +11,7 @@ import json
 import sys
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT / "src"))
 
 CORPORA = ROOT / "tests" / "corpora"
@@ -21,7 +21,7 @@ COMMENT = (
     "Baseline of corpus expectations not yet met with the shipped vocabulary/"
     "anchors: unresolved/mismatched mentions, furniture that still resolves, "
     "and qualifier pairs that still collide. tests/test_corpora_ner.py fails "
-    "only on NEW gaps; regenerate with scripts/update_corpus_baseline.py when "
+    "only on NEW gaps; regenerate with tests/corpora/tools/update_corpus_baseline.py when "
     "a fix lands (the diff is the fix's evidence)."
 )
 

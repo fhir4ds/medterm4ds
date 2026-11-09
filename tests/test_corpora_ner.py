@@ -154,7 +154,7 @@ def test_corpus_mentions_resolve(service, path):
         "NEW corpus misses (not in tests/corpora/known_gaps.json):\n"
         + "\n".join(new_misses)
         + "\n\nIf a change deliberately fixes a known miss, regenerate the baseline "
-        "with scripts/update_corpus_baseline.py and commit the diff."
+        "with tests/corpora/tools/update_corpus_baseline.py and commit the diff."
     )
 
 

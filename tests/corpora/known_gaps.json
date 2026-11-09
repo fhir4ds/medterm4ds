@@ -1,5 +1,5 @@
 {
-  "_comment": "Baseline of corpus expectations not yet met with the shipped vocabulary/anchors: unresolved/mismatched mentions, furniture that still resolves, and qualifier pairs that still collide. tests/test_corpora_ner.py fails only on NEW gaps; regenerate with scripts/update_corpus_baseline.py when a fix lands (the diff is the fix's evidence).",
+  "_comment": "Baseline of corpus expectations not yet met with the shipped vocabulary/anchors: unresolved/mismatched mentions, furniture that still resolves, and qualifier pairs that still collide. tests/test_corpora_ner.py fails only on NEW gaps; regenerate with tests/corpora/tools/update_corpus_baseline.py when a fix lands (the diff is the fix's evidence).",
   "misses": [
     "drug_compounding_corpus:list-04: 'DM2' unresolved",
     "drug_compounding_corpus:list-04: 'HLD' -> [\"hodgkin's lymphoma\"]",
@@ -70,7 +70,8 @@
     "ner_qualifier_corpus:q-stage-02: 'stage 4' unresolved",
     "ner_qualifier_corpus:q-stage-03: 'Stage II' unresolved",
     "ner_qualifier_corpus:q-stage-04: 'Stage III' unresolved",
-    "ner_regex_trap_corpus:re-fp-03: 'Upper GI bleed' -> ['gastrointestinal']",
+    "ner_regex_trap_corpus:re-fp-03: 'Upper GI bleed' unresolved",
+    "ner_regex_trap_corpus:re-fp-04: 'Lower extremity edema' -> ['swelling of lower limb']",
     "ner_regex_trap_corpus:re-fp-07: 'Well-differentiated adenocarcinoma' -> ['malignant adenomatous neoplasm']",
     "ner_regex_trap_corpus:re-fp-08: 'Goodpasture syndrome' unresolved",
     "ner_regex_trap_corpus:re-fp-10: 'asthma' unresolved",
