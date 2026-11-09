@@ -88,8 +88,11 @@ class TestSilentDropFamilyAlive:
         import re
 
         def _normalized(b: bytes) -> bytes:
+            # The response renders "timestamp": "<iso>" (space after the
+            # colon) — a pattern without \s* never matched and the volatile
+            # stamp leaked into the comparison (CI flake, 2026-11-09).
             return re.sub(
-                rb'"timestamp":"[^"]*"', b'"timestamp":"T"', b
+                rb'"timestamp":\s*"[^"]*"', b'"timestamp":"T"', b
             )
 
         assert _normalized(base) == _normalized(with_sys)
