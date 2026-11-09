@@ -1517,3 +1517,34 @@ class TestQualifierFallbackNotPrimary:
     def test_fallback_rescues_bilateral(self):
         from medterm4ds.services.extraction import _leading_qualifier_fallback
         assert _leading_qualifier_fallback("Bilateral pneumonia") == "pneumonia"
+
+
+class TestStitchedCombinationAllModes:
+    """CR-302 (measured live on the demo Space, 2026-11-09): a stitched
+    combination span must carry composed_from AND the composed query must
+    resolve against the canonical anchor space in EVERY mode — mode-search
+    results lack combination_members, so fragment-completeness rejected
+    the correct combination and hybrid returned single Lisinopril with
+    HCTZ dropped entirely."""
+
+    def test_stitch_sets_composed_from(self):
+        from medterm4ds.services.extraction import (
+            FilteredSpan,
+            _stitch_drug_fragments,
+        )
+        spans = [
+            FilteredSpan(text="lisinopril", entity_type="therapeutic agent",
+                         span_start=0, span_end=10),
+            FilteredSpan(text="HCTZ", entity_type="therapeutic agent",
+                         span_start=11, span_end=15),
+        ]
+        out = _stitch_drug_fragments(spans, "lisinopril/HCTZ")
+        assert out[0].composed_from == ["lisinopril", "HCTZ"]
+
+    def test_combination_resolves_in_every_mode(self):
+        from medterm4ds.services.extraction import get_extraction_service
+        es = get_extraction_service()
+        text = "Take lisinopril/HCTZ 20/12.5 mg daily"
+        for mode in ("hybrid", "canonical", "lexical"):
+            codes = [c.code for c in es.extract(text, mode=mode)]
+            assert "214618" in codes, (mode, codes)

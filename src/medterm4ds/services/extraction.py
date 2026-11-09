@@ -845,6 +845,17 @@ def _stitch_drug_fragments(spans: list, text: str) -> list:
             and 0 < span.span_start - prev.span_end <= 8
             and _STITCH_GAP_RE.match(gap)
         ):
+            # CR-302 (focused review, now measured live): a stitched span
+            # MUST carry composed_from — otherwise the resolver treats it
+            # as an ordinary span (no fragment-completeness, unfiltered
+            # fallback allowed), and on hybrid's stricter grade floor the
+            # combination fails, the head fragment resolves alone, and the
+            # sibling ('HCTZ') is silently dropped ('lisinopril/HCTZ' ->
+            # 29046 only, live on the demo Space).
+            prev.composed_from = [
+                *(prev.composed_from or [prev.text]),
+                span.text,
+            ]
             prev.text = f"{prev.text}/{span.text}"
             prev.span_end = span.span_end
             prev.ner_confidence = max(prev.ner_confidence, span.ner_confidence)
@@ -2226,7 +2237,21 @@ class ExtractionService:
                     else _span_search_categories(span)
                 )
 
-                def _fetch(text, _ss=ss, _ss_key=ss_key, _rt=rt_probe):
+                def _fetch(text, _ss=ss, _ss_key=ss_key, _rt=rt_probe,
+                           _span=span, _mode=search_mode):
+                    # CR-302 followup (measured live on the demo Space):
+                    # the COMPOSED query resolves against the canonical
+                    # anchor space even in non-canonical modes —
+                    # combination_members (and the alias expansions
+                    # fragment-completeness needs) exist only on canonical
+                    # results; mode-search results made every combination
+                    # fail completeness ('lisinopril/HCTZ' -> single
+                    # Lisinopril, HCTZ dropped). Sibling fragments keep
+                    # the mode search below.
+                    if text == _span.text and _mode != "canonical":
+                        canon = search.canonical(text, count=10)
+                        if canon:
+                            return canon
                     probe = _strip_trailing_values(text)
                     attempts = [_rt, None] if result_types is None else [result_types]
                     for attempt in attempts:
