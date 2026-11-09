@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **DuckDB support matrix verified** (2026-11-09): the full test suite
+  passes unchanged on **1.5.5, 1.5.6 and 2.0.0** (9058 passed / 0 failed
+  on each; also 1.5.3, the lockfile default). Default installs now cap
+  `duckdb<2` — 1.x stays the supported default and **2.x is opt-in**
+  (`pip install --no-deps "duckdb>=2.0.0,<3"`), covered by a new CI
+  matrix job so the claim stays true.
+
 ## [0.0.10] - 2026-11-05
 
 ### Changed
