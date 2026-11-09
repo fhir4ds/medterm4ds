@@ -1,0 +1,1585 @@
+{
+  "_comment": "Edge corpus: abbreviations, type collisions, devices/anatomy, units and numeric traps, hyphenation, unicode/formatting, punctuation boundaries, and note furniture. 'noise' entries must never resolve to a concept.",
+  "cases": [
+    {
+      "id": "abbr-amb-01",
+      "family": "abbrev_ambiguous",
+      "text": "MS diagnosed in 2018.",
+      "mentions": [
+        {
+          "text": "MS",
+          "expect": [
+            "multiple sclerosis"
+          ],
+          "mode": "any"
+        }
+      ]
+    },
+    {
+      "id": "abbr-amb-02",
+      "family": "abbrev_ambiguous",
+      "text": "MS murmur on exam.",
+      "mentions": [
+        {
+          "text": "MS",
+          "expect": [
+            "mitral stenosis"
+          ],
+          "mode": "any"
+        }
+      ]
+    },
+    {
+      "id": "abbr-amb-03",
+      "family": "abbrev_ambiguous",
+      "text": "MI in 2020, stented.",
+      "mentions": [
+        {
+          "text": "MI",
+          "expect": [
+            "myocardial infarction"
+          ],
+          "mode": "any"
+        }
+      ]
+    },
+    {
+      "id": "abbr-amb-04",
+      "family": "abbrev_ambiguous",
+      "text": "RA with positive RF.",
+      "mentions": [
+        {
+          "text": "RA",
+          "expect": [
+            "rheumatoid arthritis"
+          ],
+          "mode": "any"
+        }
+      ]
+    },
+    {
+      "id": "abbr-amb-05",
+      "family": "abbrev_ambiguous",
+      "text": "PT 14 seconds, INR 1.2.",
+      "mentions": [
+        {
+          "text": "PT",
+          "expect": [
+            "prothrombin"
+          ],
+          "mode": "any",
+          "type": "lab"
+        }
+      ]
+    },
+    {
+      "id": "abbr-amb-06",
+      "family": "abbrev_ambiguous",
+      "text": "CA 125 elevated.",
+      "mentions": [
+        {
+          "text": "CA 125",
+          "expect": [
+            "ca 125",
+            "cancer antigen"
+          ],
+          "mode": "any",
+          "type": "lab"
+        }
+      ]
+    },
+    {
+      "id": "abbr-amb-07",
+      "family": "abbrev_ambiguous",
+      "text": "Serum calcium 9.2 mg/dL.",
+      "mentions": [
+        {
+          "text": "calcium",
+          "expect": [
+            "calcium"
+          ],
+          "mode": "any",
+          "type": "lab"
+        }
+      ]
+    },
+    {
+      "id": "abbr-amb-08",
+      "family": "abbrev_ambiguous",
+      "text": "ASA 81 mg daily.",
+      "mentions": [
+        {
+          "text": "ASA",
+          "expect": [
+            "aspirin"
+          ],
+          "mode": "any"
+        }
+      ]
+    },
+    {
+      "id": "abbr-amb-09",
+      "family": "abbrev_ambiguous",
+      "text": "MSContin 15 mg BID.",
+      "mentions": [
+        {
+          "text": "MSContin",
+          "expect": [
+            "morphine"
+          ],
+          "mode": "any"
+        }
+      ]
+    },
+    {
+      "id": "abbr-amb-10",
+      "family": "abbrev_ambiguous",
+      "text": "APAP 650 mg prn.",
+      "mentions": [
+        {
+          "text": "APAP",
+          "expect": [
+            "acetaminophen"
+          ],
+          "mode": "any"
+        }
+      ]
+    },
+    {
+      "id": "abbr-01",
+      "family": "abbreviation",
+      "text": "HTN and DM2.",
+      "mentions": [
+        {
+          "text": "HTN",
+          "expect": [
+            "hypertension"
+          ],
+          "mode": "any"
+        },
+        {
+          "text": "DM2",
+          "expect": [
+            "diabetes"
+          ],
+          "mode": "any"
+        }
+      ]
+    },
+    {
+      "id": "abbr-02",
+      "family": "abbreviation",
+      "text": "CHF exacerbation.",
+      "mentions": [
+        {
+          "text": "CHF",
+          "expect": [
+            "heart failure"
+          ],
+          "mode": "any"
+        }
+      ]
+    },
+    {
+      "id": "abbr-03",
+      "family": "abbreviation",
+      "text": "COPD with exacerbation.",
+      "mentions": [
+        {
+          "text": "COPD",
+          "expect": [
+            "pulmonary disease"
+          ],
+          "mode": "any"
+        }
+      ]
+    },
+    {
+      "id": "abbr-04",
+      "family": "abbreviation",
+      "text": "CKD stage 4.",
+      "mentions": [
+        {
+          "text": "CKD",
+          "expect": [
+            "kidney disease"
+          ],
+          "mode": "any"
+        }
+      ]
+    },
+    {
+      "id": "abbr-05",
+      "family": "abbreviation",
+      "text": "ESRD on dialysis.",
+      "mentions": [
+        {
+          "text": "ESRD",
+          "expect": [
+            "end-stage renal",
+            "end stage renal",
+            "esrd"
+          ],
+          "mode": "any"
+        }
+      ]
+    },
+    {
+      "id": "abbr-06",
+      "family": "abbreviation",
+      "text": "AFib with RVR.",
+      "mentions": [
+        {
+          "text": "AFib",
+          "expect": [
+            "atrial fibrillation"
+          ],
+          "mode": "any"
+        }
+      ]
+    },
+    {
+      "id": "abbr-07",
+      "family": "abbreviation",
+      "text": "CAD s/p stent.",
+      "mentions": [
+        {
+          "text": "CAD",
+          "expect": [
+            "coronary artery disease",
+            "coronary"
+          ],
+          "mode": "any"
+        }
+      ]
+    },
+    {
+      "id": "abbr-08",
+      "family": "abbreviation",
+      "text": "CVA in 2019 with residual deficit.",
+      "mentions": [
+        {
+          "text": "CVA",
+          "expect": [
+            "stroke",
+            "cerebrovascular"
+          ],
+          "mode": "any"
+        }
+      ]
+    },
+    {
+      "id": "abbr-09",
+      "family": "abbreviation",
+      "text": "TIA last month.",
+      "mentions": [
+        {
+          "text": "TIA",
+          "expect": [
+            "transient ischemic",
+            "ischemic attack"
+          ],
+          "mode": "any"
+        }
+      ]
+    },
+    {
+      "id": "abbr-10",
+      "family": "abbreviation",
+      "text": "DVT of left leg.",
+      "mentions": [
+        {
+          "text": "DVT",
+          "expect": [
+            "deep vein thrombosis",
+            "thrombosis"
+          ],
+          "mode": "any"
+        }
+      ]
+    },
+    {
+      "id": "abbr-11",
+      "family": "abbreviation",
+      "text": "PE confirmed on CTA.",
+      "mentions": [
+        {
+          "text": "PE",
+          "expect": [
+            "pulmonary embolism",
+            "embolism"
+          ],
+          "mode": "any"
+        }
+      ]
+    },
+    {
+      "id": "abbr-12",
+      "family": "abbreviation",
+      "text": "UTI treated with nitrofurantoin.",
+      "mentions": [
+        {
+          "text": "UTI",
+          "expect": [
+            "urinary tract infection"
+          ],
+          "mode": "any"
+        }
+      ]
+    },
+    {
+      "id": "abbr-13",
+      "family": "abbreviation",
+      "text": "GERD on PPI.",
+      "mentions": [
+        {
+          "text": "GERD",
+          "expect": [
+            "gerd",
+            "gastroesophageal",
+            "reflux"
+          ],
+          "mode": "any"
+        }
+      ]
+    },
+    {
+      "id": "abbr-14",
+      "family": "abbreviation",
+      "text": "OSA on CPAP.",
+      "mentions": [
+        {
+          "text": "OSA",
+          "expect": [
+            "sleep apnea"
+          ],
+          "mode": "any"
+        }
+      ]
+    },
+    {
+      "id": "abbr-15",
+      "family": "abbreviation",
+      "text": "BPH with LUTS.",
+      "mentions": [
+        {
+          "text": "BPH",
+          "expect": [
+            "prostatic hyperplasia",
+            "prostate"
+          ],
+          "mode": "any"
+        }
+      ]
+    },
+    {
+      "id": "abbr-16",
+      "family": "abbreviation",
+      "text": "SLE with nephritis.",
+      "mentions": [
+        {
+          "text": "SLE",
+          "expect": [
+            "lupus"
+          ],
+          "mode": "any"
+        }
+      ]
+    },
+    {
+      "id": "abbr-17",
+      "family": "abbreviation",
+      "text": "HIV on ART.",
+      "mentions": [
+        {
+          "text": "HIV",
+          "expect": [
+            "hiv"
+          ],
+          "mode": "any"
+        }
+      ]
+    },
+    {
+      "id": "abbr-18",
+      "family": "abbreviation",
+      "text": "HCV genotype 1a.",
+      "mentions": [
+        {
+          "text": "HCV",
+          "expect": [
+            "hepatitis c"
+          ],
+          "mode": "any"
+        }
+      ]
+    },
+    {
+      "id": "abbr-19",
+      "family": "abbreviation",
+      "text": "TB treated with RIPE.",
+      "mentions": [
+        {
+          "text": "TB",
+          "expect": [
+            "tuberculosis"
+          ],
+          "mode": "any"
+        }
+      ]
+    },
+    {
+      "id": "abbr-20",
+      "family": "abbreviation",
+      "text": "MRSA bacteremia.",
+      "mentions": [
+        {
+          "text": "MRSA",
+          "expect": [
+            "staphylococcus aureus",
+            "mrsa"
+          ],
+          "mode": "any"
+        }
+      ]
+    },
+    {
+      "id": "abbr-21",
+      "family": "abbreviation",
+      "text": "C. diff colitis.",
+      "mentions": [
+        {
+          "text": "C. diff",
+          "expect": [
+            "clostridium difficile",
+            "difficile"
+          ],
+          "mode": "any"
+        }
+      ]
+    },
+    {
+      "id": "collide-01",
+      "family": "type_collision",
+      "text": "Sodium 138, potassium 4.2.",
+      "mentions": [
+        {
+          "text": "Sodium",
+          "expect": [
+            "sodium"
+          ],
+          "mode": "any",
+          "type": "lab"
+        },
+        {
+          "text": "potassium",
+          "expect": [
+            "potassium"
+          ],
+          "mode": "any",
+          "type": "lab"
+        }
+      ]
+    },
+    {
+      "id": "collide-02",
+      "family": "type_collision",
+      "text": "Magnesium 1.8 mg/dL.",
+      "mentions": [
+        {
+          "text": "Magnesium",
+          "expect": [
+            "magnesium"
+          ],
+          "mode": "any",
+          "type": "lab"
+        }
+      ]
+    },
+    {
+      "id": "collide-03",
+      "family": "type_collision",
+      "text": "Iron studies pending.",
+      "mentions": [
+        {
+          "text": "Iron",
+          "expect": [
+            "iron"
+          ],
+          "mode": "any"
+        }
+      ]
+    },
+    {
+      "id": "collide-04",
+      "family": "type_collision",
+      "text": "Start ferrous sulfate 325 mg.",
+      "mentions": [
+        {
+          "text": "ferrous sulfate",
+          "expect": [
+            "ferrous",
+            "iron"
+          ],
+          "mode": "any"
+        }
+      ]
+    },
+    {
+      "id": "collide-05",
+      "family": "type_collision",
+      "text": "Insulin glargine 20 units nightly.",
+      "mentions": [
+        {
+          "text": "Insulin glargine",
+          "expect": [
+            "insulin"
+          ],
+          "mode": "any",
+          "type": "medication"
+        }
+      ]
+    },
+    {
+      "id": "collide-06",
+      "family": "type_collision",
+      "text": "Insulin level 45.",
+      "mentions": [
+        {
+          "text": "Insulin",
+          "expect": [
+            "insulin"
+          ],
+          "mode": "any",
+          "type": "lab"
+        }
+      ]
+    },
+    {
+      "id": "collide-07",
+      "family": "type_collision",
+      "text": "Heparin drip per protocol.",
+      "mentions": [
+        {
+          "text": "Heparin",
+          "expect": [
+            "heparin"
+          ],
+          "mode": "any",
+          "type": "medication"
+        }
+      ]
+    },
+    {
+      "id": "collide-08",
+      "family": "type_collision",
+      "text": "Heparin-induced thrombocytopenia suspected.",
+      "mentions": [
+        {
+          "text": "Heparin-induced thrombocytopenia",
+          "expect": [
+            "thrombocytopenia"
+          ],
+          "mode": "any"
+        }
+      ]
+    },
+    {
+      "id": "collide-09",
+      "family": "type_collision",
+      "text": "Glucose 210 mg/dL.",
+      "mentions": [
+        {
+          "text": "Glucose",
+          "expect": [
+            "glucose"
+          ],
+          "mode": "any",
+          "type": "lab"
+        }
+      ]
+    },
+    {
+      "id": "collide-10",
+      "family": "type_collision",
+      "text": "Dopamine infusion at 5 mcg/kg/min.",
+      "mentions": [
+        {
+          "text": "Dopamine",
+          "expect": [
+            "dopamine"
+          ],
+          "mode": "any"
+        }
+      ]
+    },
+    {
+      "id": "collide-11",
+      "family": "type_collision",
+      "text": "Weight 82 kg, height 175 cm, BMI 27.",
+      "mentions": [
+        {
+          "text": "Weight",
+          "expect": [
+            "weight"
+          ],
+          "mode": "any"
+        },
+        {
+          "text": "BMI",
+          "expect": [
+            "body mass index",
+            "bmi"
+          ],
+          "mode": "any"
+        }
+      ]
+    },
+    {
+      "id": "collide-12",
+      "family": "type_collision",
+      "text": "Pain score 7 out of 10.",
+      "mentions": [
+        {
+          "text": "Pain score",
+          "expect": [
+            "pain"
+          ],
+          "mode": "any"
+        }
+      ]
+    },
+    {
+      "id": "collide-13",
+      "family": "type_collision",
+      "text": "Temperature 38.4 C at 14:30.",
+      "mentions": [
+        {
+          "text": "Temperature",
+          "expect": [
+            "temperature"
+          ],
+          "mode": "any",
+          "type": "vital"
+        }
+      ]
+    },
+    {
+      "id": "collide-14",
+      "family": "type_collision",
+      "text": "Oxygen saturation 88% on 2L.",
+      "mentions": [
+        {
+          "text": "Oxygen saturation",
+          "expect": [
+            "oxygen saturation",
+            "saturation"
+          ],
+          "mode": "any"
+        }
+      ]
+    },
+    {
+      "id": "device-10",
+      "family": "device_other",
+      "text": "LVAD placed as destination therapy.",
+      "mentions": [
+        {
+          "text": "LVAD",
+          "expect": [
+            "ventricular assist",
+            "lvad"
+          ],
+          "mode": "any"
+        }
+      ]
+    },
+    {
+      "id": "device-11",
+      "family": "device_other",
+      "text": "Right total knee arthroplasty in 2021.",
+      "mentions": [
+        {
+          "text": "total knee arthroplasty",
+          "expect": [
+            "arthroplasty",
+            "knee replacement"
+          ],
+          "mode": "any"
+        }
+      ]
+    },
+    {
+      "id": "device-12",
+      "family": "device_other",
+      "text": "PICC line in right arm.",
+      "mentions": [
+        {
+          "text": "PICC",
+          "expect": [
+            "picc",
+            "catheter"
+          ],
+          "mode": "any"
+        }
+      ]
+    },
+    {
+      "id": "device-13",
+      "family": "device_other",
+      "text": "Port-a-cath accessed today.",
+      "mentions": [
+        {
+          "text": "Port-a-cath",
+          "expect": [
+            "port",
+            "catheter"
+          ],
+          "mode": "any"
+        }
+      ]
+    },
+    {
+      "id": "device-14",
+      "family": "device_other",
+      "text": "Tracheostomy tube size 7.",
+      "mentions": [
+        {
+          "text": "Tracheostomy",
+          "expect": [
+            "tracheostomy"
+          ],
+          "mode": "any"
+        }
+      ]
+    },
+    {
+      "id": "device-15",
+      "family": "device_other",
+      "text": "Aortic valve replacement prosthesis.",
+      "mentions": [
+        {
+          "text": "Aortic valve replacement",
+          "expect": [
+            "valve replacement",
+            "aortic valve"
+          ],
+          "mode": "any"
+        }
+      ]
+    },
+    {
+      "id": "device-16",
+      "family": "anatomy",
+      "text": "LAD stenosis 70%.",
+      "mentions": [
+        {
+          "text": "LAD",
+          "expect": [
+            "left anterior descending",
+            "lad"
+          ],
+          "mode": "any"
+        }
+      ]
+    },
+    {
+      "id": "device-17",
+      "family": "anatomy",
+      "text": "RCA occlusion.",
+      "mentions": [
+        {
+          "text": "RCA",
+          "expect": [
+            "right coronary"
+          ],
+          "mode": "any"
+        }
+      ]
+    },
+    {
+      "id": "device-18",
+      "family": "anatomy",
+      "text": "Opacity in RLL on chest X-ray.",
+      "mentions": [
+        {
+          "text": "RLL",
+          "expect": [
+            "right lower lobe",
+            "lower lobe"
+          ],
+          "mode": "any"
+        }
+      ]
+    },
+    {
+      "id": "device-19",
+      "family": "anatomy",
+      "text": "Left ventricular ejection fraction 35%.",
+      "mentions": [
+        {
+          "text": "Left ventricular ejection fraction",
+          "expect": [
+            "ejection fraction"
+          ],
+          "mode": "any"
+        }
+      ]
+    },
+    {
+      "id": "numeric-01",
+      "family": "numeric",
+      "text": "BP 120/80 today.",
+      "mentions": [
+        {
+          "text": "BP",
+          "expect": [
+            "blood pressure"
+          ],
+          "mode": "any"
+        }
+      ]
+    },
+    {
+      "id": "numeric-02",
+      "family": "numeric",
+      "text": "Temp 98.6 F.",
+      "mentions": [
+        {
+          "text": "Temp",
+          "expect": [
+            "temperature"
+          ],
+          "mode": "any"
+        }
+      ]
+    },
+    {
+      "id": "numeric-03",
+      "family": "numeric",
+      "text": "Took 1,000 mg twice daily.",
+      "mentions": [],
+      "noise": [
+        "1,000",
+        "twice daily"
+      ]
+    },
+    {
+      "id": "numeric-04",
+      "family": "numeric",
+      "text": "25-OH vitamin D 32.",
+      "mentions": [
+        {
+          "text": "25-OH vitamin D",
+          "expect": [
+            "vitamin d"
+          ],
+          "mode": "any",
+          "type": "lab"
+        }
+      ]
+    },
+    {
+      "id": "numeric-05",
+      "family": "numeric",
+      "text": "T4 free 1.2 ng/dL.",
+      "mentions": [
+        {
+          "text": "T4 free",
+          "expect": [
+            "t4",
+            "thyroxine",
+            "free t4"
+          ],
+          "mode": "any",
+          "type": "lab"
+        }
+      ]
+    },
+    {
+      "id": "numeric-06",
+      "family": "numeric",
+      "text": "ICD-10 code assigned.",
+      "mentions": [],
+      "noise": [
+        "ICD-10",
+        "code"
+      ]
+    },
+    {
+      "id": "numeric-07",
+      "family": "numeric",
+      "text": "COVID-19 positive.",
+      "mentions": [
+        {
+          "text": "COVID-19",
+          "expect": [
+            "covid"
+          ],
+          "mode": "any"
+        }
+      ]
+    },
+    {
+      "id": "numeric-08",
+      "family": "numeric",
+      "text": "Creatinine 1.8 mg/dL, up from 1.2.",
+      "mentions": [
+        {
+          "text": "Creatinine",
+          "expect": [
+            "creatinine"
+          ],
+          "mode": "any",
+          "type": "lab"
+        }
+      ]
+    },
+    {
+      "id": "numeric-09",
+      "family": "numeric",
+      "text": "eGFR 45 mL/min/1.73m2.",
+      "mentions": [
+        {
+          "text": "eGFR",
+          "expect": [
+            "glomerular filtration",
+            "egfr"
+          ],
+          "mode": "any",
+          "type": "lab"
+        }
+      ]
+    },
+    {
+      "id": "numeric-10",
+      "family": "numeric",
+      "text": "HbA1c 7.2%.",
+      "mentions": [
+        {
+          "text": "HbA1c",
+          "expect": [
+            "hemoglobin a1c",
+            "a1c"
+          ],
+          "mode": "any",
+          "type": "lab"
+        }
+      ]
+    },
+    {
+      "id": "numeric-11",
+      "family": "numeric",
+      "text": "Range 3.5-5.0 mmol/L.",
+      "mentions": [],
+      "noise": [
+        "3.5-5.0",
+        "mmol/L"
+      ]
+    },
+    {
+      "id": "numeric-12",
+      "family": "numeric",
+      "text": "40 mg daily x 10 days.",
+      "mentions": [],
+      "noise": [
+        "40 mg",
+        "10 days",
+        "x 10"
+      ]
+    },
+    {
+      "id": "hyphen-01",
+      "family": "hyphenation",
+      "text": "Non-Hodgkin lymphoma diagnosed.",
+      "mentions": [
+        {
+          "text": "Non-Hodgkin lymphoma",
+          "expect": [
+            "lymphoma"
+          ],
+          "mode": "any",
+          "type": "condition"
+        }
+      ]
+    },
+    {
+      "id": "hyphen-02",
+      "family": "hyphenation",
+      "text": "Anti-CCP antibody positive.",
+      "mentions": [
+        {
+          "text": "Anti-CCP antibody",
+          "expect": [
+            "ccp",
+            "cyclic citrullinated"
+          ],
+          "mode": "any",
+          "type": "lab"
+        }
+      ]
+    },
+    {
+      "id": "hyphen-03",
+      "family": "hyphenation",
+      "text": "HELLP syndrome suspected.",
+      "mentions": [
+        {
+          "text": "HELLP syndrome",
+          "expect": [
+            "hellp"
+          ],
+          "mode": "any"
+        }
+      ]
+    },
+    {
+      "id": "hyphen-04",
+      "family": "hyphenation",
+      "text": "Beta-blocker started.",
+      "mentions": [
+        {
+          "text": "Beta-blocker",
+          "expect": [
+            "beta blocker",
+            "beta-blocker"
+          ],
+          "mode": "any"
+        }
+      ]
+    },
+    {
+      "id": "hyphen-05",
+      "family": "hyphenation",
+      "text": "Alpha-fetoprotein 12.",
+      "mentions": [
+        {
+          "text": "Alpha-fetoprotein",
+          "expect": [
+            "alpha-fetoprotein",
+            "fetoprotein"
+          ],
+          "mode": "any",
+          "type": "lab"
+        }
+      ]
+    },
+    {
+      "id": "hyphen-06",
+      "family": "hyphenation",
+      "text": "Wheezing worse at night, well-controlled asthma.",
+      "mentions": [
+        {
+          "text": "asthma",
+          "expect": [
+            "asthma"
+          ],
+          "mode": "any",
+          "type": "condition"
+        }
+      ]
+    },
+    {
+      "id": "hyphen-07",
+      "family": "hyphenation",
+      "text": "Non-STEMI ruled out.",
+      "mentions": [
+        {
+          "text": "Non-STEMI",
+          "expect": [
+            "myocardial infarction",
+            "nstemi"
+          ],
+          "mode": "any"
+        }
+      ]
+    },
+    {
+      "id": "unicode-01",
+      "family": "unicode",
+      "text": "Vitamin D 25 µg daily.",
+      "mentions": [
+        {
+          "text": "Vitamin D",
+          "expect": [
+            "vitamin d"
+          ],
+          "mode": "any"
+        }
+      ]
+    },
+    {
+      "id": "unicode-02",
+      "family": "unicode",
+      "text": "Temperature 37.2 °C.",
+      "mentions": [
+        {
+          "text": "Temperature",
+          "expect": [
+            "temperature"
+          ],
+          "mode": "any",
+          "type": "vital"
+        }
+      ]
+    },
+    {
+      "id": "unicode-03",
+      "family": "unicode",
+      "text": "β-blocker therapy continued.",
+      "mentions": [
+        {
+          "text": "β-blocker",
+          "expect": [
+            "beta",
+            "blocker"
+          ],
+          "mode": "any"
+        }
+      ]
+    },
+    {
+      "id": "unicode-04",
+      "family": "unicode",
+      "text": "Pain ≥ 7/10 for 3 days.",
+      "mentions": [
+        {
+          "text": "Pain",
+          "expect": [
+            "pain"
+          ],
+          "mode": "any"
+        }
+      ]
+    },
+    {
+      "id": "unicode-05",
+      "family": "unicode",
+      "text": "Patient’s blood pressure 140/90.",
+      "mentions": [
+        {
+          "text": "blood pressure",
+          "expect": [
+            "blood pressure"
+          ],
+          "mode": "any"
+        }
+      ]
+    },
+    {
+      "id": "unicode-06",
+      "family": "unicode",
+      "text": "• Diabetes mellitus\n• Hypertension\n• Hyperlipidemia",
+      "mentions": [
+        {
+          "text": "Diabetes mellitus",
+          "expect": [
+            "diabetes"
+          ],
+          "mode": "any"
+        },
+        {
+          "text": "Hypertension",
+          "expect": [
+            "hypertension"
+          ],
+          "mode": "any"
+        },
+        {
+          "text": "Hyperlipidemia",
+          "expect": [
+            "hyperlipidemia",
+            "lipid"
+          ],
+          "mode": "any"
+        }
+      ]
+    },
+    {
+      "id": "unicode-07",
+      "family": "unicode",
+      "text": "Took 2–3 tablets daily.",
+      "mentions": [],
+      "noise": [
+        "2",
+        "3",
+        "tablets"
+      ]
+    },
+    {
+      "id": "punct-01",
+      "family": "punctuation",
+      "text": "Diabetes.",
+      "mentions": [
+        {
+          "text": "Diabetes",
+          "expect": [
+            "diabetes"
+          ],
+          "mode": "any",
+          "type": "condition"
+        }
+      ]
+    },
+    {
+      "id": "punct-02",
+      "family": "punctuation",
+      "text": "The patient's diabetes is uncontrolled.",
+      "mentions": [
+        {
+          "text": "diabetes",
+          "expect": [
+            "diabetes"
+          ],
+          "mode": "any",
+          "type": "condition"
+        }
+      ]
+    },
+    {
+      "id": "punct-03",
+      "family": "punctuation",
+      "text": "Diabetes and diabetes control discussed.",
+      "mentions": [
+        {
+          "text": "Diabetes",
+          "expect": [
+            "diabetes"
+          ],
+          "mode": "any"
+        }
+      ]
+    },
+    {
+      "id": "punct-04",
+      "family": "punctuation",
+      "text": "Dx: hypertension; Rx: lisinopril.",
+      "mentions": [
+        {
+          "text": "hypertension",
+          "expect": [
+            "hypertension"
+          ],
+          "mode": "any"
+        },
+        {
+          "text": "lisinopril",
+          "expect": [
+            "lisinopril"
+          ],
+          "mode": "any"
+        }
+      ]
+    },
+    {
+      "id": "punct-05",
+      "family": "punctuation",
+      "text": "Medications (home): metformin 500 mg.",
+      "mentions": [
+        {
+          "text": "metformin",
+          "expect": [
+            "metformin"
+          ],
+          "mode": "any"
+        }
+      ]
+    },
+    {
+      "id": "punct-06",
+      "family": "punctuation",
+      "text": "Allergies: penicillin - rash.",
+      "mentions": [
+        {
+          "text": "penicillin",
+          "expect": [
+            "penicillin"
+          ],
+          "mode": "any"
+        }
+      ]
+    },
+    {
+      "id": "longform-01",
+      "family": "long_compound",
+      "text": "Computed tomography angiography of the lower extremities ordered.",
+      "mentions": [
+        {
+          "text": "Computed tomography angiography",
+          "expect": [
+            "angiography",
+            "tomography"
+          ],
+          "mode": "any",
+          "type": "procedure"
+        }
+      ]
+    },
+    {
+      "id": "longform-02",
+      "family": "long_compound",
+      "text": "Magnetic resonance imaging of the brain without contrast.",
+      "mentions": [
+        {
+          "text": "Magnetic resonance imaging",
+          "expect": [
+            "magnetic resonance"
+          ],
+          "mode": "any",
+          "type": "procedure"
+        }
+      ]
+    },
+    {
+      "id": "longform-03",
+      "family": "long_compound",
+      "text": "Transesophageal echocardiogram showed vegetation.",
+      "mentions": [
+        {
+          "text": "Transesophageal echocardiogram",
+          "expect": [
+            "echocardiogram",
+            "echocardiography"
+          ],
+          "mode": "any"
+        }
+      ]
+    },
+    {
+      "id": "longform-04",
+      "family": "long_compound",
+      "text": "Endoscopic retrograde cholangiopancreatography performed.",
+      "mentions": [
+        {
+          "text": "Endoscopic retrograde cholangiopancreatography",
+          "expect": [
+            "cholangiopancreatography",
+            "ercp"
+          ],
+          "mode": "any"
+        }
+      ]
+    },
+    {
+      "id": "longform-05",
+      "family": "long_compound",
+      "text": "Congestive heart failure with reduced ejection fraction.",
+      "mentions": [
+        {
+          "text": "Congestive heart failure",
+          "expect": [
+            "heart failure"
+          ],
+          "mode": "any",
+          "type": "condition"
+        }
+      ]
+    },
+    {
+      "id": "noise-10",
+      "family": "noise",
+      "text": "On 1/15/2025 at 14:30 seen by Dr. Smith.",
+      "mentions": [],
+      "noise": [
+        "1/15/2025",
+        "14:30",
+        "Dr. Smith",
+        "Smith"
+      ]
+    },
+    {
+      "id": "noise-11",
+      "family": "noise",
+      "text": "Pain scale 0-10; rated 7.",
+      "mentions": [],
+      "noise": [
+        "scale",
+        "0-10",
+        "rated"
+      ]
+    },
+    {
+      "id": "noise-12",
+      "family": "noise",
+      "text": "Blood pressure: ____ / ____ mmHg.",
+      "mentions": [],
+      "noise": [
+        "____",
+        "mmHg"
+      ]
+    },
+    {
+      "id": "noise-13",
+      "family": "noise",
+      "text": "Discussed risks and benefits with patient.",
+      "mentions": [],
+      "noise": [
+        "risks",
+        "benefits",
+        "Discussed"
+      ]
+    },
+    {
+      "id": "noise-14",
+      "family": "noise",
+      "text": "Follow-up in 2 weeks; return precautions given.",
+      "mentions": [],
+      "noise": [
+        "Follow-up",
+        "weeks",
+        "precautions"
+      ]
+    },
+    {
+      "id": "noise-15",
+      "family": "noise",
+      "text": "Subjective: patient feels better. Objective: vitals stable.",
+      "mentions": [],
+      "noise": [
+        "Subjective",
+        "Objective",
+        "vitals",
+        "better"
+      ]
+    },
+    {
+      "id": "noise-16",
+      "family": "noise",
+      "text": "Reviewed outside records from General Hospital.",
+      "mentions": [],
+      "noise": [
+        "Reviewed",
+        "records",
+        "General Hospital"
+      ]
+    },
+    {
+      "id": "noise-17",
+      "family": "noise",
+      "text": "Continue current regimen, no changes.",
+      "mentions": [],
+      "noise": [
+        "Continue",
+        "regimen",
+        "changes"
+      ]
+    },
+    {
+      "id": "noise-18",
+      "family": "noise",
+      "text": "Patient is 68 years old, widowed, lives with daughter.",
+      "mentions": [],
+      "noise": [
+        "68 years",
+        "widowed",
+        "daughter"
+      ]
+    },
+    {
+      "id": "noise-19",
+      "family": "noise",
+      "text": "Per attending, plan discussed. Agree with plan.",
+      "mentions": [],
+      "noise": [
+        "attending",
+        "plan",
+        "Agree"
+      ]
+    },
+    {
+      "id": "edge-sibling-01",
+      "family": "composition_siblings",
+      "text": "Pneumonia with sepsis.",
+      "mentions": [
+        {
+          "text": "Pneumonia",
+          "expect": [
+            "pneumonia"
+          ],
+          "mode": "any",
+          "type": "condition"
+        },
+        {
+          "text": "sepsis",
+          "expect": [
+            "sepsis"
+          ],
+          "mode": "any",
+          "type": "condition"
+        }
+      ]
+    },
+    {
+      "id": "edge-fused-dose-01",
+      "family": "fused_dose",
+      "text": "Patient takes metformin 500mg and has diabetes.",
+      "mentions": [
+        {
+          "text": "metformin",
+          "expect": [
+            "metformin"
+          ],
+          "mode": "any",
+          "type": "medication"
+        },
+        {
+          "text": "diabetes",
+          "expect": [
+            "diabetes"
+          ],
+          "mode": "any",
+          "type": "condition"
+        }
+      ]
+    },
+    {
+      "id": "edge-fused-dose-02",
+      "family": "fused_dose",
+      "text": "atorvastatin 40mg nightly.",
+      "mentions": [
+        {
+          "text": "atorvastatin",
+          "expect": [
+            "atorvastatin"
+          ],
+          "mode": "any",
+          "type": "medication"
+        }
+      ]
+    },
+    {
+      "id": "edge-fused-dose-03",
+      "family": "fused_dose",
+      "text": "HbA1c 7.2% today.",
+      "mentions": [
+        {
+          "text": "HbA1c",
+          "expect": [
+            "hemoglobin a1c",
+            "a1c"
+          ],
+          "mode": "any",
+          "type": "lab"
+        }
+      ]
+    },
+    {
+      "id": "edge-fused-dose-04",
+      "family": "fused_dose",
+      "text": "lisinopril/HCTZ 20/12.5 mg daily.",
+      "mentions": [
+        {
+          "text": "lisinopril/HCTZ",
+          "expect": [
+            "lisinopril",
+            "hydrochlorothiazide"
+          ],
+          "mode": "all"
+        }
+      ],
+      "noise": [
+        "mg"
+      ]
+    }
+  ]
+}

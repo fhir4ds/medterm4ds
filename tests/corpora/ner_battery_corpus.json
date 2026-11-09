@@ -1,0 +1,67 @@
+{
+  "_comment": "Broad NER battery for medterm4ds extraction beyond medications. Each mention may declare expect (display tokens), mode (any/all), type (expected result_type) and status (expected ConText status). Cases with include_non_affirmed=true are run with all status filters open. 'noise' lists text spans that must NOT resolve to a concept.",
+  "cases": [
+    {"id": "lab-01", "family": "lab", "text": "HbA1c 7.2% today.", "mentions": [{"text": "HbA1c", "expect": ["hba1c", "hemoglobin a1c", "a1c"], "mode": "any", "type": "lab"}]},
+    {"id": "lab-02", "family": "lab", "text": "eGFR 45 mL/min/1.73m2.", "mentions": [{"text": "eGFR", "expect": ["egfr", "glomerular filtration"], "mode": "any", "type": "lab"}]},
+    {"id": "lab-03", "family": "lab", "text": "TSH elevated at 6.2.", "mentions": [{"text": "TSH", "expect": ["tsh", "thyrotropin", "thyroid stimulating"], "mode": "any", "type": "lab"}]},
+    {"id": "lab-04", "family": "lab", "text": "CBC with differential ordered.", "mentions": [{"text": "CBC with differential", "expect": ["complete blood count", "cbc", "blood count"], "mode": "any", "type": "lab"}]},
+    {"id": "lab-05", "family": "lab", "text": "ALT or AST elevated.", "mentions": [{"text": "ALT", "expect": ["alt", "alanine"], "mode": "any"}, {"text": "AST", "expect": ["ast", "aspartate"], "mode": "any"}]},
+    {"id": "lab-06", "family": "lab", "text": "Creatinine 1.8 mg/dL.", "mentions": [{"text": "Creatinine", "expect": ["creatinine"], "mode": "any", "type": "lab"}]},
+    {"id": "lab-07", "family": "lab", "text": "LDL cholesterol 130 mg/dL.", "mentions": [{"text": "LDL cholesterol", "expect": ["ldl", "low density lipoprotein"], "mode": "any", "type": "lab"}]},
+    {"id": "lab-08", "family": "lab", "text": "Urine albumin-to-creatinine ratio 45.", "mentions": [{"text": "albumin-to-creatinine ratio", "expect": ["albumin", "creatinine"], "mode": "any", "type": "lab"}]},
+
+    {"id": "vital-01", "family": "vital", "text": "BP 120/80 today.", "mentions": [{"text": "BP", "expect": ["blood pressure", "bp"], "mode": "any", "type": "vital"}]},
+    {"id": "vital-02", "family": "vital", "text": "Heart rate 88, regular.", "mentions": [{"text": "Heart rate", "expect": ["heart rate", "pulse"], "mode": "any", "type": "vital"}]},
+    {"id": "vital-03", "family": "vital", "text": "Temperature 38.2 C.", "mentions": [{"text": "Temperature", "expect": ["temperature", "body temperature"], "mode": "any", "type": "vital"}]},
+    {"id": "vital-04", "family": "vital", "text": "SpO2 94% on room air.", "mentions": [{"text": "SpO2", "expect": ["oxygen saturation", "spo2", "saturation"], "mode": "any", "type": "vital"}]},
+    {"id": "vital-05", "family": "vital", "text": "BMI 31, weight up 2 kg.", "mentions": [{"text": "BMI", "expect": ["body mass index", "bmi"], "mode": "any", "type": "vital"}]},
+
+    {"id": "cond-01", "family": "condition", "text": "Type 2 diabetes mellitus, uncontrolled.", "mentions": [{"text": "Type 2 diabetes mellitus", "expect": ["diabetes"], "mode": "any", "type": "condition"}]},
+    {"id": "cond-02", "family": "condition", "text": "HTN and CHF, compensated.", "mentions": [{"text": "HTN", "expect": ["hypertension", "hypertensive"], "mode": "any", "type": "condition"}, {"text": "CHF", "expect": ["heart failure", "cardiac failure"], "mode": "any", "type": "condition"}]},
+    {"id": "cond-03", "family": "condition", "text": "COPD with acute exacerbation.", "mentions": [{"text": "COPD", "expect": ["copd", "pulmonary disease"], "mode": "any", "type": "condition"}]},
+    {"id": "cond-04", "family": "condition", "text": "Acute appendicitis confirmed on CT.", "mentions": [{"text": "Acute appendicitis", "expect": ["appendicitis"], "mode": "any", "type": "condition"}]},
+    {"id": "cond-05", "family": "condition", "text": "Major depressive disorder, recurrent.", "mentions": [{"text": "Major depressive disorder", "expect": ["depressive"], "mode": "any", "type": "condition"}]},
+    {"id": "cond-06", "family": "condition", "text": "Chronic kidney disease stage 3.", "mentions": [{"text": "Chronic kidney disease stage 3", "expect": ["kidney disease", "renal"], "mode": "any", "type": "condition"}]},
+    {"id": "cond-07", "family": "condition", "text": "Atrial fibrillation, rate controlled.", "mentions": [{"text": "Atrial fibrillation", "expect": ["atrial fibrillation"], "mode": "any", "type": "condition"}]},
+    {"id": "cond-08", "family": "condition", "text": "NSTEMI last year.", "mentions": [{"text": "NSTEMI", "expect": ["myocardial infarction", "nstemi"], "mode": "any", "type": "condition"}]},
+
+    {"id": "proc-01", "family": "procedure", "text": "Colonoscopy with polypectomy performed.", "mentions": [{"text": "Colonoscopy", "expect": ["colonoscopy"], "mode": "any", "type": "procedure"}]},
+    {"id": "proc-02", "family": "procedure", "text": "Status post CABG.", "mentions": [{"text": "CABG", "expect": ["bypass", "cabg"], "mode": "any", "type": "procedure"}]},
+    {"id": "proc-03", "family": "procedure", "text": "Laparoscopic cholecystectomy scheduled.", "mentions": [{"text": "Laparoscopic cholecystectomy", "expect": ["cholecystectomy"], "mode": "any", "type": "procedure"}]},
+    {"id": "proc-04", "family": "procedure", "text": "MRI of the brain ordered.", "mentions": [{"text": "MRI of the brain", "expect": ["mri", "magnetic resonance"], "mode": "any", "type": "procedure"}]},
+    {"id": "proc-05", "family": "procedure", "text": "Percutaneous coronary intervention done.", "mentions": [{"text": "Percutaneous coronary intervention", "expect": ["percutaneous", "angioplasty", "pci"], "mode": "any", "type": "procedure"}]},
+    {"id": "proc-06", "family": "procedure", "text": "Hemodialysis three times weekly.", "mentions": [{"text": "Hemodialysis", "expect": ["hemodialysis", "dialysis"], "mode": "any", "type": "procedure"}]},
+
+    {"id": "vax-01", "family": "immunization", "text": "Influenza vaccine given today.", "mentions": [{"text": "Influenza vaccine", "expect": ["influenza", "flu"], "mode": "any", "type": "vaccine"}]},
+    {"id": "vax-02", "family": "immunization", "text": "Tdap booster administered.", "mentions": [{"text": "Tdap", "expect": ["tdap", "tetanus", "diphtheria"], "mode": "any", "type": "vaccine"}]},
+    {"id": "vax-03", "family": "immunization", "text": "COVID-19 booster due next month.", "mentions": [{"text": "COVID-19 booster", "expect": ["covid", "sars-cov-2"], "mode": "any", "type": "vaccine"}]},
+    {"id": "vax-04", "family": "immunization", "text": "MMR series complete.", "mentions": [{"text": "MMR", "expect": ["measles", "mumps", "rubella"], "mode": "any", "type": "vaccine"}]},
+
+    {"id": "abbrev-01", "family": "abbreviation", "text": "Pt with DM2 and SOB.", "mentions": [{"text": "DM2", "expect": ["diabetes", "type 2"], "mode": "any", "type": "condition"}, {"text": "SOB", "expect": ["dyspnea", "breathlessness", "shortness of breath"], "mode": "any", "type": "symptom"}]},
+    {"id": "abbrev-02", "family": "abbreviation", "text": "60 yo M with AMS.", "mentions": [{"text": "AMS", "expect": ["altered mental status", "confusion", "mental status"], "mode": "any"}]},
+    {"id": "abbrev-03", "family": "abbreviation", "text": "NKA, NKDA documented.", "mentions": [], "noise": ["NKA", "NKDA"]},
+
+    {"id": "status-neg-01", "family": "status_negated", "include_non_affirmed": true, "text": "No evidence of pneumonia.", "mentions": [{"text": "pneumonia", "expect": ["pneumonia"], "mode": "any", "status": "negated"}]},
+    {"id": "status-neg-02", "family": "status_negated", "include_non_affirmed": true, "text": "Patient denies chest pain.", "mentions": [{"text": "chest pain", "expect": ["chest pain"], "mode": "any", "status": "negated"}]},
+    {"id": "status-neg-03", "family": "status_negated", "include_non_affirmed": true, "text": "Breast cancer ruled out.", "mentions": [{"text": "Breast cancer", "expect": ["breast cancer", "breast"], "mode": "any", "status": "negated"}]},
+    {"id": "status-unc-01", "family": "status_uncertain", "include_non_affirmed": true, "text": "Possible pneumonia on imaging.", "mentions": [{"text": "pneumonia", "expect": ["pneumonia"], "mode": "any", "status": "uncertain"}]},
+    {"id": "status-hist-01", "family": "status_historical", "include_non_affirmed": true, "text": "History of myocardial infarction.", "mentions": [{"text": "myocardial infarction", "expect": ["myocardial infarction"], "mode": "any", "status": "historical"}]},
+    {"id": "status-fam-01", "family": "status_family", "include_non_affirmed": true, "text": "Father had colon cancer at 62.", "mentions": [{"text": "colon cancer", "expect": ["colon cancer", "colorectal"], "mode": "any", "status": "family"}]},
+    {"id": "status-hyp-01", "family": "status_hypothetical", "include_non_affirmed": true, "text": "If symptoms worsen, start prednisone.", "mentions": [{"text": "prednisone", "expect": ["prednisone"], "mode": "any", "status": "hypothetical"}]},
+
+    {"id": "device-01", "family": "device_other", "text": "Drug-eluting stent in the LAD.", "mentions": [{"text": "Drug-eluting stent", "expect": ["stent"], "mode": "any"}]},
+    {"id": "device-02", "family": "device_other", "text": "Pacemaker implanted 2020.", "mentions": [{"text": "Pacemaker", "expect": ["pacemaker"], "mode": "any"}]},
+    {"id": "device-03", "family": "device_other", "text": "Urinary catheter in place.", "mentions": [{"text": "Urinary catheter", "expect": ["catheter"], "mode": "any"}]},
+
+    {"id": "supp-01", "family": "supplement", "text": "Vitamin D 2000 IU daily.", "mentions": [{"text": "Vitamin D", "expect": ["vitamin d"], "mode": "any"}]},
+    {"id": "supp-02", "family": "supplement", "text": "Fish oil 1 g twice daily.", "mentions": [{"text": "Fish oil", "expect": ["fish oil", "omega"], "mode": "any"}]},
+    {"id": "supp-03", "family": "supplement", "text": "Magnesium oxide 400 mg daily.", "mentions": [{"text": "Magnesium oxide", "expect": ["magnesium"], "mode": "any"}]},
+
+    {"id": "noise-01", "family": "noise", "text": "Plan: continue current medications.", "mentions": [], "noise": ["Plan", "medications"]},
+    {"id": "noise-02", "family": "noise", "text": "Patient is a 65-year-old male.", "mentions": [], "noise": ["65-year-old", "male", "Patient"]},
+    {"id": "noise-03", "family": "noise", "text": "Vitals stable, follow up in 2 weeks.", "mentions": [], "noise": ["Vitals", "stable", "follow up", "weeks"]},
+    {"id": "noise-04", "family": "noise", "text": "Take one tab PO BID prn.", "mentions": [], "noise": ["one tab", "PO", "BID", "prn"]},
+    {"id": "noise-05", "family": "noise", "text": "20 mg daily with meals.", "mentions": [], "noise": ["20", "mg", "meals"]},
+    {"id": "noise-06", "family": "noise", "text": "Assessment and Plan: reassess in 3 months.", "mentions": [], "noise": ["Assessment", "Plan", "months"]}
+  ]
+}

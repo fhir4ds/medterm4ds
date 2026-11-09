@@ -45,7 +45,7 @@ Same engine, four deliverables:
 - `medterm4ds.ds` — dataframe helpers for pandas/polars workflows.
 """
 
-__version__ = "0.0.10"
+__version__ = "0.0.11"
 
 # ============================================================================
 # Primary API — what most users need

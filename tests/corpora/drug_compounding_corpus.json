@@ -1,0 +1,56 @@
+{
+  "_comment": "Composition traps: lists that must yield N separate concepts (expect_separate), ranges/titrations that must stay one mention, and combination products that should resolve as combinations. expect_separate = [[a, b], ...] pairs that must NOT collapse into one merged mention.",
+  "cases": [
+    {"id": "list-01", "family": "list", "text": "Home meds: metformin, glipizide, and insulin.",
+     "expect_separate": [["metformin", "glipizide"], ["glipizide", "insulin"], ["metformin", "insulin"]],
+     "mentions": [{"text": "metformin", "expect": ["metformin"], "mode": "any"},
+                  {"text": "glipizide", "expect": ["glipizide"], "mode": "any"},
+                  {"text": "insulin", "expect": ["insulin"], "mode": "any"}]},
+    {"id": "list-02", "family": "list", "text": "Discharge on aspirin, clopidogrel, and atorvastatin.",
+     "expect_separate": [["aspirin", "clopidogrel"], ["clopidogrel", "atorvastatin"]],
+     "mentions": [{"text": "aspirin", "expect": ["aspirin"], "mode": "any"},
+                  {"text": "clopidogrel", "expect": ["clopidogrel"], "mode": "any"},
+                  {"text": "atorvastatin", "expect": ["atorvastatin"], "mode": "any"}]},
+    {"id": "list-03", "family": "list", "text": "Lisinopril 10 mg, carvedilol 6.25 mg, spironolactone 25 mg.",
+     "expect_separate": [["lisinopril", "carvedilol"], ["carvedilol", "spironolactone"]],
+     "mentions": [{"text": "lisinopril", "expect": ["lisinopril"], "mode": "any"},
+                  {"text": "carvedilol", "expect": ["carvedilol"], "mode": "any"},
+                  {"text": "spironolactone", "expect": ["spironolactone"], "mode": "any"}]},
+    {"id": "list-04", "family": "list", "text": "PMH: DM2, HTN, HLD.",
+     "expect_separate": [["DM2", "HTN"], ["HTN", "HLD"]],
+     "mentions": [{"text": "DM2", "expect": ["diabetes"], "mode": "any"},
+                  {"text": "HTN", "expect": ["hypertension"], "mode": "any"},
+                  {"text": "HLD", "expect": ["hyperlipidemia", "lipid"], "mode": "any"}]},
+    {"id": "list-05", "family": "list", "text": "Allergies: sulfa, codeine.",
+     "expect_separate": [["sulfa", "codeine"]],
+     "mentions": [{"text": "sulfa", "expect": ["sulfonamide", "sulfa"], "mode": "any"},
+                  {"text": "codeine", "expect": ["codeine"], "mode": "any"}]},
+    {"id": "list-06", "family": "list", "text": "Take metformin, then check glucose.",
+     "expect_separate": [["metformin", "glucose"]],
+     "mentions": [{"text": "metformin", "expect": ["metformin"], "mode": "any"},
+                  {"text": "glucose", "expect": ["glucose"], "mode": "any"}]},
+
+    {"id": "range-01", "family": "range", "text": "Metformin 500-1000 mg daily.", "mentions": [{"text": "Metformin", "expect": ["metformin"], "mode": "any"}]},
+    {"id": "range-02", "family": "range", "text": "Titrate lisinopril from 10 to 20 mg.", "mentions": [{"text": "lisinopril", "expect": ["lisinopril"], "mode": "any"}]},
+    {"id": "range-03", "family": "range", "text": "Warfarin 2.5 mg alternating 5 mg.", "mentions": [{"text": "Warfarin", "expect": ["warfarin"], "mode": "any"}]},
+    {"id": "range-04", "family": "range", "text": "Insulin 10 units with meals, 4 units correction.", "mentions": [{"text": "Insulin", "expect": ["insulin"], "mode": "any"}]},
+
+    {"id": "combo-01", "family": "true_combination", "text": "Lisinopril/HCTZ 20/12.5 mg daily.", "mentions": [{"text": "Lisinopril/HCTZ", "expect": ["lisinopril", "hydrochlorothiazide"], "mode": "all"}]},
+    {"id": "combo-02", "family": "true_combination", "text": "Norco 5/325 one tab q6h prn.", "mentions": [{"text": "Norco", "expect": ["hydrocodone", "acetaminophen"], "mode": "all"}]},
+    {"id": "combo-03", "family": "true_combination", "text": "Amoxicillin/clavulanate 875/125 mg BID.", "mentions": [{"text": "Amoxicillin/clavulanate", "expect": ["amoxicillin", "clavulanate"], "mode": "all"}]},
+    {"id": "combo-04", "family": "true_combination", "text": "Janumet 50/1000 mg BID.", "mentions": [{"text": "Janumet", "expect": ["sitagliptin", "metformin"], "mode": "all"}]},
+
+    {"id": "slash-trap-01", "family": "slash_trap", "text": "BP 120/80 mmHg, HR 88.", "expect_separate": [["120", "80"]],
+     "mentions": [{"text": "BP", "expect": ["blood pressure"], "mode": "any"}],
+     "noise": ["120/80"]},
+    {"id": "slash-trap-02", "family": "slash_trap", "text": "Visual acuity 20/40 both eyes.", "mentions": [], "noise": ["20/40"]},
+    {"id": "slash-trap-03", "family": "slash_trap", "text": "Sodium 138 mEq/L, potassium 4.2 mEq/L.", "expect_separate": [["Sodium", "potassium"]],
+     "mentions": [{"text": "Sodium", "expect": ["sodium"], "mode": "any"}, {"text": "potassium", "expect": ["potassium"], "mode": "any"}]},
+
+    {"id": "taper-01", "family": "taper", "text": "Prednisone 40 mg taper over 6 days.", "mentions": [{"text": "Prednisone", "expect": ["prednisone"], "mode": "any"}]},
+    {"id": "taper-02", "family": "taper", "text": "Start azithromycin 500 mg day 1, then 250 mg.", "mentions": [{"text": "azithromycin", "expect": ["azithromycin"], "mode": "any"}]},
+
+    {"id": "class-01", "family": "drug_class", "text": "Started an SSRI and a PPI.", "mentions": [{"text": "SSRI", "expect": ["ssri", "serotonin reuptake"], "mode": "any"}, {"text": "PPI", "expect": ["ppi", "proton pump"], "mode": "any"}]},
+    {"id": "class-02", "family": "drug_class", "text": "On statins and beta blockers.", "mentions": [{"text": "statins", "expect": ["statin"], "mode": "any"}, {"text": "beta blockers", "expect": ["beta"], "mode": "any"}]}
+  ]
+}

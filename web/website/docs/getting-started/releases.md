@@ -4,6 +4,24 @@ title: Releases
 
 This page tracks Medical Terminology for Data Science package releases.
 
+## 0.0.11
+
+Terminology alignment + DuckDB support matrix. No breaking API changes.
+
+- **Terminology default release 2026.11.08.1**: `HCTZ` resolves to the
+  medication anchor (hydrochlorothiazide) and `TMP-SMX` / `SMZ-TMP` /
+  `SMX-TMP` to sulfamethoxazole / trimethoprim — the LOINC
+  lab-ingredient tie is broken in the published data. Obsolete-brand
+  aliases (Glucovance, Vicodin) resolve at 1.0.
+- **DuckDB support matrix**: the full suite passes on 1.5.5, 1.5.6 and
+  2.0.0. Default installs cap `duckdb<2`; 2.x is an explicit opt-in
+  (`pip install --no-deps "duckdb>=2.0.0,<3"`) and CI runs all three.
+- **Qualifier handling**: leading laterality/descriptor tokens are only
+  used as a fallback query — `Left ventricular hypertrophy` and `Upper
+  respiratory infection` keep their concepts; `Bilateral pneumonia`
+  still resolves. Composed mentions keep every sibling
+  (`Bilateral pneumonia with sepsis` → both).
+
 ## 0.0.10
 
 Lexical performance + BM25 v3 indexes (terminology release 2026.11.05.1).

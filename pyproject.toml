@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "medterm4ds"
-version = "0.0.10"
+version = "0.0.11"
 description = "Medical terminology utilities for data science workflows"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -13,7 +13,7 @@ authors = [
     { name = "medterm4ds contributors" }
 ]
 dependencies = [
-    "duckdb>=0.9.0",
+    "duckdb>=0.9.0,<2",
     "huggingface_hub>=0.20.0",
 ]
 
