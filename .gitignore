@@ -16,7 +16,9 @@ scratch/
 
 # Scripts, reports, and archive (one-off utilities, generated deliverables,
 # and legacy code — not part of the library)
-scripts/
+scripts/*
+!scripts/update_corpus_baseline.py
+!scripts/generate_ner_minimal_pairs.py
 reports/
 archive/
 
