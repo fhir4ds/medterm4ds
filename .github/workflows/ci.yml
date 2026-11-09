@@ -46,6 +46,43 @@ jobs:
       - name: Compile
         run: python -m py_compile $(find src tests -name '*.py' -print)
 
+
+  duckdb-versions:
+    # Support matrix (2026-11-09): full suite must pass on every pinned
+    # DuckDB line we claim. 2.x is opt-in for users but required here.
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        duckdb-version: ["1.5.5", "1.5.6", "2.0.0"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Cache search artifacts
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/medterm4ds
+          key: terminology-${{ hashFiles('src/medterm4ds/core/terminology.py') }}
+          restore-keys: terminology-
+
+      - name: Install package with pinned DuckDB
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[dev]"
+          # 2.x conflicts with the default <2 requirement: override the
+          # resolver explicitly (the documented opt-in path).
+          python -m pip install --no-deps --upgrade "duckdb==${{ matrix.duckdb-version }}"
+          python -c "import duckdb; print('duckdb', duckdb.__version__)"
+
+      - name: Test
+        run: pytest -q
+
   package:
     runs-on: ubuntu-latest
 

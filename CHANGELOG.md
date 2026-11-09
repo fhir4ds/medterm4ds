@@ -7,6 +7,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.11] - 2026-11-09
+
+### Changed
+
+- **Terminology default release 2026.11.08.1**: HCTZ resolves to the
+  medication anchor (hydrochlorothiazide) and TMP-SMX / SMZ-TMP /
+  SMX-TMP to sulfamethoxazole / trimethoprim — the LOINC lab-ingredient
+  tie is broken in the published data (single ownership enforced).
+  Obsolete-brand aliases from 2026.11.07.1 included (Glucovance, Vicodin).
+- **DuckDB support matrix verified**: full suite green on 1.5.5, 1.5.6
+  and 2.0.0. Default installs cap `duckdb<2`; 2.x is opt-in
+  (`pip install --no-deps "duckdb>=2.0.0,<3"`) and covered by CI.
+
+### Fixed
+
+- **Leading qualifiers are a fallback query, not the primary one**
+  (CR-301): `Left ventricular hypertrophy` no longer resolves to the
+  generic `Ventricular Hypertrophy`, and `Upper respiratory infection`
+  keeps its concept; `Bilateral pneumonia` still resolves via the
+  fallback.
+- **Composed-sibling parity** (evolution D1): `Bilateral pneumonia with
+  sepsis.` emits both mentions — the sibling fallback now applies the
+  qualifier variant per fragment.
+- Corpora ratchet tooling moved to `tests/corpora/tools/` so clean
+  checkouts keep `scripts/` absent (CI hardening/notebook skips work
+  again).
+
+### Changed
+
+- **DuckDB support matrix verified** (2026-11-09): the full test suite
+  passes unchanged on **1.5.5, 1.5.6 and 2.0.0** (9058 passed / 0 failed
+  on each; also 1.5.3, the lockfile default). Default installs now cap
+  `duckdb<2` — 1.x stays the supported default and **2.x is opt-in**
+  (`pip install --no-deps "duckdb>=2.0.0,<3"`), covered by a new CI
+  matrix job so the claim stays true.
+
 ## [0.0.10] - 2026-11-05
 
 ### Changed

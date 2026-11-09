@@ -26,7 +26,7 @@ import logging
 import os
 import re
 import threading
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any
 
 from medterm4ds.core.env import env_int
@@ -519,8 +519,43 @@ def _strip_trailing_values(text: str) -> str:
     "BP 120/80" → "BP"
     "HbA1c 7.2%" → "HbA1c"
     "temperature" → "temperature" (unchanged — no trailing value)
+
+    Leading qualifiers are NOT removed here: the qualifier is part of the
+    concept for some terms ('left ventricular hypertrophy', 'upper
+    respiratory infection') and furniture for others ('bilateral
+    pneumonia'). They are tried as a FALLBACK query instead (CR-301) —
+    see ``_leading_qualifier_fallback``.
     """
     return _TRAILING_VALUE_RE.sub('', text).strip()
+
+
+_LEADING_QUALIFIER_RE = re.compile(
+    r"^(?:left|right|bilateral|unilateral|upper|lower|"
+    r"history\s+of|hx\s+of|status\s+post|s/p)\s+",
+    re.IGNORECASE,
+)
+
+
+def _strip_leading_qualifiers(text: str) -> str:
+    """Remove leading laterality/descriptor furniture from a query."""
+    while True:
+        m = _LEADING_QUALIFIER_RE.match(text)
+        if not m:
+            return text
+        rest = text[m.end():].strip()
+        if not rest:
+            return text
+        text = rest
+
+
+def _leading_qualifier_fallback(text: str) -> str | None:
+    """The stripped variant to retry when the primary query finds nothing.
+
+    Returns None when stripping would not change the query.
+    """
+    base = _strip_trailing_values(text)
+    stripped = _strip_leading_qualifiers(base)
+    return stripped if stripped and stripped != base else None
 
 
 # Conjunction patterns for splitting compound spans.
@@ -605,6 +640,381 @@ _POST_ENTITY_NEGATION_RE = re.compile(
     re.IGNORECASE,
 )
 
+# Sentence-local post-span negation cues (2026-11-07 NER battery, model
+# team finding 1): when GLiNER leaves the trigger OUTSIDE the span
+# ('Breast cancer ruled out.' → span 'Breast cancer'), ConText is the
+# only line of defense and missed it. These cues are checked in the
+# sentence tail AFTER a span whose status would otherwise be affirmed.
+_POST_SPAN_CUE_RE = re.compile(
+    r"^\s*[(\[\"\u201c]?\s*(?:was\s+|is\s+|are\s+|has\s+been\s+|have\s+been\s+|now\s+)?"
+    r"(?:ruled\s+out|rules\s+out|excluded|not\s+seen|not\s+appreciated|"
+    r"negative\s+for|free\s+of|denied|denies)\b",
+    re.IGNORECASE,
+)
+# Post-span uncertainty cues — the same parenthetical form ('Sepsis
+# (possible)', 'Pneumonia (suspected)'). Uncertain, not negated.
+_POST_SPAN_UNCERTAINTY_RE = re.compile(
+    r"^\s*[(\[\"\u201c]?\s*(?:possible|possibly|suspected|suspect|"
+    r"likely|concerning\s+for|cannot\s+rule\s+out|can't\s+rule\s+out|"
+    r"cannot\s+exclude)\b",
+    re.IGNORECASE,
+)
+# How far past the span end a post-span cue may sit and still bind to it
+# (same sentence; conservative window — cue must effectively follow the
+# mention directly).
+_POST_SPAN_CUE_WINDOW = 32
+
+# Pre-span cues (2026-11-07 edge corpus): cues that sit immediately
+# BEFORE a span GLiNER left bare. Two safety classes:
+#   PSEUDONEGATION — 'Cannot rule out pneumonia': medspaCy ConText reads
+#   'rule out' as a forward NEGATION and marks the span negated, but the
+#   'cannot' inverts it — the finding is UNCERTAIN, and a negated status
+#   would silently drop a possible diagnosis.
+#   UNCERTAINTY — 'Suspected urinary tract infection': ConText missed the
+#   forward uncertainty cue; the span affirmed.
+_PRE_SPAN_PSEUDONEGATION_RE = re.compile(
+    r"\b(?:cannot|can't|could\s+not|unable\s+to|not\s+able\s+to)\s+"
+    r"(?:rule\s+out|exclude|be\s+ruled\s+out|be\s+excluded)\s*$",
+    re.IGNORECASE,
+)
+_PRE_SPAN_UNCERTAINTY_RE = re.compile(
+    r"\b(?:suspected|suspect|possibly|possible|concerning\s+for|"
+    r"likely|question\s+of|cannot\s+rule\s+out|can't\s+rule\s+out|"
+    r"cannot\s+exclude|unable\s+to\s+exclude)\s+(?:a|an|the)?\s*$",
+    re.IGNORECASE,
+)
+_PRE_SPAN_NEGATION_RE = re.compile(
+    r"\b(?:neither|nor|denies|denied|negative\s+for|free\s+of)\s*$",
+    re.IGNORECASE,
+)
+_PRE_SPAN_HISTORICAL_RE = re.compile(
+    r"\b(?:history\s+of|hx\s+of|hx|prior|previous|past)\s+(?:hx\s+of\s+)?"
+    r"(?:a|an|the)?\s*$",
+    re.IGNORECASE,
+)
+_PRE_SPAN_WINDOW = 48
+
+
+def _pre_span_cue(text: str, span_start: int, doc) -> str | None:
+    """Cue immediately before a span, in its sentence.
+
+    Returns 'pseudo_negation' | 'uncertainty' | 'negation' |
+    'historical' | None. Only the text directly adjacent to the span
+    (anchored with $) matches — a cue from a previous clause never binds.
+    """
+    sent_start = None
+    try:
+        for sent in doc.sents:
+            if sent.start_char <= span_start < sent.end_char:
+                sent_start = sent.start_char
+                break
+    except Exception:  # noqa: BLE001 — no sentence iterator → window only
+        sent_start = None
+    begin = max(span_start - _PRE_SPAN_WINDOW, sent_start or 0)
+    head = text[begin:span_start]
+    if _PRE_SPAN_PSEUDONEGATION_RE.search(head):
+        return "pseudo_negation"
+    if _PRE_SPAN_UNCERTAINTY_RE.search(head):
+        return "uncertainty"
+    if _PRE_SPAN_NEGATION_RE.search(head):
+        return "negation"
+    if _PRE_SPAN_HISTORICAL_RE.search(head):
+        return "historical"
+    return None
+
+
+def _post_span_negation_cue(text: str, span_end: int, doc) -> bool:
+    """True when a negation cue sits just after the span, in its sentence.
+
+    Only consulted when inline triggers and ConText both left the status
+    affirmed (the ConText safety net already having had its chance).
+    The cue must follow the span across WHITESPACE ONLY — a clause
+    boundary (',' ';') between span and cue means the cue belongs to a
+    different clause ('Hypertension, negative for proteinuria' must not
+    negate Hypertension; adversarial corpus as-window-01, 2026-11-07).
+    """
+    sent_end = None
+    try:
+        for sent in doc.sents:
+            if sent.start_char <= span_end <= sent.end_char:
+                sent_end = sent.end_char
+                break
+    except Exception:  # noqa: BLE001 — no sentence iterator → window only
+        sent_end = None
+    limit = min(span_end + _POST_SPAN_CUE_WINDOW, sent_end or len(text))
+    tail = text[span_end:limit]
+    return bool(_POST_SPAN_CUE_RE.match(tail))
+
+
+def _post_span_uncertainty_cue(text: str, span_end: int, doc) -> bool:
+    """True when an uncertainty cue sits just after the span ('X (possible)')."""
+    sent_end = None
+    try:
+        for sent in doc.sents:
+            if sent.start_char <= span_end <= sent.end_char:
+                sent_end = sent.end_char
+                break
+    except Exception:  # noqa: BLE001
+        sent_end = None
+    limit = min(span_end + _POST_SPAN_CUE_WINDOW, sent_end or len(text))
+    return bool(_POST_SPAN_UNCERTAINTY_RE.match(text[span_end:limit]))
+
+
+# Strong clause boundaries for the ConText scope guard. Comma is
+# deliberately NOT a boundary: 'denies chest pain, arm pain' keeps its
+# negation for the second item. Semicolon/colon/dash/' but ' separate
+# independent clauses whose cues must not leak ('No evidence of
+# pneumonia; started ceftriaxone for sepsis' — sepsis is not negated).
+_CLAUSE_BOUNDARY_RE = re.compile(r"[;:\u2014]|\bbut\b", re.IGNORECASE)
+_CLAUSE_NEGATION_SUPPORT_RE = re.compile(
+    r"\b(?:no|not|non-|denies|denied|deny|negative|without|absent|free|"
+    r"neither|nor|ruled\s+out|rules\s+out|negative\s+for)\b",
+    re.IGNORECASE,
+)
+
+
+def _clause_negation_supported(text: str, span_start: int, span_end: int) -> bool:
+    """True when the span's own clause carries a negation cue.
+
+    Guards against ConText's token-window scope crossing clause
+    boundaries: a 'negated' ConText verdict is only trusted when the
+    span's clause (strong boundaries only) itself supports it.
+    """
+    boundary = 0
+    for m in _CLAUSE_BOUNDARY_RE.finditer(text[:span_start]):
+        boundary = m.end()
+    clause = text[boundary:span_end]
+    return bool(_CLAUSE_NEGATION_SUPPORT_RE.search(clause))
+
+
+# Drug-ish GLiNER labels whose fragments may be stitched (2026-11-07 NER
+# battery, model team finding 3): GLiNER fragments compound drug mentions
+# ('lisinopril/HCTZ' → 'lisinopril' + 'HCTZ'), and resolving the FULL
+# mention is what returns the correct combination anchor (measured:
+# lisinopril/HCTZ → 'hydrochlorothiazide / lisinopril' 0.917 rank 1).
+# STITCH ONLY THESE — blind stitching merged 'Norco' with 'q6h'.
+_DRUG_NER_LABELS = frozenset({
+    "therapeutic agent", "therapeutic class", "medication", "drug",
+})
+# Battery finding #5: 'immunization' is GLiNER's dominant mislabel for
+# oral-drug fragments ('lisinopril', 'HCTZ'). These may join a stitch
+# ONLY across a bare '/' — 'flu and covid vaccine' must never merge.
+_MISLABELED_DRUG_LABELS = frozenset({"immunization"})
+_STITCH_SLASH_GAP_RE = re.compile(r"^/$")
+# Gap that may sit between two stitchable fragments: SLASH or HYPHEN
+# separators only (2026-11-07 edge corpus: ',' and 'and' are co-
+# prescription LIST separators — 'Home meds: metformin, glipizide, and
+# insulin.' must stay three mentions, not become a fake combination
+# product). Hyphen stays: 'lisinopril-HCTZ' is a genuine compound.
+_STITCH_GAP_RE = re.compile(r"^\s*(?:/|\\|-)\s*$")
+
+
+def _stitch_drug_fragments(spans: list, text: str) -> list:
+    """Merge adjacent drug-label fragments separated only by separators.
+
+    'lisinopril' + '/' + 'HCTZ' (two GLiNER spans) becomes one span
+    'lisinopril/HCTZ' — the combination-mention text the resolver needs
+    to find the combination anchor. Non-drug neighbours, statuses other
+    than affirmed, and gaps containing any real token are never stitched.
+    """
+    if len(spans) < 2:
+        return spans
+    out: list = []
+    for span in spans:
+        prev = out[-1] if out else None
+        if prev is None:
+            out.append(span)
+            continue
+        gap = text[prev.span_end:span.span_start]
+        prev_drug = prev.entity_type in _DRUG_NER_LABELS
+        span_drug = span.entity_type in _DRUG_NER_LABELS
+        prev_mis = prev.entity_type in _MISLABELED_DRUG_LABELS
+        span_mis = span.entity_type in _MISLABELED_DRUG_LABELS
+        eligible = (
+            (prev_drug and span_drug)
+            # a mislabeled fragment may only join through a bare '/'
+            or (prev_drug and span_mis and _STITCH_SLASH_GAP_RE.match(gap))
+            or (prev_mis and span_drug and _STITCH_SLASH_GAP_RE.match(gap))
+            or (prev_mis and span_mis and _STITCH_SLASH_GAP_RE.match(gap))
+        )
+        if (
+            eligible
+            and prev.status == "affirmed"
+            and span.status == "affirmed"
+            and prev.section == span.section
+            and 0 < span.span_start - prev.span_end <= 8
+            and _STITCH_GAP_RE.match(gap)
+        ):
+            prev.text = f"{prev.text}/{span.text}"
+            prev.span_end = span.span_end
+            prev.ner_confidence = max(prev.ner_confidence, span.ner_confidence)
+            continue
+        out.append(span)
+    return out
+
+
+# Compound-span composition (2026-11-07 NER battery, model team findings 1/3).
+# GLiNER fragments compound mentions ('CBC' + 'with differential',
+# 'lisinopril' + 'HCTZ'); only the COMPOSED phrase carries the qualifier into
+# search, and search on the head noun alone is what produced the inverted
+# 'CBC' -> 'Hemogram ... WITHOUT Differential' answer.
+#
+# Linkers only: '/', '-', whitespace, parentheses, with/without/w-of/of.
+# Comma and 'and' are NEVER linkers: 'metformin, glipizide, and insulin' is a
+# co-prescription list and must stay three mentions (measured false merge).
+_COMPOSE_GAP_RE = re.compile(
+    r"^\s*(?:(?:with|without|w/|w/o|of)\s*|[/\-()]\s*|\s+)*$", re.IGNORECASE
+)
+_MAX_COMPOSE_GAP = 18  # chars between fragments; longer gaps are separate mentions
+
+# Fragments that never compose: values, units, dosing, frequency, note verbs.
+_NEUTRAL_FRAGMENT_TOKENS = frozenset({
+    "mg", "mcg", "ug", "g", "kg", "ml", "cc", "l", "iu", "unit", "units",
+    "meq", "tab", "tabs", "tablet", "tablets", "cap", "caps", "capsule",
+    "capsules", "pill", "pills", "drop", "drops", "puff", "puffs",
+    "po", "iv", "im", "sq", "prn", "bid", "tid", "qid", "qd", "hs",
+    "daily", "nightly", "weekly", "meals", "food", "today", "tomorrow",
+    "ordered", "continue", "continue.", "start", "stop", "take", "takes",
+    "given", "dose", "dosing", "mg/dl", "mmol/l", "mmhg",
+    # dosing/taper verbs and single-letter units (2026-11-07 port):
+    # 'Titrate lisinopril' and 'Temperature 38.2 C' must not compose.
+    "titrate", "titration", "taper", "from", "to", "c", "f",
+})
+_COMPOSE_STOPWORDS = frozenset({"with", "without", "of", "the", "w", "o", "and"})
+
+# Labels that describe the same kind of entity. GLiNER routinely splits one
+# compound across families ('CBC' lab test + 'differential' vital sign), so
+# composition treats these as compatible while keeping genuine cross-family
+# pairs (lab + symptom) separate.
+_COMPOSE_LABEL_FAMILIES: tuple[frozenset[str], ...] = (
+    frozenset({"lab test", "vital sign", "panel"}),
+    frozenset({"therapeutic agent", "therapeutic class", "medication", "drug",
+               "immunization"}),
+    frozenset({"disorder", "disease", "symptom", "sign"}),
+    frozenset({"medical intervention", "procedure"}),
+)
+
+
+def _labels_composable(left: str, right: str) -> bool:
+    """True when two GLiNER labels describe the same entity family."""
+    left, right = (left or "").lower(), (right or "").lower()
+    if left == right:
+        return True
+    for family in _COMPOSE_LABEL_FAMILIES:
+        if left in family and right in family:
+            return True
+    return False
+_TOKEN_RE = re.compile(r"[a-z0-9]+")
+
+
+_ASSERTION_FRAGMENT_RE = re.compile(
+    r"^(?:ruled?\s+out|rules?\s+out|excluded?|not\s+seen|not\s+appreciated"
+    r"|negative(?:\s+for)?|denies?|denied|free\s+of|no\s+evidence(?:\s+of)?"
+    r"|cannot|suspect(?:ed)?|possible|possibly|likely)\b",
+    re.IGNORECASE,
+)
+
+
+def _is_assertion_fragment(text: str) -> bool:
+    """True when a fragment is an assertion cue, not a compound modifier.
+
+    'Pneumonia' + 'ruled out' must never compose: the cue carries status,
+    not meaning, and composing it turned a negated mention into an
+    unresolvable span (2026-11-07 port regression).
+    """
+    return bool(_ASSERTION_FRAGMENT_RE.match(text.strip()))
+
+
+# Fused dose/value tokens ('500mg', '7.2%', '120/80') survive _TOKEN_RE as
+# ONE alnum token, so isdigit()/set membership never classify them —
+# measured regression (ts99): 'metformin' + '500mg' composed into
+# 'metformin 500mg' and resolved to the glyburide/metformin combination
+# anchor instead of plain metformin.
+_FUSED_VALUE_TOKEN_RE = re.compile(
+    r"^\d+(?:\.\d+)?(?:[a-z]+(?:/[a-z]+)?|%)$", re.IGNORECASE
+)
+
+
+def _is_neutral_fragment(text: str) -> bool:
+    """True when a fragment is only values/units/dosing (never composed)."""
+    tokens = _TOKEN_RE.findall(text.lower())
+    if not tokens:
+        return True
+    return all(
+        t.isdigit()
+        or t in _NEUTRAL_FRAGMENT_TOKENS
+        or _FUSED_VALUE_TOKEN_RE.match(t)
+        for t in tokens
+    )
+
+
+def _compose_compound_spans(spans: list, text: str) -> list:
+    """Merge adjacent same-label spans separated by linker-only gaps.
+
+    'CBC' + 'with differential' -> 'CBC with differential' (the phrase that
+    carries the qualifier into search). Only affirmed spans in the same
+    section, same GLiNER label, and neither side numeric/unit/dosing.
+    The merged span keeps the head's offsets start and records every merged
+    fragment in ``composed_from`` so resolution can rank candidates by
+    fragment completeness.
+    """
+    if len(spans) < 2:
+        return spans
+    out: list = []
+    for span in spans:
+        prev = out[-1] if out else None
+        if prev is None:
+            out.append(span)
+            continue
+        gap = text[prev.span_end:span.span_start]
+        if not (
+            prev.status == "affirmed"
+            and span.status == "affirmed"
+            and prev.section == span.section
+            and _labels_composable(prev.entity_type, span.entity_type)
+            and 0 < span.span_start - prev.span_end <= _MAX_COMPOSE_GAP
+            and _COMPOSE_GAP_RE.match(gap)
+            and not _is_neutral_fragment(prev.text)
+            and not _is_neutral_fragment(span.text)
+            and not _is_assertion_fragment(prev.text)
+            and not _is_assertion_fragment(span.text)
+        ):
+            out.append(span)
+            continue
+        fragments = list(prev.composed_from or [prev.text])
+        fragments.append(span.text)
+        prev.text = " ".join(text[prev.span_start:span.span_end].split())
+        prev.span_end = span.span_end
+        prev.ner_confidence = max(prev.ner_confidence, span.ner_confidence)
+        prev.composed_from = fragments
+        continue
+    return out
+
+
+def _fragment_completeness(span, result) -> bool:
+    """True when a candidate represents every fragment of a composed span.
+
+    A combination anchor whose combination_members cover the fragment count
+    is complete by construction ('lisinopril/HCTZ' -> 'hydrochlorothiazide /
+    lisinopril'); otherwise each fragment must contribute a content token to
+    the display ('CBC with differential' -> 'CBC with Manual Differential').
+    """
+    fragments = getattr(span, "composed_from", None) or []
+    if len(fragments) < 2:
+        return True
+    members = getattr(result, "combination_members", None) or []
+    if len(members) >= len(fragments):
+        return True
+    display_tokens = set(_TOKEN_RE.findall((result.display or "").lower()))
+    for fragment in fragments:
+        tokens = [
+            t for t in _TOKEN_RE.findall(fragment.lower())
+            if not t.isdigit() and t not in _COMPOSE_STOPWORDS
+        ]
+        if tokens and not all(t in display_tokens for t in tokens):
+            return False
+    return True
+
 
 def _detect_inline_trigger(entity_text: str) -> tuple[str, str]:
     """Check if entity text starts with a negation/uncertainty/historical trigger.
@@ -643,7 +1053,41 @@ def _is_false_positive(text: str) -> bool:
     # Filter single-character spans (bullet chars, punctuation, etc.)
     if len(lower) <= 1:
         return True
+    # Abbreviation/code/markup stoplist (2026-11-07 adversarial battery):
+    # non-clinical shorthand resolved to confident wrong answers
+    # ('NPO' -> Narcissistic Personality Disorder, 'HEDIS' -> hypermobile
+    # EDS, 'MD' -> Multicore Myopathy, '<b>' -> 'B').
+    if lower in _ABBREVIATION_STOPLIST:
+        return True
+    if _CODE_PATTERN_RE.fullmatch(lower):
+        return True
+    if re.search(r"[<>{}]|&[a-z]+;", lower):
+        return True
     return False
+
+
+_ABBREVIATION_STOPLIST = frozenset({
+    "npo", "nkda", "nka", "md", "hedis", "cms", "fda", "cdc",
+    "icd", "icd-10", "icd10", "cpt", "loinc", "ndc", "drg", "snomed",
+    "umls", "rxnorm", "hcpcs",
+    # Bare units/dosing/frequency tokens (2026-11-07 verification): a
+    # lone 'mg' resolved to Myasthenia Gravis in 'lisinopril/HCTZ
+    # 20/12.5 mg daily'. A unit is never a concept — drop it.
+    "mg", "mcg", "ug", "ng", "g", "kg", "ml", "cc", "dl", "l",
+    "iu", "meq", "unit", "units", "mmol", "mol", "percent", "%",
+    "tab", "tabs", "tablet", "tablets", "cap", "caps", "capsule",
+    "capsules", "pill", "pills", "drop", "drops", "puff", "puffs",
+    "po", "iv", "im", "sq", "prn", "bid", "tid", "qid", "qd", "qhs",
+    "hs", "q6h", "q8h", "q12h", "q24h", "daily", "nightly", "weekly",
+})
+# Bare billing/terminology codes that leak as spans ('99213' CPT,
+# 'E11.9' ICD, '4548-4' LOINC) carry no clinical surface text to
+# resolve. Deliberately NOT matching short alnum clinical tokens:
+# 'b12'/'a1c' stay extractable (the alnum ICD form requires a decimal).
+_CODE_PATTERN_RE = re.compile(
+    r"(?:[a-z]\d{2}\.\d+|\d{4,5}-\d|\d{5}|\d{1,3}\.\d+)",
+    re.IGNORECASE,
+)
 
 
 @dataclass
@@ -663,6 +1107,9 @@ class FilteredSpan:
     # mapping stands). Captured at find_terms time because resolve_spans
     # runs without medspaCy loaded. Internal only — omitted from to_dict.
     context_categories: list[str] | None = None
+    # Fragments merged into this span by _compose_compound_spans, head first.
+    # None for ordinary spans. Internal only — omitted from to_dict.
+    composed_from: list[str] | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -1119,6 +1566,31 @@ class NlpPipeline:
                 display_text = cleaned_text
             else:
                 status = context_status or "affirmed"
+                # ConText clause-scope guard (adversarial corpus as-scope-03,
+                # 2026-11-07): ConText's token window can cross a ';'/':'
+                # boundary — a 'negated' verdict is only trusted when the
+                # span's own clause carries a negation cue.
+                if (
+                    status == "negated"
+                    and not _clause_negation_supported(text, start, end)
+                ):
+                    status = "affirmed"
+                # Pre-span cues (2026-11-07 edge corpus). PSEUDONEGATION
+                # overrides even a ConText negation ('cannot rule out X' is
+                # uncertain, never negated); the weaker cues only lift an
+                # otherwise-affirmed span.
+                pre_cue = _pre_span_cue(text, start, doc)
+                if pre_cue == "pseudo_negation" and status in ("affirmed", "negated"):
+                    status = "uncertain"
+                elif status == "affirmed" and pre_cue:
+                    status = {"uncertainty": "uncertain", "negation": "negated", "historical": "historical"}[pre_cue]
+                # Sentence-local post-span cues (2026-11-07): negation and
+                # uncertainty may follow the span, parenthetical or bare.
+                if status == "affirmed":
+                    if _post_span_negation_cue(text, end, doc):
+                        status = "negated"
+                    elif _post_span_uncertainty_cue(text, end, doc):
+                        status = "uncertain"
                 display_text = ent_text
 
             spans.append(FilteredSpan(
@@ -1131,7 +1603,7 @@ class NlpPipeline:
                 context_categories=context_categories,
             ))
 
-        return spans
+        return _compose_compound_spans(_stitch_drug_fragments(spans, text), text)
 
 
 # Inline-marker field vocabulary for format="annotated". source_code is the
@@ -1213,6 +1685,26 @@ def _annotation_marker_values(
     return values
 
 
+def _qualifier_inverted(query: str, display: str) -> bool:
+    """True when a result's with/without qualifier inverts the query's.
+
+    2026-11-07 NER battery, model team finding 2 ('CBC with differential'
+    resolving to 'Hemogram and Platelets WITHOUT Differential'): right
+    family, inverted meaning — a wrong answer, not a near-miss. Only a
+    with↔without flip on the SAME qualifier token counts; other tokens
+    are irrelevant.
+    """
+    qual_re = re.compile(r"\b(without|with)\s+([a-z]{3,})\b", re.IGNORECASE)
+    q_quals = {tok.lower(): q for q, tok in qual_re.findall(query)}
+    if not q_quals:
+        return False
+    for q, tok in qual_re.findall(display):
+        q_tok = q_quals.get(tok.lower())
+        if q_tok is not None and {q_tok, q} == {"with", "without"}:
+            return True
+    return False
+
+
 def _first_matching_concept(
     span: FilteredSpan,
     results: list,
@@ -1220,6 +1712,7 @@ def _first_matching_concept(
     *,
     result_type_prefixes: set[str] | None,
     grade_threshold: str,
+    composed: bool = False,
 ) -> ExtractedConcept | None:
     """First search result passing the span's source/category/grade filters.
 
@@ -1248,30 +1741,49 @@ def _first_matching_concept(
         None if result_type_prefixes
         else _categories_to_prefixes(_span_search_categories(span))
     )
-    prefix_attempts: list[set[str] | None] = (
-        [label_prefixes, None] if label_prefixes else [None]
-    )
+    # Composed spans never take the unfiltered fallback: a composed phrase may
+    # only resolve within its label's categories (same result_type — iteration
+    # (c) lesson: label-only constraints reintroduced type drift on mislabeled
+    # spans when the fallback was allowed).
+    if composed and label_prefixes:
+        prefix_attempts: list[set[str] | None] = [label_prefixes]
+    else:
+        prefix_attempts = [label_prefixes, None] if label_prefixes else [None]
     for label_pf in prefix_attempts:
         for r in results:
+            # Qualifier-inversion guard (2026-11-07 NER battery): a
+            # with/without flip on the same token is a wrong answer, not
+            # a lower-grade match — skip it and let the next candidate
+            # (or abstention) win.
+            if _qualifier_inverted(span.text, r.display):
+                continue
             # Source filter
             if source_set and r.anchor_system not in source_set:
                 continue
             # Result-type filter (QC-153: previously the batch path
             # ignored result_types entirely — FHIR resultTypes=condition
             # still returned medications)
-            if result_type_prefixes and not any(
-                r.canonical_id.startswith(p) for p in result_type_prefixes
+            result_canonical_id = getattr(r, "canonical_id", "") or ""
+            if result_type_prefixes and result_canonical_id and not any(
+                result_canonical_id.startswith(p) for p in result_type_prefixes
             ):
                 continue
             # Label-derived category constraint (constrain pass;
             # the fallback pass re-runs with label_pf=None)
-            if label_pf and not any(
-                r.canonical_id.startswith(p) for p in label_pf
+            if label_pf and result_canonical_id and not any(
+                result_canonical_id.startswith(p) for p in label_pf
             ):
                 continue
             # Grade filter
             if _GRADE_ORDER.get(r.match_grade, 2) > _GRADE_ORDER.get(grade_threshold, 0):
                 continue
+            # Composed spans: candidate must represent every fragment, and clear
+            # the 'probable' floor regardless of the caller's min_grade.
+            if composed:
+                if _GRADE_ORDER.get(r.match_grade, 2) > _GRADE_ORDER["probable"]:
+                    continue
+                if not _fragment_completeness(span, r):
+                    continue
             canonical_id = getattr(r, "canonical_id", "") or ""
             combination_members = getattr(r, "combination_members", None) or []
             return ExtractedConcept(
@@ -1284,6 +1796,79 @@ def _first_matching_concept(
                 combination_members=combination_members,
             )
     return None
+
+
+def _resolve_composed_multi(
+    span: FilteredSpan,
+    fetch,
+    ss: tuple[str, ...] | None,
+    *,
+    result_type_prefixes: set[str] | None,
+    grade_threshold: str,
+) -> list[ExtractedConcept]:
+    """Resolve a span, preferring the composed phrase, never losing siblings.
+
+    A composed span that fails completeness/type/grade falls back to EVERY
+    fragment: composition may add specificity, but it may never drop a mention
+    ('Pneumonia with sepsis' must still yield both concepts when no single
+    anchor covers the pair — 2026-11-07 review blocker).
+    """
+    composed = bool(span.composed_from)
+    if composed:
+        # A composed query is already gated by fragment completeness, so it is
+        # never held to a floor stricter than 'probable' — hybrid mode's default
+        # min_grade is 'certain', which filtered every composed candidate before
+        # the completeness logic could rank it (review blocker 2).
+        composed_threshold = (
+            "probable"
+            if _GRADE_ORDER.get(grade_threshold, 0) < _GRADE_ORDER["probable"]
+            else grade_threshold
+        )
+        matched = _first_matching_concept(
+            span, fetch(span.text), ss,
+            result_type_prefixes=result_type_prefixes,
+            grade_threshold=composed_threshold,
+            composed=True,
+        )
+        if matched is not None:
+            return [matched]
+
+    out: list[ExtractedConcept] = []
+    seen: set[str] = set()
+    for fragment in (span.composed_from or [span.text]):
+        # Values/units and assertion cues are never mentions of their own.
+        if composed and (_is_neutral_fragment(fragment) or _is_assertion_fragment(fragment)):
+            continue
+        fragment_span = replace(
+            span, text=fragment, composed_from=None,
+            span_end=span.span_start + len(fragment),
+        )
+        matched = _first_matching_concept(
+            fragment_span, fetch(fragment), ss,
+            result_type_prefixes=result_type_prefixes,
+            grade_threshold=grade_threshold,
+            composed=False,
+        )
+        if matched is None:
+            # CR-301 sibling parity: a fragment may need the leading-qualifier
+            # fallback too ('Bilateral pneumonia' must still resolve when the
+            # composed pair does not — measured loss of the pneumonia mention).
+            variant = _leading_qualifier_fallback(fragment)
+            if variant:
+                matched = _first_matching_concept(
+                    fragment_span, fetch(variant), ss,
+                    result_type_prefixes=result_type_prefixes,
+                    grade_threshold=grade_threshold,
+                    composed=False,
+                )
+        if matched is None:
+            continue
+        key = matched.canonical_id or f"{matched.source}:{matched.code}"
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(matched)
+    return out
 
 
 def _dedup_concepts(concepts: list[ExtractedConcept]) -> list[ExtractedConcept]:
@@ -1513,6 +2098,18 @@ class ExtractionService:
 
             for span, results in zip(spans, batch_results, strict=False):
                 ss = _LABEL_TO_SOURCES.get(span.entity_type.lower())
+                if span.composed_from:
+                    concepts.extend(_resolve_composed_multi(
+                        span,
+                        lambda text, _results=results, _span_text=span.text: (
+                            _results if text == _span_text
+                            else search.canonical(_strip_trailing_values(text), count=10)
+                        ),
+                        ss,
+                        result_type_prefixes=result_type_prefixes,
+                        grade_threshold=grade_threshold,
+                    ))
+                    continue
                 matched = _first_matching_concept(
                     span, results, ss,
                     result_type_prefixes=result_type_prefixes,
@@ -1521,6 +2118,18 @@ class ExtractionService:
                 if matched is not None:
                     concepts.append(matched)
                     continue
+                # CR-301: leading-qualifier FALLBACK — only after the
+                # primary query (qualifier intact) found nothing.
+                variant = _leading_qualifier_fallback(span.text)
+                if variant:
+                    matched = _first_matching_concept(
+                        span, search.canonical(variant, count=10), ss,
+                        result_type_prefixes=result_type_prefixes,
+                        grade_threshold=grade_threshold,
+                    )
+                    if matched is not None:
+                        concepts.append(matched)
+                        continue
 
                 # Conjunction split on failure (individual search for split parts)
                 search_text = _strip_trailing_values(span.text)
@@ -1601,7 +2210,40 @@ class ExtractionService:
             _search_cache[cache_key] = r
             return r
 
+        # Composition guard (2026-11-07 port, mode-agnostic): composed spans
+        # resolve under completeness/type/grade rules in EVERY mode — the
+        # shipped default (hybrid) had the inverted 'CBC' answer because this
+        # guard was canonical-only (review blocker 2). Non-composed spans keep
+        # the pre-existing per-span path untouched.
+        if any(span.composed_from for span in spans):
+            for span in spans:
+                if not span.composed_from:
+                    continue
+                ss = _LABEL_TO_SOURCES.get(span.entity_type.lower())
+                ss_key = ",".join(ss) if ss else ""
+                rt_probe = (
+                    result_types if result_types is not None
+                    else _span_search_categories(span)
+                )
+
+                def _fetch(text, _ss=ss, _ss_key=ss_key, _rt=rt_probe):
+                    probe = _strip_trailing_values(text)
+                    attempts = [_rt, None] if result_types is None else [result_types]
+                    for attempt in attempts:
+                        found = _search_span_texts(probe, _ss_key, _ss, attempt)
+                        if found:
+                            return found
+                    return []
+
+                concepts.extend(_resolve_composed_multi(
+                    span, _fetch, ss,
+                    result_type_prefixes=result_type_prefixes,
+                    grade_threshold=grade_threshold,
+                ))
+
         for span in spans:
+            if span.composed_from:
+                continue  # resolved by the composed pre-pass above
             search_text = _strip_trailing_values(span.text)
             ss = _LABEL_TO_SOURCES.get(span.entity_type.lower())
             ss_key = ",".join(ss) if ss else ""
@@ -1615,25 +2257,38 @@ class ExtractionService:
                 rt = _span_search_categories(span)
                 rt_attempts = [rt, None] if rt is not None else [None]
 
+            # CR-301: leading-qualifier FALLBACK — retry the stripped
+            # query only when the primary one finds nothing.
+            variant = _leading_qualifier_fallback(span.text)
+            if variant:
+                search_texts = [search_text, variant]
+            else:
+                search_texts = [search_text]
+
             resolved = False
-            for rt in rt_attempts:
-                results = _search_span_texts(search_text, ss_key, ss, rt)
-                for r in results:
-                    if _GRADE_ORDER.get(r.match_grade, 2) > _GRADE_ORDER.get(grade_threshold, 0):
-                        continue
-                    canonical_id = getattr(r, "canonical_id", "") or ""
-                    combination_members = getattr(r, "combination_members", None) or []
-                    concepts.append(ExtractedConcept(
-                        code=r.code, source=r.source, display=r.display,
-                        matched_text=span.text, status=span.status,
-                        section=span.section, confidence=r.score,
-                        match_grade=r.match_grade, ner_label=span.entity_type,
-                        span_start=span.span_start, span_end=span.span_end,
-                        canonical_id=canonical_id,
-                        combination_members=combination_members,
-                    ))
-                    resolved = True
+            for candidate_text in search_texts:
+                if resolved:
                     break
+                for rt in rt_attempts:
+                    if resolved:
+                        break
+                    results = _search_span_texts(candidate_text, ss_key, ss, rt)
+                    for r in results:
+                        if _GRADE_ORDER.get(r.match_grade, 2) > _GRADE_ORDER.get(grade_threshold, 0):
+                            continue
+                        canonical_id = getattr(r, "canonical_id", "") or ""
+                        combination_members = getattr(r, "combination_members", None) or []
+                        concepts.append(ExtractedConcept(
+                            code=r.code, source=r.source, display=r.display,
+                            matched_text=span.text, status=span.status,
+                            section=span.section, confidence=r.score,
+                            match_grade=r.match_grade, ner_label=span.entity_type,
+                            span_start=span.span_start, span_end=span.span_end,
+                            canonical_id=canonical_id,
+                            combination_members=combination_members,
+                        ))
+                        resolved = True
+                        break
                 if resolved:
                     break
 
@@ -1746,6 +2401,18 @@ class ExtractionService:
             concepts: list[ExtractedConcept] = []
             for span, t in zip(spans, texts, strict=False):
                 ss = _LABEL_TO_SOURCES.get(span.entity_type.lower())
+                if span.composed_from:
+                    concepts.extend(_resolve_composed_multi(
+                        span,
+                        lambda text, _by_text=results_by_text: _by_text.get(
+                            _strip_trailing_values(text),
+                            search.canonical(_strip_trailing_values(text), count=10),
+                        ),
+                        ss,
+                        result_type_prefixes=result_type_prefixes,
+                        grade_threshold=grade_threshold,
+                    ))
+                    continue
                 matched = _first_matching_concept(
                     span, results_by_text.get(t, []), ss,
                     result_type_prefixes=result_type_prefixes,
@@ -1754,6 +2421,17 @@ class ExtractionService:
                 if matched is not None:
                     concepts.append(matched)
                     continue
+                # CR-301: leading-qualifier FALLBACK (see single-batch path).
+                variant = _leading_qualifier_fallback(span.text)
+                if variant:
+                    matched = _first_matching_concept(
+                        span, search.canonical(variant, count=10), ss,
+                        result_type_prefixes=result_type_prefixes,
+                        grade_threshold=grade_threshold,
+                    )
+                    if matched is not None:
+                        concepts.append(matched)
+                        continue
                 parts = _split_on_conjunction(t)
                 if parts:
                     rt_attempts: list[str | list[str] | None]

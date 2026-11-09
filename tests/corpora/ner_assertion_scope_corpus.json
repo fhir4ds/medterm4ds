@@ -1,0 +1,80 @@
+{
+  "_comment": "Attacks the assertion layer: the 32-char post-span negation window (false-negation traps), sentence-boundary scope, parentheticals, contradiction, current-vs-history on the same entity, and clinical shorthand that means 'present' (afebrile, no acute distress, NKDA).",
+  "cases": [
+    {"id": "as-window-01", "family": "false_negation_trap", "include_non_affirmed": true, "text": "Hypertension, negative for proteinuria.", "mentions": [
+      {"text": "Hypertension", "expect": ["hypertension"], "status": "affirmed"},
+      {"text": "proteinuria", "expect": ["proteinuria"], "status": "negated"}]},
+    {"id": "as-window-02", "family": "false_negation_trap", "include_non_affirmed": true, "text": "Anemia, workup negative for iron deficiency.", "mentions": [
+      {"text": "Anemia", "expect": ["anemia"], "status": "affirmed"},
+      {"text": "iron deficiency", "expect": ["iron deficiency"], "status": "negated"}]},
+    {"id": "as-window-03", "family": "false_negation_trap", "include_non_affirmed": true, "text": "Asthma; free of symptoms today.", "mentions": [
+      {"text": "Asthma", "expect": ["asthma"], "status": "affirmed"}]},
+    {"id": "as-window-04", "family": "false_negation_trap", "include_non_affirmed": true, "text": "Diabetes, excluded from the trial.", "mentions": [
+      {"text": "Diabetes", "expect": ["diabetes"]}]},
+    {"id": "as-window-05", "family": "false_negation_trap", "include_non_affirmed": true, "text": "Pneumonia, resolved; free of fever.", "mentions": [
+      {"text": "Pneumonia", "expect": ["pneumonia"]},
+      {"text": "fever", "expect": ["fever"], "status": "negated"}]},
+    {"id": "as-window-06", "family": "false_negation_trap", "include_non_affirmed": true, "text": "HFpEF, negative for ischemia on stress test.", "mentions": [
+      {"text": "HFpEF", "expect": ["heart failure"], "status": "affirmed"},
+      {"text": "ischemia", "expect": ["ischemia"], "status": "negated"}]},
+
+    {"id": "as-scope-01", "family": "sentence_scope", "include_non_affirmed": true, "text": "No fever. Pneumonia present.", "mentions": [
+      {"text": "fever", "expect": ["fever"], "status": "negated"},
+      {"text": "Pneumonia", "expect": ["pneumonia"], "status": "affirmed"}]},
+    {"id": "as-scope-02", "family": "sentence_scope", "include_non_affirmed": true, "text": "Denies chest pain. Shortness of breath present.", "mentions": [
+      {"text": "chest pain", "expect": ["chest pain"], "status": "negated"},
+      {"text": "Shortness of breath", "expect": ["dyspnea", "shortness of breath"], "status": "affirmed"}]},
+    {"id": "as-scope-03", "family": "sentence_scope", "include_non_affirmed": true, "text": "No evidence of pneumonia; started ceftriaxone for sepsis.", "mentions": [
+      {"text": "pneumonia", "expect": ["pneumonia"], "status": "negated"},
+      {"text": "sepsis", "expect": ["sepsis"], "status": "affirmed"}]},
+    {"id": "as-scope-04", "family": "sentence_scope", "include_non_affirmed": true, "text": "No history of MI. Current NSTEMI.", "mentions": [
+      {"text": "NSTEMI", "expect": ["myocardial infarction", "nstemi"], "status": "affirmed"}]},
+
+    {"id": "as-paren-01", "family": "parenthetical", "include_non_affirmed": true, "text": "Pneumonia (ruled out).", "mentions": [
+      {"text": "Pneumonia", "expect": ["pneumonia"], "status": "negated"}]},
+    {"id": "as-paren-02", "family": "parenthetical", "include_non_affirmed": true, "text": "Chest pain (non-cardiac).", "mentions": [
+      {"text": "Chest pain", "expect": ["chest pain"], "status": "affirmed"}]},
+    {"id": "as-paren-03", "family": "parenthetical", "include_non_affirmed": true, "text": "Sepsis (possible), pending cultures.", "mentions": [
+      {"text": "Sepsis", "expect": ["sepsis"], "status": "uncertain"}]},
+
+    {"id": "as-contra-01", "family": "contradiction", "include_non_affirmed": true, "text": "No pneumonia; pneumonia suspected clinically.", "mentions": [
+      {"text": "pneumonia", "expect": ["pneumonia"]}]},
+    {"id": "as-contra-02", "family": "contradiction", "include_non_affirmed": true, "text": "Denies alcohol use but drinks daily.", "mentions": [
+      {"text": "alcohol use", "expect": ["alcohol"]}]},
+
+    {"id": "as-status-01", "family": "clinical_shorthand", "include_non_affirmed": true, "text": "Afebrile, no acute distress.", "mentions": [], "noise": ["Afebrile", "acute distress"]},
+    {"id": "as-status-02", "family": "clinical_shorthand", "include_non_affirmed": true, "text": "Alert and oriented, in no acute distress.", "mentions": [], "noise": ["Alert and oriented", "acute distress"]},
+    {"id": "as-status-03", "family": "clinical_shorthand", "include_non_affirmed": true, "text": "Full code, DNR/DNI discussed.", "mentions": [], "noise": ["Full code", "DNR", "DNI"]},
+    {"id": "as-status-04", "family": "clinical_shorthand", "include_non_affirmed": true, "text": "NKDA. NKA.", "mentions": [], "noise": ["NKDA", "NKA"]},
+
+    {"id": "as-hist-01", "family": "current_vs_history", "include_non_affirmed": true, "text": "History of MI; now presents with new MI.", "mentions": [
+      {"text": "MI", "expect": ["myocardial infarction"]}]},
+    {"id": "as-hist-02", "family": "current_vs_history", "include_non_affirmed": true, "text": "Previously had COVID-19, now COVID-19 negative.", "mentions": [
+      {"text": "COVID-19", "expect": ["covid"], "status": "negated"}]},
+    {"id": "as-hist-03", "family": "current_vs_history", "include_non_affirmed": true, "text": "Past medical history of stroke; no new stroke.", "mentions": [
+      {"text": "stroke", "expect": ["stroke"]}]},
+
+    {"id": "as-order-01", "family": "cue_order", "include_non_affirmed": true, "text": "Pneumonia was ruled out by imaging.", "mentions": [
+      {"text": "Pneumonia", "expect": ["pneumonia"], "status": "negated"}]},
+    {"id": "as-order-02", "family": "cue_order", "include_non_affirmed": true, "text": "The team ruled out pneumonia.", "mentions": [
+      {"text": "pneumonia", "expect": ["pneumonia"], "status": "negated"}]},
+    {"id": "as-order-03", "family": "cue_order", "include_non_affirmed": true, "text": "To rule out pneumonia, CT ordered.", "mentions": [
+      {"text": "pneumonia", "expect": ["pneumonia"], "status": "uncertain"}]},
+    {"id": "as-order-04", "family": "cue_order", "include_non_affirmed": true, "text": "Cultures negative for MRSA, but staph aureus grew.", "mentions": [
+      {"text": "MRSA", "expect": ["mrsa", "staphylococcus"], "status": "negated"},
+      {"text": "staph aureus", "expect": ["staphylococcus aureus", "aureus"], "status": "affirmed"}]},
+
+    {"id": "as-double-01", "family": "double_negative", "include_non_affirmed": true, "text": "Not unremarkable.", "mentions": []},
+    {"id": "as-double-02", "family": "double_negative", "include_non_affirmed": true, "text": "No fever, no chills, no night sweats.", "mentions": [
+      {"text": "fever", "expect": ["fever"], "status": "negated"},
+      {"text": "chills", "expect": ["chills"], "status": "negated"},
+      {"text": "night sweats", "expect": ["night sweat"], "status": "negated"}]},
+    {"id": "as-mixed-01", "family": "mixed_list", "include_non_affirmed": true, "text": "Positive for fever and cough; negative for dyspnea.", "mentions": [
+      {"text": "fever", "expect": ["fever"], "status": "affirmed"},
+      {"text": "cough", "expect": ["cough"], "status": "affirmed"},
+      {"text": "dyspnea", "expect": ["dyspnea", "shortness of breath"], "status": "negated"}]},
+    {"id": "as-mixed-02", "family": "mixed_list", "include_non_affirmed": true, "text": "Allergic to penicillin; tolerates amoxicillin.", "mentions": [
+      {"text": "penicillin", "expect": ["penicillin"]},
+      {"text": "amoxicillin", "expect": ["amoxicillin"]}]}
+  ]
+}

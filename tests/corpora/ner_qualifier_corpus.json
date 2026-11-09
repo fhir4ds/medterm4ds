@@ -1,0 +1,683 @@
+{
+  "_comment": "Qualifier minimal pairs: two cases share a head noun and differ only by a polarity token. A resolver that ignores the qualifier returns the same code for both (inversion); the pair should resolve to different anchors, or the second should abstain. 'expect' tokens include the qualifier where the anchor likely carries it.",
+  "cases": [
+    {
+      "id": "q-contrast-01",
+      "family": "qualifier",
+      "text": "CT abdomen with contrast ordered.",
+      "mentions": [
+        {
+          "text": "with contrast",
+          "expect": [
+            "with contrast",
+            "contrast"
+          ],
+          "mode": "any"
+        }
+      ]
+    },
+    {
+      "id": "q-contrast-02",
+      "family": "qualifier",
+      "text": "CT abdomen without contrast ordered.",
+      "mentions": [
+        {
+          "text": "without contrast",
+          "expect": [
+            "without contrast",
+            "noncontrast",
+            "non-contrast"
+          ],
+          "mode": "any"
+        }
+      ]
+    },
+    {
+      "id": "q-side-01",
+      "family": "qualifier",
+      "text": "Fracture of left femur.",
+      "mentions": [
+        {
+          "text": "left",
+          "expect": [
+            "left"
+          ],
+          "mode": "any"
+        }
+      ]
+    },
+    {
+      "id": "q-side-02",
+      "family": "qualifier",
+      "text": "Fracture of right femur.",
+      "mentions": [
+        {
+          "text": "right",
+          "expect": [
+            "right"
+          ],
+          "mode": "any"
+        }
+      ]
+    },
+    {
+      "id": "q-side-03",
+      "family": "qualifier",
+      "text": "Left knee pain.",
+      "mentions": [
+        {
+          "text": "Left",
+          "expect": [
+            "left"
+          ],
+          "mode": "any"
+        }
+      ]
+    },
+    {
+      "id": "q-side-04",
+      "family": "qualifier",
+      "text": "Right knee pain.",
+      "mentions": [
+        {
+          "text": "Right",
+          "expect": [
+            "right"
+          ],
+          "mode": "any"
+        }
+      ]
+    },
+    {
+      "id": "q-acute-01",
+      "family": "qualifier",
+      "text": "Acute kidney injury.",
+      "mentions": [
+        {
+          "text": "Acute kidney injury",
+          "expect": [
+            "acute"
+          ],
+          "mode": "any",
+          "type": "condition"
+        }
+      ]
+    },
+    {
+      "id": "q-acute-02",
+      "family": "qualifier",
+      "text": "Chronic kidney disease.",
+      "mentions": [
+        {
+          "text": "Chronic kidney disease",
+          "expect": [
+            "chronic"
+          ],
+          "mode": "any",
+          "type": "condition"
+        }
+      ]
+    },
+    {
+      "id": "q-type-01",
+      "family": "qualifier",
+      "text": "Type 1 diabetes mellitus.",
+      "mentions": [
+        {
+          "text": "Type 1 diabetes mellitus",
+          "expect": [
+            "type 1",
+            "type i",
+            "1 diabetes"
+          ],
+          "mode": "any",
+          "type": "condition"
+        }
+      ]
+    },
+    {
+      "id": "q-type-02",
+      "family": "qualifier",
+      "text": "Type 2 diabetes mellitus.",
+      "mentions": [
+        {
+          "text": "Type 2 diabetes mellitus",
+          "expect": [
+            "type 2",
+            "type ii",
+            "2 diabetes"
+          ],
+          "mode": "any",
+          "type": "condition"
+        }
+      ]
+    },
+    {
+      "id": "q-stage-01",
+      "family": "qualifier",
+      "text": "Chronic kidney disease stage 3.",
+      "mentions": [
+        {
+          "text": "stage 3",
+          "expect": [
+            "stage 3"
+          ],
+          "mode": "any"
+        }
+      ]
+    },
+    {
+      "id": "q-stage-02",
+      "family": "qualifier",
+      "text": "Chronic kidney disease stage 4.",
+      "mentions": [
+        {
+          "text": "stage 4",
+          "expect": [
+            "stage 4"
+          ],
+          "mode": "any"
+        }
+      ]
+    },
+    {
+      "id": "q-stage-03",
+      "family": "qualifier",
+      "text": "Stage II breast cancer.",
+      "mentions": [
+        {
+          "text": "Stage II",
+          "expect": [
+            "stage ii",
+            "stage 2"
+          ],
+          "mode": "any"
+        }
+      ]
+    },
+    {
+      "id": "q-stage-04",
+      "family": "qualifier",
+      "text": "Stage III breast cancer.",
+      "mentions": [
+        {
+          "text": "Stage III",
+          "expect": [
+            "stage iii",
+            "stage 3"
+          ],
+          "mode": "any"
+        }
+      ]
+    },
+    {
+      "id": "q-bp-01",
+      "family": "qualifier",
+      "text": "Systolic blood pressure 150 mmHg.",
+      "mentions": [
+        {
+          "text": "Systolic blood pressure",
+          "expect": [
+            "systolic"
+          ],
+          "mode": "any"
+        }
+      ]
+    },
+    {
+      "id": "q-bp-02",
+      "family": "qualifier",
+      "text": "Diastolic blood pressure 90 mmHg.",
+      "mentions": [
+        {
+          "text": "Diastolic blood pressure",
+          "expect": [
+            "diastolic"
+          ],
+          "mode": "any"
+        }
+      ]
+    },
+    {
+      "id": "q-lateral-01",
+      "family": "qualifier",
+      "text": "Unilateral hearing loss.",
+      "mentions": [
+        {
+          "text": "Unilateral hearing loss",
+          "expect": [
+            "unilateral"
+          ],
+          "mode": "any"
+        }
+      ]
+    },
+    {
+      "id": "q-lateral-02",
+      "family": "qualifier",
+      "text": "Bilateral hearing loss.",
+      "mentions": [
+        {
+          "text": "Bilateral hearing loss",
+          "expect": [
+            "bilateral"
+          ],
+          "mode": "any"
+        }
+      ]
+    },
+    {
+      "id": "q-prepost-01",
+      "family": "qualifier",
+      "text": "Preoperative assessment completed.",
+      "mentions": [
+        {
+          "text": "Preoperative",
+          "expect": [
+            "preoperative",
+            "pre-operative"
+          ],
+          "mode": "any"
+        }
+      ]
+    },
+    {
+      "id": "q-prepost-02",
+      "family": "qualifier",
+      "text": "Postoperative wound infection.",
+      "mentions": [
+        {
+          "text": "Postoperative wound infection",
+          "expect": [
+            "postoperative",
+            "surgical site",
+            "wound infection"
+          ],
+          "mode": "any"
+        }
+      ]
+    },
+    {
+      "id": "q-malig-01",
+      "family": "qualifier",
+      "text": "Benign prostatic hyperplasia.",
+      "mentions": [
+        {
+          "text": "Benign prostatic hyperplasia",
+          "expect": [
+            "benign"
+          ],
+          "mode": "any",
+          "type": "condition"
+        }
+      ]
+    },
+    {
+      "id": "q-malig-02",
+      "family": "qualifier",
+      "text": "Malignant neoplasm of prostate.",
+      "mentions": [
+        {
+          "text": "Malignant neoplasm of prostate",
+          "expect": [
+            "malignant",
+            "prostate cancer",
+            "prostate"
+          ],
+          "mode": "any",
+          "type": "condition"
+        }
+      ]
+    },
+    {
+      "id": "q-posneg-01",
+      "family": "qualifier",
+      "text": "Strep test positive.",
+      "mentions": [
+        {
+          "text": "Strep test",
+          "expect": [
+            "streptococc",
+            "strep"
+          ],
+          "mode": "any"
+        }
+      ]
+    },
+    {
+      "id": "q-posneg-02",
+      "family": "qualifier",
+      "text": "Strep test negative.",
+      "mentions": [
+        {
+          "text": "Strep test",
+          "expect": [
+            "streptococc",
+            "strep"
+          ],
+          "mode": "any"
+        }
+      ]
+    },
+    {
+      "id": "q-hiv-01",
+      "family": "qualifier",
+      "text": "HIV positive since 2015.",
+      "mentions": [
+        {
+          "text": "HIV",
+          "expect": [
+            "hiv"
+          ],
+          "mode": "any"
+        }
+      ]
+    },
+    {
+      "id": "q-hiv-02",
+      "family": "qualifier",
+      "text": "HIV negative.",
+      "mentions": [
+        {
+          "text": "HIV",
+          "expect": [
+            "hiv"
+          ],
+          "mode": "any"
+        }
+      ]
+    },
+    {
+      "id": "q-fasting-01",
+      "family": "qualifier",
+      "text": "Fasting glucose 110.",
+      "mentions": [
+        {
+          "text": "Fasting glucose",
+          "expect": [
+            "fasting"
+          ],
+          "mode": "any",
+          "type": "lab"
+        }
+      ]
+    },
+    {
+      "id": "q-fasting-02",
+      "family": "qualifier",
+      "text": "Random glucose 140.",
+      "mentions": [
+        {
+          "text": "Random glucose",
+          "expect": [
+            "random"
+          ],
+          "mode": "any"
+        }
+      ]
+    },
+    {
+      "id": "q-route-01",
+      "family": "qualifier",
+      "text": "Vancomycin IV started.",
+      "mentions": [
+        {
+          "text": "Vancomycin",
+          "expect": [
+            "vancomycin"
+          ],
+          "mode": "any"
+        }
+      ]
+    },
+    {
+      "id": "q-route-02",
+      "family": "qualifier",
+      "text": "Vancomycin PO for C. diff.",
+      "mentions": [
+        {
+          "text": "Vancomycin",
+          "expect": [
+            "vancomycin"
+          ],
+          "mode": "any"
+        }
+      ]
+    },
+    {
+      "id": "q-control-01",
+      "family": "qualifier",
+      "text": "Well-controlled hypertension.",
+      "mentions": [
+        {
+          "text": "hypertension",
+          "expect": [
+            "hypertension"
+          ],
+          "mode": "any",
+          "type": "condition"
+        }
+      ]
+    },
+    {
+      "id": "q-control-02",
+      "family": "qualifier",
+      "text": "Uncontrolled hypertension.",
+      "mentions": [
+        {
+          "text": "hypertension",
+          "expect": [
+            "hypertension"
+          ],
+          "mode": "any",
+          "type": "condition"
+        }
+      ]
+    },
+    {
+      "id": "q-primary-01",
+      "family": "qualifier",
+      "text": "Primary hypertension.",
+      "mentions": [
+        {
+          "text": "Primary hypertension",
+          "expect": [
+            "primary",
+            "essential"
+          ],
+          "mode": "any"
+        }
+      ]
+    },
+    {
+      "id": "q-primary-02",
+      "family": "qualifier",
+      "text": "Secondary hypertension.",
+      "mentions": [
+        {
+          "text": "Secondary hypertension",
+          "expect": [
+            "secondary"
+          ],
+          "mode": "any"
+        }
+      ]
+    },
+    {
+      "id": "q-simple-01",
+      "family": "qualifier",
+      "text": "Simple partial seizure.",
+      "mentions": [
+        {
+          "text": "Simple partial seizure",
+          "expect": [
+            "simple"
+          ],
+          "mode": "any"
+        }
+      ]
+    },
+    {
+      "id": "q-simple-02",
+      "family": "qualifier",
+      "text": "Complex partial seizure.",
+      "mentions": [
+        {
+          "text": "Complex partial seizure",
+          "expect": [
+            "complex"
+          ],
+          "mode": "any"
+        }
+      ]
+    },
+    {
+      "id": "q-current-01",
+      "family": "qualifier",
+      "text": "Current smoker.",
+      "mentions": [
+        {
+          "text": "Current smoker",
+          "expect": [
+            "smoker",
+            "tobacco"
+          ],
+          "mode": "any"
+        }
+      ]
+    },
+    {
+      "id": "q-current-02",
+      "family": "qualifier",
+      "text": "Former smoker, quit 2010.",
+      "mentions": [
+        {
+          "text": "Former smoker",
+          "expect": [
+            "former",
+            "smoker",
+            "tobacco"
+          ],
+          "mode": "any"
+        }
+      ]
+    },
+    {
+      "id": "q-without-diff-01",
+      "family": "qualifier",
+      "text": "CBC without differential.",
+      "mentions": [
+        {
+          "text": "CBC without differential",
+          "expect": [
+            "without"
+          ],
+          "mode": "any",
+          "type": "lab"
+        }
+      ]
+    },
+    {
+      "id": "q-with-diff-02",
+      "family": "qualifier",
+      "text": "CBC with differential.",
+      "mentions": [
+        {
+          "text": "CBC with differential",
+          "expect": [
+            "with",
+            "differential"
+          ],
+          "mode": "all",
+          "type": "lab"
+        }
+      ]
+    },
+    {
+      "id": "q-timed-01",
+      "family": "qualifier",
+      "text": "1-hour glucose tolerance test.",
+      "mentions": [
+        {
+          "text": "1-hour glucose tolerance test",
+          "expect": [
+            "glucose tolerance"
+          ],
+          "mode": "any",
+          "type": "lab"
+        }
+      ]
+    },
+    {
+      "id": "q-timed-02",
+      "family": "qualifier",
+      "text": "3-hour glucose tolerance test.",
+      "mentions": [
+        {
+          "text": "3-hour glucose tolerance test",
+          "expect": [
+            "glucose tolerance"
+          ],
+          "mode": "any",
+          "type": "lab"
+        }
+      ]
+    },
+    {
+      "id": "q-fever-01",
+      "family": "qualifier",
+      "text": "Intermittent fever.",
+      "mentions": [
+        {
+          "text": "Intermittent fever",
+          "expect": [
+            "intermittent"
+          ],
+          "mode": "any"
+        }
+      ]
+    },
+    {
+      "id": "q-fever-02",
+      "family": "qualifier",
+      "text": "Continuous fever.",
+      "mentions": [
+        {
+          "text": "Continuous fever",
+          "expect": [
+            "continuous"
+          ],
+          "mode": "any"
+        }
+      ]
+    },
+    {
+      "id": "q-pain-type-01",
+      "family": "qualifier",
+      "text": "Sharp chest pain.",
+      "mentions": [
+        {
+          "text": "Sharp chest pain",
+          "expect": [
+            "chest pain"
+          ],
+          "mode": "any"
+        }
+      ]
+    },
+    {
+      "id": "q-pain-type-02",
+      "family": "qualifier",
+      "text": "Dull chest pain.",
+      "mentions": [
+        {
+          "text": "Dull chest pain",
+          "expect": [
+            "chest pain"
+          ],
+          "mode": "any"
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,149 @@
+{
+  "_comment": "Drug NER diagnostic corpus for medterm4ds extraction pipeline. Cases target the two reported failure classes: brand-name drugs and multi-ingredient drugs. 'expect' lists ingredient tokens (lowercase) that a correct resolution's display must contain. mode=all means every token must appear (combination anchor); mode=any means at least one (single-ingredient brand).",
+  "cases": [
+    {
+      "id": "brand-01",
+      "kind": "brand_single",
+      "text": "Patient continues Lipitor 20 mg nightly.",
+      "mentions": [{"text": "Lipitor", "expect": ["atorvastatin"], "mode": "any"}]
+    },
+    {
+      "id": "brand-02",
+      "kind": "brand_single",
+      "text": "Started Zocor 40 mg daily.",
+      "mentions": [{"text": "Zocor", "expect": ["simvastatin"], "mode": "any"}]
+    },
+    {
+      "id": "brand-03",
+      "kind": "brand_single",
+      "text": "Cozaar 50 mg daily for hypertension.",
+      "mentions": [{"text": "Cozaar", "expect": ["losartan"], "mode": "any"}]
+    },
+    {
+      "id": "brand-04",
+      "kind": "brand_single",
+      "text": "Glucophage XR 500 mg BID with meals.",
+      "mentions": [{"text": "Glucophage XR", "expect": ["metformin"], "mode": "any"}]
+    },
+    {
+      "id": "brand-05",
+      "kind": "brand_single",
+      "text": "Humira 40 mg subcut every 2 weeks.",
+      "mentions": [{"text": "Humira", "expect": ["adalimumab"], "mode": "any"}]
+    },
+    {
+      "id": "brand-06",
+      "kind": "brand_single",
+      "text": "Lantus 18 units at bedtime.",
+      "mentions": [{"text": "Lantus", "expect": ["insulin"], "mode": "any"}]
+    },
+    {
+      "id": "brand-07",
+      "kind": "brand_single",
+      "text": "Norco 5/325 one tab q6h prn pain.",
+      "mentions": [{"text": "Norco", "expect": ["hydrocodone", "acetaminophen"], "mode": "all"}]
+    },
+    {
+      "id": "brandcombo-01",
+      "kind": "brand_combo",
+      "text": "Janumet 50/1000 mg BID with meals.",
+      "mentions": [{"text": "Janumet", "expect": ["sitagliptin", "metformin"], "mode": "all"}]
+    },
+    {
+      "id": "brandcombo-02",
+      "kind": "brand_combo",
+      "text": "Vicodin 5/500 q6h prn for pain.",
+      "mentions": [{"text": "Vicodin", "expect": ["hydrocodone", "acetaminophen"], "mode": "all"}]
+    },
+    {
+      "id": "brandcombo-03",
+      "kind": "brand_combo",
+      "text": "Advair 250/50 one inhalation BID.",
+      "mentions": [{"text": "Advair", "expect": ["fluticasone", "salmeterol"], "mode": "all"}]
+    },
+    {
+      "id": "combo-slash-01",
+      "kind": "combo_slash",
+      "text": "Continue lisinopril/HCTZ 20/12.5 mg daily.",
+      "mentions": [{"text": "lisinopril/HCTZ", "expect": ["lisinopril", "hydrochlorothiazide"], "mode": "all"}]
+    },
+    {
+      "id": "combo-slash-02",
+      "kind": "combo_slash",
+      "text": "Amlodipine/valsartan 5/160 mg daily.",
+      "mentions": [{"text": "Amlodipine/valsartan", "expect": ["amlodipine", "valsartan"], "mode": "all"}]
+    },
+    {
+      "id": "combo-slash-03",
+      "kind": "combo_slash",
+      "text": "Acetaminophen/hydrocodone 325/5 one tab q6h.",
+      "mentions": [{"text": "Acetaminophen/hydrocodone", "expect": ["acetaminophen", "hydrocodone"], "mode": "all"}]
+    },
+    {
+      "id": "combo-and-01",
+      "kind": "combo_and",
+      "text": "Continue hydrochlorothiazide and lisinopril.",
+      "mentions": [{"text": "hydrochlorothiazide and lisinopril", "expect": ["hydrochlorothiazide", "lisinopril"], "mode": "all"}]
+    },
+    {
+      "id": "combo-and-02",
+      "kind": "combo_and",
+      "text": "She takes amlodipine and valsartan for blood pressure.",
+      "mentions": [{"text": "amlodipine and valsartan", "expect": ["amlodipine", "valsartan"], "mode": "all"}]
+    },
+    {
+      "id": "combo-hyphen-01",
+      "kind": "combo_hyphen",
+      "text": "lisinopril-HCTZ 20-12.5 daily.",
+      "mentions": [{"text": "lisinopril-HCTZ", "expect": ["lisinopril", "hydrochlorothiazide"], "mode": "all"}]
+    },
+    {
+      "id": "combo-hyphen-02",
+      "kind": "combo_hyphen",
+      "text": "amoxicillin-clavulanate 875-125 mg BID.",
+      "mentions": [{"text": "amoxicillin-clavulanate", "expect": ["amoxicillin", "clavulanate"], "mode": "all"}]
+    },
+    {
+      "id": "combo-hyphen-03",
+      "kind": "combo_hyphen",
+      "text": "sulfamethoxazole-trimethoprim DS BID x7 days.",
+      "mentions": [{"text": "sulfamethoxazole-trimethoprim", "expect": ["sulfamethoxazole", "trimethoprim"], "mode": "all"}]
+    },
+    {
+      "id": "abbrev-01",
+      "kind": "abbrev",
+      "text": "Continue TMP-SMX DS BID x7 days.",
+      "mentions": [{"text": "TMP-SMX", "expect": ["sulfamethoxazole", "trimethoprim"], "mode": "all"}]
+    },
+    {
+      "id": "abbrev-02",
+      "kind": "abbrev",
+      "text": "HCTZ 25 mg daily.",
+      "mentions": [{"text": "HCTZ", "expect": ["hydrochlorothiazide"], "mode": "any"}]
+    },
+    {
+      "id": "generic-01",
+      "kind": "generic_control",
+      "text": "Metformin 1000 mg BID.",
+      "mentions": [{"text": "Metformin", "expect": ["metformin"], "mode": "any"}]
+    },
+    {
+      "id": "generic-02",
+      "kind": "generic_control",
+      "text": "Lisinopril 10 mg daily.",
+      "mentions": [{"text": "Lisinopril", "expect": ["lisinopril"], "mode": "any"}]
+    },
+    {
+      "id": "generic-03",
+      "kind": "generic_control",
+      "text": "Atorvastatin 40 mg nightly.",
+      "mentions": [{"text": "Atorvastatin", "expect": ["atorvastatin"], "mode": "any"}]
+    },
+    {
+      "id": "generic-04",
+      "kind": "generic_control",
+      "text": "Ibuprofen 600 mg q6h prn.",
+      "mentions": [{"text": "Ibuprofen", "expect": ["ibuprofen"], "mode": "any"}]
+    }
+  ]
+}

@@ -1,0 +1,24 @@
+{
+  "_comment": "Adversarial co-prescription corpus: drugs listed together with 'and'/'-' that are NOT combination products. The medterm4ds f681a8c stitching rule merges drug+drug fragments across 'and'/'-' unconditionally; these cases check whether that false-merges separate medications. Each case expects BOTH mentions to survive as separate concepts.",
+  "cases": [
+    {"id": "copres-01", "kind": "coprescription", "text": "Take aspirin and lisinopril daily.",
+     "mentions": [{"text": "aspirin", "expect": ["aspirin"], "mode": "any"},
+                  {"text": "lisinopril", "expect": ["lisinopril"], "mode": "any"}]},
+    {"id": "copres-02", "kind": "coprescription", "text": "Continue metformin and atorvastatin.",
+     "mentions": [{"text": "metformin", "expect": ["metformin"], "mode": "any"},
+                  {"text": "atorvastatin", "expect": ["atorvastatin"], "mode": "any"}]},
+    {"id": "copres-03", "kind": "coprescription", "text": "Started amlodipine and metoprolol for hypertension.",
+     "mentions": [{"text": "amlodipine", "expect": ["amlodipine"], "mode": "any"},
+                  {"text": "metoprolol", "expect": ["metoprolol"], "mode": "any"}]},
+    {"id": "copres-04", "kind": "coprescription", "text": "Omeprazole and clopidogrel continued.",
+     "mentions": [{"text": "Omeprazole", "expect": ["omeprazole"], "mode": "any"},
+                  {"text": "clopidogrel", "expect": ["clopidogrel"], "mode": "any"}]},
+    {"id": "copres-05", "kind": "coprescription", "text": "Warfarin and aspirin - continue both.",
+     "mentions": [{"text": "Warfarin", "expect": ["warfarin"], "mode": "any"},
+                  {"text": "aspirin", "expect": ["aspirin"], "mode": "any"}]},
+    {"id": "control-combo-01", "kind": "true_combination", "text": "Continue amlodipine/valsartan 5/160 mg daily.",
+     "mentions": [{"text": "amlodipine/valsartan", "expect": ["amlodipine", "valsartan"], "mode": "all"}]},
+    {"id": "control-combo-02", "kind": "true_combination", "text": "Continue hydrochlorothiazide and lisinopril.",
+     "mentions": [{"text": "hydrochlorothiazide and lisinopril", "expect": ["hydrochlorothiazide", "lisinopril"], "mode": "all"}]}
+  ]
+}

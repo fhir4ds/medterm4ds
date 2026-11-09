@@ -1,0 +1,594 @@
+{
+  "_comment": "Assertion/status edge cases. Targets negation scope, pseudonegation, discontinuation, social/allergy context, and radiology boilerplate. Cases with include_non_affirmed=true expect a specific status; 'noise' entries must not resolve.",
+  "cases": [
+    {
+      "id": "assert-01",
+      "family": "neg_list",
+      "include_non_affirmed": true,
+      "text": "No fever, cough, or dyspnea.",
+      "mentions": [
+        {
+          "text": "fever",
+          "expect": [
+            "fever"
+          ],
+          "status": "negated"
+        },
+        {
+          "text": "cough",
+          "expect": [
+            "cough"
+          ],
+          "status": "negated"
+        },
+        {
+          "text": "dyspnea",
+          "expect": [
+            "dyspnea",
+            "breathlessness",
+            "shortness of breath"
+          ],
+          "status": "negated"
+        }
+      ]
+    },
+    {
+      "id": "assert-02",
+      "family": "neg_contrast",
+      "include_non_affirmed": true,
+      "text": "No fever but has cough.",
+      "mentions": [
+        {
+          "text": "fever",
+          "expect": [
+            "fever"
+          ],
+          "status": "negated"
+        },
+        {
+          "text": "cough",
+          "expect": [
+            "cough"
+          ],
+          "status": "affirmed"
+        }
+      ]
+    },
+    {
+      "id": "assert-03",
+      "family": "pseudonegation",
+      "include_non_affirmed": true,
+      "text": "Cannot rule out pneumonia.",
+      "mentions": [
+        {
+          "text": "pneumonia",
+          "expect": [
+            "pneumonia"
+          ],
+          "status": "uncertain"
+        }
+      ]
+    },
+    {
+      "id": "assert-04",
+      "family": "pseudonegation",
+      "include_non_affirmed": true,
+      "text": "We cannot exclude pulmonary embolism.",
+      "mentions": [
+        {
+          "text": "pulmonary embolism",
+          "expect": [
+            "pulmonary embolism",
+            "embolism"
+          ],
+          "status": "uncertain"
+        }
+      ]
+    },
+    {
+      "id": "assert-05",
+      "family": "pseudonegation",
+      "include_non_affirmed": true,
+      "text": "Rule out myocardial infarction.",
+      "mentions": [
+        {
+          "text": "myocardial infarction",
+          "expect": [
+            "myocardial infarction"
+          ],
+          "status": "uncertain"
+        }
+      ]
+    },
+    {
+      "id": "assert-06",
+      "family": "double_negation",
+      "include_non_affirmed": true,
+      "text": "Not without pain.",
+      "mentions": [
+        {
+          "text": "pain",
+          "expect": [
+            "pain"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "assert-07",
+      "family": "neg_either",
+      "include_non_affirmed": true,
+      "text": "Neither pneumonia nor pulmonary embolism.",
+      "mentions": [
+        {
+          "text": "pneumonia",
+          "expect": [
+            "pneumonia"
+          ],
+          "status": "negated"
+        },
+        {
+          "text": "pulmonary embolism",
+          "expect": [
+            "pulmonary embolism",
+            "embolism"
+          ],
+          "status": "negated"
+        }
+      ]
+    },
+    {
+      "id": "assert-08",
+      "family": "post_entity",
+      "include_non_affirmed": true,
+      "text": "Sepsis not seen on admission.",
+      "mentions": [
+        {
+          "text": "Sepsis",
+          "expect": [
+            "sepsis"
+          ],
+          "status": "negated"
+        }
+      ]
+    },
+    {
+      "id": "assert-09",
+      "family": "post_entity",
+      "include_non_affirmed": true,
+      "text": "PE excluded by CT angiography.",
+      "mentions": [
+        {
+          "text": "PE",
+          "expect": [
+            "pulmonary embolism",
+            "embolism"
+          ],
+          "status": "negated"
+        }
+      ]
+    },
+    {
+      "id": "assert-10",
+      "family": "historical",
+      "include_non_affirmed": true,
+      "text": "History of stroke in 2019.",
+      "mentions": [
+        {
+          "text": "stroke",
+          "expect": [
+            "stroke",
+            "cerebrovascular"
+          ],
+          "status": "historical"
+        }
+      ]
+    },
+    {
+      "id": "assert-11",
+      "family": "historical",
+      "include_non_affirmed": true,
+      "text": "Prior MI, now on dual antiplatelet therapy.",
+      "mentions": [
+        {
+          "text": "MI",
+          "expect": [
+            "myocardial infarction"
+          ],
+          "status": "historical"
+        }
+      ]
+    },
+    {
+      "id": "assert-12",
+      "family": "family_history",
+      "include_non_affirmed": true,
+      "text": "Mother and sister both had breast cancer.",
+      "mentions": [
+        {
+          "text": "breast cancer",
+          "expect": [
+            "breast cancer",
+            "breast"
+          ],
+          "status": "family"
+        }
+      ]
+    },
+    {
+      "id": "assert-13",
+      "family": "hypothetical",
+      "include_non_affirmed": true,
+      "text": "If febrile, start antibiotics.",
+      "mentions": [
+        {
+          "text": "febrile",
+          "expect": [
+            "fever",
+            "febrile"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "assert-14",
+      "family": "discontinued",
+      "include_non_affirmed": true,
+      "text": "Discontinued lisinopril due to cough.",
+      "mentions": [
+        {
+          "text": "lisinopril",
+          "expect": [
+            "lisinopril"
+          ]
+        },
+        {
+          "text": "cough",
+          "expect": [
+            "cough"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "assert-15",
+      "family": "held",
+      "include_non_affirmed": true,
+      "text": "Metformin held before surgery.",
+      "mentions": [
+        {
+          "text": "Metformin",
+          "expect": [
+            "metformin"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "assert-16",
+      "family": "allergy",
+      "include_non_affirmed": true,
+      "text": "Allergic to penicillin, rash.",
+      "mentions": [
+        {
+          "text": "penicillin",
+          "expect": [
+            "penicillin"
+          ]
+        },
+        {
+          "text": "rash",
+          "expect": [
+            "rash"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "assert-17",
+      "family": "social",
+      "include_non_affirmed": true,
+      "text": "Denies tobacco use; quit alcohol 2019.",
+      "mentions": [
+        {
+          "text": "tobacco use",
+          "expect": [
+            "tobacco",
+            "smoking"
+          ],
+          "status": "negated"
+        },
+        {
+          "text": "alcohol",
+          "expect": [
+            "alcohol"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "assert-18",
+      "family": "radiology_boilerplate",
+      "text": "No acute abnormality. Unremarkable exam.",
+      "mentions": [],
+      "noise": [
+        "abnormality",
+        "exam",
+        "acute abnormality"
+      ]
+    },
+    {
+      "id": "assert-19",
+      "family": "neg_value",
+      "include_non_affirmed": true,
+      "text": "Creatinine normalized, no AKI.",
+      "mentions": [
+        {
+          "text": "AKI",
+          "expect": [
+            "acute kidney injury",
+            "kidney injury"
+          ],
+          "status": "negated"
+        }
+      ]
+    },
+    {
+      "id": "assert-20",
+      "family": "neg_scope_trap",
+      "include_non_affirmed": true,
+      "text": "Pneumonia present; TB ruled out.",
+      "mentions": [
+        {
+          "text": "Pneumonia",
+          "expect": [
+            "pneumonia"
+          ],
+          "status": "affirmed"
+        },
+        {
+          "text": "TB",
+          "expect": [
+            "tuberculosis"
+          ],
+          "status": "negated"
+        }
+      ]
+    },
+    {
+      "id": "assert-21",
+      "family": "neg_scope_trap",
+      "include_non_affirmed": true,
+      "text": "Chest pain worse, MI ruled out.",
+      "mentions": [
+        {
+          "text": "Chest pain",
+          "expect": [
+            "chest pain"
+          ],
+          "status": "affirmed"
+        },
+        {
+          "text": "MI",
+          "expect": [
+            "myocardial infarction"
+          ],
+          "status": "negated"
+        }
+      ]
+    },
+    {
+      "id": "assert-22",
+      "family": "uncertain",
+      "include_non_affirmed": true,
+      "text": "Suspected urinary tract infection.",
+      "mentions": [
+        {
+          "text": "urinary tract infection",
+          "expect": [
+            "urinary tract infection",
+            "urinary"
+          ],
+          "status": "uncertain"
+        }
+      ]
+    },
+    {
+      "id": "assert-23",
+      "family": "uncertain",
+      "include_non_affirmed": true,
+      "text": "Possibly gout, will check uric acid.",
+      "mentions": [
+        {
+          "text": "gout",
+          "expect": [
+            "gout"
+          ],
+          "status": "uncertain"
+        }
+      ]
+    },
+    {
+      "id": "assert-24",
+      "family": "neg_list_mixed",
+      "include_non_affirmed": true,
+      "text": "No nausea or vomiting, but abdominal pain persists.",
+      "mentions": [
+        {
+          "text": "nausea",
+          "expect": [
+            "nausea"
+          ],
+          "status": "negated"
+        },
+        {
+          "text": "vomiting",
+          "expect": [
+            "vomiting"
+          ],
+          "status": "negated"
+        },
+        {
+          "text": "abdominal pain",
+          "expect": [
+            "abdominal pain"
+          ],
+          "status": "affirmed"
+        }
+      ]
+    },
+    {
+      "id": "assert-25",
+      "family": "neg_family",
+      "include_non_affirmed": true,
+      "text": "No family history of colon cancer.",
+      "mentions": [
+        {
+          "text": "colon cancer",
+          "expect": [
+            "colon cancer",
+            "colorectal"
+          ],
+          "status": "negated"
+        }
+      ]
+    },
+    {
+      "id": "assert-26",
+      "family": "neg_past",
+      "include_non_affirmed": true,
+      "text": "No history of deep vein thrombosis.",
+      "mentions": [
+        {
+          "text": "deep vein thrombosis",
+          "expect": [
+            "deep vein thrombosis",
+            "thrombosis"
+          ],
+          "status": "negated"
+        }
+      ]
+    },
+    {
+      "id": "assert-27",
+      "family": "neg_ruled_out_prefix",
+      "include_non_affirmed": true,
+      "text": "Ruled out meningitis after LP.",
+      "mentions": [
+        {
+          "text": "meningitis",
+          "expect": [
+            "meningitis"
+          ],
+          "status": "negated"
+        }
+      ]
+    },
+    {
+      "id": "assert-28",
+      "family": "neg_free_of",
+      "include_non_affirmed": true,
+      "text": "Free of chest pain for 48 hours.",
+      "mentions": [
+        {
+          "text": "chest pain",
+          "expect": [
+            "chest pain"
+          ],
+          "status": "negated"
+        }
+      ]
+    },
+    {
+      "id": "assert-29",
+      "family": "neg_negative_for",
+      "include_non_affirmed": true,
+      "text": "Negative for influenza and COVID-19.",
+      "mentions": [
+        {
+          "text": "influenza",
+          "expect": [
+            "influenza"
+          ],
+          "status": "negated"
+        },
+        {
+          "text": "COVID-19",
+          "expect": [
+            "covid"
+          ],
+          "status": "negated"
+        }
+      ]
+    },
+    {
+      "id": "assert-30",
+      "family": "neg_not_appreciated",
+      "include_non_affirmed": true,
+      "text": "Fracture not appreciated on X-ray.",
+      "mentions": [
+        {
+          "text": "Fracture",
+          "expect": [
+            "fracture"
+          ],
+          "status": "negated"
+        }
+      ]
+    },
+    {
+      "id": "assert-31",
+      "family": "neg_denies_plural",
+      "include_non_affirmed": true,
+      "text": "Denies chest pain, shortness of breath, or palpitations.",
+      "mentions": [
+        {
+          "text": "chest pain",
+          "expect": [
+            "chest pain"
+          ],
+          "status": "negated"
+        },
+        {
+          "text": "shortness of breath",
+          "expect": [
+            "dyspnea",
+            "shortness of breath"
+          ],
+          "status": "negated"
+        },
+        {
+          "text": "palpitations",
+          "expect": [
+            "palpitation"
+          ],
+          "status": "negated"
+        }
+      ]
+    },
+    {
+      "id": "assert-32",
+      "family": "affirmed_control",
+      "include_non_affirmed": true,
+      "text": "Patient reports worsening dyspnea and fatigue.",
+      "mentions": [
+        {
+          "text": "dyspnea",
+          "expect": [
+            "dyspnea",
+            "breathlessness",
+            "shortness of breath"
+          ],
+          "status": "affirmed"
+        },
+        {
+          "text": "fatigue",
+          "expect": [
+            "fatigue"
+          ],
+          "status": "affirmed"
+        }
+      ]
+    }
+  ]
+}

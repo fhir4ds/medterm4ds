@@ -122,6 +122,18 @@ Valid result types: `condition`, `symptom`, `lab`, `vital`, `medication`,
 - `MEDTERM4DS_SEARCH_INDEX_DIR` — BM25 index directory
 - `MEDTERM4DS_EMBEDDING_MODEL_DIR` — SapBERT model directory
 
+### DuckDB compatibility
+
+Default installs pin `duckdb>=0.9.0,<2`; the 1.x line is the supported
+default. **DuckDB 2.x is opt-in** — the full test suite passes on it
+(CI covers 1.5.5, 1.5.6 and 2.0.0), but it is not installed by default,
+so an upgrade is an explicit operator decision:
+
+```bash
+pip install medterm4ds
+pip install --no-deps "duckdb>=2.0.0,<3"   # explicit 2.x opt-in
+```
+
 ### Artifact cache layout
 
 Search/extract artifacts are cached from the `fhir4ds/terminology` HF repo
@@ -129,7 +141,7 @@ Search/extract artifacts are cached from the `fhir4ds/terminology` HF repo
 Three layouts are accepted; the release layout is preferred:
 
 - **Release (current default)** — one self-contained release per dated tag
-  (the default release tag, `2026.11.05.1` today): `canonical/<release>/value_sets.json` +
+  (the default release tag, `2026.11.08.1` today): `canonical/<release>/value_sets.json` +
   `claimant_details.json` + `decomposition_links.json`,
   `lexical/<release>/<category>.json`, `semantic/<release>/<category>.faiss`
   + metadata plus `anchors.faiss`/`anchors_metadata.json` (the canonical
