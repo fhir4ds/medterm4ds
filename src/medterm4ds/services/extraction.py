@@ -800,13 +800,177 @@ _DRUG_NER_LABELS = frozenset({
 # oral-drug fragments ('lisinopril', 'HCTZ'). These may join a stitch
 # ONLY across a bare '/' — 'flu and covid vaccine' must never merge.
 _MISLABELED_DRUG_LABELS = frozenset({"immunization"})
-_STITCH_SLASH_GAP_RE = re.compile(r"^/$")
-# Gap that may sit between two stitchable fragments: SLASH or HYPHEN
-# separators only (2026-11-07 edge corpus: ',' and 'and' are co-
-# prescription LIST separators — 'Home meds: metformin, glipizide, and
-# insulin.' must stay three mentions, not become a fake combination
-# product). Hyphen stays: 'lisinopril-HCTZ' is a genuine compound.
-_STITCH_GAP_RE = re.compile(r"^\s*(?:/|\\|-)\s*$")
+_STITCH_SLASH_GAP_RE = re.compile(r"^\s*(?:/|\+|plus)\s*$", re.IGNORECASE)
+# Gap that may sit between two stitchable fragments: SLASH, HYPHEN, PLUS
+# and the word 'plus' — characters that (almost) never separate a
+# co-prescription LIST. ',' and 'and' are list separators and are gated
+# separately (see _stitch_gated_list_pairs): they may only join when a
+# shared trailing strength corroborates a combination product.
+_STITCH_GAP_RE = re.compile(r"^\s*(?:/|\\|-|\+|plus)\s*$", re.IGNORECASE)
+# LIST separators — joinable ONLY with strength corroboration + an
+# anchor that covers every fragment at resolve time.
+_LIST_GAP_RE = re.compile(r"^\s*(?:,|\band\b)\s*$", re.IGNORECASE)
+
+
+def _strength_components(strength: str | None) -> int | None:
+    """Number of dose components in a strength expression.
+
+    '20/12.5 mg' -> 2, '5-500' -> 2, '500 mg' -> 1, '250/50/100' -> 3.
+    None when unknown (no strength captured).
+    """
+    if not strength:
+        return None
+    nums = re.findall(r"\d+(?:\.\d+)?", strength)
+    return len(nums) if nums else None
+
+
+
+
+def _complete_strength(strength: str | None, text: str, at: int) -> str | None:
+    """Extend a captured strength through slash/dash continuations.
+
+    GLiNER splits '325/5' across spans ('325' absorbed, '/5' lost) — the
+    raw text right after the captured strength completes the ratio.
+    """
+    if not strength:
+        return strength
+    m = re.match(
+        r"\s*[./-]\s*\d+(?:\.\d+)?(?:\s*(?:mg|mcg|ml|%)?)?",
+        text[at:at + 14],
+        re.IGNORECASE,
+    )
+    if m:
+        return f"{strength}{m.group(0).strip()}"
+    return strength
+
+
+
+def _is_value_like_span(span) -> bool:
+    """A neutral fragment span usable as dose/strength context."""
+    return (
+        span.status == "affirmed"
+        and _is_neutral_fragment(span.text)
+        and bool(re.search(r"\d", span.text))
+    )
+
+
+def _absorb_trailing_strength(spans: list, text: str) -> list:
+    """Capture the dose/strength following a drug mention as metadata.
+
+    'lisinopril/HCTZ' + '20' + '12.5 mg' (three GLiNER spans) -> one span
+    with strength '20/12.5 mg'; the value spans stop resolving to junk.
+    Only value-like neutral fragments DIRECTLY adjacent (whitespace/sep
+    gap <= 4 chars) after a drug-ish span are absorbed — a dose that
+    belongs to the next mention in a list is left alone ('aspirin 81,
+    metformin 500': each drug keeps its own).
+    """
+    if not spans:
+        return spans
+    out: list = []
+    i = 0
+    drug_labels = _DRUG_NER_LABELS | _MISLABELED_DRUG_LABELS
+    while i < len(spans):
+        span = spans[i]
+        if span.entity_type not in drug_labels:
+            out.append(span)
+            i += 1
+            continue
+        # in-span trailing strength ('metformin 500mg' as ONE span)
+        if span.strength is None:
+            m = re.search(
+                r"\s+(?:"
+                r"\d+(?:\s*[./-]\s*\d+)+\s*[a-z/%]*"
+                r"|\d+(?:\.\d+)?\s*(?:mg|mcg|ug|g|ml|%)"
+                r"|\d+(?:\.\d+)?(?=\s*$))",
+                span.text,
+                re.IGNORECASE,
+            )
+            if m and re.search(r"[a-z]", span.text[:m.start()], re.IGNORECASE):
+                span.strength = m.group(0).strip()
+        # absorb directly-following value-like spans
+        end = span.span_end
+        j = i + 1
+        while j < len(spans):
+            nxt = spans[j]
+            gap = text[end:nxt.span_start]
+            if (
+                _is_value_like_span(nxt)
+                and 0 < nxt.span_start - end <= 4
+                and re.fullmatch(r"[\s./-]*", gap)
+            ):
+                end = nxt.span_end
+                j += 1
+            else:
+                break
+        if j > i + 1:
+            span.strength = text[span.span_end:end].strip()
+            span.span_end = end
+            span.strength = _complete_strength(span.strength, text, end)
+            i = j
+            out.append(span)
+            continue
+        # Raw-text fallback: GLiNER often emits NO value spans at all
+        # ('lisinopril and HCTZ 20/12.5 mg' — only the two drug spans).
+        # A value expression directly after the span (no intervening
+        # words) is still this mention's strength — capture it without
+        # moving span_end so a later real span is unaffected.
+        if span.strength is None:
+            m = re.match(
+                r"\s{1,3}(\d+(?:\s*[./-]\s*\d+)+\s*(?:mg|mcg|ml|%)?"
+                r"|\d+(?:\.\d+)?\s?(?:mg|mcg))(?=\W|$)",
+                text[span.span_end:span.span_end + 24],
+                re.IGNORECASE,
+            )
+            if m:
+                span.strength = m.group(1).strip()
+                span.strength = _complete_strength(
+                    span.strength, text, span.span_end + m.end()
+                )
+        out.append(span)
+        i += 1
+    return out
+
+
+def _stitch_gated_list_pairs(spans: list, text: str) -> list:
+    """Corroboration-gated join across ',' / 'and' (2026-11-09 design).
+
+    A list separator may join two drug fragments ONLY when the merged
+    mention carries a multi-component strength whose component count
+    equals 2 (the fragment count). Anchor existence is enforced at
+    resolve time — if no combination anchor covers every fragment, the
+    composed attempt fails and BOTH siblings are emitted, which is the
+    correct list behavior. No strength corroboration -> never joins.
+    """
+    if len(spans) < 2:
+        return spans
+    drug_labels = _DRUG_NER_LABELS | _MISLABELED_DRUG_LABELS
+    out: list = []
+    for span in spans:
+        prev = out[-1] if out else None
+        if (
+            prev is not None
+            and prev.entity_type in drug_labels
+            and span.entity_type in drug_labels
+            and prev.status == "affirmed"
+            and span.status == "affirmed"
+            and prev.section == span.section
+            and 0 < span.span_start - prev.span_end <= 8
+            and _LIST_GAP_RE.match(text[prev.span_end:span.span_start])
+            and _strength_components(span.strength) == 2
+            and prev.strength is None
+        ):
+            prev.composed_from = [
+                *(prev.composed_from or [prev.text]),
+                span.text,
+            ]
+            prev.text = f"{prev.text}/{span.text}"
+            prev.span_end = span.span_end
+            prev.strength = span.strength
+            prev.composed_strict = True
+            prev.ner_confidence = max(prev.ner_confidence, span.ner_confidence)
+            continue
+        out.append(span)
+    return out
 
 
 def _stitch_drug_fragments(spans: list, text: str) -> list:
@@ -858,6 +1022,7 @@ def _stitch_drug_fragments(spans: list, text: str) -> list:
             ]
             prev.text = f"{prev.text}/{span.text}"
             prev.span_end = span.span_end
+            prev.strength = prev.strength or span.strength
             prev.ner_confidence = max(prev.ner_confidence, span.ner_confidence)
             continue
         out.append(span)
@@ -1015,6 +1180,28 @@ def _fragment_completeness(span, result) -> bool:
         return True
     members = getattr(result, "combination_members", None) or []
     if len(members) >= len(fragments):
+        if getattr(span, "composed_strict", False):
+            # List-separator joins (',' / 'and') are the risky class: a
+            # member COUNT match is not enough — every fragment must be
+            # textually covered by the candidate's member displays, so
+            # 'aspirin and clopidogrel' cannot land on 'aspirin / caffeine'
+            # (measured DAPT regression, 2026-11-09). Alias-fragment joins
+            # ('/'-stitched, e.g. HCTZ) keep the count shortcut.
+            member_tokens = set()
+            for mem in members:
+                for tok in (
+                    getattr(mem, "display", None)
+                    or (mem.get("display", "") if isinstance(mem, dict) else "")
+                    or ""
+                ).lower().split():
+                    member_tokens.update(_TOKEN_RE.findall(tok))
+            for fragment in fragments:
+                ftoks = [
+                    t for t in _TOKEN_RE.findall(fragment.lower())
+                    if not t.isdigit() and t not in _COMPOSE_STOPWORDS
+                ]
+                if ftoks and not all(t in member_tokens for t in ftoks):
+                    return False
         return True
     display_tokens = set(_TOKEN_RE.findall((result.display or "").lower()))
     for fragment in fragments:
@@ -1121,6 +1308,18 @@ class FilteredSpan:
     # Fragments merged into this span by _compose_compound_spans, head first.
     # None for ordinary spans. Internal only — omitted from to_dict.
     composed_from: list[str] | None = None
+    # Trailing dose/strength expression captured for this mention
+    # ('20/12.5 mg', '500 mg', '5-500') — dose context, exposed in output
+    # and used for combination corroboration (component count must match
+    # the composed fragment count) and multi-ingredient inference.
+    # Internal only — omitted from to_dict (use to_dict_with_strength).
+    strength: str | None = None
+    # True when this composed span was joined across a LIST separator
+    # (',' / 'and') under strength corroboration — the riskier join class.
+    # Members-coverage is then checked STRICTLY (see _fragment_completeness)
+    # so 'aspirin and clopidogrel' can never land on aspirin/caffeine just
+    # because it also has two members.
+    composed_strict: bool = False
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -1614,6 +1813,8 @@ class NlpPipeline:
                 context_categories=context_categories,
             ))
 
+        spans = _absorb_trailing_strength(spans, text)
+        spans = _stitch_gated_list_pairs(spans, text)
         return _compose_compound_spans(_stitch_drug_fragments(spans, text), text)
 
 
@@ -1734,7 +1935,13 @@ def _first_matching_concept(
     Shared by the single-text and pooled-batch canonical paths.
     """
     source_set = None
-    if ss:
+    # GLiNER's 'immunization' mislabel for oral drugs: the label's source
+    # constraint (CVX) is wrong for a drug mention — bypass it so the
+    # RxNorm combination anchor is reachable; completeness still gates.
+    if ss and not (
+        getattr(span, "composed_from", None)
+        and span.entity_type.lower() in _MISLABELED_DRUG_LABELS
+    ):
         source_set = set()
         for s in ss:
             su = s.upper()
@@ -1757,7 +1964,13 @@ def _first_matching_concept(
     # (c) lesson: label-only constraints reintroduced type drift on mislabeled
     # spans when the fallback was allowed).
     if composed and label_prefixes:
-        prefix_attempts: list[set[str] | None] = [label_prefixes]
+        # GLiNER's 'immunization' mislabel for oral drugs makes the label
+        # constraint wrong exactly when it matters ('Acetaminophen/
+        # hydrocodone' typed immunization must still reach the RxNorm
+        # combination anchor) — the mislabel-prone label keeps the
+        # unfiltered fallback; completeness still gates every candidate.
+        mislabel_prone = span.entity_type.lower() in _MISLABELED_DRUG_LABELS
+        prefix_attempts = [label_prefixes, None] if mislabel_prone else [label_prefixes]
     else:
         prefix_attempts = [label_prefixes, None] if label_prefixes else [None]
     for label_pf in prefix_attempts:
@@ -1825,7 +2038,23 @@ def _resolve_composed_multi(
     anchor covers the pair — 2026-11-07 review blocker).
     """
     composed = bool(span.composed_from)
+    strength_parts = _strength_components(span.strength)
+    non_neutral_frags = None
     if composed:
+        non_neutral_frags = [
+            f for f in (span.composed_from or [])
+            if not (_is_neutral_fragment(f) or _is_assertion_fragment(f))
+        ]
+    # Corroboration gate (2026-11-09 design): a captured strength's
+    # component count must match the composed fragment count — a mismatch
+    # means the strength belongs to something else, and a combination
+    # guess would be wrong ('aspirin 81 and warfarin 5 mg' must not fuse).
+    corroboration_ok = (
+        strength_parts is None
+        or non_neutral_frags is None
+        or strength_parts == len(non_neutral_frags)
+    )
+    if composed and corroboration_ok:
         # A composed query is already gated by fragment completeness, so it is
         # never held to a floor stricter than 'probable' — hybrid mode's default
         # min_grade is 'certain', which filtered every composed candidate before
@@ -1835,17 +2064,76 @@ def _resolve_composed_multi(
             if _GRADE_ORDER.get(grade_threshold, 0) < _GRADE_ORDER["probable"]
             else grade_threshold
         )
-        matched = _first_matching_concept(
-            span, fetch(span.text), ss,
-            result_type_prefixes=result_type_prefixes,
-            grade_threshold=composed_threshold,
-            composed=True,
+        # Strength-inclusive primary query (2026-11-09): canonical aliases
+        # and lexical product rows carry strengths, so the full mention is
+        # the better query; the names-only form retries on failure.
+        queries = [span.text]
+        if span.strength and span.strength not in span.text:
+            queries.insert(0, f"{span.text} {span.strength}")
+        for q in queries:
+            matched = _first_matching_concept(
+                span, fetch(q), ss,
+                result_type_prefixes=result_type_prefixes,
+                grade_threshold=composed_threshold,
+                composed=True,
+            )
+            if matched is not None:
+                return [matched]
+
+    # Multi-ingredient inference (2026-11-09 design): a slash-strength on
+    # a slash-less single name ('Ziac 2.5/6.25', 'Janumet 50/1000') is
+    # itself evidence of a combination product — attempt the combination
+    # anchor for name+strength, gated by combination_members count.
+    if (
+        not composed
+        and span.entity_type in (_DRUG_NER_LABELS | _MISLABELED_DRUG_LABELS)
+        and (strength_parts or 0) >= 2
+    ):
+        composed_threshold = (
+            "probable"
+            if _GRADE_ORDER.get(grade_threshold, 0) < _GRADE_ORDER["probable"]
+            else grade_threshold
         )
-        if matched is not None:
-            return [matched]
+        results = fetch(f"{span.text} {span.strength}")
+        for r in results:
+            if (
+                _GRADE_ORDER.get(r.match_grade, 2) > _GRADE_ORDER[composed_threshold]
+            ):
+                continue
+            members = getattr(r, "combination_members", None) or []
+            if len(members) < (strength_parts or 0):
+                continue
+            if result_type_prefixes and not any(
+                r.canonical_id.startswith(x) for x in result_type_prefixes
+            ):
+                continue
+            canonical_id = getattr(r, "canonical_id", "") or ""
+            return [ExtractedConcept(
+                code=r.code, source=r.source, display=r.display,
+                matched_text=span.text, status=span.status,
+                section=span.section, confidence=r.score,
+                match_grade=r.match_grade, ner_label=span.entity_type,
+                span_start=span.span_start, span_end=span.span_end,
+                canonical_id=canonical_id,
+                combination_members=members,
+            )]
 
     out: list[ExtractedConcept] = []
     seen: set[str] = set()
+    # Corroborated-but-declined joins (strict members rejected an
+    # alias-fragment combination) still emit every sibling — and because
+    # the shared strength marked these as ONE mention's fragments, the
+    # siblings resolve at the composed 'probable' floor, not the caller's
+    # stricter default (otherwise 'lisinopril and HCTZ 20/12.5' would
+    # silently lose the HCTZ sibling on hybrid's 'certain' floor).
+    sibling_threshold = (
+        "probable"
+        if (
+            getattr(span, "composed_strict", False)
+            and _GRADE_ORDER.get(grade_threshold, 0) < _GRADE_ORDER["probable"]
+        )
+        else grade_threshold
+    )
     for fragment in (span.composed_from or [span.text]):
         # Values/units and assertion cues are never mentions of their own.
         if composed and (_is_neutral_fragment(fragment) or _is_assertion_fragment(fragment)):
@@ -1857,7 +2145,7 @@ def _resolve_composed_multi(
         matched = _first_matching_concept(
             fragment_span, fetch(fragment), ss,
             result_type_prefixes=result_type_prefixes,
-            grade_threshold=grade_threshold,
+            grade_threshold=sibling_threshold,
             composed=False,
         )
         if matched is None:
@@ -2087,7 +2375,9 @@ class ExtractionService:
         # Post-filters (source, grade) applied per-span after batch search.
         if search_mode == "canonical" and len(spans) > 1:
             # Prepare search texts (strip trailing values)
-            search_texts = [_strip_trailing_values(s.text) for s in spans]
+            # 2026-11-09: full mention (strength included) is the primary
+            # query; the stripped form retries per-span on failure below.
+            search_texts = [s.text.strip() or s.text for s in spans]
 
             # Batch search — returns list of result-lists, one per query
             batch_results = search.canonical_batch(search_texts, count=10)
@@ -2129,18 +2419,22 @@ class ExtractionService:
                 if matched is not None:
                     concepts.append(matched)
                     continue
-                # CR-301: leading-qualifier FALLBACK — only after the
-                # primary query (qualifier intact) found nothing.
-                variant = _leading_qualifier_fallback(span.text)
-                if variant:
+                # 2026-11-09: strength-stripped fallback, then qualifier
+                # variant — only after the primary (full mention) failed.
+                stripped = _strip_trailing_values(span.text)
+                for fallback_query in (stripped, _leading_qualifier_fallback(span.text)):
+                    if not fallback_query or fallback_query == span.text:
+                        continue
                     matched = _first_matching_concept(
-                        span, search.canonical(variant, count=10), ss,
+                        span, search.canonical(fallback_query, count=10), ss,
                         result_type_prefixes=result_type_prefixes,
                         grade_threshold=grade_threshold,
                     )
                     if matched is not None:
                         concepts.append(matched)
-                        continue
+                        break
+                if matched is not None:
+                    continue
 
                 # Conjunction split on failure (individual search for split parts)
                 search_text = _strip_trailing_values(span.text)
@@ -2269,7 +2563,18 @@ class ExtractionService:
         for span in spans:
             if span.composed_from:
                 continue  # resolved by the composed pre-pass above
-            search_text = _strip_trailing_values(span.text)
+            # 2026-11-09 design: the FULL mention text (strength included)
+            # is the primary query in every mode — lexical product rows and
+            # canonical/semantic strength aliases key on it; the stripped
+            # form is a fallback, as is the leading-qualifier variant.
+            stripped = _strip_trailing_values(span.text)
+            search_texts = [span.text.strip()]
+            if stripped and stripped != search_texts[0]:
+                search_texts.append(stripped)
+            variant = _leading_qualifier_fallback(span.text)
+            if variant and variant not in search_texts:
+                search_texts.append(variant)
+            search_text = search_texts[0]
             ss = _LABEL_TO_SOURCES.get(span.entity_type.lower())
             ss_key = ",".join(ss) if ss else ""
             # Constrain-then-fallback (QC-182 follow-up): label-derived
@@ -2282,13 +2587,8 @@ class ExtractionService:
                 rt = _span_search_categories(span)
                 rt_attempts = [rt, None] if rt is not None else [None]
 
-            # CR-301: leading-qualifier FALLBACK — retry the stripped
-            # query only when the primary one finds nothing.
-            variant = _leading_qualifier_fallback(span.text)
-            if variant:
-                search_texts = [search_text, variant]
-            else:
-                search_texts = [search_text]
+            # search_texts already carries [full, stripped, qualifier
+            # variant] (2026-11-09 strength-inclusive design + CR-301).
 
             resolved = False
             for candidate_text in search_texts:
@@ -2390,7 +2690,7 @@ class ExtractionService:
         for spans in spans_lists:
             per_span_texts.append([])
             for span in spans:
-                t = _strip_trailing_values(span.text)
+                t = (span.text.strip() or span.text)
                 per_span_texts[-1].append(t)
                 if t not in unique_texts:
                     unique_texts[t] = len(unique_texts)
@@ -2446,17 +2746,22 @@ class ExtractionService:
                 if matched is not None:
                     concepts.append(matched)
                     continue
-                # CR-301: leading-qualifier FALLBACK (see single-batch path).
-                variant = _leading_qualifier_fallback(span.text)
-                if variant:
+                # 2026-11-09: strength-stripped fallback, then qualifier
+                # variant — only after the primary (full mention) failed.
+                stripped = _strip_trailing_values(span.text)
+                for fallback_query in (stripped, _leading_qualifier_fallback(span.text)):
+                    if not fallback_query or fallback_query == t:
+                        continue
                     matched = _first_matching_concept(
-                        span, search.canonical(variant, count=10), ss,
+                        span, search.canonical(fallback_query, count=10), ss,
                         result_type_prefixes=result_type_prefixes,
                         grade_threshold=grade_threshold,
                     )
                     if matched is not None:
                         concepts.append(matched)
-                        continue
+                        break
+                if matched is not None:
+                    continue
                 parts = _split_on_conjunction(t)
                 if parts:
                     rt_attempts: list[str | list[str] | None]

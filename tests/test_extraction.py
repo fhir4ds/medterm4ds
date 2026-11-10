@@ -1548,3 +1548,161 @@ class TestStitchedCombinationAllModes:
         for mode in ("hybrid", "canonical", "lexical"):
             codes = [c.code for c in es.extract(text, mode=mode)]
             assert "214618" in codes, (mode, codes)
+
+
+class TestStrengthDesign20261109:
+    """The 0.0.12 strength design: strength-inclusive primary queries in
+    every mode, strength captured as metadata, corroboration-gated list
+    joins, slash-strength inference, and +/plus separators."""
+
+    def test_strength_components(self):
+        from medterm4ds.services.extraction import _strength_components
+        assert _strength_components("20/12.5 mg") == 2
+        assert _strength_components("5-500") == 2
+        assert _strength_components("500 mg") == 1
+        assert _strength_components("250/50/100") == 3
+        assert _strength_components(None) is None
+        assert _strength_components("daily") is None
+
+    def test_absorb_trailing_strength_spans(self):
+        from medterm4ds.services.extraction import (
+            FilteredSpan,
+            _absorb_trailing_strength,
+        )
+        text = "Take lisinopril/HCTZ 20/12.5 mg daily"
+        drug_end = text.index("20")
+        spans = [
+            FilteredSpan(text="lisinopril/HCTZ", entity_type="therapeutic agent",
+                         span_start=5, span_end=drug_end - 1),
+            FilteredSpan(text="20", entity_type="lab test",
+                         span_start=drug_end, span_end=drug_end + 2),
+            FilteredSpan(text="12.5 mg", entity_type="vital sign",
+                         span_start=drug_end + 3, span_end=drug_end + 10),
+        ]
+        out = _absorb_trailing_strength(spans, text)
+        assert len(out) == 1
+        assert out[0].strength == "20/12.5 mg"
+        assert out[0].span_end == drug_end + 10
+
+    def test_plus_and_word_plus_separators_stitch(self):
+        from medterm4ds.services.extraction import (
+            FilteredSpan,
+            _stitch_drug_fragments,
+        )
+        for gap in ("+", " plus "):
+            text = f"lisinopril{gap}HCTZ"
+            cut = text.index("HCTZ")
+            spans = [
+                FilteredSpan(text="lisinopril", entity_type="therapeutic agent",
+                             span_start=0, span_end=10),
+                FilteredSpan(text="HCTZ", entity_type="therapeutic agent",
+                             span_start=cut, span_end=len(text)),
+            ]
+            out = _stitch_drug_fragments(spans, text)
+            assert len(out) == 1 and out[0].composed_from == ["lisinopril", "HCTZ"], gap
+
+    def test_gated_list_join_requires_strength_corroboration(self):
+        from medterm4ds.services.extraction import (
+            FilteredSpan,
+            _stitch_gated_list_pairs,
+        )
+        # corroborated: 'lisinopril and HCTZ 20/12.5' joins
+        text = "lisinopril and HCTZ 20/12.5"
+        cut = text.index("HCTZ")
+        spans = [
+            FilteredSpan(text="lisinopril", entity_type="therapeutic agent",
+                         span_start=0, span_end=10),
+            FilteredSpan(text="HCTZ", entity_type="therapeutic agent",
+                         span_start=cut, span_end=len(text), strength="20/12.5"),
+        ]
+        out = _stitch_gated_list_pairs(spans, text)
+        assert len(out) == 1 and out[0].text == "lisinopril/HCTZ"
+        assert out[0].strength == "20/12.5"
+        # uncorroborated list ('metformin, glipizide, and insulin') stays 3
+        text2 = "metformin, glipizide, and insulin"
+        spans2 = [
+            FilteredSpan(text="metformin", entity_type="medication",
+                         span_start=0, span_end=9),
+            FilteredSpan(text="glipizide", entity_type="medication",
+                         span_start=11, span_end=20),
+            FilteredSpan(text="insulin", entity_type="medication",
+                         span_start=26, span_end=33),
+        ]
+        assert len(_stitch_gated_list_pairs(spans2, text2)) == 3
+
+    def test_in_span_strength_captured(self):
+        from medterm4ds.services.extraction import (
+            FilteredSpan,
+            _absorb_trailing_strength,
+        )
+        spans = [FilteredSpan(text="metformin 500mg",
+                              entity_type="therapeutic agent",
+                              span_start=0, span_end=15)]
+        out = _absorb_trailing_strength(spans, "metformin 500mg")
+        assert out[0].strength == "500mg"
+        assert out[0].text == "metformin 500mg"
+
+    def test_gated_join_strict_members_reject_wrong_combination(self):
+        """DAPT safety: 'Aspirin and clopidogrel 75/75' must NOT land on
+        aspirin/caffeine (also 2 members) — count alone is not enough
+        for list-separator joins."""
+        from medterm4ds.services.extraction import (
+            FilteredSpan,
+            _fragment_completeness,
+        )
+        from medterm4ds.services.search import CanonicalSearchResult
+        span = FilteredSpan(
+            text="Aspirin/clopidogrel", entity_type="medication",
+            composed_from=["Aspirin", "clopidogrel"], composed_strict=True,
+        )
+        members = [{"display": "Aspirin"}, {"display": "Caffeine"}]
+        r = CanonicalSearchResult(
+            canonical_id="VAL-MED-RXNORM-X", domain=[], anchor_system="RXNORM",
+            anchor_code="X", patient_friendly_name="aspirin / caffeine",
+            score=0.95, match_grade="exact", matched_via_code="t",
+            matched_via_display="t", total_member_count=2,
+            combination_members=members,
+        )
+        assert not _fragment_completeness(span, r)
+        # name-matching members pass
+        r2 = CanonicalSearchResult(
+            canonical_id="VAL-MED-RXNORM-Y", domain=[], anchor_system="RXNORM",
+            anchor_code="Y", patient_friendly_name="aspirin / clopidogrel",
+            score=0.95, match_grade="exact", matched_via_code="t",
+            matched_via_display="t", total_member_count=2,
+            combination_members=[{"display": "Aspirin"}, {"display": "Clopidogrel"}],
+        )
+        assert _fragment_completeness(span, r2)
+        # alias fragments ('/'-stitched, not strict) keep the count shortcut
+        span_alias = FilteredSpan(
+            text="lisinopril/HCTZ", entity_type="medication",
+            composed_from=["lisinopril", "HCTZ"],
+        )
+        assert _fragment_completeness(
+            span_alias,
+            CanonicalSearchResult(
+                canonical_id="VAL-MED-RXNORM-Z", domain=[], anchor_system="RXNORM",
+                anchor_code="Z", patient_friendly_name="hctz / lisinopril",
+                score=0.92, match_grade="probable", matched_via_code="t",
+                matched_via_display="t", total_member_count=2,
+                combination_members=[{"display": "Hydrochlorothiazide"},
+                                     {"display": "Lisinopril"}],
+            ),
+        )
+
+    def test_raw_text_strength_fallback(self):
+        from medterm4ds.services.extraction import (
+            FilteredSpan,
+            _absorb_trailing_strength,
+        )
+        text = "Take lisinopril and HCTZ 20/12.5 mg daily"
+        cut = text.index("HCTZ")
+        spans = [
+            FilteredSpan(text="lisinopril", entity_type="therapeutic agent",
+                         span_start=5, span_end=15),
+            FilteredSpan(text="HCTZ", entity_type="immunization",
+                         span_start=cut, span_end=cut + 4),
+        ]
+        out = _absorb_trailing_strength(spans, text)
+        assert out[1].strength == "20/12.5 mg"
+        assert out[1].span_end == cut + 4  # boundaries unchanged
