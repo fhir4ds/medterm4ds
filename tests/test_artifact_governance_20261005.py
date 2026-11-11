@@ -45,7 +45,7 @@ from pathlib import Path
 
 import pytest
 
-NEW_SPACE = "esp_468d01ebbab03648"  # terminology v2026.11.2 (2026-10-31)
+NEW_SPACE = "esp_f6c5c18d5f3ee3b5"  # v2_release encoder, 2026-11-11 rotation back (A/B winner)
 OLD_SPACE = "esp_5a508816b4bb95e9"
 
 ENV_KEYS = (

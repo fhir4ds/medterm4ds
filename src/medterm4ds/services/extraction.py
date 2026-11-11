@@ -162,6 +162,10 @@ _MEASUREMENT_CUES = (
     "reference", "range", "reference range", "obtained", "collected",
     "specimen", "fasting", "random", "spot", "ordered", "supplemented",
     "corrected",
+    # 2026-11-11: the phlebotomy phrase for analyte draws — "blood draw"
+    # is the standard surface ("blood draw for lithium"); bare "draw"
+    # stays out (verb senses: "draw blood", "draw up").
+    "blood draw", "redraw",
 )
 
 # Administration cues. Note vs. the eval spec: "repleted", "infused" and
@@ -558,6 +562,25 @@ def _leading_qualifier_fallback(text: str) -> str | None:
     return stripped if stripped and stripped != base else None
 
 
+# Trailing dose-form/administration nouns (2026-11-11 addendum B,
+# re-tv-11): 'Normal saline bolus' names the substance — the form noun is
+# furniture for anchor lookup. Tried ONLY as a fallback query, after the
+# full mention fails, so 'ceftriaxone injection' keeps its full form when
+# the full mention resolves.
+_TRAILING_FORM_NOUN_RE = re.compile(
+    r"\s+(?:bolus|drip|push|infusion|injection|tablet|tablets|capsule|"
+    r"capsules|solution|suspension)\s*$",
+    re.IGNORECASE,
+)
+
+
+def _trailing_form_fallback(text: str) -> str | None:
+    """The form-noun-stripped variant to retry when the primary fails."""
+    base = _strip_trailing_values(text)
+    stripped = _TRAILING_FORM_NOUN_RE.sub("", base).strip()
+    return stripped if stripped and stripped != base else None
+
+
 # Conjunction patterns for splitting compound spans.
 # GLiNER sometimes returns "ALT or AST" or "ALT/AST" as one span. We try the
 # full span first; if it doesn't resolve, we split on conjunctions and search
@@ -619,6 +642,11 @@ _FALSE_POSITIVE_WORDS = frozenset({
     "evidence", "history", "social history", "family history",
     "past medical history", "review of systems", "physical exam",
     "stage",
+    # 2026-11-11 batteries: bare section-header/boilerplate words that
+    # resolved confidently wrong ('exam' -> Assessment lab, 'risks' ->
+    # Injury risk, 'Follow-up' -> Follow-Up Encounter, 'Objective' ->
+    # Goals).
+    "exam", "risks", "follow-up", "objective",
 })
 
 # Negation/uncertainty/historical trigger patterns that GLiNER may include
@@ -646,9 +674,16 @@ _POST_ENTITY_NEGATION_RE = re.compile(
 # only line of defense and missed it. These cues are checked in the
 # sentence tail AFTER a span whose status would otherwise be affirmed.
 _POST_SPAN_CUE_RE = re.compile(
-    r"^\s*[(\[\"\u201c]?\s*(?:was\s+|is\s+|are\s+|has\s+been\s+|have\s+been\s+|now\s+)?"
+    r"^\s*[(\[\"\u201c]?\s*"
+    r"(?:(?:was\s+|is\s+|are\s+|has\s+been\s+|have\s+been\s+|now\s+)?"
     r"(?:ruled\s+out|rules\s+out|excluded|not\s+seen|not\s+appreciated|"
-    r"negative\s+for|free\s+of|denied|denies)\b",
+    r"negative\s+for|free\s+of|denied|denies)"
+    # Bare 'negative' as a post-span predicate (2026-11-11 as-hist-02:
+    # 'now COVID-19 negative') — but ONLY with an explicit copula/'now':
+    # unprefixed 'HIV negative.' (qualifier battery q-hiv-02) must keep
+    # its resolvable affirmed span for default consumers.
+    r"|(?:was\s+|is\s+|are\s+|has\s+been\s+|have\s+been\s+|now\s+)negative)"
+    r"\b",
     re.IGNORECASE,
 )
 # Post-span uncertainty cues — the same parenthetical form ('Sepsis
@@ -723,7 +758,7 @@ def _pre_span_cue(text: str, span_start: int, doc) -> str | None:
     return None
 
 
-def _post_span_negation_cue(text: str, span_end: int, doc) -> bool:
+def _post_span_negation_cue(text: str, span_end: int, doc, span_start: int | None = None) -> bool:
     """True when a negation cue sits just after the span, in its sentence.
 
     Only consulted when inline triggers and ConText both left the status
@@ -743,7 +778,16 @@ def _post_span_negation_cue(text: str, span_end: int, doc) -> bool:
         sent_end = None
     limit = min(span_end + _POST_SPAN_CUE_WINDOW, sent_end or len(text))
     tail = text[span_end:limit]
-    return bool(_POST_SPAN_CUE_RE.match(tail))
+    if _POST_SPAN_CUE_RE.match(tail):
+        return True
+    # Bare 'negative' predicate on a 'now'-marked span (2026-11-11
+    # assertion-scope battery, as-hist-02: 'now COVID-19 negative'): the
+    # temporal marker directly before the span makes the bare predicate a
+    # current-status negation. Unmarked 'HIV negative.' stays affirmed so
+    # default (affirmed-only) consumers keep the concept (q-hiv-02).
+    if span_start is not None and re.match(r"^\s*negative\b", tail, re.IGNORECASE):
+        return bool(re.search(r"\bnow\s*$", text[:span_start], re.IGNORECASE))
+    return False
 
 
 def _post_span_uncertainty_cue(text: str, span_end: int, doc) -> bool:
@@ -785,6 +829,25 @@ def _clause_negation_supported(text: str, span_start: int, span_end: int) -> boo
         boundary = m.end()
     clause = text[boundary:span_end]
     return bool(_CLAUSE_NEGATION_SUPPORT_RE.search(clause))
+
+
+# Pediatric patient descriptors (2026-11-11 regex-trap battery, re-fp-10):
+# 'Child with asthma' names the PATIENT, not a relative — but medspaCy
+# ConText fires FAMILY_HISTORY on the kinship word and silently hides the
+# finding from default (affirmed-only) consumers. An age/role descriptor
+# directly governing 'with <finding>' is the note's subject.
+_PEDIATRIC_SUBJECT_RE = re.compile(
+    r"\b(?:child|infant|neonate|newborn|toddler|adolescent|teenager)\s+with\b",
+    re.IGNORECASE,
+)
+
+
+def _pediatric_subject(text: str, span_start: int, span_end: int) -> bool:
+    """True when the span's clause describes a pediatric PATIENT descriptor."""
+    boundary = 0
+    for m in _CLAUSE_BOUNDARY_RE.finditer(text[:span_start]):
+        boundary = m.end()
+    return bool(_PEDIATRIC_SUBJECT_RE.search(text[boundary:span_end]))
 
 
 # Drug-ish GLiNER labels whose fragments may be stitched (2026-11-07 NER
@@ -1209,9 +1272,43 @@ def _fragment_completeness(span, result) -> bool:
             t for t in _TOKEN_RE.findall(fragment.lower())
             if not t.isdigit() and t not in _COMPOSE_STOPWORDS
         ]
-        if tokens and not all(t in display_tokens for t in tokens):
+        if tokens and not all(
+            _token_covered(t, display_tokens) for t in tokens
+        ):
             return False
     return True
+
+
+# Initialism expansions for fragment coverage: 'GI' abbreviates
+# 'Gastro-Intestinal' by initials, so a prefix rule cannot cover it
+# ('Upper GI bleed' -> 'Upper Gastrointestinal Bleeding',
+# amux-canonical follow-up 3, 2026-11-11). Keep curated and minimal.
+_ABBREV_INITIALISM_EXPANSIONS = {
+    "gi": "gastrointestinal",
+    "gu": "genitourinary",
+    "ugib": "gastrointestinal",
+}
+
+
+def _token_covered(token: str, display_tokens: set[str]) -> bool:
+    """Exact token coverage, with abbreviation tolerance.
+
+    Two narrow tolerances: a length-floored prefix match ('bleed' ->
+    'bleeding') and the curated initialism map above ('gi' ->
+    'gastrointestinal'). A composed candidate is not incomplete just
+    because the display spells an abbreviation out.
+    """
+    if token in display_tokens:
+        return True
+    expansion = _ABBREV_INITIALISM_EXPANSIONS.get(token)
+    if expansion and expansion in display_tokens:
+        return True
+    if len(token) < 2:
+        return False
+    return any(
+        d.startswith(token) and len(d) > len(token)
+        for d in display_tokens
+    )
 
 
 def _detect_inline_trigger(entity_text: str) -> tuple[str, str]:
@@ -1257,6 +1354,8 @@ def _is_false_positive(text: str) -> bool:
     # EDS, 'MD' -> Multicore Myopathy, '<b>' -> 'B').
     if lower in _ABBREVIATION_STOPLIST:
         return True
+    if lower in _BOILERPLATE_PHRASES:
+        return True
     if _CODE_PATTERN_RE.fullmatch(lower):
         return True
     if re.search(r"[<>{}]|&[a-z]+;", lower):
@@ -1278,6 +1377,13 @@ _ABBREVIATION_STOPLIST = frozenset({
     "po", "iv", "im", "sq", "prn", "bid", "tid", "qid", "qd", "qhs",
     "hs", "q6h", "q8h", "q12h", "q24h", "daily", "nightly", "weekly",
 })
+# Clinical boilerplate phrases (2026-11-11 assertion-scope battery,
+# as-status-01/02): 'no acute distress' is the exam-finding template —
+# the phrase 'acute distress' in a span of its own is boilerplate, not a
+# finding ('in acute distress' phrasing is rare and the measured battery
+# noise is 2/2).
+_BOILERPLATE_PHRASES = frozenset({"acute distress"})
+
 # Bare billing/terminology codes that leak as spans ('99213' CPT,
 # 'E11.9' ICD, '4548-4' LOINC) carry no clinical surface text to
 # resolve. Deliberately NOT matching short alnum clinical tokens:
@@ -1355,6 +1461,12 @@ class ExtractedConcept:
     # ingredient canonical_ids so callers can resolve all components. Empty for
     # non-combination anchors and legacy mode results.
     combination_members: list[dict[str, Any]] = field(default_factory=list)
+    # Qualifier phrases carried by the mention but not by the anchor name
+    # (2026-11-11 addendum A — qualifier handling is resolver-side): the
+    # vocabulary does not carry qualifier strings, so 'Fasting glucose'
+    # resolves to the Glucose anchor and records qualifier 'fasting'; same
+    # for laterality, numbered stage/type/grade, contrast.
+    qualifiers: list[str] = field(default_factory=list)
     span_start: int = 0
     span_end: int = 0
 
@@ -1410,6 +1522,7 @@ class ExtractedConcept:
             "result_type": self.result_type,
             "canonical_id": self.canonical_id,
             "combination_members": self.combination_members,
+            "qualifiers": self.qualifiers,
             "span_start": self.span_start,
             "span_end": self.span_end,
         }
@@ -1761,7 +1874,13 @@ class NlpPipeline:
                     if negated:
                         context_status = "negated"
                     elif family:
-                        context_status = "family"
+                        # Pediatric-subject guard (2026-11-11): 'Child with
+                        # asthma' is the PATIENT, not a relative — ConText's
+                        # kinship cue is wrong when an age descriptor
+                        # governs the finding; the span stays affirmed.
+                        context_status = (
+                            None if _pediatric_subject(text, start, end) else "family"
+                        )
                     elif hypothetical:
                         context_status = "hypothetical"
                     elif uncertain:
@@ -1797,7 +1916,7 @@ class NlpPipeline:
                 # Sentence-local post-span cues (2026-11-07): negation and
                 # uncertainty may follow the span, parenthetical or bare.
                 if status == "affirmed":
-                    if _post_span_negation_cue(text, end, doc):
+                    if _post_span_negation_cue(text, end, doc, span_start=start):
                         status = "negated"
                     elif _post_span_uncertainty_cue(text, end, doc):
                         status = "uncertain"
@@ -1917,6 +2036,29 @@ def _qualifier_inverted(query: str, display: str) -> bool:
     return False
 
 
+def _result_is_lab(r) -> bool:
+    """True when a search result is a canonical lab anchor (VAL-LAB-*)."""
+    return (getattr(r, "canonical_id", "") or "").startswith("VAL-LAB-")
+
+
+def _result_is_medication(r) -> bool:
+    """True when a search result is a canonical medication anchor (VAL-MED-*)."""
+    return (getattr(r, "canonical_id", "") or "").startswith("VAL-MED-")
+
+
+def _context_decided_lab(span) -> bool:
+    """True when the ConText arbiter EXCLUSIVELY decided lab for this span.
+
+    The medspaCy MEASUREMENT/ADMINISTRATION arbitration (level, trough,
+    drawn, blood draw, serum, ...) records its verdict on every span.
+    ['lab'] alone is an exclusive measurement decision — ['lab',
+    'medication'] means both cue families fired and carries no decision.
+    Consulted by the cross-type tie rule so measurement context outranks
+    the bare-mention drug preference.
+    """
+    return (getattr(span, "context_categories", None) or []) == ["lab"]
+
+
 def _first_matching_concept(
     span: FilteredSpan,
     results: list,
@@ -1974,6 +2116,7 @@ def _first_matching_concept(
     else:
         prefix_attempts = [label_prefixes, None] if label_prefixes else [None]
     for label_pf in prefix_attempts:
+        chosen = None
         for r in results:
             # Qualifier-inversion guard (2026-11-07 NER battery): a
             # with/without flip on the same token is a wrong answer, not
@@ -2008,17 +2151,70 @@ def _first_matching_concept(
                     continue
                 if not _fragment_completeness(span, r):
                     continue
-            canonical_id = getattr(r, "canonical_id", "") or ""
-            combination_members = getattr(r, "combination_members", None) or []
-            return ExtractedConcept(
-                code=r.code, source=r.source, display=r.display,
-                matched_text=span.text, status=span.status,
-                section=span.section, confidence=r.score,
-                match_grade=r.match_grade, ner_label=span.entity_type,
-                span_start=span.span_start, span_end=span.span_end,
-                canonical_id=canonical_id,
-                combination_members=combination_members,
-            )
+            if chosen is None:
+                chosen = r
+                # Small resolution rule (Joel, 2026-11-10 pressure test,
+                # twin_regate.json cross-type tie class): a bare analyte
+                # mention ('dexamethasone', 'tacrolimus') with no label
+                # constraint tying a LOINC lab anchor and a medication
+                # anchor on score prefers the medication — bare-phrase
+                # mentions in notes are overwhelmingly drug-use mentions,
+                # and real level queries ('tacrolimus level') outscore the
+                # drug anchor on the level-specific lab surfaces, so only
+                # an exact tie ever flips. Never applies inside a
+                # constrained pass — a label/type constraint is evidence.
+                #
+                # ConText override (2026-11-11): when the medspaCy ConText
+                # arbiter EXCLUSIVELY decided lab (MEASUREMENT cues —
+                # level/trough/drawn/blood draw/serum...), the measurement
+                # context is evidence the tie rule must respect: the lab
+                # anchor stays and a tied medication cannot steal it.
+                if (
+                    label_pf is None
+                    and _result_is_lab(r)
+                    and not _context_decided_lab(span)
+                ):
+                    continue
+                # mirror: a medication chosen under a lab decision scans
+                # for a tied lab anchor before settling
+                if (
+                    label_pf is None
+                    and _result_is_medication(r)
+                    and _context_decided_lab(span)
+                ):
+                    continue
+                break
+            if label_pf is None and r.score == chosen.score:
+                # default tie direction: medication wins a cross-type tie
+                if (
+                    _result_is_medication(r)
+                    and not (_result_is_lab(chosen) and _context_decided_lab(span))
+                ):
+                    chosen = r
+                    break
+                # ConText mirror: a tied lab anchor beats the medication
+                # when the arbiter exclusively decided lab ('tacrolimus
+                # level', 'blood draw for lithium').
+                if (
+                    _result_is_lab(r)
+                    and _result_is_medication(chosen)
+                    and _context_decided_lab(span)
+                ):
+                    chosen = r
+                    break
+        if chosen is None:
+            continue
+        canonical_id = getattr(chosen, "canonical_id", "") or ""
+        combination_members = getattr(chosen, "combination_members", None) or []
+        return ExtractedConcept(
+            code=chosen.code, source=chosen.source, display=chosen.display,
+            matched_text=span.text, status=span.status,
+            section=span.section, confidence=chosen.score,
+            match_grade=chosen.match_grade, ner_label=span.entity_type,
+            span_start=span.span_start, span_end=span.span_end,
+            canonical_id=canonical_id,
+            combination_members=combination_members,
+        )
     return None
 
 
@@ -2180,10 +2376,71 @@ def _dedup_concepts(concepts: list[ExtractedConcept]) -> list[ExtractedConcept]:
     """
     seen: dict[tuple[str, str], ExtractedConcept] = {}
     for c in concepts:
+        # Qualifier attributes (2026-11-11 addendum A): derived once at the
+        # resolution funnel — phrases the mention carried that the anchor
+        # name does not. Applied only when empty so an explicit caller
+        # value is never overwritten.
+        if not c.qualifiers:
+            c.qualifiers = _extract_qualifiers(c.matched_text, c.display)
         key = (c.canonical_id or f"{c.source}:{c.code}", c.status)
         if key not in seen or c.confidence > seen[key].confidence:
             seen[key] = c
     return sorted(seen.values(), key=lambda c: c.confidence, reverse=True)
+
+
+# Qualifier vocabulary (2026-11-11 addendum A): modifiers the mention may
+# carry that the anchor name does not — the vocabulary will not carry
+# qualifier strings, so the resolver records them as attributes instead of
+# dropping them silently. A token qualifies only when it is in the mention
+# and NOT in the resolved display.
+_QUALIFIER_WORDS = frozenset({
+    "fasting", "nonfasting", "random", "spot",
+    "left", "right", "bilateral", "unilateral", "upper", "lower",
+    "acute", "chronic", "primary", "secondary",
+    "systolic", "diastolic", "peak", "trough",
+    "contrast", "with", "without", "w", "wo",
+})
+_QUALIFIER_HEAD_RE = re.compile(
+    r"\b(type|stage|grade|class|phase)\s+(\d+[a-d]?|[ivxIVX]+)\b",
+    re.IGNORECASE,
+)
+_QUALIFIER_WORD_RE = re.compile(r"[a-z0-9]+")
+
+
+def _extract_qualifiers(matched_text: str, display: str) -> list[str]:
+    """Qualifier phrases present in the mention but absent from the display.
+
+    'Fasting glucose' -> display 'Glucose' -> ['fasting'];
+    'left arm pain' -> display 'Arm pain' -> ['left'];
+    'Stage 2 pressure ulcer' -> display 'Pressure ulcer' -> ['stage 2'];
+    'CBC with differential' -> display 'CBC W Differential' -> [] (the
+    display carries the qualifier — nothing was dropped).
+    """
+    if not matched_text or not display:
+        return []
+    display_tokens = set(_QUALIFIER_WORD_RE.findall(display.lower()))
+    # Display abbreviations that still carry the qualifier: 'W' = with,
+    # 'W/O'/'WO' = without ('CBC W Differential' did not drop 'with').
+    if "w" in display_tokens:
+        display_tokens.add("with")
+    if "wo" in display_tokens or "w/o" in display or "without" in display_tokens:
+        display_tokens.add("without")
+    qualifiers: list[str] = []
+    # Numbered qualifiers first, with their spans so the word pass does not
+    # double-report the head/number tokens.
+    numbered_spans: list[tuple[int, int]] = []
+    for m in _QUALIFIER_HEAD_RE.finditer(matched_text):
+        phrase = " ".join(m.group(0).lower().split())
+        if not any(t in display_tokens for t in _QUALIFIER_WORD_RE.findall(phrase)):
+            qualifiers.append(phrase)
+            numbered_spans.append((m.start(), m.end()))
+    for m in _QUALIFIER_WORD_RE.finditer(matched_text.lower()):
+        if any(s <= m.start() < e for s, e in numbered_spans):
+            continue
+        tok = m.group(0)
+        if tok in _QUALIFIER_WORDS and tok not in display_tokens:
+            qualifiers.append(tok)
+    return qualifiers
 
 
 def _filter_spans_by_status(
@@ -2422,7 +2679,11 @@ class ExtractionService:
                 # 2026-11-09: strength-stripped fallback, then qualifier
                 # variant — only after the primary (full mention) failed.
                 stripped = _strip_trailing_values(span.text)
-                for fallback_query in (stripped, _leading_qualifier_fallback(span.text)):
+                for fallback_query in (
+                    stripped,
+                    _trailing_form_fallback(span.text),
+                    _leading_qualifier_fallback(span.text),
+                ):
                     if not fallback_query or fallback_query == span.text:
                         continue
                     matched = _first_matching_concept(
@@ -2571,6 +2832,9 @@ class ExtractionService:
             search_texts = [span.text.strip()]
             if stripped and stripped != search_texts[0]:
                 search_texts.append(stripped)
+            form_variant = _trailing_form_fallback(span.text)
+            if form_variant and form_variant not in search_texts:
+                search_texts.append(form_variant)
             variant = _leading_qualifier_fallback(span.text)
             if variant and variant not in search_texts:
                 search_texts.append(variant)
@@ -2749,7 +3013,11 @@ class ExtractionService:
                 # 2026-11-09: strength-stripped fallback, then qualifier
                 # variant — only after the primary (full mention) failed.
                 stripped = _strip_trailing_values(span.text)
-                for fallback_query in (stripped, _leading_qualifier_fallback(span.text)):
+                for fallback_query in (
+                    stripped,
+                    _trailing_form_fallback(span.text),
+                    _leading_qualifier_fallback(span.text),
+                ):
                     if not fallback_query or fallback_query == t:
                         continue
                     matched = _first_matching_concept(

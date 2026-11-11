@@ -1098,7 +1098,164 @@ class TestNerBattery20261107:
         assert len(_stitch_drug_fragments(spans, "aspirin/plavix")) == 2
 
 
-class TestNerEdgeCorpus20261107:
+class TestSmallResolutionRule20261110:
+    """Cross-type tie preference (Joel directive, 2026-11-10, from the
+    fhir4px-model pressure test twin_regate.json findings): when a bare
+    analyte mention (tacrolimus, lithium, digoxin, dexamethasone) has NO
+    GLiNER label constraint and the top LOINC lab anchor and top
+    medication anchor tie on score, prefer the medication anchor."""
+
+    @staticmethod
+    def _result(canonical_id, system, code, name, score):
+        from medterm4ds.services.search import CanonicalSearchResult
+        return CanonicalSearchResult(
+            canonical_id=canonical_id, domain="Lab" if "LAB" in canonical_id else "Med",
+            anchor_system=system, anchor_code=code,
+            patient_friendly_name=name, score=score,
+            match_grade="probable", matched_via_code=code,
+            matched_via_display=name, total_member_count=1,
+        )
+
+    def test_bare_analyte_tie_prefers_medication(self):
+        # bare 'dexamethasone' — lab anchor first, medication tied on score
+        from medterm4ds.services import extraction as ex
+        lab = self._result("VAL-LAB-1", "LOINC", "XXXX-0", "Dexamethasone [Moles/Vol]", 0.82)
+        med = self._result("VAL-MED-1", "RXNORM", "3264", "dexamethasone", 0.82)
+        span = ex.FilteredSpan(text="dexamethasone", entity_type="body structure")
+        got = ex._first_matching_concept(
+            span, [lab, med], None,
+            result_type_prefixes=None, grade_threshold="probable",
+        )
+        assert got is not None and got.code == "3264"
+
+    def test_lab_strictly_higher_keeps_lab(self):
+        # 'tacrolimus level' — the level-specific lab surface outscores the
+        # drug anchor, so the tie rule must not fire
+        from medterm4ds.services import extraction as ex
+        lab = self._result("VAL-LAB-2", "LOINC", "YYYY-0", "Tacrolimus [Mass/Vol]", 0.90)
+        med = self._result("VAL-MED-2", "RXNORM", "4126", "tacrolimus", 0.82)
+        span = ex.FilteredSpan(text="tacrolimus level", entity_type="body structure")
+        got = ex._first_matching_concept(
+            span, [lab, med], None,
+            result_type_prefixes=None, grade_threshold="probable",
+        )
+        assert got is not None and got.source == "LOINC"
+
+    def test_label_constraint_blocks_tie_rule(self):
+        # a span constrained to lab categories keeps the lab anchor even at
+        # a tie — the constraint is evidence, the tie rule never overrides it
+        from medterm4ds.services import extraction as ex
+        lab = self._result("VAL-LAB-3", "LOINC", "ZZZZ-0", "Digoxin [Mass/Vol]", 0.82)
+        med = self._result("VAL-MED-3", "RXNORM", "2291", "digoxin", 0.82)
+        span = ex.FilteredSpan(text="digoxin", entity_type="lab test")
+        got = ex._first_matching_concept(
+            span, [lab, med], None,
+            result_type_prefixes=None, grade_threshold="probable",
+        )
+        assert got is not None and got.source == "LOINC"
+
+    def test_tie_rule_skips_lower_tied_medication(self):
+        # a medication tie candidate must also clear the grade floor: a
+        # 'possible' medication cannot replace a 'probable' lab at the same
+        # numeric score
+        from medterm4ds.services import extraction as ex
+        from medterm4ds.services.search import CanonicalSearchResult
+        lab = self._result("VAL-LAB-4", "LOINC", "WWWW-0", "Lithium [Moles/Vol]", 0.45)
+        med = CanonicalSearchResult(
+            canonical_id="VAL-MED-4", domain="Med", anchor_system="RXNORM",
+            anchor_code="10237", patient_friendly_name="lithium", score=0.45,
+            match_grade="possible", matched_via_code="10237",
+            matched_via_display="lithium", total_member_count=1,
+        )
+        span = ex.FilteredSpan(text="lithium", entity_type="body structure")
+        got = ex._first_matching_concept(
+            span, [lab, med], None,
+            result_type_prefixes=None, grade_threshold="probable",
+        )
+        assert got is not None and got.source == "LOINC"
+
+    def test_context_lab_decision_outranks_tie_rule(self):
+        # ConText arbiter decided ['lab'] (MEASUREMENT cues: level/drawn/
+        # blood draw) — the tied medication cannot steal the lab anchor,
+        # in either result order, and a tied lab beats a first-pass med.
+        from medterm4ds.services import extraction as ex
+        lab = self._result("VAL-LAB-5", "LOINC", "VVVV-0", "Tacrolimus [Mass/Vol]", 0.82)
+        med = self._result("VAL-MED-5", "RXNORM", "4126", "tacrolimus", 0.82)
+        ctx = ex.FilteredSpan(
+            text="tacrolimus level", entity_type="body structure",
+            context_categories=["lab"],
+        )
+        got = ex._first_matching_concept(
+            ctx, [lab, med], None,
+            result_type_prefixes=None, grade_threshold="probable",
+        )
+        assert got is not None and got.source == "LOINC"
+        # reversed order: medication first, tied lab behind -> lab wins
+        got2 = ex._first_matching_concept(
+            ctx, [med, lab], None,
+            result_type_prefixes=None, grade_threshold="probable",
+        )
+        assert got2 is not None and got2.source == "LOINC"
+        # an indeterminate arbiter verdict (both cue families) is NOT a
+        # lab decision — the default drug preference keeps operating
+        ambiguous = ex.FilteredSpan(
+            text="tacrolimus", entity_type="body structure",
+            context_categories=["lab", "medication"],
+        )
+        got3 = ex._first_matching_concept(
+            ambiguous, [lab, med], None,
+            result_type_prefixes=None, grade_threshold="probable",
+        )
+        assert got3 is not None and got3.source == "RXNORM"
+
+
+class TestDeterministicFixes20261111:
+    """NER deterministic-fix package (2026-11-11 handoff, fhir4px-model
+    pressure-test defect classes verified on HEAD a381503)."""
+
+    def test_post_span_bare_negative_binds(self):
+        # as-hist-02: 'now COVID-19 negative.' — bare 'negative' predicate
+        # binds ONLY when the span is directly preceded by 'now'; the
+        # unmarked 'HIV negative.' form stays affirmed (q-hiv-02 keeps its
+        # concept for default consumers).
+        from medterm4ds.services.extraction import _POST_SPAN_CUE_RE, _post_span_negation_cue
+        assert _POST_SPAN_CUE_RE.match(" was negative.")
+        assert not _POST_SPAN_CUE_RE.match(" negative.")
+        assert _POST_SPAN_CUE_RE.match(" negative for disease.")
+        text = "Previously had COVID-19, now COVID-19 negative."
+        end = text.index("negative.")
+        start = text.rindex("COVID-19")  # the 'now'-marked second span
+        class _Doc:
+            sents = ()
+            def __iter__(self):
+                return iter(())
+        assert _post_span_negation_cue(text, end, _Doc(), span_start=start)
+        # unmarked span keeps the affirmed default
+        hiv = "HIV negative."
+        assert not _post_span_negation_cue(hiv, hiv.index("negative"), _Doc(), span_start=0)
+
+    def test_pediatric_subject_demotes_family(self):
+        from medterm4ds.services.extraction import _pediatric_subject
+        # 'Child with asthma' — patient descriptor, not a relative
+        assert _pediatric_subject("Child with asthma.", 11, 17)
+        assert _pediatric_subject("Neonate with jaundice.", 13, 22)
+        # a real relative keeps family status
+        assert not _pediatric_subject("Father had colon cancer.", 11, 23)
+        assert not _pediatric_subject("Family history of CAD.", 18, 21)
+
+    def test_boilerplate_and_furniture_stoplisted(self):
+        from medterm4ds.services.extraction import _is_false_positive
+        # 'no acute distress' template phrase
+        assert _is_false_positive("acute distress")
+        # section-header furniture measured resolving confidently wrong
+        for w in ("exam", "risks", "Follow-up", "Objective"):
+            assert _is_false_positive(w), w
+        # clinical content is untouched
+        assert not _is_false_positive("acute respiratory distress syndrome")
+        assert not _is_false_positive("physical exam under anesthesia")
+        assert not _is_false_positive("respiratory distress")
+
+
     """Model-team expanded edge corpus (2026-11-07, ~202 cases): the
     list false-merge side effect, pseudonegation, and pre-span cues."""
 
@@ -1178,6 +1335,96 @@ class TestNerEdgeCorpus20261107:
 
         text = "Breast cancer ruled out."
         assert _post_span_negation_cue(text, 13, _Doc(_Sent(0, len(text))))
+
+
+class TestAddendum20261111:
+    """Canonical-1b4d8d8 addendum: alias surfaces (B/C) and the
+    qualifier-attribute resolver side (A)."""
+
+    def test_alias_dictionary_exact_hits(self):
+        from medterm4ds.services.search import get_search_service
+        ss = get_search_service()
+        ss._ensure_canonical()
+        # 'CVA' is an anchor synonym of Stroke in every current data unit
+        assert ss._alias_to_cid.get("cva") == "VAL-COND-SNOMED-230690007"
+
+    def test_alias_result_honors_type_filter(self):
+        from medterm4ds.services.search import get_search_service
+        ss = get_search_service()
+        # unfiltered: the alias hit wins
+        top = ss.canonical("CVA", count=3)[0]
+        assert top.patient_friendly_name == "Stroke"
+        assert top.match_grade == "exact" and top.matched_via_code.startswith("alias:")
+        # a lab-only filter excludes the condition anchor -> alias is a miss,
+        # the caller falls through to embedding search
+        lab = ss.canonical("CVA", result_types="lab", count=3)
+        assert all(r.canonical_id.startswith("VAL-LAB-") for r in lab)
+
+    def test_extract_qualifiers_attribute(self):
+        from medterm4ds.services.extraction import _extract_qualifiers
+        assert _extract_qualifiers("Fasting glucose", "Glucose") == ["fasting"]
+        assert _extract_qualifiers("left arm pain", "Arm pain") == ["left"]
+        assert _extract_qualifiers("Stage 2 pressure ulcer", "Pressure ulcer") == ["stage 2"]
+        assert _extract_qualifiers("Type 2 diabetes", "Type 2 Diabetes") == []
+        assert _extract_qualifiers("CBC with differential", "CBC W Differential") == []
+        assert _extract_qualifiers("chest x-ray", "Chest X-Ray") == []
+
+    def test_trailing_form_fallback(self):
+        from medterm4ds.services.extraction import _trailing_form_fallback
+        assert _trailing_form_fallback("Normal saline bolus") == "Normal saline"
+        assert _trailing_form_fallback("ceftriaxone 1 g") is None  # value, not form noun
+        assert _trailing_form_fallback(" TMP-SMX ") is None
+
+    def test_structural_hubs_skipped_in_dictionary_passes(self):
+        # amux-canonical 1cdb6ef follow-up: structural hubs are absent
+        # from the concept index and must not surface as exact alias or
+        # group matches ('infection' must not return the LOINC hub).
+        from medterm4ds.services import search as S
+        vsets = [
+            {"canonical_id": "VAL-LAB-LOINC-X1", "system": "LOINC", "code": "X1",
+             "patient_friendly_name": "Infection", "anchor_synonyms": ["INF"],
+             "structural_hub": True, "composite_groups": [
+                 {"group_id": "GP-X1", "term": "Infection panel"}]},
+            {"canonical_id": "VAL-COND-SNOMED-Y2", "system": "SNOMEDCT_US",
+             "code": "Y2", "patient_friendly_name": "Infectious Disease",
+             "anchor_synonyms": ["contagion"]},
+        ]
+        svc = S.SearchService.__new__(S.SearchService)
+        svc._canonical_by_id = {}
+        svc._canonical_by_anchor = {}
+        svc._code_to_canonical_id = {}
+        svc._group_terms = {}
+        svc._alias_to_cid = {}
+        for v in vsets:
+            svc._canonical_by_id[v["canonical_id"]] = v
+            svc._canonical_by_anchor[(v["system"], v["code"])] = v["canonical_id"]
+        svc._build_group_dictionary(vsets)
+        svc._build_alias_dictionary(vsets)
+        assert "infection" not in svc._alias_to_cid  # hub name excluded
+        assert "inf" not in svc._alias_to_cid        # hub synonym excluded
+        assert "contagion" in svc._alias_to_cid      # real anchor's synonym kept
+        assert not any(
+            "infection" in t for t in svc._group_terms
+        ), svc._group_terms
+
+    def test_initialism_fragment_coverage(self):
+        # 'Upper GI bleed' -> 'Upper Gastrointestinal Bleeding': 'GI' is
+        # an initialism, not a prefix — curated expansion covers it.
+        from medterm4ds.services.extraction import (
+            FilteredSpan, _fragment_completeness, _token_covered,
+        )
+        dt = {"upper", "gastrointestinal", "bleeding"}
+        assert _token_covered("gi", dt)
+        assert _token_covered("bleed", dt)   # prefix tolerance
+        assert not _token_covered("gua", dt)
+        assert not _token_covered("g", dt)   # length floor
+
+        class _R:
+            display = "Upper Gastrointestinal Bleeding"
+            combination_members = []
+        span = FilteredSpan(text="Upper GI bleed", entity_type="disorder",
+                            composed_from=["Upper GI", "bleed"])
+        assert _fragment_completeness(span, _R())
 
 
 class TestPostSpanClauseBinding:
