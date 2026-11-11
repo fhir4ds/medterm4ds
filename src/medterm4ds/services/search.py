@@ -353,12 +353,19 @@ def _hf_download_atomic(
     target_root: Path,
     family: str,
     revision: str,
+    unit_subpath: str | None = None,
 ) -> None:
     """Atomic variant of _hf_download for one family unit.
 
     Downloads into a tmp dir (sibling of the target) and renames the
     family dir into place, so an FAISS index and its metadata can never
     be observed mixed (dual-edge rule, plan §5; model-team correction 4).
+
+    ``unit_subpath`` renames a CHILD of the family dir (e.g. the
+    models/<space_id> unit) instead of the family root — needed when the
+    family root is shared across units (models/ holds several embedding
+    spaces, so a family-level rename collides with the existing dir and
+    the unit can never land).
     """
     try:
         from huggingface_hub import snapshot_download
@@ -387,7 +394,11 @@ def _hf_download_atomic(
         allow_patterns=allow_patterns,
         token=os.getenv("HF_TOKEN"),
     )
-    atomic_rename_dir(tmp_root / family, target_root / family)
+    if unit_subpath is None:
+        atomic_rename_dir(tmp_root / family, target_root / family)
+    else:
+        atomic_rename_dir(tmp_root / family / unit_subpath,
+                          target_root / family / unit_subpath)
     shutil.rmtree(tmp_root, ignore_errors=True)
 
 
@@ -482,9 +493,13 @@ def _download_split_model(space_id: str | None = None) -> Path:
         space_id = effective_embedding_space()
     target = _SPLIT_ROOT / "models" / space_id
     if not (target / "model.safetensors").exists():
+        # Per-space atomic unit (2026-11-11): the shared models/ root can
+        # already hold other embedding spaces — a family-level rename
+        # collided with it and the unit never landed, silently degrading
+        # query embeddings to the legacy space against the new index.
         _hf_download_atomic(
             [f"models/{space_id}/*"], target_root=_SPLIT_ROOT, family="models",
-            revision="main",
+            revision="main", unit_subpath=space_id,
         )
     return target
 
@@ -982,6 +997,7 @@ class SearchService:
         self._canonical_loaded = False
         self._canonical_by_id: dict[str, dict] = {}
         self._group_terms: dict[str, dict] = {}
+        self._alias_to_cid: dict[str, str] = {}
         self._canonical_by_anchor: dict[tuple[str, str], str] = {}
         self._code_to_canonical_id: dict[tuple[str, str], str] = {}
         self._concepts_faiss = None
@@ -1280,9 +1296,11 @@ class SearchService:
             for m in v.get("members", []):
                 self._code_to_canonical_id[(m["system"], m["code"])] = cid
         self._build_group_dictionary(vsets)
+        self._build_alias_dictionary(vsets)
         self._canonical_loaded = True
-        logger.info("Loaded %d Master Canonical Value Sets (%d code pairs, %d group terms)",
-                    len(vsets), len(self._code_to_canonical_id), len(self._group_terms))
+        logger.info("Loaded %d Master Canonical Value Sets (%d code pairs, %d group terms, %d aliases)",
+                    len(vsets), len(self._code_to_canonical_id), len(self._group_terms),
+                    len(self._alias_to_cid))
 
     def _build_group_dictionary(self, vsets: list[dict]) -> None:
         """Inverted index for the composite-group dictionary pass.
@@ -1332,6 +1350,94 @@ class SearchService:
                 "member_cids": sorted(members_by_group[gid])}
             for t, gid in terms.items()
         }
+
+    def _build_alias_dictionary(self, vsets: list[dict]) -> None:
+        """Exact-alias index over anchor names and their synonyms.
+
+        Abbreviation queries ('HLD', 'DM2', 'ASA', 'NSTEMI') name their
+        anchor exactly but cannot reach it through embedding search —
+        SapBERT ranks semantic neighbours ('HLD' -> Hodgkin's Lymphoma)
+        above the true anchor. An exact alias hit returns the anchor
+        directly (2026-11-11 addendum B). Ambiguous aliases (claimed by
+        2+ anchors) are excluded — an exact match must be unambiguous.
+        """
+        alias_map: dict[str, str] = {}
+        ambiguous: set[str] = set()
+        for v in vsets:
+            cid = v["canonical_id"]
+            names = [v.get("patient_friendly_name"), v.get("snomed_pt"),
+                     v.get("rxnorm_display")]
+            names += list(v.get("consumer_synonyms") or [])
+            names += list(v.get("anchor_synonyms") or [])
+            for nm in names:
+                if not nm or not str(nm).strip():
+                    continue
+                key = " ".join(str(nm).lower().split())
+                if not key:
+                    continue
+                if alias_map.get(key, cid) != cid:
+                    ambiguous.add(key)
+                else:
+                    alias_map[key] = cid
+        for key in ambiguous:
+            alias_map.pop(key, None)
+        self._alias_to_cid = alias_map
+
+    def _alias_dictionary_search(
+        self,
+        query: str,
+        *,
+        result_types: str | list[str] | None,
+        sources: list[str] | None,
+    ) -> CanonicalSearchResult | None:
+        """Exact consumer/anchor-alias pass (before embedding search).
+
+        Returns the uniquely-claimed anchor for the query's normalized
+        form, or None (caller falls through to embedding search). The
+        result_types/sources filters are honored: a filtered-out anchor
+        is a miss, not a forced return.
+        """
+        if not self._alias_to_cid:
+            return None
+        cid = self._alias_to_cid.get(" ".join(query.lower().split()))
+        if cid is None:
+            return None
+        v = self._canonical_by_id.get(cid)
+        if v is None:
+            return None
+        anchor_system = v.get("anchor_system") or v.get("system")
+        if sources:
+            upper = {s.upper() for s in sources}
+            aliases = {
+                "LNC": "LOINC", "LOINC": "LNC",
+                "RXNORM": "ATC", "ATC": "RXNORM",
+                "SNOMED": "SNOMEDCT_US", "SNOMEDCT_US": "SNOMED",
+            }
+            widened = set(upper)
+            for s in upper:
+                partner = aliases.get(s)
+                if partner:
+                    widened.add(partner)
+            if anchor_system.upper() not in widened:
+                return None
+        if result_types:
+            prefixes = _result_types_to_prefixes(result_types)
+            if prefixes and not any(cid.startswith(p) for p in prefixes):
+                return None
+        return CanonicalSearchResult(
+            canonical_id=cid,
+            domain=v.get("domain", []),
+            anchor_system=anchor_system,
+            anchor_code=v.get("anchor_code") or v.get("code"),
+            patient_friendly_name=v.get("patient_friendly_name", ""),
+            score=1.0,
+            match_grade="exact",
+            matched_via_code=f"alias:{anchor_system}:{v.get('anchor_code') or v.get('code')}",
+            matched_via_display=query,
+            total_member_count=self._total_member_count(v),
+            members=v.get("members", []),
+            combination_members=v.get("combination_members", []),
+        )
 
     def _group_dictionary_search(
         self,
@@ -1898,7 +2004,16 @@ class SearchService:
 
         # Process results per query
         all_results: list[list[CanonicalSearchResult]] = []
-        for q_idx in range(len(queries)):
+        for q_idx, query in enumerate(queries):
+            # Exact-alias pass per query (2026-11-11 addendum B): an exact
+            # anchor/consumer-synonym hit is authoritative — return it instead
+            # of the embedding ranking (abbreviation queries like 'HLD'/'DM2'
+            # cannot reach their anchor semantically).
+            alias_result = self._alias_dictionary_search(
+                query, result_types=None, sources=None)
+            if alias_result is not None:
+                all_results.append([alias_result])
+                continue
             results: list[CanonicalSearchResult] = []
             seen_ids: set[str] = set()
             for score, idx in zip(scores[q_idx], ids[q_idx], strict=False):
@@ -1986,6 +2101,15 @@ class SearchService:
             query, result_types=result_types, sources=sources, count=count)
         if group_results:
             return group_results
+
+        # Exact-alias pass (2026-11-11 addendum B): abbreviation queries
+        # ('HLD', 'DM2', 'ASA', 'NSTEMI', 'FOLFOX') name their anchor via
+        # an anchor/consumer synonym — return it exactly instead of letting
+        # embedding search rank a semantic neighbour above it.
+        alias_result = self._alias_dictionary_search(
+            query, result_types=result_types, sources=sources)
+        if alias_result is not None:
+            return [alias_result]
 
         # Option C-B: concept index is the primary path when available.
         # If it returns empty (all results below 0.70 threshold), that's
