@@ -1174,6 +1174,40 @@ class TestSmallResolutionRule20261110:
         )
         assert got is not None and got.source == "LOINC"
 
+    def test_context_lab_decision_outranks_tie_rule(self):
+        # ConText arbiter decided ['lab'] (MEASUREMENT cues: level/drawn/
+        # blood draw) — the tied medication cannot steal the lab anchor,
+        # in either result order, and a tied lab beats a first-pass med.
+        from medterm4ds.services import extraction as ex
+        lab = self._result("VAL-LAB-5", "LOINC", "VVVV-0", "Tacrolimus [Mass/Vol]", 0.82)
+        med = self._result("VAL-MED-5", "RXNORM", "4126", "tacrolimus", 0.82)
+        ctx = ex.FilteredSpan(
+            text="tacrolimus level", entity_type="body structure",
+            context_categories=["lab"],
+        )
+        got = ex._first_matching_concept(
+            ctx, [lab, med], None,
+            result_type_prefixes=None, grade_threshold="probable",
+        )
+        assert got is not None and got.source == "LOINC"
+        # reversed order: medication first, tied lab behind -> lab wins
+        got2 = ex._first_matching_concept(
+            ctx, [med, lab], None,
+            result_type_prefixes=None, grade_threshold="probable",
+        )
+        assert got2 is not None and got2.source == "LOINC"
+        # an indeterminate arbiter verdict (both cue families) is NOT a
+        # lab decision — the default drug preference keeps operating
+        ambiguous = ex.FilteredSpan(
+            text="tacrolimus", entity_type="body structure",
+            context_categories=["lab", "medication"],
+        )
+        got3 = ex._first_matching_concept(
+            ambiguous, [lab, med], None,
+            result_type_prefixes=None, grade_threshold="probable",
+        )
+        assert got3 is not None and got3.source == "RXNORM"
+
 
 class TestDeterministicFixes20261111:
     """NER deterministic-fix package (2026-11-11 handoff, fhir4px-model

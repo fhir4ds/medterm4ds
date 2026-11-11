@@ -162,6 +162,10 @@ _MEASUREMENT_CUES = (
     "reference", "range", "reference range", "obtained", "collected",
     "specimen", "fasting", "random", "spot", "ordered", "supplemented",
     "corrected",
+    # 2026-11-11: the phlebotomy phrase for analyte draws — "blood draw"
+    # is the standard surface ("blood draw for lithium"); bare "draw"
+    # stays out (verb senses: "draw blood", "draw up").
+    "blood draw", "redraw",
 )
 
 # Administration cues. Note vs. the eval spec: "repleted", "infused" and
@@ -2042,6 +2046,19 @@ def _result_is_medication(r) -> bool:
     return (getattr(r, "canonical_id", "") or "").startswith("VAL-MED-")
 
 
+def _context_decided_lab(span) -> bool:
+    """True when the ConText arbiter EXCLUSIVELY decided lab for this span.
+
+    The medspaCy MEASUREMENT/ADMINISTRATION arbitration (level, trough,
+    drawn, blood draw, serum, ...) records its verdict on every span.
+    ['lab'] alone is an exclusive measurement decision — ['lab',
+    'medication'] means both cue families fired and carries no decision.
+    Consulted by the cross-type tie rule so measurement context outranks
+    the bare-mention drug preference.
+    """
+    return (getattr(span, "context_categories", None) or []) == ["lab"]
+
+
 def _first_matching_concept(
     span: FilteredSpan,
     results: list,
@@ -2146,16 +2163,45 @@ def _first_matching_concept(
                 # drug anchor on the level-specific lab surfaces, so only
                 # an exact tie ever flips. Never applies inside a
                 # constrained pass — a label/type constraint is evidence.
-                if label_pf is None and _result_is_lab(r):
+                #
+                # ConText override (2026-11-11): when the medspaCy ConText
+                # arbiter EXCLUSIVELY decided lab (MEASUREMENT cues —
+                # level/trough/drawn/blood draw/serum...), the measurement
+                # context is evidence the tie rule must respect: the lab
+                # anchor stays and a tied medication cannot steal it.
+                if (
+                    label_pf is None
+                    and _result_is_lab(r)
+                    and not _context_decided_lab(span)
+                ):
+                    continue
+                # mirror: a medication chosen under a lab decision scans
+                # for a tied lab anchor before settling
+                if (
+                    label_pf is None
+                    and _result_is_medication(r)
+                    and _context_decided_lab(span)
+                ):
                     continue
                 break
-            if (
-                label_pf is None
-                and r.score == chosen.score
-                and _result_is_medication(r)
-            ):
-                chosen = r
-                break
+            if label_pf is None and r.score == chosen.score:
+                # default tie direction: medication wins a cross-type tie
+                if (
+                    _result_is_medication(r)
+                    and not (_result_is_lab(chosen) and _context_decided_lab(span))
+                ):
+                    chosen = r
+                    break
+                # ConText mirror: a tied lab anchor beats the medication
+                # when the arbiter exclusively decided lab ('tacrolimus
+                # level', 'blood draw for lithium').
+                if (
+                    _result_is_lab(r)
+                    and _result_is_medication(chosen)
+                    and _context_decided_lab(span)
+                ):
+                    chosen = r
+                    break
         if chosen is None:
             continue
         canonical_id = getattr(chosen, "canonical_id", "") or ""
