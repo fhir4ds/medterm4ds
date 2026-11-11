@@ -1411,7 +1411,9 @@ class TestAddendum20261111:
         # 'Upper GI bleed' -> 'Upper Gastrointestinal Bleeding': 'GI' is
         # an initialism, not a prefix — curated expansion covers it.
         from medterm4ds.services.extraction import (
-            FilteredSpan, _fragment_completeness, _token_covered,
+            FilteredSpan,
+            _fragment_completeness,
+            _token_covered,
         )
         dt = {"upper", "gastrointestinal", "bleeding"}
         assert _token_covered("gi", dt)

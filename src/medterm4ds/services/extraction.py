@@ -2186,9 +2186,10 @@ def _first_matching_concept(
     else:
         prefix_attempts = [label_prefixes, None] if label_prefixes else [None]
     for label_pf in prefix_attempts:
-        def _eligible(r) -> bool:
+        def _eligible(r, _label_pf=label_pf) -> bool:
             """Per-pass candidate filter — single source for both the
-            selection scan and the R4 runner-up scan."""
+            selection scan and the R4 runner-up scan (``_label_pf`` bound
+            per pass, B023)."""
             # Qualifier-inversion guard (2026-11-07 NER battery): a
             # with/without flip on the same token is a wrong answer, not
             # a lower-grade match — skip it and let the next candidate
@@ -2207,9 +2208,9 @@ def _first_matching_concept(
             ):
                 return False
             # Label-derived category constraint (constrain pass;
-            # the fallback pass re-runs with label_pf=None)
-            if label_pf and result_canonical_id and not any(
-                result_canonical_id.startswith(p) for p in label_pf
+            # the fallback pass re-runs with _label_pf=None)
+            if _label_pf and result_canonical_id and not any(
+                result_canonical_id.startswith(p) for p in _label_pf
             ):
                 return False
             # Grade filter
