@@ -1268,9 +1268,43 @@ def _fragment_completeness(span, result) -> bool:
             t for t in _TOKEN_RE.findall(fragment.lower())
             if not t.isdigit() and t not in _COMPOSE_STOPWORDS
         ]
-        if tokens and not all(t in display_tokens for t in tokens):
+        if tokens and not all(
+            _token_covered(t, display_tokens) for t in tokens
+        ):
             return False
     return True
+
+
+# Initialism expansions for fragment coverage: 'GI' abbreviates
+# 'Gastro-Intestinal' by initials, so a prefix rule cannot cover it
+# ('Upper GI bleed' -> 'Upper Gastrointestinal Bleeding',
+# amux-canonical follow-up 3, 2026-11-11). Keep curated and minimal.
+_ABBREV_INITIALISM_EXPANSIONS = {
+    "gi": "gastrointestinal",
+    "gu": "genitourinary",
+    "ugib": "gastrointestinal",
+}
+
+
+def _token_covered(token: str, display_tokens: set[str]) -> bool:
+    """Exact token coverage, with abbreviation tolerance.
+
+    Two narrow tolerances: a length-floored prefix match ('bleed' ->
+    'bleeding') and the curated initialism map above ('gi' ->
+    'gastrointestinal'). A composed candidate is not incomplete just
+    because the display spells an abbreviation out.
+    """
+    if token in display_tokens:
+        return True
+    expansion = _ABBREV_INITIALISM_EXPANSIONS.get(token)
+    if expansion and expansion in display_tokens:
+        return True
+    if len(token) < 2:
+        return False
+    return any(
+        d.startswith(token) and len(d) > len(token)
+        for d in display_tokens
+    )
 
 
 def _detect_inline_trigger(entity_text: str) -> tuple[str, str]:

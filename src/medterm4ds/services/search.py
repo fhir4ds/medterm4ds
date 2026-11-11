@@ -1315,6 +1315,11 @@ class SearchService:
         members_by_group: dict[str, list[str]] = {}
         terms: dict[str, str] = {}
         for v in vsets:
+            # Same structural-hub exclusion as the alias dictionary: hubs
+            # are absent from the concept index and must not surface as
+            # exact group matches either (amux-canonical 1cdb6ef).
+            if v.get("structural_hub"):
+                continue
             cid = v["canonical_id"]
             for g in v.get("composite_groups") or []:
                 gid = g.get("group_id")
@@ -1334,7 +1339,10 @@ class SearchService:
         # RxNorm INs) do not collide across systems; revisit if a
         # mixed-system group family ever appears.
         parent_by_group: dict[str, str] = {}
-        code_to_cid = {(code): cid for (system, code), cid in self._canonical_by_anchor.items()}
+        code_to_cid = {
+            code: cid for (system, code), cid in self._canonical_by_anchor.items()
+            if not (self._canonical_by_id.get(cid, {}).get("structural_hub"))
+        }
         for gid in members_by_group:
             suffix = gid[3:] if gid.startswith("GP-") else gid
             pcid = code_to_cid.get(suffix)
@@ -1364,6 +1372,14 @@ class SearchService:
         alias_map: dict[str, str] = {}
         ambiguous: set[str] = set()
         for v in vsets:
+            # Structural hubs (LOINC grouping parents like LP130385-0
+            # 'Infection') are absent from the concept index by design —
+            # the dictionary passes must skip them too, or an exact alias
+            # returns an anchor the embedding path would never serve
+            # (canonical('infection') -> structural LOINC hub at 1.0
+            # instead of the real condition; amux-canonical 1cdb6ef).
+            if v.get("structural_hub"):
+                continue
             cid = v["canonical_id"]
             names = [v.get("patient_friendly_name"), v.get("snomed_pt"),
                      v.get("rxnorm_display")]

@@ -1341,6 +1341,57 @@ class TestAddendum20261111:
         assert _trailing_form_fallback("ceftriaxone 1 g") is None  # value, not form noun
         assert _trailing_form_fallback(" TMP-SMX ") is None
 
+    def test_structural_hubs_skipped_in_dictionary_passes(self):
+        # amux-canonical 1cdb6ef follow-up: structural hubs are absent
+        # from the concept index and must not surface as exact alias or
+        # group matches ('infection' must not return the LOINC hub).
+        from medterm4ds.services import search as S
+        vsets = [
+            {"canonical_id": "VAL-LAB-LOINC-X1", "system": "LOINC", "code": "X1",
+             "patient_friendly_name": "Infection", "anchor_synonyms": ["INF"],
+             "structural_hub": True, "composite_groups": [
+                 {"group_id": "GP-X1", "term": "Infection panel"}]},
+            {"canonical_id": "VAL-COND-SNOMED-Y2", "system": "SNOMEDCT_US",
+             "code": "Y2", "patient_friendly_name": "Infectious Disease",
+             "anchor_synonyms": ["contagion"]},
+        ]
+        svc = S.SearchService.__new__(S.SearchService)
+        svc._canonical_by_id = {}
+        svc._canonical_by_anchor = {}
+        svc._code_to_canonical_id = {}
+        svc._group_terms = {}
+        svc._alias_to_cid = {}
+        for v in vsets:
+            svc._canonical_by_id[v["canonical_id"]] = v
+            svc._canonical_by_anchor[(v["system"], v["code"])] = v["canonical_id"]
+        svc._build_group_dictionary(vsets)
+        svc._build_alias_dictionary(vsets)
+        assert "infection" not in svc._alias_to_cid  # hub name excluded
+        assert "inf" not in svc._alias_to_cid        # hub synonym excluded
+        assert "contagion" in svc._alias_to_cid      # real anchor's synonym kept
+        assert not any(
+            "infection" in t for t in svc._group_terms
+        ), svc._group_terms
+
+    def test_initialism_fragment_coverage(self):
+        # 'Upper GI bleed' -> 'Upper Gastrointestinal Bleeding': 'GI' is
+        # an initialism, not a prefix — curated expansion covers it.
+        from medterm4ds.services.extraction import (
+            FilteredSpan, _fragment_completeness, _token_covered,
+        )
+        dt = {"upper", "gastrointestinal", "bleeding"}
+        assert _token_covered("gi", dt)
+        assert _token_covered("bleed", dt)   # prefix tolerance
+        assert not _token_covered("gua", dt)
+        assert not _token_covered("g", dt)   # length floor
+
+        class _R:
+            display = "Upper Gastrointestinal Bleeding"
+            combination_members = []
+        span = FilteredSpan(text="Upper GI bleed", entity_type="disorder",
+                            composed_from=["Upper GI", "bleed"])
+        assert _fragment_completeness(span, _R())
+
 
 class TestPostSpanClauseBinding:
     """Adversarial corpus (model team, 2026-11-07, as-window-01/03,
