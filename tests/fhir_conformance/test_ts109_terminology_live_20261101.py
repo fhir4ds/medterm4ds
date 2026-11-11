@@ -153,12 +153,16 @@ def test_t6_default_release_forward_compat(tmp_path_factory):
     """The resolver's DEFAULT release (release()) — if it differs from
     LIVE_RELEASE, the same invariants must hold on it too."""
     from medterm4ds.core import terminology as term
+    from medterm4ds.core.artifact_manifest import effective_embedding_space
 
     default_rel = term.release()
     if default_rel == LIVE_RELEASE:
         pytest.skip("default release is the live release — covered above")
     root = tmp_path_factory.mktemp("ts109_default")
-    paths = term.download(root, rel=default_rel, space_id=SPACE)
+    # 2026-11-11 encoder-convergence rotation: the default release pairs
+    # with the default SERVING space (they rotate together) — the pinned
+    # historical SPACE above belongs to LIVE_RELEASE only.
+    paths = term.download(root, rel=default_rel, space_id=effective_embedding_space())
     manifest = paths.manifest
     assert manifest["release"] == default_rel
     for fam in ("canonical", "lexical", "semantic"):
