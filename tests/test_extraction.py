@@ -1427,6 +1427,75 @@ class TestAddendum20261111:
         assert _fragment_completeness(span, _R())
 
 
+class TestQualifierAbstention20261111:
+    """R4 of the qualifier-guard port: a near-tied qualifier-variant
+    runner-up flags the pick ('qualifier_ambiguous') instead of a silent
+    coin flip."""
+
+    @staticmethod
+    def _result(cid, system, code, name, score, grade="probable"):
+        from medterm4ds.services.search import CanonicalSearchResult
+        return CanonicalSearchResult(
+            canonical_id=cid, domain="Lab" if "LAB" in cid else "Med",
+            anchor_system=system, anchor_code=code,
+            patient_friendly_name=name, score=score, match_grade=grade,
+            matched_via_code=code, matched_via_display=name,
+            total_member_count=1,
+        )
+
+    def test_qualifier_variants_detection(self):
+        from medterm4ds.services.extraction import _qualifier_variants
+        assert _qualifier_variants("CBC with Differential", "CBC without Differential")
+        assert _qualifier_variants("Left Arm Pain", "Right Arm Pain")
+        # single-token diff is a specificity difference, not a qualifier
+        # flip — prototype R4 rule requires the full two-token swap
+        assert not _qualifier_variants("Lithium", "Lithium Carbonate")
+        assert not _qualifier_variants("CBC with Differential", "CBC with Differential")
+        assert not _qualifier_variants("Pneumonia", "Pulmonary Embolism")
+        assert not _qualifier_variants("Hypertension", "Hypertensive Heart Disease")
+
+    def test_near_tied_variant_runner_up_flags(self):
+        from medterm4ds.services import extraction as ex
+        with_diff = self._result("VAL-LAB-1", "LOINC", "57021-2",
+                                 "CBC with Differential", 0.90)
+        without_diff = self._result("VAL-LAB-2", "LOINC", "58410-2",
+                                    "CBC without Differential", 0.88)
+        span = ex.FilteredSpan(text="CBC", entity_type="lab test")
+        got = ex._first_matching_concept(
+            span, [with_diff, without_diff], None,
+            result_type_prefixes=None, grade_threshold="probable",
+        )
+        assert got is not None and got.code == "57021-2"
+        assert got.flags == ["qualifier_ambiguous"]
+
+    def test_wide_margin_variant_not_flagged(self):
+        from medterm4ds.services import extraction as ex
+        with_diff = self._result("VAL-LAB-3", "LOINC", "57021-2",
+                                 "CBC with Differential", 0.95)
+        without_diff = self._result("VAL-LAB-4", "LOINC", "58410-2",
+                                    "CBC without Differential", 0.60,
+                                    grade="possible")
+        span = ex.FilteredSpan(text="CBC", entity_type="lab test")
+        got = ex._first_matching_concept(
+            span, [with_diff, without_diff], None,
+            result_type_prefixes=None, grade_threshold="probable",
+        )
+        assert got is not None and got.flags == []
+
+    def test_non_variant_runner_up_not_flagged(self):
+        from medterm4ds.services import extraction as ex
+        top = self._result("VAL-LAB-5", "LOINC", "58941-5", "CBC", 0.90)
+        other = self._result("VAL-LAB-6", "LOINC", "24338-6",
+                             "Hemoglobin and Hematocrit", 0.89)
+        span = ex.FilteredSpan(text="CBC", entity_type="lab test")
+        got = ex._first_matching_concept(
+            span, [top, other], None,
+            result_type_prefixes=None, grade_threshold="probable",
+        )
+        assert got is not None and got.code == "58941-5"
+        assert got.flags == []
+
+
 class TestPostSpanClauseBinding:
     """Adversarial corpus (model team, 2026-11-07, as-window-01/03,
     as-mixed-01, as-scope-03): the post-span cue and ConText scope must
