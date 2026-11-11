@@ -1098,8 +1098,214 @@ class TestNerBattery20261107:
         assert len(_stitch_drug_fragments(spans, "aspirin/plavix")) == 2
 
 
-class TestAliasDictionaryPass20261111:
-    """Canonical-1b4d8d8 addendum B: exact-alias dictionary surfaces."""
+class TestSmallResolutionRule20261110:
+    """Cross-type tie preference (Joel directive, 2026-11-10, from the
+    fhir4px-model pressure test twin_regate.json findings): when a bare
+    analyte mention (tacrolimus, lithium, digoxin, dexamethasone) has NO
+    GLiNER label constraint and the top LOINC lab anchor and top
+    medication anchor tie on score, prefer the medication anchor."""
+
+    @staticmethod
+    def _result(canonical_id, system, code, name, score):
+        from medterm4ds.services.search import CanonicalSearchResult
+        return CanonicalSearchResult(
+            canonical_id=canonical_id, domain="Lab" if "LAB" in canonical_id else "Med",
+            anchor_system=system, anchor_code=code,
+            patient_friendly_name=name, score=score,
+            match_grade="probable", matched_via_code=code,
+            matched_via_display=name, total_member_count=1,
+        )
+
+    def test_bare_analyte_tie_prefers_medication(self):
+        # bare 'dexamethasone' — lab anchor first, medication tied on score
+        from medterm4ds.services import extraction as ex
+        lab = self._result("VAL-LAB-1", "LOINC", "XXXX-0", "Dexamethasone [Moles/Vol]", 0.82)
+        med = self._result("VAL-MED-1", "RXNORM", "3264", "dexamethasone", 0.82)
+        span = ex.FilteredSpan(text="dexamethasone", entity_type="body structure")
+        got = ex._first_matching_concept(
+            span, [lab, med], None,
+            result_type_prefixes=None, grade_threshold="probable",
+        )
+        assert got is not None and got.code == "3264"
+
+    def test_lab_strictly_higher_keeps_lab(self):
+        # 'tacrolimus level' — the level-specific lab surface outscores the
+        # drug anchor, so the tie rule must not fire
+        from medterm4ds.services import extraction as ex
+        lab = self._result("VAL-LAB-2", "LOINC", "YYYY-0", "Tacrolimus [Mass/Vol]", 0.90)
+        med = self._result("VAL-MED-2", "RXNORM", "4126", "tacrolimus", 0.82)
+        span = ex.FilteredSpan(text="tacrolimus level", entity_type="body structure")
+        got = ex._first_matching_concept(
+            span, [lab, med], None,
+            result_type_prefixes=None, grade_threshold="probable",
+        )
+        assert got is not None and got.source == "LOINC"
+
+    def test_label_constraint_blocks_tie_rule(self):
+        # a span constrained to lab categories keeps the lab anchor even at
+        # a tie — the constraint is evidence, the tie rule never overrides it
+        from medterm4ds.services import extraction as ex
+        lab = self._result("VAL-LAB-3", "LOINC", "ZZZZ-0", "Digoxin [Mass/Vol]", 0.82)
+        med = self._result("VAL-MED-3", "RXNORM", "2291", "digoxin", 0.82)
+        span = ex.FilteredSpan(text="digoxin", entity_type="lab test")
+        got = ex._first_matching_concept(
+            span, [lab, med], None,
+            result_type_prefixes=None, grade_threshold="probable",
+        )
+        assert got is not None and got.source == "LOINC"
+
+    def test_tie_rule_skips_lower_tied_medication(self):
+        # a medication tie candidate must also clear the grade floor: a
+        # 'possible' medication cannot replace a 'probable' lab at the same
+        # numeric score
+        from medterm4ds.services import extraction as ex
+        from medterm4ds.services.search import CanonicalSearchResult
+        lab = self._result("VAL-LAB-4", "LOINC", "WWWW-0", "Lithium [Moles/Vol]", 0.45)
+        med = CanonicalSearchResult(
+            canonical_id="VAL-MED-4", domain="Med", anchor_system="RXNORM",
+            anchor_code="10237", patient_friendly_name="lithium", score=0.45,
+            match_grade="possible", matched_via_code="10237",
+            matched_via_display="lithium", total_member_count=1,
+        )
+        span = ex.FilteredSpan(text="lithium", entity_type="body structure")
+        got = ex._first_matching_concept(
+            span, [lab, med], None,
+            result_type_prefixes=None, grade_threshold="probable",
+        )
+        assert got is not None and got.source == "LOINC"
+
+
+class TestDeterministicFixes20261111:
+    """NER deterministic-fix package (2026-11-11 handoff, fhir4px-model
+    pressure-test defect classes verified on HEAD a381503)."""
+
+    def test_post_span_bare_negative_binds(self):
+        # as-hist-02: 'now COVID-19 negative.' — bare 'negative' predicate
+        # binds ONLY when the span is directly preceded by 'now'; the
+        # unmarked 'HIV negative.' form stays affirmed (q-hiv-02 keeps its
+        # concept for default consumers).
+        from medterm4ds.services.extraction import _POST_SPAN_CUE_RE, _post_span_negation_cue
+        assert _POST_SPAN_CUE_RE.match(" was negative.")
+        assert not _POST_SPAN_CUE_RE.match(" negative.")
+        assert _POST_SPAN_CUE_RE.match(" negative for disease.")
+        text = "Previously had COVID-19, now COVID-19 negative."
+        end = text.index("negative.")
+        start = text.rindex("COVID-19")  # the 'now'-marked second span
+        class _Doc:
+            sents = ()
+            def __iter__(self):
+                return iter(())
+        assert _post_span_negation_cue(text, end, _Doc(), span_start=start)
+        # unmarked span keeps the affirmed default
+        hiv = "HIV negative."
+        assert not _post_span_negation_cue(hiv, hiv.index("negative"), _Doc(), span_start=0)
+
+    def test_pediatric_subject_demotes_family(self):
+        from medterm4ds.services.extraction import _pediatric_subject
+        # 'Child with asthma' — patient descriptor, not a relative
+        assert _pediatric_subject("Child with asthma.", 11, 17)
+        assert _pediatric_subject("Neonate with jaundice.", 13, 22)
+        # a real relative keeps family status
+        assert not _pediatric_subject("Father had colon cancer.", 11, 23)
+        assert not _pediatric_subject("Family history of CAD.", 18, 21)
+
+    def test_boilerplate_and_furniture_stoplisted(self):
+        from medterm4ds.services.extraction import _is_false_positive
+        # 'no acute distress' template phrase
+        assert _is_false_positive("acute distress")
+        # section-header furniture measured resolving confidently wrong
+        for w in ("exam", "risks", "Follow-up", "Objective"):
+            assert _is_false_positive(w), w
+        # clinical content is untouched
+        assert not _is_false_positive("acute respiratory distress syndrome")
+        assert not _is_false_positive("physical exam under anesthesia")
+        assert not _is_false_positive("respiratory distress")
+
+
+    """Model-team expanded edge corpus (2026-11-07, ~202 cases): the
+    list false-merge side effect, pseudonegation, and pre-span cues."""
+
+    def test_coprescription_list_never_merges(self):
+        # 'Home meds: metformin, glipizide, and insulin.' — three
+        # mentions, NOT the fake combination 'metformin/glipizide'.
+        from medterm4ds.services.extraction import (
+            FilteredSpan,
+            _stitch_drug_fragments,
+        )
+        text = "Home meds: metformin, glipizide, and insulin."
+        spans = [
+            FilteredSpan(text="metformin", entity_type="therapeutic agent",
+                         span_start=11, span_end=20),
+            FilteredSpan(text="glipizide", entity_type="therapeutic agent",
+                         span_start=22, span_end=31),
+            FilteredSpan(text="insulin", entity_type="therapeutic agent",
+                         span_start=37, span_end=44),
+        ]
+        out = _stitch_drug_fragments(spans, text)
+        assert [s.text for s in out] == ["metformin", "glipizide", "insulin"]
+
+    def test_hyphen_compound_still_stitches(self):
+        from medterm4ds.services.extraction import (
+            FilteredSpan,
+            _stitch_drug_fragments,
+        )
+        text = "lisinopril-HCTZ 20/12.5 mg daily"
+        spans = [
+            FilteredSpan(text="lisinopril", entity_type="therapeutic agent",
+                         span_start=0, span_end=10),
+            FilteredSpan(text="HCTZ", entity_type="therapeutic agent",
+                         span_start=11, span_end=15),
+        ]
+        out = _stitch_drug_fragments(spans, text)
+        assert len(out) == 1 and out[0].text == "lisinopril/HCTZ"
+
+    def test_pre_span_cue_classes(self):
+        from medterm4ds.services.extraction import _pre_span_cue
+
+        class _Sent:
+            def __init__(self, s, e):
+                self.start_char, self.end_char = s, e
+
+        class _Doc:
+            def __init__(self, *sents):
+                self.sents = list(sents)
+
+        def cue(text, start, doc=None):
+            return _pre_span_cue(text, start, doc or _Doc(_Sent(0, len(text))))
+
+        # pseudonegation — 'cannot rule out X' is UNCERTAIN, never negated
+        assert cue("Cannot rule out pneumonia.", "Cannot rule out pneumonia.".index("pneumonia")) == "pseudo_negation"
+        assert cue("We cannot exclude pulmonary embolism.", "We cannot exclude pulmonary embolism.".index("pulmonary")) == "pseudo_negation"
+        assert cue("Unable to exclude malignancy.", "Unable to exclude malignancy.".index("malignancy")) == "pseudo_negation"
+        # plain uncertainty rescue
+        assert cue("Suspected urinary tract infection.", "Suspected urinary tract infection.".index("urinary")) == "uncertainty"
+        assert cue("Possibly gout.", "Possibly gout.".index("gout")) == "uncertainty"
+        # neither/nor negation
+        assert cue("Neither pneumonia nor pulmonary embolism.", "Neither pneumonia nor pulmonary embolism.".index("pneumonia")) == "negation"
+        # historical
+        assert cue("Prior MI, now on dual antiplatelet therapy.", "Prior MI, now on dual antiplatelet therapy.".index("MI")) == "historical"
+        # a cue from an EARLIER clause never binds (anchored adjacency)
+        assert cue("We ruled out the flu. Pneumonia noted today.", "We ruled out the flu. Pneumonia noted today.".index("Pneumonia")) is None
+
+    def test_post_span_cue_still_negates(self):
+        # the original battery fix keeps working alongside the new guards
+        from medterm4ds.services.extraction import _post_span_negation_cue
+
+        class _Sent:
+            def __init__(self, s, e):
+                self.start_char, self.end_char = s, e
+
+        class _Doc:
+            def __init__(self, *sents):
+                self.sents = list(sents)
+
+        text = "Breast cancer ruled out."
+        assert _post_span_negation_cue(text, 13, _Doc(_Sent(0, len(text))))
+
+
+class TestAddendum20261111:
+    """Canonical-1b4d8d8 addendum: alias surfaces (B/C) and the
+    qualifier-attribute resolver side (A)."""
 
     def test_alias_dictionary_exact_hits(self):
         from medterm4ds.services.search import get_search_service
@@ -1119,6 +1325,21 @@ class TestAliasDictionaryPass20261111:
         # the caller falls through to embedding search
         lab = ss.canonical("CVA", result_types="lab", count=3)
         assert all(r.canonical_id.startswith("VAL-LAB-") for r in lab)
+
+    def test_extract_qualifiers_attribute(self):
+        from medterm4ds.services.extraction import _extract_qualifiers
+        assert _extract_qualifiers("Fasting glucose", "Glucose") == ["fasting"]
+        assert _extract_qualifiers("left arm pain", "Arm pain") == ["left"]
+        assert _extract_qualifiers("Stage 2 pressure ulcer", "Pressure ulcer") == ["stage 2"]
+        assert _extract_qualifiers("Type 2 diabetes", "Type 2 Diabetes") == []
+        assert _extract_qualifiers("CBC with differential", "CBC W Differential") == []
+        assert _extract_qualifiers("chest x-ray", "Chest X-Ray") == []
+
+    def test_trailing_form_fallback(self):
+        from medterm4ds.services.extraction import _trailing_form_fallback
+        assert _trailing_form_fallback("Normal saline bolus") == "Normal saline"
+        assert _trailing_form_fallback("ceftriaxone 1 g") is None  # value, not form noun
+        assert _trailing_form_fallback(" TMP-SMX ") is None
 
 
 class TestPostSpanClauseBinding:
