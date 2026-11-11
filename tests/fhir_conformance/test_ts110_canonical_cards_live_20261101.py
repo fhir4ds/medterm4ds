@@ -90,6 +90,11 @@ def svc(tmp_path_factory, monkeypatch_module):
     for key in env_keys:
         monkeypatch_module.delenv(key, raising=False)
     monkeypatch_module.setenv("MEDTERM4DS_TERMINOLOGY_DIR", str(paths.base))
+    # 2026-11-11 encoder-convergence rotation: pin the serving space to
+    # THIS release's encoder. Without it the reloaded search module
+    # resolves the pinned release against the (rotated) default serving
+    # space and _verify_space correctly fails loud.
+    monkeypatch_module.setenv("MEDTERM4DS_EMBEDDING_SPACE", SPACE)
 
     from medterm4ds.services import search as search_mod
 

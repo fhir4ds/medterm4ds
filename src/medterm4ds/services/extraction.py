@@ -1467,6 +1467,12 @@ class ExtractedConcept:
     # resolves to the Glucose anchor and records qualifier 'fasting'; same
     # for laterality, numbered stage/type/grade, contrast.
     qualifiers: list[str] = field(default_factory=list)
+    # R4 abstention flags (qualifier-guard port, 2026-11-11): a candidate
+    # chosen while a qualifier-variant runner-up sits within the ambiguity
+    # margin carries 'qualifier_ambiguous' — the pick is a coin flip
+    # between clinical variants ('CBC with/without Differential'), and
+    # consumers deserve to know instead of a silent choice.
+    flags: list[str] = field(default_factory=list)
     span_start: int = 0
     span_end: int = 0
 
@@ -1523,6 +1529,7 @@ class ExtractedConcept:
             "canonical_id": self.canonical_id,
             "combination_members": self.combination_members,
             "qualifiers": self.qualifiers,
+            "flags": self.flags,
             "span_start": self.span_start,
             "span_end": self.span_end,
         }
@@ -2059,6 +2066,69 @@ def _context_decided_lab(span) -> bool:
     return (getattr(span, "context_categories", None) or []) == ["lab"]
 
 
+# ---- R4 abstention (qualifier-guard port, 2026-11-11) ----------------------
+# Prototype: fhir4px-model scripts/experiments/qualifier_guard.py (R4), where
+# the battery scored the guard net-neutral over production — R1-R3 were
+# already absorbed piecewise. R4 (silent picks between near-tied qualifier
+# variants) had no production equivalent; that is what lands here.
+
+# Exclusive qualifier groups: candidates differing ONLY across one group's
+# members are clinical variants of each other ('CBC with Differential' vs
+# 'CBC without Differential') — a near-tied pick between them is a coin
+# flip, not a resolution.
+_QUALIFIER_EXCLUSIVE_GROUPS: tuple[frozenset[str], ...] = (
+    frozenset({"with", "without"}),
+    frozenset({"positive", "negative"}),
+    frozenset({"left", "right"}),
+    frozenset({"acute", "chronic"}),
+    frozenset({"pre", "post"}),
+    frozenset({"primary", "secondary"}),
+    frozenset({"malignant", "benign"}),
+    frozenset({"systolic", "diastolic"}),
+    frozenset({"unilateral", "bilateral"}),
+    frozenset({"increased", "decreased"}),
+    frozenset({"high", "low"}),
+    frozenset({"normal", "abnormal"}),
+    frozenset({"present", "absent"}),
+)
+# Score margin under which two qualifier variants count as a coin flip
+# (prototype default, kept).
+_QUALIFIER_AMBIGUITY_MARGIN = 0.03
+
+_VARIANT_TOKEN_RE = re.compile(r"[a-z0-9]+")
+
+
+def _qualifier_variants(display_a: str, display_b: str) -> bool:
+    """True when two candidate displays are qualifier variants of one concept.
+
+    Either they differ across an exclusive group ('with' vs 'without'
+    differential) or their token sets differ by at most two tokens — the
+    narrow difference class of laterality/qualifier swaps. Identical
+    token sets are the same candidate, not variants.
+    """
+    ta = set(_VARIANT_TOKEN_RE.findall(display_a.lower()))
+    tb = set(_VARIANT_TOKEN_RE.findall(display_b.lower()))
+    if ta == tb:
+        return False
+    if len(ta ^ tb) > 2:
+        return False
+    for group in _QUALIFIER_EXCLUSIVE_GROUPS:
+        if (ta & group) and (tb & group) and (ta & group) != (tb & group):
+            return True
+    return len(ta ^ tb) == 2
+
+
+def _qualifier_ambiguous(chosen, runner_up) -> bool:
+    """R4: the chosen candidate wins by less than the ambiguity margin over
+    a qualifier-variant runner-up — flag instead of picking silently."""
+    if chosen is None or runner_up is None:
+        return False
+    return (
+        abs(runner_up.score - chosen.score) < _QUALIFIER_AMBIGUITY_MARGIN
+        and _qualifier_variants(chosen.display, runner_up.display)
+    )
+
+
 def _first_matching_concept(
     span: FilteredSpan,
     results: list,
@@ -2116,41 +2186,50 @@ def _first_matching_concept(
     else:
         prefix_attempts = [label_prefixes, None] if label_prefixes else [None]
     for label_pf in prefix_attempts:
-        chosen = None
-        for r in results:
+        def _eligible(r, _label_pf=label_pf) -> bool:
+            """Per-pass candidate filter — single source for both the
+            selection scan and the R4 runner-up scan (``_label_pf`` bound
+            per pass, B023)."""
             # Qualifier-inversion guard (2026-11-07 NER battery): a
             # with/without flip on the same token is a wrong answer, not
             # a lower-grade match — skip it and let the next candidate
             # (or abstention) win.
             if _qualifier_inverted(span.text, r.display):
-                continue
+                return False
             # Source filter
             if source_set and r.anchor_system not in source_set:
-                continue
+                return False
+            result_canonical_id = getattr(r, "canonical_id", "") or ""
             # Result-type filter (QC-153: previously the batch path
             # ignored result_types entirely — FHIR resultTypes=condition
             # still returned medications)
-            result_canonical_id = getattr(r, "canonical_id", "") or ""
             if result_type_prefixes and result_canonical_id and not any(
                 result_canonical_id.startswith(p) for p in result_type_prefixes
             ):
-                continue
+                return False
             # Label-derived category constraint (constrain pass;
-            # the fallback pass re-runs with label_pf=None)
-            if label_pf and result_canonical_id and not any(
-                result_canonical_id.startswith(p) for p in label_pf
+            # the fallback pass re-runs with _label_pf=None)
+            if _label_pf and result_canonical_id and not any(
+                result_canonical_id.startswith(p) for p in _label_pf
             ):
-                continue
+                return False
             # Grade filter
             if _GRADE_ORDER.get(r.match_grade, 2) > _GRADE_ORDER.get(grade_threshold, 0):
-                continue
-            # Composed spans: candidate must represent every fragment, and clear
-            # the 'probable' floor regardless of the caller's min_grade.
+                return False
+            # Composed spans: candidate must represent every fragment, and
+            # clear the 'probable' floor regardless of the caller's
+            # min_grade.
             if composed:
                 if _GRADE_ORDER.get(r.match_grade, 2) > _GRADE_ORDER["probable"]:
-                    continue
+                    return False
                 if not _fragment_completeness(span, r):
-                    continue
+                    return False
+            return True
+
+        chosen = None
+        for r in results:
+            if not _eligible(r):
+                continue
             if chosen is None:
                 chosen = r
                 # Small resolution rule (Joel, 2026-11-10 pressure test,
@@ -2204,6 +2283,20 @@ def _first_matching_concept(
                     break
         if chosen is None:
             continue
+        # R4 abstention (qualifier-guard port, 2026-11-11): the first
+        # eligible candidate after the chosen one is the runner-up — a
+        # qualifier variant within the ambiguity margin flags the pick as
+        # a coin flip instead of choosing silently.
+        flags: list[str] = []
+        chosen_idx = next(
+            (i for i, x in enumerate(results) if x is chosen), None,
+        )
+        if chosen_idx is not None:
+            runner = next(
+                (r for r in results[chosen_idx + 1:] if _eligible(r)), None,
+            )
+            if _qualifier_ambiguous(chosen, runner):
+                flags = ["qualifier_ambiguous"]
         canonical_id = getattr(chosen, "canonical_id", "") or ""
         combination_members = getattr(chosen, "combination_members", None) or []
         return ExtractedConcept(
@@ -2214,6 +2307,7 @@ def _first_matching_concept(
             span_start=span.span_start, span_end=span.span_end,
             canonical_id=canonical_id,
             combination_members=combination_members,
+            flags=flags,
         )
     return None
 
