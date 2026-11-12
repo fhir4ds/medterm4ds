@@ -124,7 +124,6 @@ class TestCW1WriteOnlyClosure:
         """SOURCE control: ClosureTable.check has zero production
         callers (the write-only pin). Flip when a consumer lands
         ($subsumes fast-path, MCP tool, or CLI)."""
-        import inspect
         from pathlib import Path
 
         import medterm4ds

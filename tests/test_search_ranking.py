@@ -30,6 +30,8 @@ from pathlib import Path
 
 import pytest
 
+import medterm4ds.services.extraction as extraction_sm
+import medterm4ds.services.search as search_sm
 from medterm4ds.services.search import (
     SearchService,
     _posting_candidates,
@@ -659,3 +661,33 @@ class TestTwoCharAlphaCasingGuard:
         )
         codes = [r.code for r in svc.lexical("MI", count=5)]
         assert "B1" in codes
+
+
+class TestSourceSabAliasesSingleSource:
+    """CR-SHOULD-FIX-2b: the pairwise SAB alias vocabulary
+    (SNOMED↔SNOMEDCT_US, RXNORM↔ATC, LNC↔LOINC) lives once in
+    core.normalize.SOURCE_SAB_ALIASES — search's _ancestor_fallback and
+    extraction's _first_matching_concept both reference the SAME object,
+    so the next source addition updates one map."""
+
+    def test_both_modules_reference_the_same_map_object(self):
+        import inspect
+
+        from medterm4ds.core import normalize
+
+        # The widening helper (and its SOURCE_SAB_ALIASES map) is defined
+        # once in core.normalize; both consumers bind the SAME object.
+        assert search_sm.expand_source_aliases is normalize.expand_source_aliases
+        assert extraction_sm.expand_source_aliases is normalize.expand_source_aliases
+        # And neither consumer re-inline's the alias vocabulary.
+        for mod in (search_sm, extraction_sm):
+            src = inspect.getsource(mod)
+            assert '"SNOMEDCT_US": "SNOMED"' not in src
+            assert '"RXNORM": "ATC"' not in src
+
+    def test_expand_source_aliases_widens_pairwise(self):
+        from medterm4ds.core.normalize import expand_source_aliases
+
+        assert expand_source_aliases(["snomed"]) == {"SNOMED", "SNOMEDCT_US"}
+        assert expand_source_aliases(["LNC", "atc"]) == {"LNC", "LOINC", "ATC", "RXNORM"}
+        assert expand_source_aliases(["ICD10CM"]) == {"ICD10CM"}

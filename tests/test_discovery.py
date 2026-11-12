@@ -221,3 +221,17 @@ def test_discover_rejects_empty_code(engine):
 
     with pytest.raises(ValueError, match="non-empty string"):
         discover("ICD10CM", engine=engine, code="")
+
+
+def test_discover_rejects_out_of_range_depth(engine):
+    """EV08-QA-06 (LOW): depth previously clamped silently to [1, 5] while
+    the sibling limit parameter (validated lines above) rejected loudly —
+    silent-clamp vs loud-error asymmetry inside one tool's parameter set."""
+    from medterm4ds.domains.terminology import discover
+
+    with pytest.raises(ValueError, match="depth must be between 1 and 5"):
+        discover("ICD10CM", engine=engine, code="E11.9", depth=0)
+    with pytest.raises(ValueError, match="depth must be between 1 and 5"):
+        discover("ICD10CM", engine=engine, code="E11.9", depth=-1)
+    with pytest.raises(ValueError, match="depth must be between 1 and 5"):
+        discover("ICD10CM", engine=engine, code="E11.9", depth=99)

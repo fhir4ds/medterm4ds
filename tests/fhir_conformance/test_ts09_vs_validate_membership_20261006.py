@@ -46,7 +46,6 @@ error paths FHIR-shaped.
 
 from __future__ import annotations
 
-import pytest
 
 SNOMED_URI = "http://snomed.info/sct"
 RXNORM_URI = "http://www.nlm.nih.gov/research/umls/rxnorm"

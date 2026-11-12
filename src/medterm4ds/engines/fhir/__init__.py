@@ -120,7 +120,19 @@ def fhir_uri_to_system(uri: str) -> str | None:
 
 
 def system_to_fhir_uri(source: str) -> str | None:
-    """Convert an internal source name to a FHIR canonical system URI."""
+    """Convert an internal source name to a FHIR canonical system URI.
+
+    EV06-QA-01 fix (2026-11-11 evolution): accepts the canonical-artifact
+    spelling "LOINC" (value sets carry it as ``system``/``anchor_system``)
+    as an alias of the internal engine name "LNC" — canonical-search
+    results previously leaked the raw label through FHIR Coding.system.
+    The reverse map keeps returning the internal "LNC".
+    (SAB-side aliasing for search/extraction source filters lives in
+    core.normalize.SOURCE_SAB_ALIASES — this URI-registry alias is a
+    different concern.)
+    """
+    if source == "LOINC":
+        source = "LNC"
     return SYSTEM_TO_FHIR_URI.get(source)
 
 

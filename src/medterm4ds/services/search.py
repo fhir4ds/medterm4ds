@@ -31,7 +31,7 @@ from typing import Any
 
 from medterm4ds.core import paths as _paths
 from medterm4ds.core.models import CodeRef
-from medterm4ds.core.normalize import SOURCE_LABELS
+from medterm4ds.core.normalize import SOURCE_LABELS, expand_source_aliases
 from medterm4ds.core.paths import env_pin, terminology_root
 
 logger = logging.getLogger(__name__)
@@ -117,6 +117,17 @@ _DATA_REVISION_ENV = os.getenv("MEDTERM4DS_DATA_REVISION") or None
 _split_legacy_deprecation_logged = False
 
 
+def _alias_key(text: str) -> str:
+    """Normalization for the exact-match dictionary passes (alias + group).
+
+    Lowercase + accent fold (the QC-329 matched-pair contract — query side
+    mirrors index side) + whitespace collapse. EV02-QA-01 (2026-11-11
+    evolution): accent folding so 'mullerian agenesis' exactly matches the
+    'müllerian …' anchor name.
+    """
+    return " ".join(_strip_accents(text.lower()).split())
+
+
 def _natural_key(name: str) -> list[int | str]:
     """Sort key for cdb_YYYY_MM_DD[_N] revision names (natural order)."""
     return [int(p) if p.isdigit() else p for p in re.split(r"(\d+)", name)]
@@ -139,9 +150,19 @@ def _local_split_model_dir() -> Path | None:
     cand = _SPLIT_ROOT / "models" / effective
     if (cand / "model.safetensors").exists():
         return cand
+    # EV03-QA-05 (2026-11-11 evolution): the lexicographic fallback is the
+    # documented last resort (K1) — but it was SILENT. Say which space is
+    # actually being served so operators can see the substitution.
     for space in sorted(ACCEPTED_EMBEDDING_SPACES):
         cand = _SPLIT_ROOT / "models" / space
         if (cand / "model.safetensors").exists():
+            logger.warning(
+                "Serving split model %s (lexicographic fallback): the "
+                "effective space %s has no local model unit. Vectors stay "
+                "consistent via _check_concepts_space; download the "
+                "effective space to remove this substitution.",
+                cand, effective,
+            )
             return cand
     return None
 
@@ -156,7 +177,16 @@ def _local_latest_data_dir() -> Path | None:
     data_root = _SPLIT_ROOT / "data"
     if not data_root.is_dir():
         return None
-    revs = [d.name for d in data_root.iterdir() if d.is_dir() and (d / "manifest.json").exists()]
+    revs = [
+        d.name for d in data_root.iterdir()
+        if d.is_dir() and (d / "manifest.json").exists()
+        # EV03-QA-04 fix: symlinked revision dirs silently alias whatever
+        # they point at (a repo tree, a dangling target) — the split layout
+        # expects materialized, atomically-downloaded units. Skip them so a
+        # stale operator symlink can never shadow or corrupt the revision
+        # scan (the fail-loud _verify_space handles the rest).
+        and not d.is_symlink()
+    ]
     if not revs:
         return None
     return data_root / max(revs, key=_natural_key)
@@ -248,7 +278,12 @@ def _resolve_terminology(download: bool = True):
                 "split/legacy artifacts.", exc,
             )
             paths = None
-    if paths is not None or download:
+    # EV03-QA-02 fix (2026-11-11 evolution): cache only RESOLVED paths. The
+    # prior `paths is not None or download` form cached None after one
+    # failed download=True attempt — one transient network blip permanently
+    # disabled the terminology layout for a long-running server (later
+    # calls hit the poisoned cache and never retried).
+    if paths is not None:
         _TERM_CACHE[key] = paths
     return paths
 
@@ -367,6 +402,12 @@ def _hf_download_atomic(
     spaces, so a family-level rename collides with the existing dir and
     the unit can never land).
     """
+    # EV03-QA-06 hardening: a subpath bearing '/' or '..' would land
+    # outside the family root — reject before any path arithmetic.
+    if unit_subpath is not None and ("/" in unit_subpath or ".." in unit_subpath):
+        raise ValueError(
+            f"unit_subpath must be a bare directory name, got {unit_subpath!r}"
+        )
     try:
         from huggingface_hub import snapshot_download
     except ImportError:
@@ -1311,9 +1352,15 @@ class SearchService:
         Group membership = anchors carrying the group_id; the parent is the
         anchor whose code equals the group_id suffix (join contract:
         group_id == f'GP-{anchor code}').
+
+        EV02-QA-01/QA-03 (2026-11-11 evolution): term keys fold accents (the
+        QC-329 matched-pair contract — query side mirrors index side) and
+        terms claimed by 2+ groups are excluded, mirroring the alias
+        dictionary's ambiguity exclusion (was: silent first-wins).
         """
         members_by_group: dict[str, list[str]] = {}
         terms: dict[str, str] = {}
+        ambiguous_terms: set[str] = set()
         for v in vsets:
             # Same structural-hub exclusion as the alias dictionary: hubs
             # are absent from the concept index and must not surface as
@@ -1328,12 +1375,15 @@ class SearchService:
                 lst = members_by_group.setdefault(gid, [])
                 if cid not in lst:
                     lst.append(cid)
-                # Same normalization as the query side (lowercase +
-                # whitespace collapse) so term/query normalization can
+                # Same normalization as the query side (lowercase + accent
+                # fold + whitespace collapse) so term/query normalization can
                 # never diverge.
-                term = " ".join((g.get("term") or "").lower().split())
+                term = _alias_key(g.get("term") or "")
                 if term:
-                    terms.setdefault(term, gid)
+                    if terms.get(term, gid) != gid:
+                        ambiguous_terms.add(term)
+                    else:
+                        terms[term] = gid
         # parent anchor per group (code == gid suffix) + its name/synonyms as terms.
         # Keyed by bare code — group families (LOINC panels, CVX combos,
         # RxNorm INs) do not collide across systems; revisit if a
@@ -1351,7 +1401,13 @@ class SearchService:
                 pa = self._canonical_by_id.get(pcid, {})
                 for t in [pa.get("patient_friendly_name")] + list(pa.get("consumer_synonyms") or []):
                     if t and str(t).strip():
-                        terms.setdefault(" ".join(str(t).lower().split()), gid)
+                        key = _alias_key(str(t))
+                        if terms.get(key, gid) != gid:
+                            ambiguous_terms.add(key)
+                        else:
+                            terms[key] = gid
+        for key in ambiguous_terms:
+            terms.pop(key, None)
         self._group_terms = {
             t: {"group_id": gid,
                 "parent_cid": parent_by_group.get(gid),
@@ -1388,7 +1444,7 @@ class SearchService:
             for nm in names:
                 if not nm or not str(nm).strip():
                     continue
-                key = " ".join(str(nm).lower().split())
+                key = _alias_key(str(nm))
                 if not key:
                     continue
                 if alias_map.get(key, cid) != cid:
@@ -1415,7 +1471,7 @@ class SearchService:
         """
         if not self._alias_to_cid:
             return None
-        cid = self._alias_to_cid.get(" ".join(query.lower().split()))
+        cid = self._alias_to_cid.get(_alias_key(query))
         if cid is None:
             return None
         v = self._canonical_by_id.get(cid)
@@ -1423,18 +1479,9 @@ class SearchService:
             return None
         anchor_system = v.get("anchor_system") or v.get("system")
         if sources:
-            upper = {s.upper() for s in sources}
-            aliases = {
-                "LNC": "LOINC", "LOINC": "LNC",
-                "RXNORM": "ATC", "ATC": "RXNORM",
-                "SNOMED": "SNOMEDCT_US", "SNOMEDCT_US": "SNOMED",
-            }
-            widened = set(upper)
-            for s in upper:
-                partner = aliases.get(s)
-                if partner:
-                    widened.add(partner)
-            if anchor_system.upper() not in widened:
+            # Canonical SAB aliasing (core.normalize.SOURCE_SAB_ALIASES) —
+            # same contract as _ancestor_fallback.
+            if anchor_system.upper() not in expand_source_aliases(sources):
                 return None
         if result_types:
             prefixes = _result_types_to_prefixes(result_types)
@@ -1471,7 +1518,7 @@ class SearchService:
         components — each row tagged with group_id/group_cids. Group-ID
         identity is the trigger, never score ties.
         """
-        hit = self._group_terms.get(" ".join(query.lower().split()))
+        hit = self._group_terms.get(_alias_key(query))
         if hit is None:
             return []
         gid = hit["group_id"]
@@ -1664,11 +1711,17 @@ class SearchService:
         """
         if self._concepts_space_checked:
             return
-        self._concepts_space_checked = True
+        # EV05-QA-02 fix (2026-11-11 evolution): latch ONLY after successful
+        # validation. The prior latch-before-validate form permanently
+        # skipped the space check on the process singleton after one raise —
+        # the first request 503'd loud while every later request silently
+        # served on the mismatched embedding space.
         if self._concepts_data_manifest is None:
+            self._concepts_space_checked = True
             return
         serving_space_id = getattr(engine, "space_id", None)
         if serving_space_id is None:
+            self._concepts_space_checked = True
             return
         from medterm4ds.core.artifact_manifest import validate_data_manifest
 
@@ -1677,6 +1730,7 @@ class SearchService:
             serving_space_id=serving_space_id,
             source=str(self._concepts_data_dir),
         )
+        self._concepts_space_checked = True
 
     def _canonical_concept_search(
         self,
@@ -1820,6 +1874,19 @@ class SearchService:
         Returns results with ``match_grade='broader'`` and discounted score.
         """
         import duckdb
+
+        # EV02-QA-02 fix (2026-11-11 evolution): the sources filter now
+        # honors the same aliasing contract as the dictionary passes —
+        # uppercase + pairwise system aliasing via the canonical
+        # SOURCE_SAB_ALIASES map (core.normalize), applied BEFORE the
+        # ancestor walk. Every ancestor result is SNOMEDCT_US, so the
+        # filter is all-or-nothing: return [] up front instead of paying
+        # the full walk and post-filtering a count-truncated list (the
+        # prior verbatim case-sensitive check also rejected
+        # sources=['SNOMED'] entirely).
+        if sources:
+            if "SNOMEDCT_US" not in expand_source_aliases(sources):
+                return []
 
         engine = self._ensure_semantic()
         engine._ensure_loaded()
@@ -1978,11 +2045,6 @@ class SearchService:
             if len(results) >= count:
                 break
 
-        # Filter by sources if specified
-        if sources:
-            source_set = set(sources)
-            results = [r for r in results if r.anchor_system in source_set]
-
         return results
 
     def canonical_batch(
@@ -2010,6 +2072,11 @@ class SearchService:
             return [[] for _ in queries]
 
         engine = self._ensure_semantic()
+        # EV06-QA-01 fix (2026-11-11 evolution): the batch path skipped the
+        # space cross-check its single-query sibling performs — a mismatched
+        # data/model pair served silently wrong vectors in batches.
+        engine._ensure_loaded()
+        self._check_concepts_space(engine)
         # ARCH-001: batch embedding goes through the engine's public API —
         # the service no longer reaches into _tokenizer/_model internals.
         query_embs = engine.embed_batch(queries)
@@ -2021,14 +2088,68 @@ class SearchService:
         # Process results per query
         all_results: list[list[CanonicalSearchResult]] = []
         for q_idx, query in enumerate(queries):
+            # EV02-QA-05 fix (2026-11-11 evolution): the composite-group
+            # dictionary pass runs BEFORE the alias pass — same dispatch
+            # order as canonical(). 336 terms are both group terms and
+            # alias keys; without this pass the batch silently served a
+            # single alias row where the single-query surface serves the
+            # group fan-out.
+            group_results = self._group_dictionary_search(
+                query, result_types=None, sources=None, count=count)
+            if group_results:
+                all_results.append(group_results)
+                continue
             # Exact-alias pass per query (2026-11-11 addendum B): an exact
-            # anchor/consumer-synonym hit is authoritative — return it instead
-            # of the embedding ranking (abbreviation queries like 'HLD'/'DM2'
-            # cannot reach their anchor semantically).
+            # anchor/consumer-synonym hit is authoritative — it leads the
+            # result list. The already-computed FAISS candidates follow
+            # (deduped) so consumers that post-filter the alias away (e.g.
+            # extraction's label-constrain) still see the same-text
+            # candidates canonical() would have served (EV02-QA-04).
             alias_result = self._alias_dictionary_search(
                 query, result_types=None, sources=None)
             if alias_result is not None:
-                all_results.append([alias_result])
+                merged = [alias_result]
+                # EV06-QA-04 fix: dedup by canonical_id like the embedding
+                # loop below — the merged append previously admitted
+                # duplicate anchors and wasted count slots.
+                seen_ids = {alias_result.canonical_id}
+                for score, idx in zip(scores[q_idx], ids[q_idx], strict=False):
+                    if idx < 0 or score < min_score:
+                        break
+                    cid = self._concepts_meta[idx]["canonical_id"]
+                    if cid in seen_ids:
+                        continue
+                    seen_ids.add(cid)
+                    m = self._concepts_meta[idx]
+                    vset = self._canonical_by_id.get(cid, {})
+                    anchor_system = (
+                        m.get("anchor_system")
+                        or vset.get("anchor_system")
+                        or vset.get("system")
+                    )
+                    anchor_code = (
+                        m.get("anchor_code")
+                        or vset.get("anchor_code")
+                        or vset.get("code")
+                    )
+                    meta_name = m.get("patient_friendly_name") or m.get("name")
+                    merged.append(CanonicalSearchResult(
+                        canonical_id=cid,
+                        domain=vset.get("domain", m.get("domain", [])),
+                        anchor_system=anchor_system,
+                        anchor_code=anchor_code,
+                        patient_friendly_name=vset.get("patient_friendly_name") or meta_name,
+                        score=float(score),
+                        match_grade="exact" if score > 0.95 else "probable" if score > 0.80 else "possible",
+                        matched_via_code=f"concept:{anchor_code}",
+                        matched_via_display=meta_name,
+                        total_member_count=self._total_member_count(vset, m),
+                        members=vset.get("members", []),
+                        combination_members=vset.get("combination_members", []),
+                    ))
+                    if len(merged) >= count:
+                        break
+                all_results.append(merged)
                 continue
             results: list[CanonicalSearchResult] = []
             seen_ids: set[str] = set()
@@ -2125,7 +2246,22 @@ class SearchService:
         alias_result = self._alias_dictionary_search(
             query, result_types=result_types, sources=sources)
         if alias_result is not None:
-            return [alias_result]
+            # EV06-QA-02 fix (2026-11-11 evolution): the alias hit LEADS the
+            # result list, with the embedding candidates merged behind it
+            # (deduped, count-capped) — matching the canonical_batch shape
+            # (EV02-QA-04). The prior early-return served a 1-element list
+            # on $search?query=HLD&count=10 while the batch path served 10.
+            merged = [alias_result]
+            if self._concepts_faiss is not None:
+                for r in self._canonical_concept_search(
+                    query, sources=sources, result_types=result_types, count=count,
+                ):
+                    if r.canonical_id == alias_result.canonical_id:
+                        continue
+                    merged.append(r)
+                    if len(merged) >= count:
+                        break
+            return merged
 
         # Option C-B: concept index is the primary path when available.
         # If it returns empty (all results below 0.70 threshold), that's

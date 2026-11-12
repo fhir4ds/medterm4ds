@@ -215,7 +215,7 @@ export default function Home() {
       <header className={styles.hero}>
         <div className={styles.grid} />
         <div className={`container ${styles.heroInner}`}>
-          <span className={styles.badge}>medterm4ds v0.0.11 · UMLS 2026AA · Athena-ready</span>
+          <span className={styles.badge}>medterm4ds v0.0.12 · UMLS 2026AA · Athena-ready</span>
           <Heading as="h1" className={styles.title}>
             Medical Terminology<br />for Data Science
           </Heading>

@@ -8,8 +8,6 @@ docs/plans/athena-vocabulary-support-design.md (approved 2026-10-23).
 
 from __future__ import annotations
 
-import json
-from pathlib import Path
 
 import duckdb
 import pytest

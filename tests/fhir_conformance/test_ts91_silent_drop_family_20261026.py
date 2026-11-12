@@ -20,7 +20,6 @@ rejection) re-verified as the boundary that HOLDS.
 
 from __future__ import annotations
 
-import importlib
 
 import pytest
 

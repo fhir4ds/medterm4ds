@@ -36,7 +36,6 @@ T2 (LOW) — "one (and only one)" input contract not enforced.
 
 from __future__ import annotations
 
-import pytest
 
 SNOMED_URI = "http://snomed.info/sct"
 ICD10CM_URI = "http://hl7.org/fhir/sid/icd-10-cm"

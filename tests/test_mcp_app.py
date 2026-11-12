@@ -498,3 +498,86 @@ def test_mcp_extract_annotation_fields_forwarded_qa005(tmp_path, monkeypatch):
     payload = result.data if hasattr(result, "data") else result
     assert payload["annotated_text"] == "[x]"
     assert captured["annotation_fields"] == ["source_code", "text"]
+
+
+# =============================================================================
+# EV-08 remediation regressions (mcp-surface QA, iterations 22-24)
+# =============================================================================
+
+
+def test_athena_subsumes_names_remedy_on_umls_only_db():
+    """EV08-QA-01 (MEDIUM): athena_subsumes was the only athena query
+    surface without _check_athena_schema — on a UMLS-only DB (the standard
+    MCP configuration) it leaked a raw duckdb.CatalogException, and the
+    equal-ids short-circuit answered 'equivalent' before touching any
+    table. It must raise the same named RuntimeError as its siblings."""
+    from medterm4ds.services.athena import athena_subsumes
+
+    con = duckdb.connect()  # no athena_* tables
+    try:
+        with pytest.raises(RuntimeError, match="ingest-athena"):
+            athena_subsumes(con, 1, 2)
+        # The guard fires BEFORE the equal-ids short-circuit.
+        with pytest.raises(RuntimeError, match="ingest-athena"):
+            athena_subsumes(con, 1, 1)
+    finally:
+        con.close()
+
+
+def test_athena_descendants_rejects_negative_limit_and_depth():
+    """EV08-QA-02 (MEDIUM): limit=-1 was interpolated into the SQL LIMIT
+    clause and raised a raw duckdb.BinderException ('LIMIT/OFFSET cannot be
+    negative'); max_depth=-1 silently matched nothing (returned [])."""
+    from medterm4ds.services.athena import (
+        get_athena_ancestors,
+        get_athena_descendants,
+    )
+
+    con = duckdb.connect()  # validation fires before the schema check
+    try:
+        with pytest.raises(ValueError, match="limit must be at least 1"):
+            get_athena_descendants(con, 1, limit=-1)
+        with pytest.raises(ValueError, match="max_depth must be at least 1"):
+            get_athena_descendants(con, 1, max_depth=-1)
+        with pytest.raises(ValueError, match="max_depth must be at least 1"):
+            get_athena_ancestors(con, 1, max_depth=-1)
+    finally:
+        con.close()
+
+
+def test_mcp_health_reports_version_and_release_pins(tmp_path, monkeypatch):
+    """EV08-QA-04 (MEDIUM): QC-487 version parity with the api/fhir
+    /health surfaces, plus cheap pin observability for the v0.0.12
+    rotation knobs (env reads only — health bypasses the db_executor)."""
+    import medterm4ds
+
+    db_path = tmp_path / "umls.duckdb"
+    _make_duckdb(db_path)
+    monkeypatch.delenv("MEDTERM4DS_TERMINOLOGY_RELEASE", raising=False)
+    monkeypatch.delenv("MEDTERM4DS_EMBEDDING_MODEL_DIR", raising=False)
+    runtime = McpRuntime(_settings(db_path, prepare_cache=False))
+    runtime.open()
+    try:
+        health = runtime.health()
+    finally:
+        runtime.close()
+
+    assert health["version"] == medterm4ds.__version__
+    assert health["terminology_release_source"].startswith("default (")
+    assert health["embedding_model_dir_pinned"] is False
+
+    monkeypatch.setenv("MEDTERM4DS_TERMINOLOGY_RELEASE", "2026.11.08.1")
+    monkeypatch.setenv("MEDTERM4DS_EMBEDDING_MODEL_DIR", "/some/dir")
+    assert runtime.health()["terminology_release_source"].startswith("pinned (")
+    assert runtime.health()["embedding_model_dir_pinned"] is True
+
+
+def test_mcp_optimize_rejects_uri_source(tmp_path):
+    """EV08-QA-03 (LOW): optimize reuses the QC-322 URI/OID source guard
+    its sibling tools (lookup_code, map_codes) already had."""
+    db_path = tmp_path / "umls.duckdb"
+    _make_duckdb(db_path)
+    runtime = McpRuntime(_settings(db_path, prepare_cache=False))
+
+    with pytest.raises(ValueError, match="URI/OID"):
+        runtime.optimize(codes=["E11.9"], source="http://snomed.info/sct")

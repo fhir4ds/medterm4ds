@@ -28,8 +28,6 @@ AR1 (HIGH, NEW — production bug in dev) — CONCEPT_ANCESTOR column
 
 from __future__ import annotations
 
-import subprocess
-import sys
 from pathlib import Path
 
 import pytest

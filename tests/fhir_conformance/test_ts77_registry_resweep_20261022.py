@@ -23,7 +23,6 @@ from __future__ import annotations
 
 import xml.etree.ElementTree as ET
 
-import pytest
 
 SNOMED_URI = "http://snomed.info/sct"
 NS = {"f": "http://hl7.org/fhir"}

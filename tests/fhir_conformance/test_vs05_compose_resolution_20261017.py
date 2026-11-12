@@ -51,7 +51,6 @@ Controls (fresh): unknown BLOCK system → 400 naming known systems
 
 from __future__ import annotations
 
-import pytest
 
 SNOMED_URI = "http://snomed.info/sct"
 SNOMED_OID = "urn:oid:2.16.840.1.113883.6.96"

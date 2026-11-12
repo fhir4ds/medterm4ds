@@ -18,13 +18,14 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY deploy/hf-spaces/fhir-server/requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy the app + medterm4ds source (build context = repo root)
+# Copy the app + medterm4ds source (build context = repo root).
+# scripts/ is gitignored (v0.0.3 QA-001 tag-completeness trap) and is NOT
+# needed at runtime — do not COPY it; clean checkouts must build.
 COPY deploy/hf-spaces/fhir-server/app.py .
 COPY src/ ./src/
-COPY scripts/ ./scripts/
 
 # Use PYTHONPATH instead of pip install (avoids build backend dependency)
-ENV PYTHONPATH=/app/src:/app/scripts
+ENV PYTHONPATH=/app/src
 # Unbuffered stdout/stderr so print() and log lines show up in `docker logs`
 # immediately, instead of being buffered until the buffer fills or process exits.
 ENV PYTHONUNBUFFERED=1

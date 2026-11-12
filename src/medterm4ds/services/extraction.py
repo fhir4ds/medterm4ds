@@ -31,7 +31,7 @@ from typing import Any
 
 from medterm4ds.core.env import env_int
 from medterm4ds.core.models import CodeRef
-from medterm4ds.core.normalize import source_label
+from medterm4ds.core.normalize import expand_source_aliases, source_label
 
 logger = logging.getLogger(__name__)
 
@@ -2156,16 +2156,10 @@ def _first_matching_concept(
     ):
         source_set = set()
         for s in ss:
-            su = s.upper()
-            source_set.add(su)
-            if su == "LNC":
-                source_set.add("LOINC")
-            elif su == "LOINC":
-                source_set.add("LNC")
-            elif su == "RXNORM":
-                source_set.add("ATC")
-            elif su == "ATC":
-                source_set.add("RXNORM")
+            source_set.add(s.upper())
+            # Pairwise SAB aliasing via the canonical map (core.normalize) —
+            # single source of truth shared with search's _ancestor_fallback.
+            source_set.update(expand_source_aliases([s]))
 
     label_prefixes = (
         None if result_type_prefixes
@@ -2515,9 +2509,11 @@ def _extract_qualifiers(matched_text: str, display: str) -> list[str]:
     display_tokens = set(_QUALIFIER_WORD_RE.findall(display.lower()))
     # Display abbreviations that still carry the qualifier: 'W' = with,
     # 'W/O'/'WO' = without ('CBC W Differential' did not drop 'with').
+    # Case-insensitive scan — displays may carry 'W/O' uppercase.
+    display_lower = display.lower()
     if "w" in display_tokens:
         display_tokens.add("with")
-    if "wo" in display_tokens or "w/o" in display or "without" in display_tokens:
+    if "wo" in display_tokens or "w/o" in display_lower or "without" in display_tokens:
         display_tokens.add("without")
     qualifiers: list[str] = []
     # Numbered qualifiers first, with their spans so the word pass does not
@@ -2807,6 +2803,13 @@ class ExtractionService:
                         for part_rt in rt_attempts:
                             part_results = _cached_part_search(part, part_rt, ss)
                             for r in part_results:
+                                # EV01-QA-05 fix: the qualifier-inversion guard
+                                # must gate conjunction-split parts too — a
+                                # 'with differential' part must never resolve
+                                # to the WITHOUT-qualifier anchor (10th
+                                # helper-not-wired occurrence).
+                                if _qualifier_inverted(part, r.display):
+                                    continue
                                 if _GRADE_ORDER.get(r.match_grade, 2) > _GRADE_ORDER.get(grade_threshold, 0):
                                     continue
                                 canonical_id = getattr(r, "canonical_id", "") or ""
@@ -2955,21 +2958,22 @@ class ExtractionService:
                 for rt in rt_attempts:
                     if resolved:
                         break
-                    results = _search_span_texts(candidate_text, ss_key, ss, rt)
-                    for r in results:
-                        if _GRADE_ORDER.get(r.match_grade, 2) > _GRADE_ORDER.get(grade_threshold, 0):
-                            continue
-                        canonical_id = getattr(r, "canonical_id", "") or ""
-                        combination_members = getattr(r, "combination_members", None) or []
-                        concepts.append(ExtractedConcept(
-                            code=r.code, source=r.source, display=r.display,
-                            matched_text=span.text, status=span.status,
-                            section=span.section, confidence=r.score,
-                            match_grade=r.match_grade, ner_label=span.entity_type,
-                            span_start=span.span_start, span_end=span.span_end,
-                            canonical_id=canonical_id,
-                            combination_members=combination_members,
-                        ))
+                    # EV01-QA-06 fix (2026-11-11 evolution): route the
+                    # candidate selection through _first_matching_concept so
+                    # the cross-type tie rule, ConText lab override,
+                    # qualifier-inversion guard and R4 abstention flag apply
+                    # to single spans exactly as they do in the batch path
+                    # (the prior inline grade-only selection skipped them).
+                    # The rt-constrained query contract is preserved — the
+                    # constrain-then-fallback semantics now run client-side
+                    # on each attempt's result list.
+                    matched = _first_matching_concept(
+                        span, _search_span_texts(candidate_text, ss_key, ss, rt), ss,
+                        result_type_prefixes=result_type_prefixes,
+                        grade_threshold=grade_threshold,
+                    )
+                    if matched is not None:
+                        concepts.append(matched)
                         resolved = True
                         break
                 if resolved:
@@ -2983,6 +2987,10 @@ class ExtractionService:
                         for part_rt in rt_attempts:
                             part_results = _search_span_texts(part, ss_key, ss, part_rt)
                             for r in part_results:
+                                # EV01-QA-05 fix (legacy path): qualifier-
+                                # inversion guard on conjunction-split parts.
+                                if _qualifier_inverted(part, r.display):
+                                    continue
                                 if _GRADE_ORDER.get(r.match_grade, 2) > _GRADE_ORDER.get(grade_threshold, 0):
                                     continue
                                 canonical_id = getattr(r, "canonical_id", "") or ""
@@ -3137,6 +3145,13 @@ class ExtractionService:
                         for part_rt in rt_attempts:
                             part_results = _cached_part_search(part, part_rt, ss)
                             for r in part_results:
+                                # EV01-QA-05 fix: the qualifier-inversion guard
+                                # must gate conjunction-split parts too — a
+                                # 'with differential' part must never resolve
+                                # to the WITHOUT-qualifier anchor (10th
+                                # helper-not-wired occurrence).
+                                if _qualifier_inverted(part, r.display):
+                                    continue
                                 if _GRADE_ORDER.get(r.match_grade, 2) > _GRADE_ORDER.get(grade_threshold, 0):
                                     continue
                                 canonical_id = getattr(r, "canonical_id", "") or ""

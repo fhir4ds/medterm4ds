@@ -150,13 +150,34 @@ class McpRuntime:
         self.engine = None
 
     def health(self) -> dict[str, Any]:
+        import medterm4ds
+        from medterm4ds.core.terminology import (
+            DEFAULT_TERMINOLOGY_RELEASE,
+            release_explicitly_pinned,
+        )
+
         base = {
+            # EV08-QA-04 (MEDIUM): QC-487 version parity with the api/
+            # fhir /health surfaces (single-sourced from __version__).
+            "version": medterm4ds.__version__,
             "status": "ok" if self.ready else "starting",
             "ready": self.ready,
             "database": str(self.settings.db_path),
             "sources": list(self.settings.sources),
             "memory_profile": self.settings.memory_profile,
             "cache_prepared": bool(self.engine.cache_prepared) if self.engine else False,
+            # EV08-QA-04: cheap pin observability for the v0.0.12
+            # rotation knobs (pairs with EV07-QA-11 in artifact_cache)
+            # — env reads only, no network/IO (health bypasses the
+            # db_executor by design, QC-207).
+            "terminology_release_source": (
+                "pinned (MEDTERM4DS_TERMINOLOGY_RELEASE)"
+                if release_explicitly_pinned()
+                else f"default ({DEFAULT_TERMINOLOGY_RELEASE})"
+            ),
+            "embedding_model_dir_pinned": bool(
+                os.getenv("MEDTERM4DS_EMBEDDING_MODEL_DIR")
+            ),
         }
         # Design §2 + HH1 doctrine: the athena block reports LIVE
         # table facts (present/vocabularies/loaded_at), only when
@@ -601,6 +622,11 @@ class McpRuntime:
             raise TypeError(
                 f"source must be a string, got {type(source).__name__}"
             )
+        # EV08-QA-03 (LOW): the QC-322 URI/OID guard existed on every
+        # sibling code/source tool but not here — a FHIR system URI got
+        # the service's generic "has no codes in this database" message
+        # instead of the actionable SAB-form diagnostic.
+        _validate_source_sab(source)
         if codes is None or not isinstance(codes, Sequence):
             raise TypeError(
                 f"codes must be a sequence, got {type(codes).__name__}"
@@ -908,7 +934,7 @@ def create_mcp_server(
         source: str,
         resolve_mode: str = "active_only",
         output_format: str = "dict",
-    ) -> dict[str, Any] | str | None:
+    ) -> dict[str, Any] | str:
         """Look up canonical atom information for one clinical code."""
         return await _run_db(server_runtime.lookup_code, code=code, source=source, resolve_mode=resolve_mode, output_format=output_format)
 
@@ -994,6 +1020,9 @@ def create_mcp_server(
         - 'semantic': SapBERT embeddings + FAISS (~100ms). Catches novel phrasings
           like "high blood sugar" → Hyperglycemia.
         - 'hybrid': BM25 retrieve + SapBERT re-rank (~110ms). Best accuracy.
+        - 'canonical': value-set anchored search over the canonical artifacts.
+          Matches consumer-friendly names/abbreviations ('HLD' → Hyperlipidemia)
+          and composite group fan-outs.
 
         result_types: restrict to result categories, e.g. ['condition',
         'medication'] (legacy modes) or canonical result types (canonical
@@ -1003,7 +1032,9 @@ def create_mcp_server(
         legacy LIKE over all sources, limit=25): MCP defaults to
         mode='lexical' (BM25 canonical displays), count=20 (QC-418).
 
-        Each result includes a match_grade: 'certain', 'probable', or 'possible'.
+        Each result includes a match_grade: legacy modes yield 'certain',
+        'probable', or 'possible'; canonical mode yields 'exact', 'probable',
+        'possible', or 'broader' (ancestor fallback matches).
         """
         from medterm4ds.services.search import (
             CANONICAL_RESULT_TYPES,

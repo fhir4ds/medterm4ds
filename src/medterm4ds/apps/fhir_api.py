@@ -5429,19 +5429,31 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
 
         ner_labels = ner_labels_str.split(",") if ner_labels_str else None
         result_types = result_types_str.split(",") if result_types_str else None
-        results = extract_service(
-            text,
-            format=fmt,
-            ner_labels=ner_labels,
-            result_types=result_types,
-            mode=mode,
-            min_grade=min_grade,
-            include_negated=include_negated,
-            include_uncertain=include_uncertain,
-            include_historical=include_historical,
-            include_family=include_family,
-            annotation_fields=annotation_fields,
-        )
+        # EV05-QA-01 fix (2026-11-11 evolution): the service-delegation
+        # wrapper its sibling _do_search has had since QC-123/QC-137 —
+        # extraction raises ValueError for input validation (bogus
+        # resultTypes, invalid minGrade, annotation fields) and the search
+        # service raises RuntimeError on artifact failures; without the
+        # wrapper any span-bearing extract surfaces as an uncaught 500
+        # with a plaintext non-FHIR body (sibling-parity family).
+        try:
+            results = extract_service(
+                text,
+                format=fmt,
+                ner_labels=ner_labels,
+                result_types=result_types,
+                mode=mode,
+                min_grade=min_grade,
+                include_negated=include_negated,
+                include_uncertain=include_uncertain,
+                include_historical=include_historical,
+                include_family=include_family,
+                annotation_fields=annotation_fields,
+            )
+        except ValueError as exc:
+            return _fhir_error(400, str(exc))
+        except RuntimeError as exc:
+            return _fhir_error(503, str(exc))
 
         # format="annotated" returns a dict, not a list. QC-151: the dict's
         # "concepts" holds raw ExtractedConcept dataclasses that json.dumps

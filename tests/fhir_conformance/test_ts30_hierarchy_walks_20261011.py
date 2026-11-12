@@ -118,7 +118,6 @@ class TestHY1UnknownSource:
     def test_h11_cli_parity(self, tmp_path):
         """CLI descendants on an unknown source → results [] exit 0
         (same gap, both surfaces)."""
-        import os
         import subprocess
         import sys
         from pathlib import Path

@@ -323,7 +323,11 @@ def discover(
     as walk targets on the code branch (default active-only).
     """
     source = normalize_source(source_terminology)
-    depth = min(max(depth, 1), 5)
+    # EV08-QA-06 (LOW): depth previously clamped silently to [1, 5] while
+    # the sibling limit parameter (next lines) rejects loudly — silent-
+    # clamp vs loud-error asymmetry inside one tool's own parameter set.
+    if not 1 <= depth <= 5:
+        raise ValueError(f"depth must be between 1 and 5 (got {depth})")
     # QC-223/QC-228: validate the caller-facing parameter BEFORE delegating —
     # previously limit=0 leaked ``per_source must be at least 1`` (an internal
     # parameter name) on the no-code branch and was silently ignored on the

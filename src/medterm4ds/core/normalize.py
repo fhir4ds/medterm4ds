@@ -22,6 +22,29 @@ def source_label(source: str) -> str:
     return SOURCE_LABELS.get(source, source.lower())
 
 
+# Pairwise UMLS SAB aliases (both directions). A source filter or search
+# constraint naming one member must also admit its partner. Single source
+# of truth for services/search.py (_ancestor_fallback) and
+# services/extraction.py (_first_matching_concept); engines/fhir/__init__.py
+# keeps its URI-side LOINC aliasing separately (registry-side concern).
+SOURCE_SAB_ALIASES: dict[str, tuple[str, ...]] = {
+    "LNC": ("LOINC",),
+    "LOINC": ("LNC",),
+    "RXNORM": ("ATC",),
+    "ATC": ("RXNORM",),
+    "SNOMED": ("SNOMEDCT_US",),
+    "SNOMEDCT_US": ("SNOMED",),
+}
+
+
+def expand_source_aliases(names) -> set[str]:
+    """Uppercase ``names`` and widen each with its pairwise SAB aliases."""
+    widened = {n.upper() for n in names}
+    for name in tuple(widened):
+        widened.update(SOURCE_SAB_ALIASES.get(name, ()))
+    return widened
+
+
 SOURCE_MAP = {
     "LOINC": "LNC",
     "LNC": "LNC",

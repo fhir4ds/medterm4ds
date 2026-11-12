@@ -45,7 +45,6 @@ Controls (fresh): entry ORDER preserved across mixed statuses;
 
 from __future__ import annotations
 
-import pytest
 
 SNOMED_URI = "http://snomed.info/sct"
 T2DM = "44054006"

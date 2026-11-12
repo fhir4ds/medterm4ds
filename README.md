@@ -72,7 +72,9 @@ module boundaries.
 
 ## Canonical Anchors
 
-`medterm4ds` ships prebuilt canonical anchor artifacts at `data/canonical/`:
+`medterm4ds` serves prebuilt canonical anchor artifacts (downloaded to the
+artifact cache from the `fhir4ds/terminology` release on first use —
+pip installs do not carry them in the wheel):
 
 ```
 data/canonical/
@@ -85,7 +87,7 @@ These are produced by the **`medterm4ds-canonical`** private repo (separate
 from this one). The build pipeline — rules registry, per-domain build scripts,
 AI loop infrastructure — lives there. To rebuild or modify canonical anchors,
 clone `medterm4ds-canonical` and run its build pipeline; see
-[`docs/BUILD.md`](https://github.com/<owner>/medterm4ds-canonical/blob/main/docs/BUILD.md)
+[`docs/BUILD.md`](https://github.com/fhir4ds/medterm4ds-canonical/blob/main/docs/BUILD.md)
 in that repo.
 
 The runtime artifacts here are deploy outputs. Don't edit them directly.
@@ -113,7 +115,7 @@ results = search.canonical("chest pain",
 
 Valid result types: `condition`, `symptom`, `lab`, `vital`, `medication`,
 `drug_class`, `procedure`, `vaccine`. See
-[`RESULT_TYPES.md`](https://github.com/<owner>/medterm4ds-canonical/blob/main/docs/RESULT_TYPES.md).
+[`RESULT_TYPES.md`](https://github.com/fhir4ds/medterm4ds-canonical/blob/main/docs/RESULT_TYPES.md).
 
 ### Environment
 
@@ -132,6 +134,7 @@ so an upgrade is an explicit operator decision:
 ```bash
 pip install medterm4ds
 pip install --no-deps "duckdb>=2.0.0,<3"   # explicit 2.x opt-in
+medterm4ds --version                       # sanity check (prints medterm4ds <version>)
 ```
 
 ### Artifact cache layout
@@ -141,7 +144,7 @@ Search/extract artifacts are cached from the `fhir4ds/terminology` HF repo
 Three layouts are accepted; the release layout is preferred:
 
 - **Release (current default)** — one self-contained release per dated tag
-  (the default release tag, `2026.11.08.1` today): `canonical/<release>/value_sets.json` +
+  (the default release tag, `2026.11.12.1` today): `canonical/<release>/value_sets.json` +
   `claimant_details.json` + `decomposition_links.json`,
   `lexical/<release>/<category>.json`, `semantic/<release>/<category>.faiss`
   + metadata plus `anchors.faiss`/`anchors_metadata.json` (the canonical
@@ -704,6 +707,9 @@ Historical patient-friendly parity harnesses (`compare_patient_friendly_parity.p
 `run_patient_friendly_parity_matrix.py`, `benchmark_local_duckdb_patient_friendly.py`)
 have been removed — the Tier 1-4 regression suite under `tests/regression/` covers
 the same correctness ground with golden parity files and runs in CI.
+
+> **Note:** `scripts/` is not part of the pip package and is untracked in
+> some checkouts — these walkthroughs assume a full working repo.
 
 To smoke-test the CLI workflow end to end:
 

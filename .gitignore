@@ -75,3 +75,5 @@ canonical_anchors/
 
 # secrets (never commit)
 .env
+.oc-serve/
+.opencode/
