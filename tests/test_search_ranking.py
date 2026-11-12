@@ -663,6 +663,61 @@ class TestTwoCharAlphaCasingGuard:
         assert "B1" in codes
 
 
+class TestCanonicalTieRule:
+    """amux-canonical tie-rule spec (2026-11-12): epsilon-tied scores are
+    ordered by total_member_count DESC then canonical_id ASC — never by
+    FAISS index layout (build-order opaque), never type-aware."""
+
+    @staticmethod
+    def _hit(cid: str, score: float, members: int):
+        from medterm4ds.services.search import CanonicalSearchResult
+
+        return CanonicalSearchResult(
+            canonical_id=cid, domain=["lab"], anchor_system="LOINC",
+            anchor_code="LP1", patient_friendly_name=cid, score=score,
+            match_grade="exact", matched_via_code="concept:LP1",
+            matched_via_display=cid, total_member_count=members,
+            members=[], combination_members=[],
+        )
+
+    def test_exact_tie_orders_by_members_then_id(self):
+        from medterm4ds.services.search import get_search_service
+
+        svc = get_search_service().__class__
+        out = svc._break_exact_ties([
+            self._hit("VAL-MED-RXNORM-6851", 1.0, 36),
+            self._hit("VAL-LAB-LOINC-LP16198-1", 1.0, 38),
+            self._hit("VAL-LAB-LOINC-LP9-9", 1.0, 38),
+        ])
+        # member count desc (38 > 36), then canonical_id asc within 38
+        assert [r.canonical_id for r in out] == [
+            "VAL-LAB-LOINC-LP16198-1",
+            "VAL-LAB-LOINC-LP9-9",
+            "VAL-MED-RXNORM-6851",
+        ]
+
+    def test_epsilon_tie_buckets_and_nontied_unchanged(self):
+        from medterm4ds.services.search import get_search_service
+
+        svc = get_search_service().__class__
+        out = svc._break_exact_ties([
+            self._hit("A", 0.90, 1),          # lone group
+            self._hit("B", 0.8000000, 2),     # epsilon group with C
+            self._hit("C", 0.7999995, 10),    # 5e-7 below B -> tied
+            self._hit("D", 0.7999970, 5),     # 3e-6 below B -> own group
+            self._hit("E", 0.5, 99),          # lone group
+        ])
+        assert [r.canonical_id for r in out] == ["A", "C", "B", "D", "E"]
+
+    def test_single_and_empty(self):
+        from medterm4ds.services.search import get_search_service
+
+        svc = get_search_service().__class__
+        assert svc._break_exact_ties([]) == []
+        one = self._hit("X", 1.0, 1)
+        assert svc._break_exact_ties([one]) == [one]
+
+
 class TestSourceSabAliasesSingleSource:
     """CR-SHOULD-FIX-2b: the pairwise SAB alias vocabulary
     (SNOMED↔SNOMEDCT_US, RXNORM↔ATC, LNC↔LOINC) lives once in

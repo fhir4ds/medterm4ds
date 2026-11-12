@@ -1732,6 +1732,64 @@ class SearchService:
         )
         self._concepts_space_checked = True
 
+    # amux-canonical tie-rule spec (agreed by all three lanes, 2026-11-12):
+    # candidates whose scores differ by less than this epsilon count as
+    # TIED — tie detection must be score-epsilon based, never exact-float,
+    # vector-index order, or string order. 1e-6 covers the identical-vector
+    # case (exact 1.000 ties from cross-type twins) plus 1-ULP float noise
+    # between the batch and single embed paths.
+    CANONICAL_TIE_EPSILON = 1e-6
+
+    @classmethod
+    def _break_exact_ties(
+        cls,
+        results: list[CanonicalSearchResult],
+    ) -> list[CanonicalSearchResult]:
+        """Deterministic order for epsilon-tied scores (cross-type twins).
+
+        Identical anchor texts (e.g. 'Methotrexate' as a medication anchor
+        and as a LOINC lab-ingredient anchor) embed to IDENTICAL vectors,
+        so FAISS returns exact score ties — and ``IndexFlatIP`` settles
+        those ties by opaque internal layout, not insertion order (two
+        release builds with opposite emission orders flipped every
+        twin query's top-1). The tie policy lives HERE, at the ranking
+        layer, so results are build-independent.
+
+        Spec (amux-canonical, 2026-11-12):
+          1. tie detection is SCORE-EPSILON based (CANONICAL_TIE_EPSILON)
+          2. within a tie group: total_member_count DESC, then
+             canonical_id ASC
+          3. deliberately NOT result_type-aware — cross-type twins are
+             exactly the case where the type is the question (a
+             type-preferring rule would fix Methotrexate→med but regress
+             Lipase→lab; both families carry cross-type pairs in the
+             contract)
+
+        Order-only: nothing is dropped, non-tied ordering is unchanged.
+        The extraction layer's type-aware cross-type tie rule still
+        applies its own doctrine downstream on labeled queries.
+        """
+        if len(results) < 2:
+            return results
+        ordered = sorted(results, key=lambda r: -r.score)
+        out: list[CanonicalSearchResult] = []
+        i = 0
+        while i < len(ordered):
+            anchor = ordered[i]
+            j = i + 1
+            while (
+                j < len(ordered)
+                and anchor.score - ordered[j].score < cls.CANONICAL_TIE_EPSILON
+            ):
+                j += 1
+            group = sorted(
+                ordered[i:j],
+                key=lambda r: (-r.total_member_count, r.canonical_id),
+            )
+            out.extend(group)
+            i = j
+        return out
+
     def _canonical_concept_search(
         self,
         query: str,
@@ -1850,7 +1908,9 @@ class SearchService:
             ))
             if len(results) >= count:
                 break
-        return results
+        # Cross-type twin ties: FAISS tie order is index-layout-dependent
+        # (undefined across builds) — apply the deterministic content rule.
+        return self._break_exact_ties(results)[:count]
 
     def _ancestor_fallback(
         self,
@@ -2113,6 +2173,7 @@ class SearchService:
                 # loop below — the merged append previously admitted
                 # duplicate anchors and wasted count slots.
                 seen_ids = {alias_result.canonical_id}
+                tail: list[CanonicalSearchResult] = []
                 for score, idx in zip(scores[q_idx], ids[q_idx], strict=False):
                     if idx < 0 or score < min_score:
                         break
@@ -2133,7 +2194,7 @@ class SearchService:
                         or vset.get("code")
                     )
                     meta_name = m.get("patient_friendly_name") or m.get("name")
-                    merged.append(CanonicalSearchResult(
+                    tail.append(CanonicalSearchResult(
                         canonical_id=cid,
                         domain=vset.get("domain", m.get("domain", [])),
                         anchor_system=anchor_system,
@@ -2147,8 +2208,10 @@ class SearchService:
                         members=vset.get("members", []),
                         combination_members=vset.get("combination_members", []),
                     ))
-                    if len(merged) >= count:
-                        break
+                # Cross-type twin ties in the FAISS tail: same deterministic
+                # content rule (see _break_exact_ties); the alias hit keeps
+                # the lead regardless.
+                merged.extend(self._break_exact_ties(tail)[:count - 1])
                 all_results.append(merged)
                 continue
             results: list[CanonicalSearchResult] = []
@@ -2191,6 +2254,10 @@ class SearchService:
                     members=vset.get("members", []),
                     combination_members=vset.get("combination_members", []),
                 ))
+            # Cross-type twin ties: same deterministic content rule as
+            # canonical()/_canonical_concept_search (FAISS tie order is
+            # index-layout-dependent; see _break_exact_ties).
+            results = self._break_exact_ties(results)[:count]
             all_results.append(results)
         return all_results
 
