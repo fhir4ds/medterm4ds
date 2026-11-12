@@ -4,6 +4,34 @@ title: Releases
 
 This page tracks Medical Terminology for Data Science package releases.
 
+## 0.0.12
+
+Quality-hardening release + terminology 2026.11.12.1. No breaking API changes.
+
+- **Terminology default release 2026.11.12.1**: supersedes 2026.11.11.1
+  (plain-`pain` anchor regression — bare "pain" resolves to the LOINC
+  `Pain` anchor at 1.0 again). Encoder space unchanged.
+- **Extraction correctness**: conjunction-split parts never resolve to
+  inverted ("W/O") anchors on any path; the single-span canonical path
+  now honors the tie rule, ConText lab override, and qualifier
+  abstention (same span resolves identically alone and in a batch);
+  W/O folding is case-insensitive.
+- **Canonical search**: alias hits return the merged alias+embedding
+  list (single and batch agree — `HLD` returns a full page); the batch
+  path gained the space check and group-dictionary pass; source aliases
+  (SNOMED↔SNOMEDCT_US, RXNORM↔ATC, LNC↔LOINC) are widened via one
+  shared map.
+- **FHIR**: `$extract` failures return OperationOutcomes (was 500
+  text/plain); LOINC SAB spellings from canonical artifacts map to the
+  `http://loinc.org` URI; the space-check latch survives transient
+  failures. Conformance baseline 8124 passed / 0 failed.
+- **CLI safety**: `data cache-refresh` stages-then-swaps (offline
+  failures never delete the cache); `--db` prechecks, bulk numeric
+  validation, athena schema guards, and a `--version` flag.
+- **HF Space**: provisions the `fhir4ds/terminology` release layout on
+  its persistent volume; clean-checkout docker builds work (no
+  gitignored `scripts/` COPY); `rank-bm25` dropped.
+
 ## 0.0.11
 
 Terminology alignment + DuckDB support matrix. No breaking API changes.

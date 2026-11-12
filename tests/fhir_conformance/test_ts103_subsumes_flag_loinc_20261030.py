@@ -27,7 +27,6 @@ out of scope for this findings-only slot).
 
 from __future__ import annotations
 
-import os
 from pathlib import Path
 
 import duckdb

@@ -2024,3 +2024,95 @@ class TestStrengthDesign20261109:
         out = _absorb_trailing_strength(spans, text)
         assert out[1].strength == "20/12.5 mg"
         assert out[1].span_end == cut + 4  # boundaries unchanged
+
+
+# ---------------------------------------------------------------------------
+# EV-01 regression pins (EV-10 EXPLORER coverage-gap closure, 2026-11-11):
+# W/O case-fold (EV01-QA-01), conjunction-split inversion guard
+# (EV01-QA-05), single-span _first_matching_concept reroute (EV01-QA-06).
+# ---------------------------------------------------------------------------
+
+
+class TestEv01QualifierFixes:
+    """EV01-QA-01: the W/WO display-abbreviation fold is case-insensitive."""
+
+    def test_wo_fold_is_case_insensitive(self):
+        from medterm4ds.services.extraction import _extract_qualifiers
+
+        # Pre-fix: the raw-display scan missed uppercase 'W/O' and the
+        # mention's 'without' was falsely reported as a dropped qualifier.
+        assert _extract_qualifiers(
+            "CBC without differential", "CBC W/O Differential"
+        ) == []
+        # Lowercase display (the pre-fix working case) keeps working.
+        assert _extract_qualifiers(
+            "CBC without differential", "CBC w/o differential"
+        ) == []
+        # Control: display WITHOUT the abbreviation still reports the
+        # dropped qualifier.
+        assert _extract_qualifiers(
+            "CBC without differential", "CBC with Differential"
+        ) == ["without"]
+
+
+class TestEv01ConjunctionSplitInversionGuard:
+    """EV01-QA-05: the qualifier-inversion guard must gate conjunction-split
+    parts — 'CBC with differential' (split part) must never resolve to the
+    WITHOUT-qualifier anchor, even at a higher score/grade."""
+
+    def test_conjunction_part_skips_inverted_anchor(self, monkeypatch):
+        import medterm4ds.services.search as search_module
+
+        inverted = _anchor("VAL-LAB-58410-2", 0.99, "LOINC")
+        inverted.patient_friendly_name = "Hemogram and Platelets without Differential"
+        good_cmp = _anchor("VAL-LAB-24361-8", 0.85, "LOINC")
+        good_cmp.patient_friendly_name = "Comprehensive metabolic panel"
+        stub = _StubSearchService({
+            # primary batch query: nothing (forces the conjunction split)
+            "CBC with differential or CMP|*": [],
+            # split part 1: ONLY the inverted anchor — must be skipped
+            "CBC with differential|lab": [inverted],
+            "CBC with differential|*": [inverted],
+            # split part 2: resolves normally and must survive
+            "CMP|lab": [good_cmp],
+            "CMP|*": [good_cmp],
+        })
+        monkeypatch.setattr(search_module, "get_search_service", lambda: stub)
+        svc = ExtractionService()
+        concepts = svc.resolve_spans([
+            # second unrelated span so the batch path (len(spans) > 1) runs
+            FilteredSpan(text="CBC with differential or CMP", entity_type="panel"),
+            FilteredSpan(text="metformin", entity_type="therapeutic agent"),
+        ])
+        displays = [c.display for c in concepts]
+        assert "Hemogram and Platelets without Differential" not in displays, (
+            "conjunction-split parts must not resolve to an inverted-qualifier "
+            "anchor (EV01-QA-05)"
+        )
+        assert "Comprehensive metabolic panel" in displays
+
+
+class TestEv01SingleSpanReroute:
+    """EV01-QA-06: a SINGLE span routes through _first_matching_concept —
+    the qualifier-inversion guard (and the tie rule / R4 flags) apply on
+    the single-span path exactly as on the batch path."""
+
+    def test_single_span_skips_inverted_qualifier_result(self, monkeypatch):
+        import medterm4ds.services.search as search_module
+
+        inverted = _anchor("VAL-LAB-58410-2", 0.99, "LOINC")
+        inverted.patient_friendly_name = "Hemogram and Platelets without Differential"
+        good = _anchor("VAL-LAB-57021-2", 0.85, "LOINC")
+        good.patient_friendly_name = "CBC W Differential"
+        stub = _StubSearchService({
+            # inverted anchor outranks the correct one — pre-fix, the
+            # single-span inline grade-only scan accepted it silently
+            "CBC with differential|lab": [inverted, good],
+            "CBC with differential|*": [inverted, good],
+        })
+        monkeypatch.setattr(search_module, "get_search_service", lambda: stub)
+        svc = ExtractionService()
+        concepts = svc.resolve_spans([
+            FilteredSpan(text="CBC with differential", entity_type="panel"),
+        ])
+        assert [c.canonical_id for c in concepts] == ["VAL-LAB-57021-2"]

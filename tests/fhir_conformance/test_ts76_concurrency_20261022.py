@@ -149,11 +149,16 @@ class TestPagingDeterminism:
         # parity contract); six concurrent reads can straddle a second
         # boundary, so byte-identity holds only with the volatile stamp
         # normalized (same normalization the p10 parity test uses).
+        # The regex must tolerate the serializer's `": "` spacing —
+        # json.dumps default separators put a space after the colon,
+        # and an unspaced pattern silently matches nothing (the exact
+        # flake CI hit on 2026-11-12: pass iff all 6 reads share a
+        # wall-clock second).
         import re
 
         def _normalized(b: bytes) -> bytes:
             return re.sub(
-                rb'"timestamp":"[^"]*"', b'"timestamp":"T"', b
+                rb'"timestamp":\s*"[^"]*"', b'"timestamp": "T"', b
             )
 
         assert len({_normalized(o) for o in outputs}) == 1

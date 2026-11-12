@@ -41,8 +41,6 @@ Controls (fresh) — JSON tolerance per R4 §3.2.0.1 (unknown top-level
 
 from __future__ import annotations
 
-import pytest
-
 SNOMED_URI = "http://snomed.info/sct"
 ICD10CM_URI = "http://hl7.org/fhir/sid/icd-10-cm"
 T2DM = "44054006"

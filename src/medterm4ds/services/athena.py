@@ -509,6 +509,12 @@ def get_athena_ancestors(
     on min_levels_of_separation. The closure answers the VS02-01
     family exactly (TS-90/AN2): one indexed scan, no BFS caps.
     """
+    # EV08-QA-02 (MEDIUM): max_depth previously reached the SQL layer
+    # unvalidated — max_depth=-1 silently matched nothing (indistinguish-
+    # able from a legitimate shallow result). Mirror the sibling
+    # search_athena_concepts validation shape.
+    if max_depth is not None and max_depth < 1:
+        raise ValueError(f"max_depth must be at least 1 (got {max_depth})")
     _check_athena_schema(con)
     sql = """
         SELECT a.ancestor_concept_id, c.concept_name, c.domain_id,
@@ -539,6 +545,15 @@ def get_athena_descendants(
     limit: int = 20,
 ) -> list[dict[str, object]]:
     """Exact descendants via the closure, nearest-first."""
+    # EV08-QA-02 (MEDIUM): limit/max_depth previously reached the SQL
+    # layer unvalidated — limit=-1 raised a raw duckdb.BinderException
+    # ('LIMIT/OFFSET cannot be negative') and max_depth=-1 silently
+    # returned []. Mirror the sibling search_athena_concepts validation
+    # shape (search_athena_concepts: 'limit must be at least 1').
+    if limit < 1:
+        raise ValueError(f"limit must be at least 1 (got {limit})")
+    if max_depth is not None and max_depth < 1:
+        raise ValueError(f"max_depth must be at least 1 (got {max_depth})")
     _check_athena_schema(con)
     sql = """
         SELECT a.descendant_concept_id, c.concept_name, c.domain_id,
@@ -583,6 +598,13 @@ def athena_subsumes(
     Returns 'equivalent' | 'subsumes' | 'subsumed-by' |
     'not-subsumed'.
     """
+    # EV08-QA-01 (MEDIUM): the ONLY athena query surface without the
+    # schema guard — on a UMLS-only DB (the standard MCP configuration)
+    # it leaked a raw duckdb.CatalogException through the tool, and the
+    # equal-ids short-circuit silently answered 'equivalent' without any
+    # athena store at all. Guard BEFORE the short-circuit, mirroring
+    # get_athena_ancestors/get_athena_descendants.
+    _check_athena_schema(con)
     if ancestor_id == descendant_id:
         return "equivalent"
     row = con.execute(

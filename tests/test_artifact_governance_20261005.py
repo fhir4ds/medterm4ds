@@ -200,6 +200,14 @@ class TestGovernanceControls:
         picked = mod._local_split_model_dir()
         assert picked is not None and picked.name == OLD_SPACE
 
+    # EV10-QA-01: a nested pytest run violates the fleet one-gate rule and
+    # double-counts env failures when the outer gate is already running.
+    # Opt in explicitly when you really want the recursive suite check.
+    @pytest.mark.skipif(
+        not os.getenv("MEDTERM4DS_RUN_NESTED_SUITES"),
+        reason="nested pytest (one-gate fleet rule); opt in with "
+               "MEDTERM4DS_RUN_NESTED_SUITES=1 (EV10-QA-01)",
+    )
     def test_k34_layout_suite_green(self):
         """The committed artifact-layout suite passes on the
         rotated registry (fresh run inside this iteration)."""

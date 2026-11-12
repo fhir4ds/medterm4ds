@@ -1261,3 +1261,75 @@ def test_cli_validate_max_depth_zero_no_warn_for_mapping(capsys):
     _validate_cli_max_depth(args, warn_on_zero=False)
     captured = capsys.readouterr()
     assert captured.err == "" and captured.out == ""
+
+
+def test_cli_version_flag_prints_version_and_exits(capsys):
+    """EV07-QA-07: --version exits 0 printing medterm4ds <__version__>."""
+    import medterm4ds
+
+    with pytest.raises(SystemExit) as exc_info:
+        main(["--version"])
+    assert exc_info.value.code == 0
+    captured = capsys.readouterr()
+    assert f"medterm4ds {medterm4ds.__version__}" in captured.out
+
+
+def test_cli_bulk_knobs_reject_nonpositive_at_parse_time():
+    """EV07-QA-03: --batch-size/--fetch-size/--checkpoint-every validate at
+    parse time via _positive_int (argparse exit 2), before any connection
+    or output artifact is created."""
+    base = [
+        "bulk", "lookup", "--db", "unused.duckdb",
+        "--sources", "ICD10CM", "--output", "o.jsonl",
+    ]
+    for flag, value in (
+        ("--batch-size", "0"),
+        ("--fetch-size", "-1"),
+        ("--checkpoint-every", "0"),
+    ):
+        with pytest.raises(SystemExit) as exc_info:
+            main([*base, flag, value])
+        assert exc_info.value.code == 2
+
+
+def test_cli_lookup_rejects_directory_db(tmp_path):
+    """EV07-QA-02: --db pointing at a directory exits cleanly, never a raw
+    duckdb.IOException traceback."""
+    with pytest.raises(SystemExit) as exc_info:
+        main([
+            "lookup", "--db", str(tmp_path),
+            "--source", "ICD10CM", "--code", "E11",
+        ])
+    assert "is a directory" in str(exc_info.value)
+
+
+def test_cli_extract_runtimeerror_surfaces_as_error_not_traceback(monkeypatch):
+    """EV07-QA-06 regression pin: a service-layer RuntimeError from
+    extract (e.g. ManifestError from a rotated serving pin) must surface
+    as a clean "Error: ..." SystemExit, not a raw traceback — mirroring
+    the FHIR _do_extract EV05-QA-01 wrapper on the CLI twin."""
+
+    def _raise(*args, **kwargs):
+        raise RuntimeError("embedding space mismatch (synthetic)")
+
+    monkeypatch.setattr("medterm4ds.services.extraction.extract", _raise)
+    with pytest.raises(SystemExit) as exc_info:
+        main(["extract", "Patient has diabetes mellitus."])
+    # SystemExit with the clean message (not a RuntimeError traceback).
+    assert str(exc_info.value.code).startswith("Error: ")
+    assert "embedding space mismatch (synthetic)" in str(exc_info.value.code)
+
+
+def test_cli_search_runtimeerror_surfaces_as_error_not_traceback(monkeypatch):
+    """EV07-QA-06 regression pin (search twin): a service-layer
+    RuntimeError from the search service must surface as a clean
+    "Error: ..." SystemExit, not a raw traceback."""
+
+    def _raise(*args, **kwargs):
+        raise RuntimeError("manifest missing (synthetic)")
+
+    monkeypatch.setattr("medterm4ds.services.search.search", _raise)
+    with pytest.raises(SystemExit) as exc_info:
+        main(["search", "HLD", "--mode", "canonical"])
+    assert str(exc_info.value.code).startswith("Error: ")
+    assert "manifest missing (synthetic)" in str(exc_info.value.code)

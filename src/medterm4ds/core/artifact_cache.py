@@ -172,6 +172,17 @@ def _terminology_summary() -> dict[str, Any]:
         "expected_dir": str(expected),
         "present": _term.is_present(expected),
     }
+    # EV07-QA-11 (LOW): mirror the split layout's serving_space_source
+    # marker for the two v0.0.12 rotation knobs so pinned-vs-default
+    # state (and K1-class typos) are observable from cache-info.
+    summary["release_source"] = (
+        "pinned (MEDTERM4DS_TERMINOLOGY_RELEASE)"
+        if _term.release_explicitly_pinned()
+        else f"default ({_term.DEFAULT_TERMINOLOGY_RELEASE})"
+    )
+    summary["embedding_model_dir_pinned"] = bool(
+        os.getenv("MEDTERM4DS_EMBEDDING_MODEL_DIR")
+    )
     if summary["present"]:
         summary["manifest"] = read_manifest_summary(expected)
         try:
@@ -213,6 +224,15 @@ def cache_refresh(
     """
     from medterm4ds.services import search as _search
 
+    # EV07-QA-12 (LOW): the split branch below returns before the
+    # terminology flag is consulted, silently dropping an explicit
+    # --terminology. Reject the combination loudly instead.
+    if split and terminology is True:
+        raise ValueError(
+            "--split and --terminology are mutually exclusive layouts; "
+            "run them separately"
+        )
+
     if not _search._CACHE_REVISION_KEYED and revision is None:
         raise RuntimeError(
             "MEDTERM4DS_CACHE_DIR is set (operator-managed layout); "
@@ -239,9 +259,22 @@ def cache_refresh(
             )
         root = _search._terminology_root()
         base = _term.base_dir(root)
+        # EV07-QA-01 (HIGH): never delete before the download succeeds —
+        # rename the existing release aside, restore it if the download
+        # fails, and only remove it once the fresh download has landed
+        # (download() itself is atomic via tmp+rename).
+        stale: Path | None = None
         if base.exists():
-            shutil.rmtree(base)
-        resolved = _term.download(root)
+            stale = base.parent / f".stale-{base.name}-{os.getpid()}"
+            base.rename(stale)
+        try:
+            resolved = _term.download(root)
+        except Exception:
+            if stale is not None and not base.exists():
+                stale.rename(base)
+            raise
+        if stale is not None:
+            shutil.rmtree(stale, ignore_errors=True)
         return {
             "layout": "terminology",
             "repo_id": resolved.repo_id,
@@ -265,12 +298,7 @@ def cache_refresh(
         if Path(_search._CACHE_DIR).parent != default_root:
             cache_root = default_root / rev
 
-    patterns: list[str] = []
-    for fam in families:
-        patterns.append(f"{fam}/*")
-        subdir = cache_root / fam
-        if subdir.is_dir():
-            shutil.rmtree(subdir)
+    patterns: list[str] = [f"{fam}/*" for fam in families]
 
     try:
         from huggingface_hub import snapshot_download
@@ -280,21 +308,49 @@ def cache_refresh(
             "Install with: pip install huggingface_hub"
         ) from None
     import datetime
-    import os
 
-    snapshot_download(
-        repo_id=repo_id,
-        revision=rev,
-        repo_type="model",
-        local_dir=str(cache_root),
-        allow_patterns=patterns,
-        token=os.getenv("HF_TOKEN"),
-    )
-    (cache_root / PROVENANCE_FILENAME).write_text(json.dumps({
-        "repo_id": repo_id,
-        "revision": rev,
-        "downloaded_at": datetime.datetime.now().isoformat(timespec="seconds"),
-    }, indent=2))
+    # EV07-QA-01 (HIGH): stage the download into a sibling dir and swap
+    # each family only after it succeeded — never delete-first. On any
+    # failure (download error, hub silently returning an empty local_dir,
+    # missing family dirs) the existing families and provenance marker
+    # remain untouched.
+    staging = cache_root.parent / f".refresh-{cache_root.name}-{os.getpid()}"
+    cache_root.mkdir(parents=True, exist_ok=True)  # rename(2) needs the dst parent
+    staging.mkdir(parents=True, exist_ok=True)
+    try:
+        snapshot_download(
+            repo_id=repo_id,
+            revision=rev,
+            repo_type="model",
+            local_dir=str(staging),
+            allow_patterns=patterns,
+            token=os.getenv("HF_TOKEN"),
+        )
+        missing = [fam for fam in families if not (staging / fam).is_dir()]
+        if missing:
+            raise RuntimeError(
+                "snapshot_download produced no family dir(s) "
+                f"{missing} for revision {rev} (network failure or "
+                "empty revision); existing cache left untouched."
+            )
+        # Unlink the provenance marker BEFORE the swap loop: a kill or
+        # error between os.replace calls leaves a mixed-revision cache,
+        # and the missing marker makes that observable ("refresh
+        # incomplete") instead of silently serving a stale revision tag.
+        provenance = cache_root / PROVENANCE_FILENAME
+        provenance.unlink(missing_ok=True)
+        for fam in families:
+            target = cache_root / fam
+            if target.exists():
+                shutil.rmtree(target)
+            os.replace(staging / fam, target)
+        provenance.write_text(json.dumps({
+            "repo_id": repo_id,
+            "revision": rev,
+            "downloaded_at": datetime.datetime.now().isoformat(timespec="seconds"),
+        }, indent=2))
+    finally:
+        shutil.rmtree(staging, ignore_errors=True)
     return {
         "cache_dir": str(cache_root),
         "revision": rev,

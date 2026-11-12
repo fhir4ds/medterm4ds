@@ -27,8 +27,6 @@ Controls (fresh): the batch POST crosswalk baseline works (system/
 
 from __future__ import annotations
 
-import pytest
-
 SNOMED_URI = "http://snomed.info/sct"
 ICD10CM_URI = "http://hl7.org/fhir/sid/icd-10-cm"
 DM_ISA_URL = f"{SNOMED_URI}/73211009?fhir_vs=isa"

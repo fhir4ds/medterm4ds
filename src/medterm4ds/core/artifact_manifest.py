@@ -447,7 +447,15 @@ def atomic_rename_dir(tmp_dir: str | Path, target_dir: str | Path) -> None:
     """
     tmp = Path(tmp_dir)
     target = Path(target_dir)
+    # EV03-QA-04 hardening (2026-11-11 evolution): a symlinked target would
+    # alias whatever it points at (shutil.rmtree on a symlink raises an
+    # opaque OSError) — refuse loud and clear instead.
     target.parent.mkdir(parents=True, exist_ok=True)
+    if target.is_symlink():
+        raise ValueError(
+            f"atomic_rename_dir: target {target} is a symlink — refusing to "
+            "rmtree through it. Remove the symlink and re-provision."
+        )
     if target.exists():
         # rename(2) onto a non-empty dir is ENOTEMPTY (seen live when the
         # legacy fallback re-provisioned over an existing family dir,

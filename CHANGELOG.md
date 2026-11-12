@@ -7,6 +7,70 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.12] - 2026-11-11
+
+### Changed
+
+- **Terminology default release 2026.11.12.1** (encoder space unchanged,
+  `esp_f6c5c18d5f3ee3b5`): supersedes 2026.11.11.1, which carried a
+  plain-`pain` anchor regression — bare "pain" resolves to the bare LOINC
+  `Pain` (LP75331-6) anchor at 1.0 again, with "Chronic Pain" in the
+  symptom-filtered set.
+- **HF Space repointed to the terminology release layout**: the demo
+  container provisions search/extract artifacts from
+  `fhir4ds/terminology` releases (`MEDTERM4DS_LAYOUT=terminology` +
+  `MEDTERM4DS_TERMINOLOGY_DIR` on the persistent volume) instead of the
+  legacy per-dir pins; the Dockerfile no longer `COPY`s the gitignored
+  `scripts/` tree (clean-checkout docker builds work again), and the
+  unused `rank-bm25` requirement was dropped. Patient-friendly JSON
+  reports still come from `joelmontavon/medterm4ds-data` (they are
+  release reports, not terminology artifacts).
+- **New `--version` flag** on the CLI (single-sourced from
+  `medterm4ds.__version__`); MCP `health()` now reports `version`,
+  terminology-release pinned/default source, and embedding-model-dir pin
+  state.
+
+### Fixed
+
+- **Extraction correctness**: conjunction-split parts ("CBC with differential") no
+  longer resolve to inverted ("WITHOUT Differential") anchors on any of
+  the three paths; the legacy single-span canonical path now routes
+  through the same tie rule / ConText lab override / qualifier-abstention
+  logic as batches (same span can no longer resolve LAB alone and
+  MEDICATION in a batch); W/O qualifier folding is case-insensitive
+  ("CBC W/O Differential").
+- **Canonical search**: `canonical()` alias hits now return the merged
+  alias+embedding candidate list (deduped, count-capped) matching the
+  batch path — `$search?query=HLD` returns the full page, not 1 row;
+  `canonical_batch` runs the embedding-space consistency check and the
+  group-dictionary pass it was missing; the ancestor-fallback source
+  filter widens source aliases (SNOMED↔SNOMEDCT_US, RXNORM↔ATC,
+  LNC↔LOINC) up front via one shared map
+  (`core.normalize.SOURCE_SAB_ALIASES`).
+- **FHIR**: `$extract` wraps service ValueError/RuntimeError as 400/503
+  OperationOutcomes (was 500 text/plain); the LOINC SAB spelling in
+  canonical artifacts no longer leaks as a raw `Coding.system` (mapped
+  through the URI alias); the concepts-space check latch can no longer
+  be permanently skipped by one transient failure.
+- **CLI safety**: `data cache-refresh` stages downloads before swapping
+  (an offline failure no longer deletes cache families and report
+  success; a partial swap is detectable by a missing provenance
+  marker); `--db` directory/missing paths, bulk numeric knobs
+  (`--batch-size 0` etc.), and athena commands all fail with clean
+  diagnostics; extract/search wrap RuntimeError cleanly; `--split` +
+  `--terminology` are rejected as mutually exclusive.
+- **MCP/Athena**: `athena_subsumes` refuses athena-less databases
+  before the equal-ids short-circuit (no fabricated "equivalent");
+  `athena_descendants`/`ancestors` validate limit/max_depth loudly;
+  `discover` rejects out-of-range depth instead of silently clamping.
+
+### Added
+
+- Python version classifiers (3.10–3.13) in package metadata.
+- Regression coverage across this release's fixes (unit + conformance
+  suites; the full FHIR conformance suite now stands at 8124 passed /
+  0 failed).
+
 ## [0.0.11] - 2026-11-09
 
 ### Changed
@@ -27,7 +91,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   generic `Ventricular Hypertrophy`, and `Upper respiratory infection`
   keeps its concept; `Bilateral pneumonia` still resolves via the
   fallback.
-- **Composed-sibling parity** (evolution D1): `Bilateral pneumonia with
+- **Composed-sibling parity**: `Bilateral pneumonia with
   sepsis.` emits both mentions — the sibling fallback now applies the
   qualifier variant per fragment.
 - Corpora ratchet tooling moved to `tests/corpora/tools/` so clean
