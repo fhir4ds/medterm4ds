@@ -1740,6 +1740,27 @@ class SearchService:
     # between the batch and single embed paths.
     CANONICAL_TIE_EPSILON = 1e-6
 
+    # Cross-type twin tie priority (owner ruling, Joel 2026-11-12): for
+    # equal-score ties the order is TYPE-based, mirroring the extraction
+    # layer's doctrine (no context → drug family wins; labs lose unless a
+    # consumer applies its own cue logic). Lower rank = first.
+    _TIE_TYPE_PRIORITY = {
+        "VAX": 0,        # safety-relevant, specific
+        "MED": 1,        # no context → medication (extraction doctrine)
+        "DRUGCLASS": 2,  # drug family, after the ingredient
+        "VIT": 3,        # vital measurement beats the lab twin
+        "LAB": 4,        # loses without lab cues (extraction doctrine)
+        "PROC": 5,       # ordering of a measurement ranks below the analyte
+        "COND": 6,       # condition beats symptom
+        "SYMP": 7,
+    }
+    _TIE_TYPE_DEFAULT_RANK = 8
+
+    @classmethod
+    def _tie_type_rank(cls, canonical_id: str) -> tuple[int, str]:
+        typ = canonical_id.split("-")[1] if "-" in canonical_id else ""
+        return (cls._TIE_TYPE_PRIORITY.get(typ, cls._TIE_TYPE_DEFAULT_RANK), typ)
+
     @classmethod
     def _break_exact_ties(
         cls,
@@ -1755,17 +1776,19 @@ class SearchService:
         twin query's top-1). The tie policy lives HERE, at the ranking
         layer, so results are build-independent.
 
-        Spec (amux-canonical, 2026-11-12):
+        Spec (owner ruling, Joel 2026-11-12 — supersedes the earlier
+        type-neutral amux-canonical proposal):
           1. tie detection is SCORE-EPSILON based (CANONICAL_TIE_EPSILON)
-          2. within a tie group: total_member_count DESC, then
-             canonical_id ASC
-          3. deliberately NOT result_type-aware — cross-type twins are
-             exactly the case where the type is the question (a
-             type-preferring rule would fix Methotrexate→med but regress
-             Lipase→lab; both families carry cross-type pairs in the
-             contract)
+          2. within a tie group: type priority
+             VAX > MED > DRUGCLASS > VITAL > LAB > PROC > COND > SYMP
+             (mirrors the extraction layer's med-precedence doctrine:
+             with no context the drug family wins; labs lose unless the
+             consumer applies its own cue logic, e.g. 'level'/'draw'),
+             then canonical_id ASC as the final deterministic key
+          3. order-only: nothing is dropped, non-tied ordering unchanged;
+             both type variants always survive the tie (downstream
+             consumers see them all)
 
-        Order-only: nothing is dropped, non-tied ordering is unchanged.
         The extraction layer's type-aware cross-type tie rule still
         applies its own doctrine downstream on labeled queries.
         """
@@ -1784,7 +1807,7 @@ class SearchService:
                 j += 1
             group = sorted(
                 ordered[i:j],
-                key=lambda r: (-r.total_member_count, r.canonical_id),
+                key=lambda r: (cls._tie_type_rank(r.canonical_id), r.canonical_id),
             )
             out.extend(group)
             i = j

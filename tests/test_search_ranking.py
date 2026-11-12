@@ -680,20 +680,34 @@ class TestCanonicalTieRule:
             members=[], combination_members=[],
         )
 
-    def test_exact_tie_orders_by_members_then_id(self):
+    def test_exact_tie_orders_by_type_priority_then_id(self):
         from medterm4ds.services.search import get_search_service
 
         svc = get_search_service().__class__
         out = svc._break_exact_ties([
-            self._hit("VAL-MED-RXNORM-6851", 1.0, 36),
             self._hit("VAL-LAB-LOINC-LP16198-1", 1.0, 38),
-            self._hit("VAL-LAB-LOINC-LP9-9", 1.0, 38),
+            self._hit("VAL-MED-RXNORM-6851", 1.0, 36),
+            self._hit("VAL-MED-RXNORM-6700", 1.0, 99),  # same type: id asc
         ])
-        # member count desc (38 > 36), then canonical_id asc within 38
+        # VAX > MED > DRUGCLASS > VITAL > LAB > PROC > COND > SYMP > id
+        # (owner ruling 2026-11-12; mirrors extraction med-precedence)
         assert [r.canonical_id for r in out] == [
-            "VAL-LAB-LOINC-LP16198-1",
-            "VAL-LAB-LOINC-LP9-9",
+            "VAL-MED-RXNORM-6700",
             "VAL-MED-RXNORM-6851",
+            "VAL-LAB-LOINC-LP16198-1",
+        ]
+
+    def test_full_type_priority_order(self):
+        from medterm4ds.services.search import get_search_service
+
+        svc = get_search_service().__class__
+        out = svc._break_exact_ties([
+            self._hit(f"VAL-{t}-X-1", 1.0, 1)
+            for t in ("SYMP", "PROC", "LAB", "VIT", "DRUGCLASS", "MED", "VAX", "COND")
+        ])
+        assert [r.canonical_id for r in out] == [
+            "VAL-VAX-X-1", "VAL-MED-X-1", "VAL-DRUGCLASS-X-1", "VAL-VIT-X-1",
+            "VAL-LAB-X-1", "VAL-PROC-X-1", "VAL-COND-X-1", "VAL-SYMP-X-1",
         ]
 
     def test_epsilon_tie_buckets_and_nontied_unchanged(self):
@@ -707,7 +721,8 @@ class TestCanonicalTieRule:
             self._hit("D", 0.7999970, 5),     # 3e-6 below B -> own group
             self._hit("E", 0.5, 99),          # lone group
         ])
-        assert [r.canonical_id for r in out] == ["A", "C", "B", "D", "E"]
+        # same type (no prefix) -> id asc within the tie group
+        assert [r.canonical_id for r in out] == ["A", "B", "C", "D", "E"]
 
     def test_single_and_empty(self):
         from medterm4ds.services.search import get_search_service
