@@ -21,7 +21,7 @@ serving over UMLS-derived vocabularies, shipped on PyPI as `medterm4ds`
 - The AI loop advances via `fleet-loop-v2 status medterm4ds` / amux sends
 
 ## Gotchas
-- Default terminology release is 2026.11.12.1 (encoder esp_f6c5c18d5f3ee3b5);
+- Default terminology release is 2026.11.12.2 (encoder esp_f6c5c18d5f3ee3b5);
   `data cache-refresh` stages-then-swaps — never pre-deletes families.
 - Environment pins: `MEDTERM4DS_EMBEDDING_MODEL_DIR` / `MEDTERM4DS_SPACE` must
   point at the current model stack (see fhir4ds configs).
