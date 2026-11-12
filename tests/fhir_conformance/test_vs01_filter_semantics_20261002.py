@@ -41,7 +41,6 @@ changes.
 
 from __future__ import annotations
 
-
 SNOMED_URI = "http://snomed.info/sct"
 DM = "73211009"      # Diabetes mellitus (root)
 T2DM = "44054006"    # Type 2 DM (child of DM)

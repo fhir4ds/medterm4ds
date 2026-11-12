@@ -27,7 +27,6 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-
 SNOMED_URI = "http://snomed.info/sct"
 DM_ISA_URL = f"{SNOMED_URI}/73211009?fhir_vs=isa"
 T2DM = "44054006"

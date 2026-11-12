@@ -33,7 +33,6 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-
 SNOMED_URI = "http://snomed.info/sct"
 ICD10CM_URI = "http://hl7.org/fhir/sid/icd-10-cm"
 T2DM = "44054006"

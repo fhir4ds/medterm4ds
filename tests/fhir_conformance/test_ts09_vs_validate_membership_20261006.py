@@ -46,7 +46,6 @@ error paths FHIR-shaped.
 
 from __future__ import annotations
 
-
 SNOMED_URI = "http://snomed.info/sct"
 RXNORM_URI = "http://www.nlm.nih.gov/research/umls/rxnorm"
 VS_ISA_DM = f"{SNOMED_URI}/73211009?fhir_vs=isa"
