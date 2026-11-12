@@ -1756,6 +1756,17 @@ class SearchService:
     }
     _TIE_TYPE_DEFAULT_RANK = 8
 
+    # Exact class terms whose ATC DRUGCLASS anchor must outrank the
+    # verbatim-identical RxNorm ingredient anchor on ties (amux-canonical
+    # AMUX-107 follow-up, 2026-11-12: canonical keeps both anchors; the
+    # class-vs-ingredient preference belongs here). Matched on the
+    # anchor's primary name, lowercased.
+    CLASS_PREFERRED_TERMS = frozenset({
+        "estrogens",
+        "belladonna alkaloids",
+        "posterior pituitary hormones",
+    })
+
     @classmethod
     def _tie_type_rank(cls, canonical_id: str) -> tuple[int, str]:
         typ = canonical_id.split("-")[1] if "-" in canonical_id else ""
@@ -1785,7 +1796,11 @@ class SearchService:
              with no context the drug family wins; labs lose unless the
              consumer applies its own cue logic, e.g. 'level'/'draw'),
              then canonical_id ASC as the final deterministic key
-          3. order-only: nothing is dropped, non-tied ordering unchanged;
+          3. EXCEPTION (amux-canonical AMUX-107 follow-up): for the named
+             class terms in CLASS_PREFERRED_TERMS ('estrogens',
+             'belladonna alkaloids', 'posterior pituitary hormones'),
+             the DRUGCLASS anchor outranks the ingredient within the tie
+          4. order-only: nothing is dropped, non-tied ordering unchanged;
              both type variants always survive the tie (downstream
              consumers see them all)
 
@@ -1805,10 +1820,30 @@ class SearchService:
                 and anchor.score - ordered[j].score < cls.CANONICAL_TIE_EPSILON
             ):
                 j += 1
-            group = sorted(
-                ordered[i:j],
-                key=lambda r: (cls._tie_type_rank(r.canonical_id), r.canonical_id),
+            group = ordered[i:j]
+            # Named class terms (CLASS_PREFERRED_TERMS): the DRUGCLASS
+            # anchor outranks the ingredient within this tie group —
+            # amux-canonical AMUX-107 follow-up; the preference is
+            # app-side by agreement.
+            class_preferred = any(
+                (r.patient_friendly_name or "").strip().lower()
+                in cls.CLASS_PREFERRED_TERMS
+                for r in group
             )
+            if class_preferred:
+                group = sorted(
+                    group,
+                    key=lambda r: (
+                        (0 if r.canonical_id.startswith("VAL-DRUGCLASS-") else 1),
+                        r.canonical_id,
+                    ),
+                )
+            else:
+                group = sorted(
+                    group,
+                    key=lambda r: (
+                        cls._tie_type_rank(r.canonical_id), r.canonical_id),
+                )
             out.extend(group)
             i = j
         return out

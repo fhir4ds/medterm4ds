@@ -724,6 +724,33 @@ class TestCanonicalTieRule:
         # same type (no prefix) -> id asc within the tie group
         assert [r.canonical_id for r in out] == ["A", "B", "C", "D", "E"]
 
+    def test_class_preferred_terms_outrank_ingredient(self):
+        from medterm4ds.services.search import get_search_service
+
+        svc = get_search_service().__class__
+
+        def _term(name, cid):
+            h = self._hit(cid, 1.0, 1)
+            h.patient_friendly_name = name
+            return h
+
+        # 'Estrogens' — ATC class vs RxNorm ingredient, identical text
+        out = svc._break_exact_ties([
+            _term("Estrogens", "VAL-MED-RXNORM-4474"),
+            _term("Estrogens", "VAL-DRUGCLASS-ATC-G03C"),
+        ])
+        assert [r.canonical_id for r in out] == [
+            "VAL-DRUGCLASS-ATC-G03C", "VAL-MED-RXNORM-4474",
+        ]
+        # Same DRUGCLASS/MED twin under any other name: ingredient first
+        out = svc._break_exact_ties([
+            _term("Metformin", "VAL-MED-RXNORM-6809"),
+            _term("Metformin", "VAL-DRUGCLASS-ATC-A10B"),
+        ])
+        assert [r.canonical_id for r in out] == [
+            "VAL-MED-RXNORM-6809", "VAL-DRUGCLASS-ATC-A10B",
+        ]
+
     def test_single_and_empty(self):
         from medterm4ds.services.search import get_search_service
 
