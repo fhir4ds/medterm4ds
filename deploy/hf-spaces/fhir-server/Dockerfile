@@ -5,6 +5,7 @@ WORKDIR /app
 # OCI image labels — provenance metadata for registries / HF Spaces.
 LABEL org.opencontainers.image.title="medterm4ds FHIR Terminology Server" \
       org.opencontainers.image.source="https://github.com/fhir4ds/medterm4ds" \
+      org.opencontainers.image.vendor="Montavon Informatics LLC" \
       org.opencontainers.image.description="UMLS-backed FHIR R4 terminology server with $lookup, $validate-code, $translate, $subsumes, $expand, $closure, $search, $extract." \
       org.opencontainers.image.licenses="GPL-3.0-only"
 

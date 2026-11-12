@@ -32,8 +32,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- **Extraction correctness** (v0.0.12 evolution loop, 10 domains × 3
-  personalities): conjunction-split parts ("CBC with differential") no
+- **Extraction correctness**: conjunction-split parts ("CBC with differential") no
   longer resolve to inverted ("WITHOUT Differential") anchors on any of
   the three paths; the legacy single-span canonical path now routes
   through the same tie rule / ConText lab override / qualifier-abstention
@@ -68,8 +67,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - Python version classifiers (3.10–3.13) in package metadata.
-- Regression pins across the loop's fixes (unit + conformance suites;
-  full FHIR conformance baseline now 8124 passed / 0 failed).
+- Regression coverage across this release's fixes (unit + conformance
+  suites; the full FHIR conformance suite now stands at 8124 passed /
+  0 failed).
 
 ## [0.0.11] - 2026-11-09
 
@@ -91,7 +91,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   generic `Ventricular Hypertrophy`, and `Upper respiratory infection`
   keeps its concept; `Bilateral pneumonia` still resolves via the
   fallback.
-- **Composed-sibling parity** (evolution D1): `Bilateral pneumonia with
+- **Composed-sibling parity**: `Bilateral pneumonia with
   sepsis.` emits both mentions — the sibling fallback now applies the
   qualifier variant per fragment.
 - Corpora ratchet tooling moved to `tests/corpora/tools/` so clean

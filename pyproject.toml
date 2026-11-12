@@ -20,7 +20,7 @@ classifiers = [
     "Topic :: Scientific/Engineering :: Medical Science Apps.",
 ]
 authors = [
-    { name = "medterm4ds contributors" }
+    { name = "Montavon Informatics LLC" }
 ]
 dependencies = [
     "duckdb>=0.9.0,<2",

@@ -6,8 +6,7 @@ This page tracks Medical Terminology for Data Science package releases.
 
 ## 0.0.12
 
-Evolution-loop hardening release (10 QC domains × 3 personalities) +
-terminology 2026.11.12.1. No breaking API changes.
+Quality-hardening release + terminology 2026.11.12.1. No breaking API changes.
 
 - **Terminology default release 2026.11.12.1**: supersedes 2026.11.11.1
   (plain-`pain` anchor regression — bare "pain" resolves to the LOINC
