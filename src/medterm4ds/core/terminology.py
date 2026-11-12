@@ -33,7 +33,7 @@ logger = logging.getLogger(__name__)
 
 TERMINOLOGY_DIRNAME = "terminology"
 DEFAULT_TERMINOLOGY_REPO_ID = "fhir4ds/terminology"
-DEFAULT_TERMINOLOGY_RELEASE = "2026.11.11.1"
+DEFAULT_TERMINOLOGY_RELEASE = "2026.11.12.1"
 
 # Canonical render policy of the published release. It is a property of the
 # canonical build that produced the embedded texts (docs/plans/
@@ -81,7 +81,11 @@ def repo_id() -> str:
 
 
 def release() -> str:
-    return os.getenv("MEDTERM4DS_TERMINOLOGY_RELEASE", DEFAULT_TERMINOLOGY_RELEASE)
+    # EV03-QA-01 fix (2026-11-11 evolution): an explicitly-set but EMPTY
+    # env var is "unset", not a pin — `os.getenv(...) or DEFAULT` mirrors
+    # the embedding-space knob's fail-loud/empty semantics instead of
+    # silently diverging from DEFAULT_TERMINOLOGY_RELEASE.
+    return os.getenv("MEDTERM4DS_TERMINOLOGY_RELEASE") or DEFAULT_TERMINOLOGY_RELEASE
 
 
 def release_explicitly_pinned() -> bool:
@@ -167,7 +171,11 @@ def _verify_space(paths: TerminologyPaths) -> None:
     if declared != paths.space_id:
         raise TerminologyLayoutError(
             f"terminology manifest declares model space {declared!r} but the "
-            f"model directory is {paths.space_id!r}"
+            f"model directory is {paths.space_id!r}. The serving space and "
+            "the release's encoder must agree — pin "
+            "MEDTERM4DS_EMBEDDING_SPACE to the release's declared space "
+            "(or update DEFAULT_SERVING_EMBEDDING_SPACE alongside the "
+            "release rotation)."
         )
     try:
         fp = fingerprint_model_dir(
