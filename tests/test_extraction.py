@@ -1098,7 +1098,164 @@ class TestNerBattery20261107:
         assert len(_stitch_drug_fragments(spans, "aspirin/plavix")) == 2
 
 
-class TestNerEdgeCorpus20261107:
+class TestSmallResolutionRule20261110:
+    """Cross-type tie preference (Joel directive, 2026-11-10, from the
+    fhir4px-model pressure test twin_regate.json findings): when a bare
+    analyte mention (tacrolimus, lithium, digoxin, dexamethasone) has NO
+    GLiNER label constraint and the top LOINC lab anchor and top
+    medication anchor tie on score, prefer the medication anchor."""
+
+    @staticmethod
+    def _result(canonical_id, system, code, name, score):
+        from medterm4ds.services.search import CanonicalSearchResult
+        return CanonicalSearchResult(
+            canonical_id=canonical_id, domain="Lab" if "LAB" in canonical_id else "Med",
+            anchor_system=system, anchor_code=code,
+            patient_friendly_name=name, score=score,
+            match_grade="probable", matched_via_code=code,
+            matched_via_display=name, total_member_count=1,
+        )
+
+    def test_bare_analyte_tie_prefers_medication(self):
+        # bare 'dexamethasone' — lab anchor first, medication tied on score
+        from medterm4ds.services import extraction as ex
+        lab = self._result("VAL-LAB-1", "LOINC", "XXXX-0", "Dexamethasone [Moles/Vol]", 0.82)
+        med = self._result("VAL-MED-1", "RXNORM", "3264", "dexamethasone", 0.82)
+        span = ex.FilteredSpan(text="dexamethasone", entity_type="body structure")
+        got = ex._first_matching_concept(
+            span, [lab, med], None,
+            result_type_prefixes=None, grade_threshold="probable",
+        )
+        assert got is not None and got.code == "3264"
+
+    def test_lab_strictly_higher_keeps_lab(self):
+        # 'tacrolimus level' — the level-specific lab surface outscores the
+        # drug anchor, so the tie rule must not fire
+        from medterm4ds.services import extraction as ex
+        lab = self._result("VAL-LAB-2", "LOINC", "YYYY-0", "Tacrolimus [Mass/Vol]", 0.90)
+        med = self._result("VAL-MED-2", "RXNORM", "4126", "tacrolimus", 0.82)
+        span = ex.FilteredSpan(text="tacrolimus level", entity_type="body structure")
+        got = ex._first_matching_concept(
+            span, [lab, med], None,
+            result_type_prefixes=None, grade_threshold="probable",
+        )
+        assert got is not None and got.source == "LOINC"
+
+    def test_label_constraint_blocks_tie_rule(self):
+        # a span constrained to lab categories keeps the lab anchor even at
+        # a tie — the constraint is evidence, the tie rule never overrides it
+        from medterm4ds.services import extraction as ex
+        lab = self._result("VAL-LAB-3", "LOINC", "ZZZZ-0", "Digoxin [Mass/Vol]", 0.82)
+        med = self._result("VAL-MED-3", "RXNORM", "2291", "digoxin", 0.82)
+        span = ex.FilteredSpan(text="digoxin", entity_type="lab test")
+        got = ex._first_matching_concept(
+            span, [lab, med], None,
+            result_type_prefixes=None, grade_threshold="probable",
+        )
+        assert got is not None and got.source == "LOINC"
+
+    def test_tie_rule_skips_lower_tied_medication(self):
+        # a medication tie candidate must also clear the grade floor: a
+        # 'possible' medication cannot replace a 'probable' lab at the same
+        # numeric score
+        from medterm4ds.services import extraction as ex
+        from medterm4ds.services.search import CanonicalSearchResult
+        lab = self._result("VAL-LAB-4", "LOINC", "WWWW-0", "Lithium [Moles/Vol]", 0.45)
+        med = CanonicalSearchResult(
+            canonical_id="VAL-MED-4", domain="Med", anchor_system="RXNORM",
+            anchor_code="10237", patient_friendly_name="lithium", score=0.45,
+            match_grade="possible", matched_via_code="10237",
+            matched_via_display="lithium", total_member_count=1,
+        )
+        span = ex.FilteredSpan(text="lithium", entity_type="body structure")
+        got = ex._first_matching_concept(
+            span, [lab, med], None,
+            result_type_prefixes=None, grade_threshold="probable",
+        )
+        assert got is not None and got.source == "LOINC"
+
+    def test_context_lab_decision_outranks_tie_rule(self):
+        # ConText arbiter decided ['lab'] (MEASUREMENT cues: level/drawn/
+        # blood draw) — the tied medication cannot steal the lab anchor,
+        # in either result order, and a tied lab beats a first-pass med.
+        from medterm4ds.services import extraction as ex
+        lab = self._result("VAL-LAB-5", "LOINC", "VVVV-0", "Tacrolimus [Mass/Vol]", 0.82)
+        med = self._result("VAL-MED-5", "RXNORM", "4126", "tacrolimus", 0.82)
+        ctx = ex.FilteredSpan(
+            text="tacrolimus level", entity_type="body structure",
+            context_categories=["lab"],
+        )
+        got = ex._first_matching_concept(
+            ctx, [lab, med], None,
+            result_type_prefixes=None, grade_threshold="probable",
+        )
+        assert got is not None and got.source == "LOINC"
+        # reversed order: medication first, tied lab behind -> lab wins
+        got2 = ex._first_matching_concept(
+            ctx, [med, lab], None,
+            result_type_prefixes=None, grade_threshold="probable",
+        )
+        assert got2 is not None and got2.source == "LOINC"
+        # an indeterminate arbiter verdict (both cue families) is NOT a
+        # lab decision — the default drug preference keeps operating
+        ambiguous = ex.FilteredSpan(
+            text="tacrolimus", entity_type="body structure",
+            context_categories=["lab", "medication"],
+        )
+        got3 = ex._first_matching_concept(
+            ambiguous, [lab, med], None,
+            result_type_prefixes=None, grade_threshold="probable",
+        )
+        assert got3 is not None and got3.source == "RXNORM"
+
+
+class TestDeterministicFixes20261111:
+    """NER deterministic-fix package (2026-11-11 handoff, fhir4px-model
+    pressure-test defect classes verified on HEAD a381503)."""
+
+    def test_post_span_bare_negative_binds(self):
+        # as-hist-02: 'now COVID-19 negative.' — bare 'negative' predicate
+        # binds ONLY when the span is directly preceded by 'now'; the
+        # unmarked 'HIV negative.' form stays affirmed (q-hiv-02 keeps its
+        # concept for default consumers).
+        from medterm4ds.services.extraction import _POST_SPAN_CUE_RE, _post_span_negation_cue
+        assert _POST_SPAN_CUE_RE.match(" was negative.")
+        assert not _POST_SPAN_CUE_RE.match(" negative.")
+        assert _POST_SPAN_CUE_RE.match(" negative for disease.")
+        text = "Previously had COVID-19, now COVID-19 negative."
+        end = text.index("negative.")
+        start = text.rindex("COVID-19")  # the 'now'-marked second span
+        class _Doc:
+            sents = ()
+            def __iter__(self):
+                return iter(())
+        assert _post_span_negation_cue(text, end, _Doc(), span_start=start)
+        # unmarked span keeps the affirmed default
+        hiv = "HIV negative."
+        assert not _post_span_negation_cue(hiv, hiv.index("negative"), _Doc(), span_start=0)
+
+    def test_pediatric_subject_demotes_family(self):
+        from medterm4ds.services.extraction import _pediatric_subject
+        # 'Child with asthma' — patient descriptor, not a relative
+        assert _pediatric_subject("Child with asthma.", 11, 17)
+        assert _pediatric_subject("Neonate with jaundice.", 13, 22)
+        # a real relative keeps family status
+        assert not _pediatric_subject("Father had colon cancer.", 11, 23)
+        assert not _pediatric_subject("Family history of CAD.", 18, 21)
+
+    def test_boilerplate_and_furniture_stoplisted(self):
+        from medterm4ds.services.extraction import _is_false_positive
+        # 'no acute distress' template phrase
+        assert _is_false_positive("acute distress")
+        # section-header furniture measured resolving confidently wrong
+        for w in ("exam", "risks", "Follow-up", "Objective"):
+            assert _is_false_positive(w), w
+        # clinical content is untouched
+        assert not _is_false_positive("acute respiratory distress syndrome")
+        assert not _is_false_positive("physical exam under anesthesia")
+        assert not _is_false_positive("respiratory distress")
+
+
     """Model-team expanded edge corpus (2026-11-07, ~202 cases): the
     list false-merge side effect, pseudonegation, and pre-span cues."""
 
@@ -1178,6 +1335,167 @@ class TestNerEdgeCorpus20261107:
 
         text = "Breast cancer ruled out."
         assert _post_span_negation_cue(text, 13, _Doc(_Sent(0, len(text))))
+
+
+class TestAddendum20261111:
+    """Canonical-1b4d8d8 addendum: alias surfaces (B/C) and the
+    qualifier-attribute resolver side (A)."""
+
+    def test_alias_dictionary_exact_hits(self):
+        from medterm4ds.services.search import get_search_service
+        ss = get_search_service()
+        ss._ensure_canonical()
+        # 'CVA' is an anchor synonym of Stroke in every current data unit
+        assert ss._alias_to_cid.get("cva") == "VAL-COND-SNOMED-230690007"
+
+    def test_alias_result_honors_type_filter(self):
+        from medterm4ds.services.search import get_search_service
+        ss = get_search_service()
+        # unfiltered: the alias hit wins
+        top = ss.canonical("CVA", count=3)[0]
+        assert top.patient_friendly_name == "Stroke"
+        assert top.match_grade == "exact" and top.matched_via_code.startswith("alias:")
+        # a lab-only filter excludes the condition anchor -> alias is a miss,
+        # the caller falls through to embedding search
+        lab = ss.canonical("CVA", result_types="lab", count=3)
+        assert all(r.canonical_id.startswith("VAL-LAB-") for r in lab)
+
+    def test_extract_qualifiers_attribute(self):
+        from medterm4ds.services.extraction import _extract_qualifiers
+        assert _extract_qualifiers("Fasting glucose", "Glucose") == ["fasting"]
+        assert _extract_qualifiers("left arm pain", "Arm pain") == ["left"]
+        assert _extract_qualifiers("Stage 2 pressure ulcer", "Pressure ulcer") == ["stage 2"]
+        assert _extract_qualifiers("Type 2 diabetes", "Type 2 Diabetes") == []
+        assert _extract_qualifiers("CBC with differential", "CBC W Differential") == []
+        assert _extract_qualifiers("chest x-ray", "Chest X-Ray") == []
+
+    def test_trailing_form_fallback(self):
+        from medterm4ds.services.extraction import _trailing_form_fallback
+        assert _trailing_form_fallback("Normal saline bolus") == "Normal saline"
+        assert _trailing_form_fallback("ceftriaxone 1 g") is None  # value, not form noun
+        assert _trailing_form_fallback(" TMP-SMX ") is None
+
+    def test_structural_hubs_skipped_in_dictionary_passes(self):
+        # amux-canonical 1cdb6ef follow-up: structural hubs are absent
+        # from the concept index and must not surface as exact alias or
+        # group matches ('infection' must not return the LOINC hub).
+        from medterm4ds.services import search as S
+        vsets = [
+            {"canonical_id": "VAL-LAB-LOINC-X1", "system": "LOINC", "code": "X1",
+             "patient_friendly_name": "Infection", "anchor_synonyms": ["INF"],
+             "structural_hub": True, "composite_groups": [
+                 {"group_id": "GP-X1", "term": "Infection panel"}]},
+            {"canonical_id": "VAL-COND-SNOMED-Y2", "system": "SNOMEDCT_US",
+             "code": "Y2", "patient_friendly_name": "Infectious Disease",
+             "anchor_synonyms": ["contagion"]},
+        ]
+        svc = S.SearchService.__new__(S.SearchService)
+        svc._canonical_by_id = {}
+        svc._canonical_by_anchor = {}
+        svc._code_to_canonical_id = {}
+        svc._group_terms = {}
+        svc._alias_to_cid = {}
+        for v in vsets:
+            svc._canonical_by_id[v["canonical_id"]] = v
+            svc._canonical_by_anchor[(v["system"], v["code"])] = v["canonical_id"]
+        svc._build_group_dictionary(vsets)
+        svc._build_alias_dictionary(vsets)
+        assert "infection" not in svc._alias_to_cid  # hub name excluded
+        assert "inf" not in svc._alias_to_cid        # hub synonym excluded
+        assert "contagion" in svc._alias_to_cid      # real anchor's synonym kept
+        assert not any(
+            "infection" in t for t in svc._group_terms
+        ), svc._group_terms
+
+    def test_initialism_fragment_coverage(self):
+        # 'Upper GI bleed' -> 'Upper Gastrointestinal Bleeding': 'GI' is
+        # an initialism, not a prefix — curated expansion covers it.
+        from medterm4ds.services.extraction import (
+            FilteredSpan,
+            _fragment_completeness,
+            _token_covered,
+        )
+        dt = {"upper", "gastrointestinal", "bleeding"}
+        assert _token_covered("gi", dt)
+        assert _token_covered("bleed", dt)   # prefix tolerance
+        assert not _token_covered("gua", dt)
+        assert not _token_covered("g", dt)   # length floor
+
+        class _R:
+            display = "Upper Gastrointestinal Bleeding"
+            combination_members = []
+        span = FilteredSpan(text="Upper GI bleed", entity_type="disorder",
+                            composed_from=["Upper GI", "bleed"])
+        assert _fragment_completeness(span, _R())
+
+
+class TestQualifierAbstention20261111:
+    """R4 of the qualifier-guard port: a near-tied qualifier-variant
+    runner-up flags the pick ('qualifier_ambiguous') instead of a silent
+    coin flip."""
+
+    @staticmethod
+    def _result(cid, system, code, name, score, grade="probable"):
+        from medterm4ds.services.search import CanonicalSearchResult
+        return CanonicalSearchResult(
+            canonical_id=cid, domain="Lab" if "LAB" in cid else "Med",
+            anchor_system=system, anchor_code=code,
+            patient_friendly_name=name, score=score, match_grade=grade,
+            matched_via_code=code, matched_via_display=name,
+            total_member_count=1,
+        )
+
+    def test_qualifier_variants_detection(self):
+        from medterm4ds.services.extraction import _qualifier_variants
+        assert _qualifier_variants("CBC with Differential", "CBC without Differential")
+        assert _qualifier_variants("Left Arm Pain", "Right Arm Pain")
+        # single-token diff is a specificity difference, not a qualifier
+        # flip — prototype R4 rule requires the full two-token swap
+        assert not _qualifier_variants("Lithium", "Lithium Carbonate")
+        assert not _qualifier_variants("CBC with Differential", "CBC with Differential")
+        assert not _qualifier_variants("Pneumonia", "Pulmonary Embolism")
+        assert not _qualifier_variants("Hypertension", "Hypertensive Heart Disease")
+
+    def test_near_tied_variant_runner_up_flags(self):
+        from medterm4ds.services import extraction as ex
+        with_diff = self._result("VAL-LAB-1", "LOINC", "57021-2",
+                                 "CBC with Differential", 0.90)
+        without_diff = self._result("VAL-LAB-2", "LOINC", "58410-2",
+                                    "CBC without Differential", 0.88)
+        span = ex.FilteredSpan(text="CBC", entity_type="lab test")
+        got = ex._first_matching_concept(
+            span, [with_diff, without_diff], None,
+            result_type_prefixes=None, grade_threshold="probable",
+        )
+        assert got is not None and got.code == "57021-2"
+        assert got.flags == ["qualifier_ambiguous"]
+
+    def test_wide_margin_variant_not_flagged(self):
+        from medterm4ds.services import extraction as ex
+        with_diff = self._result("VAL-LAB-3", "LOINC", "57021-2",
+                                 "CBC with Differential", 0.95)
+        without_diff = self._result("VAL-LAB-4", "LOINC", "58410-2",
+                                    "CBC without Differential", 0.60,
+                                    grade="possible")
+        span = ex.FilteredSpan(text="CBC", entity_type="lab test")
+        got = ex._first_matching_concept(
+            span, [with_diff, without_diff], None,
+            result_type_prefixes=None, grade_threshold="probable",
+        )
+        assert got is not None and got.flags == []
+
+    def test_non_variant_runner_up_not_flagged(self):
+        from medterm4ds.services import extraction as ex
+        top = self._result("VAL-LAB-5", "LOINC", "58941-5", "CBC", 0.90)
+        other = self._result("VAL-LAB-6", "LOINC", "24338-6",
+                             "Hemoglobin and Hematocrit", 0.89)
+        span = ex.FilteredSpan(text="CBC", entity_type="lab test")
+        got = ex._first_matching_concept(
+            span, [top, other], None,
+            result_type_prefixes=None, grade_threshold="probable",
+        )
+        assert got is not None and got.code == "58941-5"
+        assert got.flags == []
 
 
 class TestPostSpanClauseBinding:
@@ -1517,3 +1835,475 @@ class TestQualifierFallbackNotPrimary:
     def test_fallback_rescues_bilateral(self):
         from medterm4ds.services.extraction import _leading_qualifier_fallback
         assert _leading_qualifier_fallback("Bilateral pneumonia") == "pneumonia"
+
+
+class TestStitchedCombinationAllModes:
+    """CR-302 (measured live on the demo Space, 2026-11-09): a stitched
+    combination span must carry composed_from AND the composed query must
+    resolve against the canonical anchor space in EVERY mode — mode-search
+    results lack combination_members, so fragment-completeness rejected
+    the correct combination and hybrid returned single Lisinopril with
+    HCTZ dropped entirely."""
+
+    def test_stitch_sets_composed_from(self):
+        from medterm4ds.services.extraction import (
+            FilteredSpan,
+            _stitch_drug_fragments,
+        )
+        spans = [
+            FilteredSpan(text="lisinopril", entity_type="therapeutic agent",
+                         span_start=0, span_end=10),
+            FilteredSpan(text="HCTZ", entity_type="therapeutic agent",
+                         span_start=11, span_end=15),
+        ]
+        out = _stitch_drug_fragments(spans, "lisinopril/HCTZ")
+        assert out[0].composed_from == ["lisinopril", "HCTZ"]
+
+    def test_combination_resolves_in_every_mode(self):
+        from medterm4ds.services.extraction import get_extraction_service
+        es = get_extraction_service()
+        text = "Take lisinopril/HCTZ 20/12.5 mg daily"
+        for mode in ("hybrid", "canonical", "lexical"):
+            codes = [c.code for c in es.extract(text, mode=mode)]
+            assert "214618" in codes, (mode, codes)
+
+
+class TestStrengthDesign20261109:
+    """The 0.0.12 strength design: strength-inclusive primary queries in
+    every mode, strength captured as metadata, corroboration-gated list
+    joins, slash-strength inference, and +/plus separators."""
+
+    def test_strength_components(self):
+        from medterm4ds.services.extraction import _strength_components
+        assert _strength_components("20/12.5 mg") == 2
+        assert _strength_components("5-500") == 2
+        assert _strength_components("500 mg") == 1
+        assert _strength_components("250/50/100") == 3
+        assert _strength_components(None) is None
+        assert _strength_components("daily") is None
+
+    def test_absorb_trailing_strength_spans(self):
+        from medterm4ds.services.extraction import (
+            FilteredSpan,
+            _absorb_trailing_strength,
+        )
+        text = "Take lisinopril/HCTZ 20/12.5 mg daily"
+        drug_end = text.index("20")
+        spans = [
+            FilteredSpan(text="lisinopril/HCTZ", entity_type="therapeutic agent",
+                         span_start=5, span_end=drug_end - 1),
+            FilteredSpan(text="20", entity_type="lab test",
+                         span_start=drug_end, span_end=drug_end + 2),
+            FilteredSpan(text="12.5 mg", entity_type="vital sign",
+                         span_start=drug_end + 3, span_end=drug_end + 10),
+        ]
+        out = _absorb_trailing_strength(spans, text)
+        assert len(out) == 1
+        assert out[0].strength == "20/12.5 mg"
+        assert out[0].span_end == drug_end + 10
+
+    def test_plus_and_word_plus_separators_stitch(self):
+        from medterm4ds.services.extraction import (
+            FilteredSpan,
+            _stitch_drug_fragments,
+        )
+        for gap in ("+", " plus "):
+            text = f"lisinopril{gap}HCTZ"
+            cut = text.index("HCTZ")
+            spans = [
+                FilteredSpan(text="lisinopril", entity_type="therapeutic agent",
+                             span_start=0, span_end=10),
+                FilteredSpan(text="HCTZ", entity_type="therapeutic agent",
+                             span_start=cut, span_end=len(text)),
+            ]
+            out = _stitch_drug_fragments(spans, text)
+            assert len(out) == 1 and out[0].composed_from == ["lisinopril", "HCTZ"], gap
+
+    def test_gated_list_join_requires_strength_corroboration(self):
+        from medterm4ds.services.extraction import (
+            FilteredSpan,
+            _stitch_gated_list_pairs,
+        )
+        # corroborated: 'lisinopril and HCTZ 20/12.5' joins
+        text = "lisinopril and HCTZ 20/12.5"
+        cut = text.index("HCTZ")
+        spans = [
+            FilteredSpan(text="lisinopril", entity_type="therapeutic agent",
+                         span_start=0, span_end=10),
+            FilteredSpan(text="HCTZ", entity_type="therapeutic agent",
+                         span_start=cut, span_end=len(text), strength="20/12.5"),
+        ]
+        out = _stitch_gated_list_pairs(spans, text)
+        assert len(out) == 1 and out[0].text == "lisinopril/HCTZ"
+        assert out[0].strength == "20/12.5"
+        # uncorroborated list ('metformin, glipizide, and insulin') stays 3
+        text2 = "metformin, glipizide, and insulin"
+        spans2 = [
+            FilteredSpan(text="metformin", entity_type="medication",
+                         span_start=0, span_end=9),
+            FilteredSpan(text="glipizide", entity_type="medication",
+                         span_start=11, span_end=20),
+            FilteredSpan(text="insulin", entity_type="medication",
+                         span_start=26, span_end=33),
+        ]
+        assert len(_stitch_gated_list_pairs(spans2, text2)) == 3
+
+    def test_in_span_strength_captured(self):
+        from medterm4ds.services.extraction import (
+            FilteredSpan,
+            _absorb_trailing_strength,
+        )
+        spans = [FilteredSpan(text="metformin 500mg",
+                              entity_type="therapeutic agent",
+                              span_start=0, span_end=15)]
+        out = _absorb_trailing_strength(spans, "metformin 500mg")
+        assert out[0].strength == "500mg"
+        assert out[0].text == "metformin 500mg"
+
+    def test_gated_join_strict_members_reject_wrong_combination(self):
+        """DAPT safety: 'Aspirin and clopidogrel 75/75' must NOT land on
+        aspirin/caffeine (also 2 members) — count alone is not enough
+        for list-separator joins."""
+        from medterm4ds.services.extraction import (
+            FilteredSpan,
+            _fragment_completeness,
+        )
+        from medterm4ds.services.search import CanonicalSearchResult
+        span = FilteredSpan(
+            text="Aspirin/clopidogrel", entity_type="medication",
+            composed_from=["Aspirin", "clopidogrel"], composed_strict=True,
+        )
+        members = [{"display": "Aspirin"}, {"display": "Caffeine"}]
+        r = CanonicalSearchResult(
+            canonical_id="VAL-MED-RXNORM-X", domain=[], anchor_system="RXNORM",
+            anchor_code="X", patient_friendly_name="aspirin / caffeine",
+            score=0.95, match_grade="exact", matched_via_code="t",
+            matched_via_display="t", total_member_count=2,
+            combination_members=members,
+        )
+        assert not _fragment_completeness(span, r)
+        # name-matching members pass
+        r2 = CanonicalSearchResult(
+            canonical_id="VAL-MED-RXNORM-Y", domain=[], anchor_system="RXNORM",
+            anchor_code="Y", patient_friendly_name="aspirin / clopidogrel",
+            score=0.95, match_grade="exact", matched_via_code="t",
+            matched_via_display="t", total_member_count=2,
+            combination_members=[{"display": "Aspirin"}, {"display": "Clopidogrel"}],
+        )
+        assert _fragment_completeness(span, r2)
+        # alias fragments ('/'-stitched, not strict) keep the count shortcut
+        span_alias = FilteredSpan(
+            text="lisinopril/HCTZ", entity_type="medication",
+            composed_from=["lisinopril", "HCTZ"],
+        )
+        assert _fragment_completeness(
+            span_alias,
+            CanonicalSearchResult(
+                canonical_id="VAL-MED-RXNORM-Z", domain=[], anchor_system="RXNORM",
+                anchor_code="Z", patient_friendly_name="hctz / lisinopril",
+                score=0.92, match_grade="probable", matched_via_code="t",
+                matched_via_display="t", total_member_count=2,
+                combination_members=[{"display": "Hydrochlorothiazide"},
+                                     {"display": "Lisinopril"}],
+            ),
+        )
+
+    def test_raw_text_strength_fallback(self):
+        from medterm4ds.services.extraction import (
+            FilteredSpan,
+            _absorb_trailing_strength,
+        )
+        text = "Take lisinopril and HCTZ 20/12.5 mg daily"
+        cut = text.index("HCTZ")
+        spans = [
+            FilteredSpan(text="lisinopril", entity_type="therapeutic agent",
+                         span_start=5, span_end=15),
+            FilteredSpan(text="HCTZ", entity_type="immunization",
+                         span_start=cut, span_end=cut + 4),
+        ]
+        out = _absorb_trailing_strength(spans, text)
+        assert out[1].strength == "20/12.5 mg"
+        assert out[1].span_end == cut + 4  # boundaries unchanged
+
+
+# ---------------------------------------------------------------------------
+# EV-01 regression pins (EV-10 EXPLORER coverage-gap closure, 2026-11-11):
+# W/O case-fold (EV01-QA-01), conjunction-split inversion guard
+# (EV01-QA-05), single-span _first_matching_concept reroute (EV01-QA-06).
+# ---------------------------------------------------------------------------
+
+
+class TestEv01QualifierFixes:
+    """EV01-QA-01: the W/WO display-abbreviation fold is case-insensitive."""
+
+    def test_wo_fold_is_case_insensitive(self):
+        from medterm4ds.services.extraction import _extract_qualifiers
+
+        # Pre-fix: the raw-display scan missed uppercase 'W/O' and the
+        # mention's 'without' was falsely reported as a dropped qualifier.
+        assert _extract_qualifiers(
+            "CBC without differential", "CBC W/O Differential"
+        ) == []
+        # Lowercase display (the pre-fix working case) keeps working.
+        assert _extract_qualifiers(
+            "CBC without differential", "CBC w/o differential"
+        ) == []
+        # Control: display WITHOUT the abbreviation still reports the
+        # dropped qualifier.
+        assert _extract_qualifiers(
+            "CBC without differential", "CBC with Differential"
+        ) == ["without"]
+
+
+class TestEv01ConjunctionSplitInversionGuard:
+    """EV01-QA-05: the qualifier-inversion guard must gate conjunction-split
+    parts — 'CBC with differential' (split part) must never resolve to the
+    WITHOUT-qualifier anchor, even at a higher score/grade."""
+
+    def test_conjunction_part_skips_inverted_anchor(self, monkeypatch):
+        import medterm4ds.services.search as search_module
+
+        inverted = _anchor("VAL-LAB-58410-2", 0.99, "LOINC")
+        inverted.patient_friendly_name = "Hemogram and Platelets without Differential"
+        good_cmp = _anchor("VAL-LAB-24361-8", 0.85, "LOINC")
+        good_cmp.patient_friendly_name = "Comprehensive metabolic panel"
+        stub = _StubSearchService({
+            # primary batch query: nothing (forces the conjunction split)
+            "CBC with differential or CMP|*": [],
+            # split part 1: ONLY the inverted anchor — must be skipped
+            "CBC with differential|lab": [inverted],
+            "CBC with differential|*": [inverted],
+            # split part 2: resolves normally and must survive
+            "CMP|lab": [good_cmp],
+            "CMP|*": [good_cmp],
+        })
+        monkeypatch.setattr(search_module, "get_search_service", lambda: stub)
+        svc = ExtractionService()
+        concepts = svc.resolve_spans([
+            # second unrelated span so the batch path (len(spans) > 1) runs
+            FilteredSpan(text="CBC with differential or CMP", entity_type="panel"),
+            FilteredSpan(text="metformin", entity_type="therapeutic agent"),
+        ])
+        displays = [c.display for c in concepts]
+        assert "Hemogram and Platelets without Differential" not in displays, (
+            "conjunction-split parts must not resolve to an inverted-qualifier "
+            "anchor (EV01-QA-05)"
+        )
+        assert "Comprehensive metabolic panel" in displays
+
+
+class TestEv01SingleSpanReroute:
+    """EV01-QA-06: a SINGLE span routes through _first_matching_concept —
+    the qualifier-inversion guard (and the tie rule / R4 flags) apply on
+    the single-span path exactly as on the batch path."""
+
+    def test_single_span_skips_inverted_qualifier_result(self, monkeypatch):
+        import medterm4ds.services.search as search_module
+
+        inverted = _anchor("VAL-LAB-58410-2", 0.99, "LOINC")
+        inverted.patient_friendly_name = "Hemogram and Platelets without Differential"
+        good = _anchor("VAL-LAB-57021-2", 0.85, "LOINC")
+        good.patient_friendly_name = "CBC W Differential"
+        stub = _StubSearchService({
+            # inverted anchor outranks the correct one — pre-fix, the
+            # single-span inline grade-only scan accepted it silently
+            "CBC with differential|lab": [inverted, good],
+            "CBC with differential|*": [inverted, good],
+        })
+        monkeypatch.setattr(search_module, "get_search_service", lambda: stub)
+        svc = ExtractionService()
+        concepts = svc.resolve_spans([
+            FilteredSpan(text="CBC with differential", entity_type="panel"),
+        ])
+        assert [c.canonical_id for c in concepts] == ["VAL-LAB-57021-2"]
+
+
+class TestEv01Run2QualifiersAndTies:
+    """EV-01 run 2 remediation pins (2026-11-12).
+
+    EV01-QA-01: display-side qualifier case folding in _qualifier_inverted.
+    EV01-QA-02: "and/or" compound conjunction splitting.
+    EV01-QA-03: 'w/'/'w/o' abbreviation fold in the inversion guard.
+    EV01-QA-06: epsilon-based tie detection sharing
+    SearchService.CANONICAL_TIE_EPSILON with the canonical layer.
+    """
+
+    # ---- EV01-QA-01: Title-case display qualifier -------------------------
+
+    def test_title_case_display_without_triggers_inversion(self):
+        from medterm4ds.services.extraction import _qualifier_inverted
+
+        # LOINC preferred names render Title Case — the display-side
+        # 'Without' must still trip the with<->without inversion guard
+        assert _qualifier_inverted(
+            "cbc with differential", "Panel Without Differential"
+        )
+        # lowercase display keeps working (regression guard)
+        assert _qualifier_inverted(
+            "cbc with differential", "Panel without Differential"
+        )
+
+    def test_title_case_display_inverted_anchor_skipped_e2e(self, monkeypatch):
+        import medterm4ds.services.search as search_module
+
+        inverted = _anchor("VAL-LAB-58410-2", 0.99, "LOINC")
+        inverted.patient_friendly_name = "Hemogram and Platelets Without Differential"
+        good = _anchor("VAL-LAB-57021-8", 0.85, "LOINC")
+        good.patient_friendly_name = "CBC with Differential"
+        stub = _StubSearchService({
+            "CBC with differential|lab": [inverted, good],
+            "CBC with differential|*": [inverted, good],
+        })
+        monkeypatch.setattr(search_module, "get_search_service", lambda: stub)
+        svc = ExtractionService()
+        concepts = svc.resolve_spans([
+            FilteredSpan(text="CBC with differential", entity_type="panel"),
+        ])
+        assert [c.canonical_id for c in concepts] == ["VAL-LAB-57021-8"]
+
+    # ---- EV01-QA-02: "and/or" compound conjunction ------------------------
+
+    def test_split_and_or_compound(self):
+        from medterm4ds.services.extraction import _split_on_conjunction
+
+        assert _split_on_conjunction("CBC and/or CMP") == ["CBC", "CMP"]
+        assert _split_on_conjunction("CBC or/and CMP") == ["CBC", "CMP"]
+        # spaced compound form
+        assert _split_on_conjunction("CBC and / or CMP") == ["CBC", "CMP"]
+        # plain conjunctions unchanged
+        assert _split_on_conjunction("ALT or AST") == ["ALT", "AST"]
+        assert _split_on_conjunction("ALT, AST") == ["ALT", "AST"]
+        assert _split_on_conjunction("HDL/LDL") == ["HDL", "LDL"]
+        assert _split_on_conjunction("metformin") is None
+
+    def test_and_or_parts_both_resolve_e2e(self, monkeypatch):
+        import medterm4ds.services.search as search_module
+
+        cbc = _anchor("VAL-LAB-57021-8", 0.95, "LOINC")
+        cbc.patient_friendly_name = "CBC W Differential"
+        cmp_ = _anchor("VAL-LAB-24361-8", 0.85, "LOINC")
+        cmp_.patient_friendly_name = "Comprehensive metabolic panel"
+        stub = _StubSearchService({
+            # primary batch query: nothing (forces the conjunction split)
+            "CBC and/or CMP|*": [],
+            "CBC|lab": [cbc],
+            "CBC|*": [cbc],
+            "CMP|lab": [cmp_],
+            "CMP|*": [cmp_],
+        })
+        monkeypatch.setattr(search_module, "get_search_service", lambda: stub)
+        svc = ExtractionService()
+        concepts = svc.resolve_spans([
+            FilteredSpan(text="CBC and/or CMP", entity_type="panel"),
+            FilteredSpan(text="metformin", entity_type="therapeutic agent"),
+        ])
+        got = sorted(c.canonical_id for c in concepts
+                     if c.matched_text in ("CBC", "CMP"))
+        assert got == ["VAL-LAB-24361-8", "VAL-LAB-57021-8"], (
+            "'CBC and/or CMP' must split to two clean parts (EV01-QA-02), "
+            f"got {[(c.matched_text, c.canonical_id) for c in concepts]}"
+        )
+        # the furniture-carrying pre-fix queries must never be issued
+        for query, _types in stub.calls:
+            assert query not in ("CBC and", "or CMP"), query
+
+    # ---- EV01-QA-03: 'w/'/'w/o' fold in the inversion guard ---------------
+
+    def test_w_o_abbreviation_participates_in_inversion_guard(self):
+        from medterm4ds.services.extraction import _qualifier_inverted
+
+        # 'w/o' mention vs WITH display -> inverted
+        assert _qualifier_inverted(
+            "CBC w/o differential", "Panel with Differential"
+        )
+        # 'w/' mention vs WITHOUT display -> inverted
+        assert _qualifier_inverted(
+            "CBC w/ differential", "Panel Without Differential"
+        )
+        # matching polarity is not an inversion
+        assert not _qualifier_inverted(
+            "CBC w/o differential", "Panel Without Differential"
+        )
+        assert not _qualifier_inverted(
+            "CBC w/ differential", "CBC W Differential"
+        )
+
+    # ---- EV01-QA-06: epsilon-based tie detection --------------------------
+
+    @staticmethod
+    def _result(canonical_id, system, code, name, score):
+        from medterm4ds.services.search import CanonicalSearchResult
+        return CanonicalSearchResult(
+            canonical_id=canonical_id,
+            domain="Lab" if "LAB" in canonical_id else "Med",
+            anchor_system=system, anchor_code=code,
+            patient_friendly_name=name, score=score,
+            match_grade="probable", matched_via_code=code,
+            matched_via_display=name, total_member_count=1,
+        )
+
+    def test_scores_tied_shares_canonical_epsilon(self):
+        from medterm4ds.services.extraction import _scores_tied
+        from medterm4ds.services.search import SearchService
+
+        assert _scores_tied(0.99, 0.99)
+        assert _scores_tied(0.99, 0.99 - 5e-7)
+        assert not _scores_tied(0.99, 0.98)
+        # one epsilon definition shared with the canonical layer
+        eps = SearchService.CANONICAL_TIE_EPSILON
+        assert _scores_tied(1.0, 1.0 - eps / 2)
+        assert not _scores_tied(1.0, 1.0 - eps * 2)
+
+    def test_epsilon_tie_lab_override_fires(self):
+        """Behavioral repro (historian H1c): twins MED 0.9899995 / LAB 0.99
+        with ConText ['lab'] — 1-ULP noise must not defeat the override."""
+        from medterm4ds.services import extraction as ex
+
+        lab = self._result("VAL-LAB-14637", "LOINC", "AAAA-0",
+                           "Lithium [Moles/Vol]", 0.99)
+        med = self._result("VAL-MED-2678", "RXNORM", "10237",
+                           "lithium", 0.9899995)
+        ctx = ex.FilteredSpan(
+            text="lithium level", entity_type="body structure",
+            context_categories=["lab"],
+        )
+        # medication first in the list: the tied lab must still win
+        got = ex._first_matching_concept(
+            ctx, [med, lab], None,
+            result_type_prefixes=None, grade_threshold="probable",
+        )
+        assert got is not None and got.source == "LOINC"
+
+    def test_epsilon_tie_bare_mention_still_prefers_medication(self):
+        """Epsilon ties behave exactly like exact ties in BOTH tie
+        directions: a bare (no-context) epsilon tie flips to the
+        medication, mirroring the exact-tie rule."""
+        from medterm4ds.services import extraction as ex
+
+        lab = self._result("VAL-LAB-14638", "LOINC", "BBBB-0",
+                           "Tacrolimus [Mass/Vol]", 0.99)
+        med = self._result("VAL-MED-2679", "RXNORM", "4126",
+                           "tacrolimus", 0.99 - 5e-7)
+        bare = ex.FilteredSpan(text="tacrolimus", entity_type="body structure")
+        got = ex._first_matching_concept(
+            bare, [lab, med], None,
+            result_type_prefixes=None, grade_threshold="probable",
+        )
+        assert got is not None and got.source == "RXNORM"
+
+    def test_exact_tie_context_override_unchanged(self):
+        from medterm4ds.services import extraction as ex
+
+        lab = self._result("VAL-LAB-14639", "LOINC", "CCCC-0",
+                           "Tacrolimus [Mass/Vol]", 0.82)
+        med = self._result("VAL-MED-2680", "RXNORM", "4126",
+                           "tacrolimus", 0.82)
+        ctx = ex.FilteredSpan(
+            text="tacrolimus level", entity_type="body structure",
+            context_categories=["lab"],
+        )
+        got = ex._first_matching_concept(
+            ctx, [med, lab], None,
+            result_type_prefixes=None, grade_threshold="probable",
+        )
+        assert got is not None and got.source == "LOINC"

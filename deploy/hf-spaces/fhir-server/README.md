@@ -44,13 +44,14 @@ curl "https://[space-name].hf.space/fhir/ValueSet/\$expand?filter=diabetes&count
 - UMLS 2026AA (filtered to 8 clinical sources)
 - Patient-friendly names for 1.1M codes
 - 2.86M condition→medication associations
-- BM25 + SapBERT semantic search indexes
+- Search/extract artifacts (canonical + lexical + semantic + model) from the
+  `fhir4ds/terminology` release layout (the 2026-10-31 repoint)
 
 ## Local development
 
 ```bash
-# Build and run locally
-docker build -t medterm4ds-fhir .
+# Build and run locally (build context = repo root)
+docker build -f deploy/hf-spaces/fhir-server/Dockerfile -t medterm4ds-fhir .
 docker run -p 7860:7860 medterm4ds-fhir
 
 # Test
@@ -75,13 +76,13 @@ Set at container start to tune behavior. All optional unless noted.
 | `MEDTERM4DS_API_HOST` | `127.0.0.1` (localhost sidecar) / `0.0.0.0` (HF Spaces) | Bind host. The Dockerfile forces `0.0.0.0` for HF Spaces reachability — see `SECURITY.md` for the auth implications. |
 | `MEDTERM4DS_FHIR_API_PORT` | `8001` (local) / `7860` (HF Spaces) | Bind port. HF Spaces requires 7860. |
 
-**Search + extraction assets:**
+**Search + extraction assets (set automatically by app.py at startup):**
 
-| Var | Default | Purpose |
+| Var | Default in this Space | Purpose |
 |---|---|---|
-| `MEDTERM4DS_SEARCH_INDEX_DIR` | `$MEDTERM4DS_CACHE_DIR/lexical` (else `~/.cache/medterm4ds/<rev>/lexical`) | Directory containing `<category>_bm25.json` (6 categories). With the default (unpinned) dir the service auto-provisions the `fhir4ds/terminology` release on first use; pinned dirs 503 if missing. |
-| `MEDTERM4DS_EMBEDDING_MODEL_DIR` | `$MEDTERM4DS_CACHE_DIR/semantic` (else `~/.cache/medterm4ds/<rev>/semantic`) | SapBERT model dir (must contain `model.safetensors` + `config.json`). Unpinned defaults resolve the terminology release model unit first. |
-| `MEDTERM4DS_FHIR4PX_BASELINE` | `$MEDTERM4DS_CACHE_DIR/reports/fhir4px` (cache-root derived) | Directory containing `patient_friendly_<source>.json` (5 sources). `$lookup` logs a WARNING naming this var when the dir is missing. |
+| `MEDTERM4DS_LAYOUT` | `terminology` | Serves the `fhir4ds/terminology` release layout; never falls back to legacy/split. |
+| `MEDTERM4DS_TERMINOLOGY_DIR` | `/data/terminology/<release>` | Release dir provisioned at first start (atomic download; pins the persistent-volume copy). |
+| `MEDTERM4DS_FHIR4PX_BASELINE` | `/data` | Directory containing `patient_friendly_<source>.json` (5 sources). `$lookup` logs a WARNING naming this var when the dir is missing. |
 
 **Request caps:**
 
@@ -95,7 +96,7 @@ Set at container start to tune behavior. All optional unless noted.
 | Var | Default | Purpose |
 |---|---|---|
 | `MEDTERM4DS_DATA_DIR` | `/data` | Where `lookup.duckdb` and downloaded derived data live. HF Spaces mounts this as a persistent volume. |
-| `MEDTERM4DS_HF_DATASET` | `joelmontavon/medterm4ds-data` | HF dataset repo for BM25 + SapBERT + patient_friendly JSONs. |
+| `MEDTERM4DS_HF_DATASET` | `joelmontavon/medterm4ds-data` | HF dataset repo for the patient_friendly JSON reports (search/extract artifacts come from `fhir4ds/terminology` instead). |
 | `UMLS_RELEASE` | `2026AA` | UMLS Metathesaurus release version. |
 | `MEDTERM4DS_MEMORY_PROFILE` | `low` (in Docker) / `balanced` (elsewhere) | DuckDB memory profile (`low`, `balanced`, `high`). |
 

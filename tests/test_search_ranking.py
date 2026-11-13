@@ -30,6 +30,8 @@ from pathlib import Path
 
 import pytest
 
+import medterm4ds.services.extraction as extraction_sm
+import medterm4ds.services.search as search_sm
 from medterm4ds.services.search import (
     SearchService,
     _posting_candidates,
@@ -659,3 +661,154 @@ class TestTwoCharAlphaCasingGuard:
         )
         codes = [r.code for r in svc.lexical("MI", count=5)]
         assert "B1" in codes
+
+
+class TestCanonicalTieRule:
+    """amux-canonical tie-rule spec (2026-11-12): epsilon-tied scores are
+    ordered by total_member_count DESC then canonical_id ASC — never by
+    FAISS index layout (build-order opaque), never type-aware."""
+
+    @staticmethod
+    def _hit(cid: str, score: float, members: int):
+        from medterm4ds.services.search import CanonicalSearchResult
+
+        return CanonicalSearchResult(
+            canonical_id=cid, domain=["lab"], anchor_system="LOINC",
+            anchor_code="LP1", patient_friendly_name=cid, score=score,
+            match_grade="exact", matched_via_code="concept:LP1",
+            matched_via_display=cid, total_member_count=members,
+            members=[], combination_members=[],
+        )
+
+    def test_exact_tie_orders_by_type_priority_then_id(self):
+        from medterm4ds.services.search import get_search_service
+
+        svc = get_search_service().__class__
+        out = svc._break_exact_ties([
+            self._hit("VAL-LAB-LOINC-LP16198-1", 1.0, 38),
+            self._hit("VAL-MED-RXNORM-6851", 1.0, 36),
+            self._hit("VAL-MED-RXNORM-6700", 1.0, 99),  # same type: id asc
+        ])
+        # VAX > MED > DRUGCLASS > VITAL > LAB > PROC > COND > SYMP > id
+        # (owner ruling 2026-11-12; mirrors extraction med-precedence)
+        assert [r.canonical_id for r in out] == [
+            "VAL-MED-RXNORM-6700",
+            "VAL-MED-RXNORM-6851",
+            "VAL-LAB-LOINC-LP16198-1",
+        ]
+
+    def test_full_type_priority_order(self):
+        from medterm4ds.services.search import get_search_service
+
+        svc = get_search_service().__class__
+        out = svc._break_exact_ties([
+            self._hit(f"VAL-{t}-X-1", 1.0, 1)
+            for t in ("SYMP", "PROC", "LAB", "VIT", "DRUGCLASS", "MED", "VAX", "COND")
+        ])
+        assert [r.canonical_id for r in out] == [
+            "VAL-VAX-X-1", "VAL-MED-X-1", "VAL-DRUGCLASS-X-1", "VAL-VIT-X-1",
+            "VAL-LAB-X-1", "VAL-PROC-X-1", "VAL-COND-X-1", "VAL-SYMP-X-1",
+        ]
+
+    def test_epsilon_tie_buckets_and_nontied_unchanged(self):
+        from medterm4ds.services.search import get_search_service
+
+        svc = get_search_service().__class__
+        out = svc._break_exact_ties([
+            self._hit("A", 0.90, 1),          # lone group
+            self._hit("B", 0.8000000, 2),     # epsilon group with C
+            self._hit("C", 0.7999995, 10),    # 5e-7 below B -> tied
+            self._hit("D", 0.7999970, 5),     # 3e-6 below B -> own group
+            self._hit("E", 0.5, 99),          # lone group
+        ])
+        # same type (no prefix) -> id asc within the tie group
+        assert [r.canonical_id for r in out] == ["A", "B", "C", "D", "E"]
+
+    def test_class_preferred_preserves_type_priority_for_rest(self):
+        # EV02-QA-02 (run 2): within a class-preferred tie group, the
+        # DRUGCLASS anchor leads but non-class members keep the type
+        # priority (a VAX twin must not be demoted below the class).
+        from medterm4ds.services.search import get_search_service
+
+        svc = get_search_service().__class__
+
+        def _term(name, cid):
+            h = self._hit(cid, 1.0, 1)
+            h.patient_friendly_name = name
+            return h
+
+        out = svc._break_exact_ties([
+            _term("Estrogens", "VAL-MED-RXNORM-4474"),
+            _term("Estrogens", "VAL-VAX-CVX-1"),
+            _term("Estrogens", "VAL-DRUGCLASS-ATC-G03C"),
+        ])
+        assert [r.canonical_id for r in out] == [
+            "VAL-DRUGCLASS-ATC-G03C",  # class preference
+            "VAL-VAX-CVX-1",           # type priority for the rest
+            "VAL-MED-RXNORM-4474",
+        ]
+
+    def test_class_preferred_terms_outrank_ingredient(self):
+        from medterm4ds.services.search import get_search_service
+
+        svc = get_search_service().__class__
+
+        def _term(name, cid):
+            h = self._hit(cid, 1.0, 1)
+            h.patient_friendly_name = name
+            return h
+
+        # 'Estrogens' — ATC class vs RxNorm ingredient, identical text
+        out = svc._break_exact_ties([
+            _term("Estrogens", "VAL-MED-RXNORM-4474"),
+            _term("Estrogens", "VAL-DRUGCLASS-ATC-G03C"),
+        ])
+        assert [r.canonical_id for r in out] == [
+            "VAL-DRUGCLASS-ATC-G03C", "VAL-MED-RXNORM-4474",
+        ]
+        # Same DRUGCLASS/MED twin under any other name: ingredient first
+        out = svc._break_exact_ties([
+            _term("Metformin", "VAL-MED-RXNORM-6809"),
+            _term("Metformin", "VAL-DRUGCLASS-ATC-A10B"),
+        ])
+        assert [r.canonical_id for r in out] == [
+            "VAL-MED-RXNORM-6809", "VAL-DRUGCLASS-ATC-A10B",
+        ]
+
+    def test_single_and_empty(self):
+        from medterm4ds.services.search import get_search_service
+
+        svc = get_search_service().__class__
+        assert svc._break_exact_ties([]) == []
+        one = self._hit("X", 1.0, 1)
+        assert svc._break_exact_ties([one]) == [one]
+
+
+class TestSourceSabAliasesSingleSource:
+    """CR-SHOULD-FIX-2b: the pairwise SAB alias vocabulary
+    (SNOMED↔SNOMEDCT_US, RXNORM↔ATC, LNC↔LOINC) lives once in
+    core.normalize.SOURCE_SAB_ALIASES — search's _ancestor_fallback and
+    extraction's _first_matching_concept both reference the SAME object,
+    so the next source addition updates one map."""
+
+    def test_both_modules_reference_the_same_map_object(self):
+        import inspect
+
+        from medterm4ds.core import normalize
+
+        # The widening helper (and its SOURCE_SAB_ALIASES map) is defined
+        # once in core.normalize; both consumers bind the SAME object.
+        assert search_sm.expand_source_aliases is normalize.expand_source_aliases
+        assert extraction_sm.expand_source_aliases is normalize.expand_source_aliases
+        # And neither consumer re-inline's the alias vocabulary.
+        for mod in (search_sm, extraction_sm):
+            src = inspect.getsource(mod)
+            assert '"SNOMEDCT_US": "SNOMED"' not in src
+            assert '"RXNORM": "ATC"' not in src
+
+    def test_expand_source_aliases_widens_pairwise(self):
+        from medterm4ds.core.normalize import expand_source_aliases
+
+        assert expand_source_aliases(["snomed"]) == {"SNOMED", "SNOMEDCT_US"}
+        assert expand_source_aliases(["LNC", "atc"]) == {"LNC", "LOINC", "ATC", "RXNORM"}
+        assert expand_source_aliases(["ICD10CM"]) == {"ICD10CM"}

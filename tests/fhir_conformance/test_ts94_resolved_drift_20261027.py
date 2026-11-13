@@ -25,8 +25,6 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-import pytest
-
 SNOMED_URI = "http://snomed.info/sct"
 RXNORM_URI = "http://www.nlm.nih.gov/research/umls/rxnorm"
 ICD10CM_URI = "http://hl7.org/fhir/sid/icd-10-cm"

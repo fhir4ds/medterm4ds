@@ -16,6 +16,7 @@ from medterm4ds.core.config import (
     local_duckdb_config,
     validate_memory_limit,
 )
+from medterm4ds.core.display import join_limited
 from medterm4ds.core.env import env_int, env_str
 from medterm4ds.core.models import CodeRef
 from medterm4ds.engines.duckdb import LocalDuckDBEngine
@@ -119,11 +120,42 @@ def main(argv: list[str] | None = None) -> int:
     except (ValueError, argparse.ArgumentTypeError) as exc:
         raise SystemExit(f"Error: {exc}") from None
     args = parser.parse_args(argv)
-    return args.func(args)
+    # EV07-QA-02 (run-2, MEDIUM): a VALID DuckDB file without the UMLS
+    # schema (right file, wrong database) raised a raw
+    # duckdb.CatalogException traceback ("Table with name mrconso does not
+    # exist") out of the query handlers — _require_db_file cannot see
+    # schema shape. There is no shared query-handler wrapper (each run_*
+    # has its own narrow inline except tuple), so this dispatch point is
+    # the single chokepoint every query command inherits; data commands
+    # convert duckdb.Error earlier via @_data_cli_errors and never reach
+    # this catch.
+    try:
+        import duckdb
+    except ImportError:
+        return args.func(args)
+    try:
+        return args.func(args)
+    except duckdb.Error as exc:
+        message = f"Error: {exc}"
+        if isinstance(exc, duckdb.CatalogException):
+            message += (
+                " — not a medterm4ds UMLS database; "
+                "build one with 'medterm4ds data build-duckdb'."
+            )
+        raise SystemExit(message) from None
 
 
 def build_parser() -> argparse.ArgumentParser:
+    import medterm4ds
+
     parser = argparse.ArgumentParser(prog="medterm4ds")
+    # EV07-QA-07: the CLI had no --version flag while the servers surface
+    # it in /health (QC-487). Single-sourced from medterm4ds.__version__.
+    parser.add_argument(
+        "--version",
+        action="version",
+        version=f"medterm4ds {medterm4ds.__version__}",
+    )
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     conceptmap = subparsers.add_parser("conceptmap", help="Generate ConceptMap outputs.")
@@ -296,7 +328,9 @@ def build_parser() -> argparse.ArgumentParser:
     # QC-354 (MEDIUM): default None (not 'json') so _write_record_results can
     # infer the format from the --output extension (.csv → csv, .jsonl → jsonl)
     # — mirrors run_optimize's QC-204 fix; this extract sibling was missed.
-    extract.add_argument("--format-output", dest="format_output", default=None, choices=["json", "csv"])
+    # EV07-QA-13 (LOW): jsonl was inferable from the extension but rejected
+    # as an explicit choice — accept it (routes to the same jsonl writer).
+    extract.add_argument("--format-output", dest="format_output", default=None, choices=["json", "csv", "jsonl"])
     extract.set_defaults(func=run_extract)
 
     hierarchy = subparsers.add_parser("hierarchy", help="Traverse code hierarchies.")
@@ -516,8 +550,8 @@ def _add_patient_friendly_args(parser: argparse.ArgumentParser) -> None:
         default=None,
         help="Output format. Defaults to the output file extension.",
     )
-    parser.add_argument("--batch-size", type=int, default=5000, help="Codes per resolution batch (default: 5000).")
-    parser.add_argument("--fetch-size", type=int, default=10_000, help="Rows fetched per source-code scan (default: 10000).")
+    parser.add_argument("--batch-size", type=_positive_int, default=5000, help="Codes per resolution batch (default: 5000).")
+    parser.add_argument("--fetch-size", type=_positive_int, default=10_000, help="Rows fetched per source-code scan (default: 10000).")
     parser.add_argument("--max-depth", type=int, default=5, help="Broader-walk depth for patient-friendly fallback (default: 5; 0 = exact/same-CUI matches only).")
     parser.add_argument("--limit", type=_positive_int, default=None, help="Optional total code limit (must be >= 1).")
     parser.add_argument(
@@ -547,7 +581,7 @@ def _add_patient_friendly_args(parser: argparse.ArgumentParser) -> None:
     )
     parser.add_argument(
         "--checkpoint-every",
-        type=int,
+        type=_positive_int,
         default=1000,
         help="Write checkpoint state every N output rows.",
     )
@@ -561,8 +595,8 @@ def _add_bulk_output_args(parser: argparse.ArgumentParser) -> None:
         default=None,
         help="Output format. Defaults to the output file extension.",
     )
-    parser.add_argument("--batch-size", type=int, default=5000, help="Codes per resolution batch (default: 5000).")
-    parser.add_argument("--fetch-size", type=int, default=10_000, help="Rows fetched per source-code scan (default: 10000).")
+    parser.add_argument("--batch-size", type=_positive_int, default=5000, help="Codes per resolution batch (default: 5000).")
+    parser.add_argument("--fetch-size", type=_positive_int, default=10_000, help="Rows fetched per source-code scan (default: 10000).")
     parser.add_argument("--limit", type=_positive_int, default=None, help="Optional total code limit (must be >= 1).")
     parser.add_argument(
         "--no-prepare-cache",
@@ -581,7 +615,7 @@ def _add_bulk_output_args(parser: argparse.ArgumentParser) -> None:
     )
     parser.add_argument(
         "--checkpoint-every",
-        type=int,
+        type=_positive_int,
         default=1000,
         help="Write checkpoint state every N output rows for JSONL/CSV outputs.",
     )
@@ -601,8 +635,8 @@ def _add_bulk_record_args(parser: argparse.ArgumentParser) -> None:
         default=None,
         help="Output format. Defaults to the output file extension.",
     )
-    parser.add_argument("--batch-size", type=int, default=5000, help="Codes per resolution batch (default: 5000).")
-    parser.add_argument("--fetch-size", type=int, default=10_000, help="Rows fetched per source-code scan (default: 10000).")
+    parser.add_argument("--batch-size", type=_positive_int, default=5000, help="Codes per resolution batch (default: 5000).")
+    parser.add_argument("--fetch-size", type=_positive_int, default=10_000, help="Rows fetched per source-code scan (default: 10000).")
     parser.add_argument("--limit", type=_positive_int, default=None, help="Optional total code limit (must be >= 1).")
     parser.add_argument(
         "--no-prepare-cache",
@@ -631,7 +665,7 @@ def _add_bulk_record_args(parser: argparse.ArgumentParser) -> None:
     )
     parser.add_argument(
         "--checkpoint-every",
-        type=int,
+        type=_positive_int,
         default=1000,
         help="Write checkpoint state every N output rows.",
     )
@@ -655,9 +689,13 @@ def _add_bulk_mapping_args(parser: argparse.ArgumentParser) -> None:
     )
     parser.add_argument(
         "--max-results-per-code",
-        type=int,
+        # EV07-QA-03: validated at parse time (must be >= 1). Pre-fix the
+        # plain int let 0/-1 through and iter_mapping_bulk deferred the
+        # services ValueError to iteration time — firing inside
+        # write_checkpointed_rows after partial artifacts existed.
+        type=_positive_int,
         default=50,
-        help="Maximum target mappings per input code.",
+        help="Maximum target mappings per input code (must be >= 1).",
     )
     parser.add_argument(
         "--max-depth",
@@ -735,9 +773,12 @@ def _add_mapping_conceptmap_args(parser: argparse.ArgumentParser) -> None:
     )
     parser.add_argument(
         "--max-results-per-code",
-        type=int,
+        # EV07-QA-03 (conceptmap mapping twin): eager parse-time guard,
+        # same as the bulk map flag. Pre-fix the lazy services ValueError
+        # fired inside write_checkpointed_rows after partial artifacts.
+        type=_positive_int,
         default=50,
-        help="Maximum target mappings per input code.",
+        help="Maximum target mappings per input code (must be >= 1).",
     )
     parser.add_argument(
         "--max-depth",
@@ -1088,9 +1129,7 @@ def run_patient_friendly_conceptmap(args: argparse.Namespace) -> int:
     # query so invalid values exit cleanly without partial output.
     _validate_cli_max_depth(args, warn_on_zero=True)
 
-    db_path = Path(args.db)
-    if not db_path.exists():
-        raise SystemExit(f"Database not found: {db_path}")
+    db_path = _require_db_file(Path(args.db))
 
     sources = _normalize_sources_or_exit(args.sources)
     output_path = Path(args.output)
@@ -1198,9 +1237,7 @@ def run_mapping_conceptmap(args: argparse.Namespace) -> int:
     except ImportError as exc:
         raise SystemExit("DuckDB is required. Install medterm4ds[duckdb].") from exc
 
-    db_path = Path(args.db)
-    if not db_path.exists():
-        raise SystemExit(f"Database not found: {db_path}")
+    db_path = _require_db_file(Path(args.db))
 
     # QC-084/QC-085: validate max_depth before opening the DB so invalid
     # values exit cleanly without a Python traceback. Sibling of EC-03
@@ -1387,9 +1424,7 @@ def run_lookup(args: argparse.Namespace) -> int:
     except ImportError as exc:
         raise SystemExit("DuckDB is required. Install medterm4ds[duckdb].") from exc
 
-    db_path = Path(args.db)
-    if not db_path.exists():
-        raise SystemExit(f"Database not found: {db_path}")
+    db_path = _require_db_file(Path(args.db))
 
     config = local_duckdb_config(
         args.memory_profile,
@@ -1420,9 +1455,7 @@ def run_resolve(args: argparse.Namespace) -> int:
     except ImportError as exc:
         raise SystemExit("DuckDB is required. Install medterm4ds[duckdb].") from exc
 
-    db_path = Path(args.db)
-    if not db_path.exists():
-        raise SystemExit(f"Database not found: {db_path}")
+    db_path = _require_db_file(Path(args.db))
 
     refs = _code_source_pairs(args.code, args.source)
     con = _connect_read_only(db_path, output=getattr(args, "output", None))
@@ -1450,9 +1483,7 @@ def run_optimize(args: argparse.Namespace) -> int:
     except ImportError as exc:
         raise SystemExit("DuckDB is required. Install medterm4ds[duckdb].") from exc
 
-    db_path = Path(args.db)
-    if not db_path.exists():
-        raise SystemExit(f"Database not found: {db_path}")
+    db_path = _require_db_file(Path(args.db))
 
     refs = [CodeRef(source=args.source, code=code) for code in args.code]
     con = _connect_read_only(db_path, output=getattr(args, "output", None))
@@ -1502,9 +1533,7 @@ def run_hierarchy(args: argparse.Namespace) -> int:
     except ImportError as exc:
         raise SystemExit("DuckDB is required. Install medterm4ds[duckdb].") from exc
 
-    db_path = Path(args.db)
-    if not db_path.exists():
-        raise SystemExit(f"Database not found: {db_path}")
+    db_path = _require_db_file(Path(args.db))
 
     config = local_duckdb_config(
         args.memory_profile,
@@ -1566,7 +1595,8 @@ def run_mapping(args: argparse.Namespace) -> int:
     if empty_targets:
         raise SystemExit(
             "--target-source must be a non-empty vocabulary name "
-            f"(got {empty_targets!r}). Use a SAB like ICD10CM or SNOMEDCT_US."
+            f"(got {join_limited(empty_targets, repr_values=True)}). "
+            "Use a SAB like ICD10CM or SNOMEDCT_US."
         )
     # QC-032: reject URI/OID-form --target-source (sibling of QC-011/FIX-010
     # for --source). Pre-fix, ``--target-source http://hl7.org/fhir/sid/icd-10-cm``
@@ -1584,9 +1614,7 @@ def run_mapping(args: argparse.Namespace) -> int:
     except ImportError as exc:
         raise SystemExit("DuckDB is required. Install medterm4ds[duckdb].") from exc
 
-    db_path = Path(args.db)
-    if not db_path.exists():
-        raise SystemExit(f"Database not found: {db_path}")
+    db_path = _require_db_file(Path(args.db))
 
     config = local_duckdb_config(
         args.memory_profile,
@@ -1633,9 +1661,7 @@ def run_source_stats(args: argparse.Namespace) -> int:
     except ImportError as exc:
         raise SystemExit("DuckDB is required. Install medterm4ds[duckdb].") from exc
 
-    db_path = Path(args.db)
-    if not db_path.exists():
-        raise SystemExit(f"Database not found: {db_path}")
+    db_path = _require_db_file(Path(args.db))
 
     config = _local_duckdb_config_from_args(args)
     con = _connect_read_only(db_path, output=getattr(args, "output", None))
@@ -1664,9 +1690,7 @@ def run_sample_codes(args: argparse.Namespace) -> int:
     except ImportError as exc:
         raise SystemExit("DuckDB is required. Install medterm4ds[duckdb].") from exc
 
-    db_path = Path(args.db)
-    if not db_path.exists():
-        raise SystemExit(f"Database not found: {db_path}")
+    db_path = _require_db_file(Path(args.db))
 
     config = _local_duckdb_config_from_args(args)
     con = _connect_read_only(db_path, output=getattr(args, "output", None))
@@ -1700,9 +1724,7 @@ def run_code_ttys(args: argparse.Namespace) -> int:
     except ImportError as exc:
         raise SystemExit("DuckDB is required. Install medterm4ds[duckdb].") from exc
 
-    db_path = Path(args.db)
-    if not db_path.exists():
-        raise SystemExit(f"Database not found: {db_path}")
+    db_path = _require_db_file(Path(args.db))
 
     config = _local_duckdb_config_from_args(args)
     refs = _code_source_pairs(args.code, args.source)
@@ -1733,9 +1755,7 @@ def run_search_names(args: argparse.Namespace) -> int:
     except ImportError as exc:
         raise SystemExit("DuckDB is required. Install medterm4ds[duckdb].") from exc
 
-    db_path = Path(args.db)
-    if not db_path.exists():
-        raise SystemExit(f"Database not found: {db_path}")
+    db_path = _require_db_file(Path(args.db))
 
     config = _local_duckdb_config_from_args(args)
     con = _connect_read_only(db_path, output=getattr(args, "output", None))
@@ -1752,7 +1772,9 @@ def run_search_names(args: argparse.Namespace) -> int:
                 tty_filters=args.tty,
                 limit=args.limit,
             )
-        except (ValueError, TypeError) as exc:
+        except (ValueError, TypeError, RuntimeError) as exc:
+            # EV07-QA-06: RuntimeError mirrors the FHIR _do_search wrapper —
+            # ManifestError (⊂ RuntimeError) previously dumped a raw traceback.
             raise SystemExit(f"Error: {exc}") from exc
     finally:
         con.close()
@@ -1847,7 +1869,9 @@ def run_text_search(args: argparse.Namespace) -> int:
             result_types=result_types,
             engine=engine,
         )
-    except (ValueError, TypeError) as exc:
+    except (ValueError, TypeError, RuntimeError) as exc:
+        # EV07-QA-06: RuntimeError mirrors the FHIR _do_search wrapper —
+        # ManifestError (⊂ RuntimeError) previously dumped a raw traceback.
         raise SystemExit(f"Error: {exc}") from exc
     finally:
         if con is not None:
@@ -1885,10 +1909,13 @@ def run_extract(args: argparse.Namespace) -> int:
             include_family=args.include_family,
             annotation_fields=annotation_fields,
         )
-    except ValueError as exc:
+    except (ValueError, RuntimeError) as exc:
         # Comma-list args (annotation_fields, free-form result_types) pass
         # argparse choices and are validated service-side (eagerly, pre-NER);
         # surface them as a one-line error like every sibling runner.
+        # RuntimeError (EV07-QA-06): the FHIR _do_extract sibling gained the
+        # EV05-QA-01 wrapper; this CLI twin dumped raw ManifestError
+        # tracebacks on a rotated serving pin.
         raise SystemExit(f"Error: {exc}") from exc
     # annotated format returns a dict with annotated_text + spans, not a list of records
     if args.format == "annotated":
@@ -1959,9 +1986,7 @@ def _data_db_path_or_exit(args: argparse.Namespace) -> Path:
     raw = getattr(args, "db", None) or os.getenv("MEDTERM4DS_DB")
     if not raw:
         raise SystemExit("Error: --db is required (or set MEDTERM4DS_DB).")
-    db_path = Path(raw)
-    if not db_path.exists():
-        raise SystemExit(f"Database not found: {db_path}")
+    db_path = _require_db_file(Path(raw))
     return db_path
 
 
@@ -2067,6 +2092,7 @@ def run_data_verify(args: argparse.Namespace) -> int:
     return 0 if report.get("ok") else 1
 
 
+@_data_cli_errors
 def run_data_cache_info(args: argparse.Namespace) -> int:
     from medterm4ds.core.artifact_cache import cache_info
 
@@ -2074,7 +2100,12 @@ def run_data_cache_info(args: argparse.Namespace) -> int:
     return 0
 
 
+@_data_cli_errors
 def run_data_cache_refresh(args: argparse.Namespace) -> int:
+    # EV07-QA-05: the cache-* trio lacked the QC-445 error envelope —
+    # hub/network failures dumped raw requests/hf tracebacks. The
+    # decorator also makes cache-refresh failures exit nonzero instead
+    # of the EV07-QA-01 silent success report.
     from medterm4ds.core.artifact_cache import cache_refresh
 
     report = cache_refresh(
@@ -2087,6 +2118,7 @@ def run_data_cache_refresh(args: argparse.Namespace) -> int:
     return 0
 
 
+@_data_cli_errors
 def run_data_cache_list(args: argparse.Namespace) -> int:
     from medterm4ds.core.artifact_cache import cache_list_remote
 
@@ -2098,11 +2130,12 @@ def run_data_cache_list(args: argparse.Namespace) -> int:
 def run_athena_concepts(args: argparse.Namespace) -> int:
     """CLI athena-concepts (design §2): Athena-native search filters
     mirroring the discovery-command conventions."""
-    import duckdb
-
     from medterm4ds.services.athena import search_athena_concepts
 
-    con = duckdb.connect(args.db, read_only=True)
+    # EV07-QA-04/QA-09: adopt the shared db precheck + read-only connect
+    # helpers (clean error on missing/dir --db; QC-360 progress-bar guard).
+    db_path = _require_db_file(Path(args.db))
+    con = _connect_read_only(db_path)
     try:
         rows = search_athena_concepts(
             con, args.query, domain_id=args.domain,
@@ -2121,14 +2154,14 @@ def run_athena_concepts(args: argparse.Namespace) -> int:
 
 def run_athena_hierarchy(args: argparse.Namespace) -> int:
     """CLI athena-hierarchy: closure-based ancestry (exact)."""
-    import duckdb
-
     from medterm4ds.services.athena import (
         get_athena_ancestors,
         get_athena_descendants,
     )
 
-    con = duckdb.connect(args.db, read_only=True)
+    # EV07-QA-04/QA-09: shared db precheck + read-only connect helpers.
+    db_path = _require_db_file(Path(args.db))
+    con = _connect_read_only(db_path)
     try:
         if args.direction == "ancestors":
             rows = get_athena_ancestors(
@@ -2211,8 +2244,6 @@ def run_data_ingest_athena(args: argparse.Namespace) -> int:
 def run_data_export_conceptmap(args: argparse.Namespace) -> int:
     """Athena → FHIR ConceptMap converter CLI (design note §3; the
     fhir4ds OMOP VD join source)."""
-    import duckdb
-
     from medterm4ds.services.athena import build_concept_map
 
     vocabs_explicit = args.vocabularies is not None
@@ -2227,8 +2258,18 @@ def run_data_export_conceptmap(args: argparse.Namespace) -> int:
 
     # AF1 fix (TS-83): a missing database dies with a raw duckdb
     # IOException traceback — actionable Error naming the path per
-    # the BL2/HT2 config-boundary doctrine.
-    if not Path(args.db).exists():
+    # the BL2/HT2 config-boundary doctrine. EV07-QA-02/QA-09: the
+    # is_file guard + shared read-only connect close the directory-db
+    # traceback and the QC-360 progress-bar gap.
+    db_path = Path(args.db)
+    if db_path.is_dir():
+        print(
+            f"Error: {db_path} is a directory, expected a DuckDB "
+            "database file.",
+            file=sys.stderr,
+        )
+        return 2
+    if not db_path.exists():
         print(
             f"Error: database not found: {args.db} — pass the path "
             "produced by 'medterm4ds data build-duckdb' (or an "
@@ -2236,7 +2277,7 @@ def run_data_export_conceptmap(args: argparse.Namespace) -> int:
             file=sys.stderr,
         )
         return 2
-    con = duckdb.connect(args.db, read_only=True)
+    con = _connect_read_only(db_path)
     # AF2 fix (TS-83): pointing at a DB that never ran ingest-athena
     # died with a raw CatalogException; name the remedy instead.
     # This check MUST precede the AE1 enum validation below —
@@ -2383,9 +2424,7 @@ def _run_bulk_record_export(
     # run_bulk_* wrappers all route through here.
     _validate_cli_max_depth(args)
 
-    db_path = Path(args.db)
-    if not db_path.exists():
-        raise SystemExit(f"Database not found: {db_path}")
+    db_path = _require_db_file(Path(args.db))
 
     output_path = Path(args.output)
     output_format = args.format or _bulk_record_format_from_path(output_path)
@@ -2495,10 +2534,43 @@ def _connect_read_only(db_path: Path, *, output: str | None = None):
     """
     import duckdb
 
-    con = duckdb.connect(str(db_path), read_only=True)
+    # EV07-QA-01 (run-2, MEDIUM): _require_db_file only checks
+    # dir-vs-file, so a corrupt/non-DuckDB file passed every precheck and
+    # died here with a raw duckdb.IOException traceback ("exists, but it
+    # is not a valid DuckDB database file"). Every query command routes
+    # through this helper (14 call sites), so the clean SystemExit
+    # envelope here covers them all — mirroring _require_db_file's own
+    # dir/not-found exits two lines below.
+    try:
+        con = duckdb.connect(str(db_path), read_only=True)
+    except duckdb.IOException as exc:
+        raise SystemExit(
+            f"Error: {db_path} is not a valid DuckDB database file ({exc})."
+        ) from None
     if not output:
         con.execute("SET enable_progress_bar = false")
     return con
+
+
+def _require_db_file(db_path: Path) -> Path:
+    """EV07-QA-02 (MEDIUM): ``Path.exists()`` is true for DIRECTORIES too.
+
+    Pre-fix, ``--db <dir>`` (and ``--db ''``, which resolves to the CWD)
+    passed every ``exists()`` precheck and died inside DuckDB with a raw
+    ``duckdb.IOException`` traceback ("Is a directory"). Require a regular
+    file; keep the sibling "Database not found" message for misses.
+    """
+    if db_path.is_dir():
+        raise SystemExit(
+            f"Error: {db_path} is a directory, expected a DuckDB database file."
+        )
+    if not db_path.is_file():
+        # EV07-QA-04 (LOW, trivial subset): harmonized with the "Error: "
+        # prefix used by the rest of the surface (sibling dir-message
+        # above already carries it); the remaining prefix-less exits are
+        # deferred as cosmetic.
+        raise SystemExit(f"Error: Database not found: {db_path}")
+    return db_path
 
 
 def _record_format_from_path(path: Path) -> str:
@@ -2560,7 +2632,7 @@ def _code_source_pairs(codes: list[str], sources: list[str]) -> list[tuple[str, 
     if empty_codes:
         raise SystemExit(
             "--code must be a non-empty terminology code "
-            f"(got {empty_codes!r})."
+            f"(got {join_limited(empty_codes, repr_values=True)})."
         )
     if len(sources) == 1 and len(codes) > 1:
         sources = sources * len(codes)

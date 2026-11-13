@@ -8,7 +8,6 @@ FHIR flag semantics; no prior-run results cited.
 
 from __future__ import annotations
 
-import os
 from pathlib import Path
 
 import duckdb
@@ -37,7 +36,6 @@ pytestmark_family = pytest.mark.skipif(
 @pytest.fixture(scope="module")
 def athena_con(tmp_path_factory):
     con = duckdb.connect()
-    from medterm4ds.services.athena import ingest_athena
 
     # In-memory DB from the mini fixture for fast surfaces + the
     # real download for the scale gate below (separate fixture).

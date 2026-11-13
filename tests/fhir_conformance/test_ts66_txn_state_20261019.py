@@ -33,8 +33,6 @@ TX1 (MEDIUM, NEW — B1's live-state exhibit) — a transaction
 
 from __future__ import annotations
 
-import pytest
-
 SNOMED_URI = "http://snomed.info/sct"
 T2DM = "44054006"
 DM = "73211009"

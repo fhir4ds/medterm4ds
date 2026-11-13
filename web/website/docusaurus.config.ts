@@ -142,7 +142,7 @@ const config: Config = {
           ],
         },
       ],
-      copyright: `Copyright © ${new Date().getFullYear()} Medical Terminology for Data Science contributors. Built with Docusaurus.`,
+      copyright: `Copyright © ${new Date().getFullYear()} Montavon Informatics LLC. Built with Docusaurus.`,
     },
     prism: {
       theme: prismThemes.oneDark,

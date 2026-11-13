@@ -36,8 +36,6 @@ C2 (controls) — conformant behaviors re-verified fresh: happy-path
 
 from __future__ import annotations
 
-import pytest
-
 SNOMED_URI = "http://snomed.info/sct"
 ICD10CM_URI = "http://hl7.org/fhir/sid/icd-10-cm"
 DM = "73211009"

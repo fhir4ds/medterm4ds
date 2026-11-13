@@ -8,16 +8,21 @@ Data provisioning:
     a 217 MB filtered DuckDB (~8 min first start, cached after).
     Cannot be downloaded from HF (UMLS license prohibits redistribution).
 
-  BM25 + SapBERT + patient_friendly JSONs (derived data — freely distributable):
-    Downloaded from joelmontavon/medterm4ds-data HF dataset (~3 GB).
-    These are pre-computed indexes, not raw UMLS data.
+  BM25 + SapBERT + canonical artifacts (derived data — freely distributable):
+    Downloaded from the fhir4ds/terminology HF repo as a self-contained
+    release (the 2026-10-31 repoint). These are pre-computed indexes, not
+    raw UMLS data.
+
+  patient_friendly_*.json (release reports):
+    Downloaded from joelmontavon/medterm4ds-data (reports are not part of
+    the terminology release). $lookup enrichment degrades gracefully if
+    unavailable.
 
 Data layout after provisioning:
   /data/
     lookup.duckdb                    # filtered UMLS (217 MB, built from RRF)
+    terminology/<release>/           # release layout: canonical/lexical/semantic/model
     patient_friendly_*.json          # 8 per-source JSONs (~225 MB, from HF)
-    bm25/*_bm25.json                 # 6 BM25 indexes (167 MB, from HF)
-    sapbert/                         # SapBERT + FAISS (2.5 GB, from HF)
 """
 
 from __future__ import annotations
@@ -27,6 +32,17 @@ import shutil
 import tempfile
 from pathlib import Path
 
+# EV03-QA-06 (2026-11-12): set MEDTERM4DS_LAYOUT at MODULE TOP, BEFORE any
+# medterm4ds import can execute (Step 1's data_setup import inside main()
+# pulls in medterm4ds/__init__ → services.search, which freezes its
+# _LAYOUT_ENV sentinel at import time). Setting it only inside
+# _provision_search_artifacts worked on RESTARTS (cached lookup.duckdb
+# returns before any medterm4ds import) but left first starts on "auto".
+os.environ.setdefault("MEDTERM4DS_LAYOUT", "terminology")
+
+# Patient-friendly baseline reports are NOT part of the fhir4ds/terminology
+# release (they are release reports, not terminology artifacts); the legacy
+# dataset remains their distribution channel for this demo Space.
 HF_DATASET = os.getenv("MEDTERM4DS_HF_DATASET", "joelmontavon/medterm4ds-data")
 UMLS_RELEASE = os.getenv("UMLS_RELEASE", "2026AA")
 
@@ -79,19 +95,36 @@ def _build_lookup_from_umls(data_dir: Path) -> Path:
     return db_path
 
 
-def _download_derived_data(data_dir: Path) -> tuple[Path, Path, Path]:
-    """Download BM25 + SapBERT + patient_friendly JSONs from HF."""
-    bm25_dir = data_dir / "bm25"
-    sapbert_dir = data_dir / "sapbert"
-    has_bm25 = bm25_dir.is_dir() and any(bm25_dir.glob("*_bm25.json"))
-    has_sapbert = (sapbert_dir / "model.safetensors").exists()
-    has_jsons = any(data_dir.glob("patient_friendly_*.json"))
+def _provision_search_artifacts(data_dir: Path) -> None:
+    """Provision search/extract artifacts via the fhir4ds/terminology
+    release layout (the 2026-10-31 repoint; see README 'Artifact cache
+    layout'). Downloads atomically into /data/terminology/<release>/ and
+    pins the layout so the server never falls back to legacy/split."""
+    # Redundant with the module-top setdefault (EV03-QA-06) — kept as a
+    # harmless belt-and-braces for anyone importing this function alone.
+    os.environ.setdefault("MEDTERM4DS_LAYOUT", "terminology")
+    from medterm4ds.core import terminology as _term
 
-    if has_bm25 and has_sapbert and has_jsons:
-        print("Derived data already cached")
-        return data_dir, bm25_dir, sapbert_dir
+    resolved = _term.download(data_dir)
+    # Pin the freshly provisioned release dir: the default terminology root
+    # (~/.cache) is NOT on the Space's persistent volume.
+    os.environ["MEDTERM4DS_TERMINOLOGY_DIR"] = str(resolved.base)
+    print(
+        f"terminology release {resolved.release} ready "
+        f"(embedding space {resolved.space_id}) at {resolved.base}"
+    )
 
-    print(f"Downloading derived data from HF: {HF_DATASET}...")
+
+def _download_patient_friendly(data_dir: Path) -> Path:
+    """Download patient_friendly_*.json baseline reports from HF.
+
+    These predate the terminology release layout and ship separately
+    (release reports, not terminology artifacts). $lookup enrichment
+    degrades gracefully if the download fails."""
+    if any(data_dir.glob("patient_friendly_*.json")):
+        return data_dir
+
+    print(f"Downloading patient-friendly reports from HF: {HF_DATASET}...")
     try:
         from huggingface_hub import snapshot_download
         snapshot_download(
@@ -99,13 +132,13 @@ def _download_derived_data(data_dir: Path) -> tuple[Path, Path, Path]:
             repo_type="dataset",
             local_dir=str(data_dir),
             token=os.getenv("HF_TOKEN"),
-            allow_patterns=["patient_friendly_*.json", "bm25/*", "sapbert/*"],
+            allow_patterns=["patient_friendly_*.json"],
         )
     except Exception as exc:
         print(f"Warning: download failed: {exc}")
-        print("$search may not be available (other operations still work).")
+        print("$lookup patient-friendly properties may be unavailable.")
 
-    return data_dir, bm25_dir, sapbert_dir
+    return data_dir
 
 
 def main():
@@ -116,14 +149,15 @@ def main():
     # Step 1: Build lookup.duckdb from UMLS RRF (requires UMLS_API_KEY)
     db_path = _build_lookup_from_umls(data_dir)
 
-    # Step 2: Download derived search data from HF (BM25, SapBERT, JSONs)
-    baseline_dir, bm25_dir, sapbert_dir = _download_derived_data(data_dir)
+    # Step 2: search/extract artifacts via the terminology release layout
+    _provision_search_artifacts(data_dir)
+
+    # Step 3: patient-friendly baseline reports (separate distribution)
+    baseline_dir = _download_patient_friendly(data_dir)
 
     # Set env vars
     os.environ["MEDTERM4DS_DB"] = str(db_path)
     os.environ["MEDTERM4DS_FHIR4PX_BASELINE"] = str(baseline_dir)
-    os.environ["MEDTERM4DS_SEARCH_INDEX_DIR"] = str(bm25_dir)
-    os.environ["MEDTERM4DS_EMBEDDING_MODEL_DIR"] = str(sapbert_dir)
     os.environ.setdefault("MEDTERM4DS_MEMORY_PROFILE", "low")
     os.environ["MEDTERM4DS_FHIR_API_PORT"] = os.getenv("MEDTERM4DS_FHIR_API_PORT", "7860")
     os.environ["MEDTERM4DS_API_HOST"] = "0.0.0.0"

@@ -6,7 +6,7 @@ from collections.abc import Sequence
 from typing import Any
 
 from medterm4ds.core.models import CodeRef
-from medterm4ds.core.normalize import normalize_source
+from medterm4ds.core.normalize import normalize_source, validate_source_sab
 from medterm4ds.services.discovery import MAX_DISCOVERY_LIMIT, sample_source_codes, search_names
 from medterm4ds.services.hierarchy import get_code_relations
 from medterm4ds.services.lookup import get_code_infos
@@ -323,7 +323,17 @@ def discover(
     as walk targets on the code branch (default active-only).
     """
     source = normalize_source(source_terminology)
-    depth = min(max(depth, 1), 5)
+    # EV08-QA-05 (LOW, run-2): '' was accepted as a success-shaped
+    # {'results': []} (QC-395: an explicitly-supplied empty value never
+    # silently no-ops) and a FHIR system URI got the generic not-found
+    # message instead of the QC-322 SAB diagnostic every other
+    # source-bearing tool emits. Reuse the canonical boundary guard.
+    validate_source_sab(source)
+    # EV08-QA-06 (LOW): depth previously clamped silently to [1, 5] while
+    # the sibling limit parameter (next lines) rejects loudly — silent-
+    # clamp vs loud-error asymmetry inside one tool's own parameter set.
+    if not 1 <= depth <= 5:
+        raise ValueError(f"depth must be between 1 and 5 (got {depth})")
     # QC-223/QC-228: validate the caller-facing parameter BEFORE delegating —
     # previously limit=0 leaked ``per_source must be at least 1`` (an internal
     # parameter name) on the no-code branch and was silently ignored on the

@@ -44,6 +44,19 @@ def get_code_mappings(
         raise TypeError(
             f"target_sources must be a sequence of strings, got {type(target_sources).__name__}"
         )
+    # EV10-QA-01 (MEDIUM, run-2): entry-level check must precede
+    # normalize_source — the EV08-QA-02 TypeError-on-non-string guard in
+    # core.normalize would otherwise fire first and break the pinned QC-021
+    # contract that None/empty ENTRIES are a ValueError ("empty or None
+    # entries"), distinct from a wrong container TYPE.
+    invalid_entries = [
+        t for t in target_sources if t is None or not isinstance(t, str)
+    ]
+    if invalid_entries:
+        raise ValueError(
+            "target_sources contains empty or None entries after normalization; "
+            f"invalid values: {invalid_entries!r}"
+        )
     normalized_codes = [
         item if isinstance(item, CodeRef) else CodeRef.from_pair(item)
         for item in codes

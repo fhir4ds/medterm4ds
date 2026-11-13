@@ -102,7 +102,6 @@ class TestFX1EscalationFleetPrepared:
     def test_p11_production_pf_no_fallback(self):
         """Production pf serves via the prepared gate WITHOUT the
         fallback warning (verified against umls_current this run)."""
-        import logging
 
         db = f"{DATA_DIR}/umls_current.duckdb"
         if not pathlib.Path(db).exists():

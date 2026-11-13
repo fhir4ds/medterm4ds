@@ -5,6 +5,7 @@ WORKDIR /app
 # OCI image labels — provenance metadata for registries / HF Spaces.
 LABEL org.opencontainers.image.title="medterm4ds FHIR Terminology Server" \
       org.opencontainers.image.source="https://github.com/fhir4ds/medterm4ds" \
+      org.opencontainers.image.vendor="Montavon Informatics LLC" \
       org.opencontainers.image.description="UMLS-backed FHIR R4 terminology server with $lookup, $validate-code, $translate, $subsumes, $expand, $closure, $search, $extract." \
       org.opencontainers.image.licenses="GPL-3.0-only"
 
@@ -18,13 +19,14 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY deploy/hf-spaces/fhir-server/requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy the app + medterm4ds source (build context = repo root)
+# Copy the app + medterm4ds source (build context = repo root).
+# scripts/ is gitignored (v0.0.3 QA-001 tag-completeness trap) and is NOT
+# needed at runtime — do not COPY it; clean checkouts must build.
 COPY deploy/hf-spaces/fhir-server/app.py .
 COPY src/ ./src/
-COPY scripts/ ./scripts/
 
 # Use PYTHONPATH instead of pip install (avoids build backend dependency)
-ENV PYTHONPATH=/app/src:/app/scripts
+ENV PYTHONPATH=/app/src
 # Unbuffered stdout/stderr so print() and log lines show up in `docker logs`
 # immediately, instead of being buffered until the buffer fills or process exits.
 ENV PYTHONUNBUFFERED=1

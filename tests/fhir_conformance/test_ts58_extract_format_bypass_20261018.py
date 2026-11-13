@@ -91,29 +91,33 @@ class TestAN1OutputFormatBypass:
     def test_an10_get_outputformat_annotated_xml_200(
         self, extract_client
     ):
-        """outputFormat=annotated + _format=xml → 200 PLAIN Bundle
-        (annotated silently dropped). Flip when outputFormat aliases
-        format (→406) or 400s."""
+        """EV-05 pin flip: outputFormat is not an accepted $extract
+        param — with _format=xml it now 400s as a FHIR XML
+        OperationOutcome naming outputFormat (was 200 plain Bundle
+        with the param silently dropped)."""
         r = extract_client.get(
             "/fhir/CodeSystem/$extract",
             params={"text": TEXT, "outputFormat": "annotated",
                     "_format": "xml"},
         )
-        assert r.status_code == 200
-        assert r.text.startswith("<?xml")
-        assert "Bundle" in r.text
+        assert r.status_code == 400
+        assert "fhir+xml" in r.headers["content-type"]
+        assert "OperationOutcome" in r.text
+        assert "outputFormat" in r.text
 
     def test_an11_get_outputformat_annotated_json_plain(
         self, extract_client
     ):
-        """JSON mode too: outputFormat=annotated returns the default
-        Bundle — no annotated_text. Flip with AN1."""
+        """EV-05 pin flip: JSON mode too — outputFormat=annotated
+        400s naming the unknown param."""
         r = extract_client.get(
             "/fhir/CodeSystem/$extract",
             params={"text": TEXT, "outputFormat": "annotated"},
         )
-        assert r.status_code == 200
-        assert "annotated_text" not in r.json()
+        assert r.status_code == 400
+        assert r.headers["content-type"].startswith("application/fhir+json")
+        assert r.json()["resourceType"] == "OperationOutcome"
+        assert "outputFormat" in r.json()["issue"][0]["diagnostics"]
 
     def test_an12_post_body_outputformat_ignored(self, extract_client):
         """POST Parameters outputFormat=annotated — same silent

@@ -221,3 +221,43 @@ def test_discover_rejects_empty_code(engine):
 
     with pytest.raises(ValueError, match="non-empty string"):
         discover("ICD10CM", engine=engine, code="")
+
+
+def test_discover_rejects_out_of_range_depth(engine):
+    """EV08-QA-06 (LOW): depth previously clamped silently to [1, 5] while
+    the sibling limit parameter (validated lines above) rejected loudly —
+    silent-clamp vs loud-error asymmetry inside one tool's parameter set."""
+    from medterm4ds.domains.terminology import discover
+
+    with pytest.raises(ValueError, match="depth must be between 1 and 5"):
+        discover("ICD10CM", engine=engine, code="E11.9", depth=0)
+    with pytest.raises(ValueError, match="depth must be between 1 and 5"):
+        discover("ICD10CM", engine=engine, code="E11.9", depth=-1)
+    with pytest.raises(ValueError, match="depth must be between 1 and 5"):
+        discover("ICD10CM", engine=engine, code="E11.9", depth=99)
+
+
+def test_discover_rejects_empty_and_uri_source(engine):
+    """EV08-QA-05 (LOW, run-2): discover('') was success-shaped
+    {'results': []} (QC-395: explicitly-supplied empty values never
+    silently no-op) and a FHIR system URI got the generic not-found
+    instead of the QC-322 SAB diagnostic every sibling source tool
+    emits. Validation fires before any engine use."""
+    from medterm4ds.domains.terminology import discover
+
+    with pytest.raises(ValueError, match="non-empty vocabulary name"):
+        discover("", engine=engine)
+    with pytest.raises(ValueError, match="non-empty vocabulary name"):
+        discover("   ", engine=engine)
+    with pytest.raises(ValueError, match="URI/OID"):
+        discover("http://snomed.info/sct", engine=engine)
+
+
+def test_discover_rejects_non_string_source(engine):
+    """EV08-QA-02 blast radius: a non-string source now fails loud at
+    the canonical boundary (normalize_source TypeError) instead of a
+    raw AttributeError from deep inside the service layer."""
+    from medterm4ds.domains.terminology import discover
+
+    with pytest.raises(TypeError, match="source must be a string"):
+        discover(123, engine=engine)

@@ -23,8 +23,6 @@ from __future__ import annotations
 
 import xml.etree.ElementTree as ET
 
-import pytest
-
 SNOMED_URI = "http://snomed.info/sct"
 NS = {"f": "http://hl7.org/fhir"}
 DM_ISA_URL = f"{SNOMED_URI}/73211009?fhir_vs=isa"

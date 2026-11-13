@@ -691,7 +691,12 @@ _EXPAND_UNSUPPORTED_PARAMS = (
     "includeDesignations", "designation", "includeDefinition",
     "excludeNested", "excludeNotForUI", "excludePostCoordinated",
     "displayLanguage", "property", "useSupplement", "context",
-    "contextTac",
+    # EV06-QA-04: contextTac was an invented name occupying R4
+    # contextDirection's slot; the R4 kebab-case version params are
+    # R4-declared but unsupported here (rejected via these sets).
+    "contextDirection",
+    "exclude-system", "system-version", "check-system-version",
+    "force-system-version",
 )
 _EXPAND_KNOWN_PARAMS = frozenset(
     ("url", "filter", "count", "offset", "activeOnly", "system",
@@ -718,7 +723,8 @@ _VS_VALIDATE_KNOWN_PARAMS = frozenset(
     ("system", "code", "version", "systemVersion", "date",
      "inferSystem", "abstract", "display", "displayLanguage",
      "coding", "codeableConcept", "property", "url",
-     "valueSetVersion", "context", "contextTac", "filter", "_format"),
+     "valueSetVersion", "context", "contextDirection", "filter",
+     "_format"),
 )
 
 _SUBSUMES_KNOWN_PARAMS = frozenset(
@@ -736,6 +742,17 @@ _TRANSLATE_KNOWN_PARAMS = frozenset(
 )
 _CLOSURE_KNOWN_PARAMS = frozenset(
     ("name", "concept", "version", "_format"),
+)
+# EV05-QA-04 (2026-11-12): the TS-17/U3 unknown-param rejection family never
+# covered the two custom operations — FastAPI silently drops undeclared
+# Query params, so ?bogusParam=1 200'd on both. Declared params + _format.
+_SEARCH_KNOWN_PARAMS = frozenset(
+    ("query", "system", "count", "searchMode", "resultTypes", "_format"),
+)
+_EXTRACT_KNOWN_PARAMS = frozenset(
+    ("text", "format", "nerLabels", "resultTypes", "mode", "minGrade",
+     "annotationFields", "includeNegated", "includeUncertain",
+     "includeHistorical", "includeFamily", "_format"),
 )
 
 
@@ -1144,7 +1161,7 @@ def expand_intensional_value_set(
     contains: list[dict[str, Any]] = []
     depth_cap_hit = False
 
-    for include in compose.get("include", []):
+    for include in (compose.get("include") or []):
         if not isinstance(include, dict):
             continue
         inc_system = include.get("system", "")
@@ -1158,7 +1175,7 @@ def expand_intensional_value_set(
 
         # Explicit concept list
         if "concept" in include:
-            for concept in include["concept"]:
+            for concept in (include.get("concept") or []):
                 if not isinstance(concept, dict):
                     continue
                 # QC-246 (MEDIUM): a null/empty code previously became
@@ -1227,7 +1244,7 @@ def expand_intensional_value_set(
                 })
 
         # Intensional filter (is-a, descendent-of)
-        for filt in include.get("filter", []):
+        for filt in (include.get("filter") or []):
             if not isinstance(filt, dict):
                 continue
             prop = filt.get("property", "")
@@ -1278,7 +1295,7 @@ def expand_intensional_value_set(
     # under-exclusion is the dangerous direction — a capped walk would
     # silently re-include truncated exclusion members. Cost is still bounded
     # by FHIR_VS_MAX_DEPTH.
-    for exclude in compose.get("exclude", []):
+    for exclude in (compose.get("exclude") or []):
         if not isinstance(exclude, dict):
             continue
         exc_system = exclude.get("system", "")
@@ -1298,7 +1315,7 @@ def expand_intensional_value_set(
                 if raw is None or not str(raw).strip():
                     continue
                 excluded.add((canonical_exc, str(raw)))
-        for filt in exclude.get("filter", []):
+        for filt in (exclude.get("filter") or []):
             if not isinstance(filt, dict):
                 continue
             prop = filt.get("property", "")
@@ -1392,13 +1409,23 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
         # this, the singleton would lazily initialize from env vars on first
         # $search call — fine in production but breaks test isolation (one
         # test's loaded indexes pollute the next test's "should be 503" case).
+        from medterm4ds.services import search as _search_service_module
         from medterm4ds.services.search import configure_search_service
+        # EV05-QA-02: remember the pre-existing singleton so shutdown can
+        # restore it. Without the restore, this app's pinned index dir
+        # (a nonexistent dir in test fixtures) poisons every later
+        # get_search_service() consumer in the same process — an
+        # order-dependent failure of tests/test_extraction.py gates.
+        _prior_search_service = _search_service_module._service
         configure_search_service(search_index_dir=app_settings.search_index_dir)
         _log_startup_banner(app_settings, bm25_summary, pf_summary)
         try:
             yield
         finally:
             app.state.ready = False
+            # EV05-QA-02: restore the singleton this app replaced (None when
+            # there was none — lazy rebuild from env on next use).
+            _search_service_module._service = _prior_search_service
             # wait=True so any in-flight DuckDB / NER call finishes before
             # con.close() runs. cancel_futures=True cancels queued work; the
             # running future is uncancellable, so without wait=True the
@@ -2489,8 +2516,11 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
                         value_set_body = _extract_valueset_from_parameters(
                             body_resource,
                         )
+                # EV06-QA-03: route through _expand_with_params_echo so the
+                # batch path emits the same expansion.params echo as every
+                # direct $expand route (single-vs-batch parity, R4 §4.9.2).
                 payload = await _run_db(
-                    executor, _do_expand, engine,
+                    executor, _expand_with_params_echo, engine,
                     url=url_param, filter_text=filter_text, count=count,
                     system_uri=system_uri, value_set=value_set_body,
                     offset=offset_val, active_only=active_only_val,
@@ -5197,6 +5227,13 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
         not_ready = _check_ready(request)
         if not_ready is not None:
             return not_ready
+        # EV05-QA-04: reject unknown query params (EA family, U3 fix shape).
+        try:
+            reject_unknown_query_params(
+                request, _SEARCH_KNOWN_PARAMS, "$search",
+            )
+        except ValueError as exc:
+            return _fhir_error_response(request, 400, str(exc))
         # QC-122: min_length=1 only rejects the empty string — whitespace-only
         # queries passed through and returned confidently-ranked anchors.
         if not query.strip():
@@ -5271,6 +5308,19 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
         not_ready = _check_ready(request)
         if not_ready is not None:
             return not_ready
+        # EV05-QA-04: reject unknown query params (EA family, U3 fix shape).
+        try:
+            reject_unknown_query_params(
+                request, _EXTRACT_KNOWN_PARAMS, "$extract",
+            )
+        except ValueError as exc:
+            return _fhir_error_response(request, 400, str(exc))
+        # EV05-QA-05 (QC-122 parity): whitespace-only text passes
+        # min_length=1 and burns a full NER pass to return an empty Bundle.
+        if not text.strip():
+            return _fhir_error_response(
+                request, 400, "text must not be empty or whitespace-only.",
+            )
         # QA-005: validate annotationFields pre-NER via the canonical
         # normalizer (ValueError -> 400), so garbage fails in milliseconds
         # like the other enum params instead of a 500 from the executor.
@@ -5300,7 +5350,11 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
             resultTypes, mode, minGrade, includeNegated, includeUncertain,
             includeHistorical, includeFamily, annotation_fields,
         )
-        return _fhir_response(request, payload)
+        # EV05-QA-01 (2026-11-12): route through _respond like $search —
+        # _do_extract's ValueError/RuntimeError wrapper returns a
+        # request-less _fhir_error Response, which _fhir_response would
+        # json.dumps into a TypeError 500 plaintext.
+        return _respond(request, payload)
 
     @app.post("/fhir/CodeSystem/$extract")
     async def extract_post(request: Request, body: dict[str, Any]):
@@ -5344,6 +5398,12 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
         text = params.get("text")
         if not text:
             return _fhir_error_response(request, 400, "text is required.")
+        # EV05-QA-05 (QC-122 parity): whitespace-only text is truthy and
+        # burns a full NER pass to return an empty Bundle.
+        if not text.strip():
+            return _fhir_error_response(
+                request, 400, "text must not be empty or whitespace-only.",
+            )
         if len(text) > MAX_EXTRACT_TEXT_CHARS:
             return _fhir_error_response(
                 request,
@@ -5406,7 +5466,9 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
             bools.get("includeFamily", False),
             annotation_fields,
         )
-        return _fhir_response(request, payload)
+        # EV05-QA-01 (2026-11-12): see extract_get — wrapped error
+        # Responses must pass through _respond, not _fhir_response.
+        return _respond(request, payload)
 
     def _validate_annotation_fields_param(request, value):
         """QA-005: normalize+validate annotationFields via the canonical
@@ -5429,19 +5491,31 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
 
         ner_labels = ner_labels_str.split(",") if ner_labels_str else None
         result_types = result_types_str.split(",") if result_types_str else None
-        results = extract_service(
-            text,
-            format=fmt,
-            ner_labels=ner_labels,
-            result_types=result_types,
-            mode=mode,
-            min_grade=min_grade,
-            include_negated=include_negated,
-            include_uncertain=include_uncertain,
-            include_historical=include_historical,
-            include_family=include_family,
-            annotation_fields=annotation_fields,
-        )
+        # EV05-QA-01 fix (2026-11-11 evolution): the service-delegation
+        # wrapper its sibling _do_search has had since QC-123/QC-137 —
+        # extraction raises ValueError for input validation (bogus
+        # resultTypes, invalid minGrade, annotation fields) and the search
+        # service raises RuntimeError on artifact failures; without the
+        # wrapper any span-bearing extract surfaces as an uncaught 500
+        # with a plaintext non-FHIR body (sibling-parity family).
+        try:
+            results = extract_service(
+                text,
+                format=fmt,
+                ner_labels=ner_labels,
+                result_types=result_types,
+                mode=mode,
+                min_grade=min_grade,
+                include_negated=include_negated,
+                include_uncertain=include_uncertain,
+                include_historical=include_historical,
+                include_family=include_family,
+                annotation_fields=annotation_fields,
+            )
+        except ValueError as exc:
+            return _fhir_error(400, str(exc))
+        except RuntimeError as exc:
+            return _fhir_error(503, str(exc))
 
         # format="annotated" returns a dict, not a list. QC-151: the dict's
         # "concepts" holds raw ExtractedConcept dataclasses that json.dumps
@@ -5790,7 +5864,7 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
             cc = param.get("valueCodeableConcept")
             if not isinstance(cc, dict):
                 continue
-            for coding in cc.get("coding", []):
+            for coding in (cc.get("coding") or []):  # QC-245: explicit null ≠ absent
                 if not isinstance(coding, dict):
                     continue
                 system = coding.get("system")
@@ -5830,7 +5904,7 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
             if not isinstance(cc, dict):
                 continue
             pairs: list[tuple[str, str]] = []
-            for coding in cc.get("coding", []):
+            for coding in (cc.get("coding") or []):  # QC-245: explicit null ≠ absent
                 if not isinstance(coding, dict):
                     continue
                 system = coding.get("system")

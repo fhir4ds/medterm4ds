@@ -469,6 +469,55 @@ def test_resolve_accepts_resolve_mode_kwarg():
     assert result_default.status == "active"
 
 
+def test_resolve_rejects_invalid_source_and_code_ev04qa01():
+    """Regression for EV04-QA-01 (MEDIUM): resolve surface lacked the EC-19
+    validators.
+
+    Pre-fix, the EC-19/QC-422 canonical validators
+    (``validate_source_sab``/``validate_code_nonempty``) were wired into
+    lookup/mapping/patient_friendly but NOT the resolve surface:
+    ``mt.lookup("", "E11")`` raised a loud ValueError while the SAME input
+    through ``mt.resolve(...)`` returned a success-shaped
+    ``status='not_found'`` CodeResolution row. The fix validates at the
+    ``effective_code_refs`` service boundary (single-vs-batch semantics
+    mirroring lookup.py / QC01-001).
+    """
+    terms = mt.Terminology(StaticTerminologyEngine())
+
+    # Empty source
+    with pytest.raises(ValueError):
+        terms.resolve("", "E11.9")
+    # URI/OID-form source
+    with pytest.raises(ValueError):
+        terms.resolve("urn:oid:1.2.3.4", "E11.9")
+    # Empty code
+    with pytest.raises(ValueError):
+        terms.resolve("ICD10CM", "")
+    # Whitespace-only code
+    with pytest.raises(ValueError):
+        terms.resolve("ICD10CM", "   ")
+
+
+def test_resolve_batch_isolates_invalid_elements_ev04qa01(caplog):
+    """EV04-QA-01 / QC01-001 batch semantics: one bad element must not reject
+    the whole resolve batch — invalid elements become not-found-shaped rows
+    with a WARNING naming the first offender; single-code calls keep the hard
+    ValueError."""
+    import logging as _logging
+
+    terms = mt.Terminology(StaticTerminologyEngine())
+    with caplog.at_level(_logging.WARNING, logger="medterm4ds.services.resolution"):
+        rows = terms.resolve(
+            [("ICD10CM", ""), ("urn:oid:1.2.3.4", "E11.9"), ("ICD10CM", "E11.9")]
+        )
+    assert len(rows) == 3  # length preserved, good siblings survive
+    assert rows[2].input.code == "E11.9"
+    assert rows[2].status == "active"
+    assert any(
+        "batch elements invalid" in r.message for r in caplog.records
+    )
+
+
 def test_coderef_rejects_none_source_or_code():
     """Regression for QC-003 (EDGE_CASE LOW): CodeRef(None, 'x') silently str()'d.
 

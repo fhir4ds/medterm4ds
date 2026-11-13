@@ -5,7 +5,7 @@ FRESH EVIDENCE — live probes executed this run; no prior-run results
 cited.
 
 Scope: FHIR R4 §4.9.12 declares the $expand In-parameter matrix (url,
-valueSet, context, contextTac, filter, date, offset, count,
+valueSet, context, contextDirection, filter, date, offset, count,
 includeDesignations, designation, includeDefinition, activeOnly,
 excludeNested, excludeNotForUI, excludePostCoordinated, displayLanguage,
 property, useSupplement). This server binds a subset and silently drops
@@ -16,7 +16,7 @@ the contract under test.
 EA (MEDIUM, NEW) — accepted-then-silently-dropped In-params.
     GET: includeDesignations / designation / includeDefinition /
     excludeNested / excludeNotForUI / excludePostCoordinated /
-    displayLanguage / property / context / contextTac all return 200
+    displayLanguage / property / context / contextDirection all return 200
     with byte-identical expansions to the un-parameterized baseline;
     ARBITRARY unknown params (bogusParam=1) also 200 (FastAPI drops
     undeclared Query params). POST Parameters bodies: same set parsed
@@ -73,7 +73,7 @@ class TestEAInParamsSilentlyDropped:
             ("displayLanguage", "fr"),
             ("property", "designation"),
             ("context", "urn:fake:ctx"),
-            ("contextTac", "loinc"),
+            ("contextDirection", "incoming"),
         ],
     )
     def test_e10_get_in_param_no_effect(

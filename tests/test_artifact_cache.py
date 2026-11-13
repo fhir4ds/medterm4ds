@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import importlib
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -139,6 +140,187 @@ class TestProvenanceAndRefresh:
         ac.cache_refresh(revision=None)
         assert not (stale / "stale.bin").exists()
         assert (stale / "fresh.bin").exists()
+
+    def test_refresh_mid_swap_failure_leaves_no_provenance(
+        self, monkeypatch, tmp_path
+    ):
+        """CR-SHOULD-FIX-1: a raise between family swaps must NOT leave the
+        OLD provenance marker over a mixed-revision cache. The marker is
+        unlinked before the swap loop, so a partially-swapped cache is
+        detectable by its missing marker ("refresh incomplete")."""
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        _reload_search(monkeypatch, revision="vM-swap")
+        import medterm4ds.core.artifact_cache as ac
+
+        root = tmp_path / ".cache" / "medterm4ds" / "vM-swap"
+        fam = root / "canonical"
+        fam.mkdir(parents=True)
+        (fam / "existing.bin").write_bytes(b"keep")
+        (root / ac.PROVENANCE_FILENAME).write_text('{"revision": "old"}')
+
+        import huggingface_hub
+
+        def fake_snapshot(*, local_dir, allow_patterns, **kw):
+            for pattern in allow_patterns:
+                sub = Path(local_dir) / pattern.rstrip("/*")
+                sub.mkdir(parents=True, exist_ok=True)
+                (sub / "fresh.bin").write_bytes(b"new")
+            return local_dir
+
+        monkeypatch.setattr(huggingface_hub, "snapshot_download", fake_snapshot)
+
+        real_replace = os.replace
+        calls = []
+
+        def flaky_replace(src, dst):
+            calls.append(dst)
+            if len(calls) == 2:
+                raise OSError("simulated kill mid-swap")
+            return real_replace(src, dst)
+
+        monkeypatch.setattr(ac.os, "replace", flaky_replace)
+        with pytest.raises(OSError, match="simulated kill mid-swap"):
+            ac.cache_refresh(revision=None)
+        # First family was swapped to the new revision, the rest stay old —
+        # a mixed cache — but the stale marker is GONE (observable, not
+        # silently mislabeled).
+        assert not (root / ac.PROVENANCE_FILENAME).exists()
+        assert not [
+            p for p in root.parent.iterdir() if p.name.startswith(".refresh-")
+        ]
+
+
+    def test_refresh_download_failure_preserves_cache(self, monkeypatch, tmp_path):
+        """EV07-QA-01: a failing snapshot_download must leave the existing
+        families and provenance marker untouched (delete-first was the
+        hazard) and clean up the staging dir."""
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        _reload_search(monkeypatch, revision="vW-fail")
+        import medterm4ds.core.artifact_cache as ac
+
+        root = tmp_path / ".cache" / "medterm4ds" / "vW-fail"
+        fam = root / "canonical"
+        fam.mkdir(parents=True)
+        (fam / "existing.bin").write_bytes(b"keep")
+        (root / ac.PROVENANCE_FILENAME).write_text('{"revision": "old"}')
+
+        import huggingface_hub
+
+        def boom(**kw):
+            raise RuntimeError("hub unreachable")
+
+        monkeypatch.setattr(huggingface_hub, "snapshot_download", boom)
+        with pytest.raises(RuntimeError, match="hub unreachable"):
+            ac.cache_refresh(revision=None)
+        assert (fam / "existing.bin").read_bytes() == b"keep"
+        prov = json.loads((root / ac.PROVENANCE_FILENAME).read_text())
+        assert prov["revision"] == "old"
+        assert not [
+            p for p in root.parent.iterdir() if p.name.startswith(".refresh-")
+        ]
+
+    def test_refresh_empty_download_preserves_cache(self, monkeypatch, tmp_path):
+        """EV07-QA-01: huggingface_hub silently "returns the existing
+        local_dir" when the hub is unreachable — a download that produced
+        no family dirs must fail loud, never rewrite provenance."""
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        _reload_search(monkeypatch, revision="vW-empty")
+        import medterm4ds.core.artifact_cache as ac
+
+        root = tmp_path / ".cache" / "medterm4ds" / "vW-empty"
+        fam = root / "canonical"
+        fam.mkdir(parents=True)
+        (fam / "existing.bin").write_bytes(b"keep")
+        (root / ac.PROVENANCE_FILENAME).write_text('{"revision": "old"}')
+
+        import huggingface_hub
+
+        def silent_noop(**kw):
+            return kw["local_dir"]
+
+        monkeypatch.setattr(huggingface_hub, "snapshot_download", silent_noop)
+        with pytest.raises(RuntimeError, match="family dir"):
+            ac.cache_refresh(revision=None)
+        assert (fam / "existing.bin").read_bytes() == b"keep"
+        prov = json.loads((root / ac.PROVENANCE_FILENAME).read_text())
+        assert prov["revision"] == "old"
+
+    def test_refresh_rejects_split_with_terminology(self, monkeypatch, tmp_path):
+        """EV07-QA-12: --split + --terminology is a flag conflict — the
+        split branch previously returned before consulting the flag,
+        silently dropping the terminology refresh.
+        EV03-QA-05 (2026-11-12): the mutex raises RuntimeError (an
+        operational conflict), NOT ValueError — @_data_cli_errors
+        deliberately lets ValueErrors (programming bugs) escape as
+        tracebacks, so a ValueError here dumped a raw traceback from the
+        CLI (the exact QC-445 shape the envelope exists to prevent)."""
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        _reload_search(monkeypatch, revision="vX-mut")
+        import medterm4ds.core.artifact_cache as ac
+
+        with pytest.raises(RuntimeError, match="mutually exclusive"):
+            ac.cache_refresh(split=True, terminology=True)
+
+    def test_split_terminology_mutex_enveloped_by_cli(
+        self, monkeypatch, tmp_path
+    ):
+        """EV03-QA-05: through the CLI runner the mutex must surface as a
+        clean SystemExit one-liner, never a raw ValueError traceback."""
+        import argparse
+
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        _reload_search(monkeypatch, revision="vX-mut2")
+        from medterm4ds.apps import cli
+
+        args = argparse.Namespace(
+            revision=None, split=True, data_revision=None, terminology=True
+        )
+        with pytest.raises(SystemExit, match="mutually exclusive"):
+            cli.run_data_cache_refresh(args)
+
+    def test_terminology_refresh_restores_after_renames_then_fails(
+        self, monkeypatch, tmp_path
+    ):
+        """EV03-QA-04 (HIGH): when download() renames tmp→base and THEN
+        fails its own resolve, the except-path restore must be
+        UNCONDITIONAL — base holds the failed download's junk, and the
+        operator's good release is stranded in .stale-* unless that junk
+        is cleared before restoring."""
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setenv("MEDTERM4DS_LAYOUT", "terminology")
+        monkeypatch.setenv("MEDTERM4DS_TERMINOLOGY_RELEASE", "2099.01.01.1")
+        _reload_search(monkeypatch, revision="vT-stale")
+        import medterm4ds.core.artifact_cache as ac
+        import medterm4ds.core.terminology as term
+        import medterm4ds.services.search as search_mod
+
+        root = search_mod._terminology_root()
+        base = term.base_dir(root)
+        base.mkdir(parents=True)
+        (base / "good.txt").write_text("good release")
+
+        def renames_then_fails(dl_root):
+            # Reproduce the historian shape: download() swaps its (junk)
+            # tmp dir onto base BEFORE its own resolve check raises.
+            if base.exists():
+                import shutil as _shutil
+
+                _shutil.rmtree(base)
+            base.mkdir(parents=True)
+            (base / "junk.bin").write_bytes(b"x")
+            raise term.TerminologyLayoutError(
+                f"download completed but release is not resolvable at {base}"
+            )
+
+        monkeypatch.setattr(term, "download", renames_then_fails)
+        with pytest.raises(term.TerminologyLayoutError, match="not resolvable"):
+            ac.cache_refresh(terminology=True)
+        # The good release is back at base, junk gone, no .stale leftover.
+        assert (base / "good.txt").read_text() == "good release"
+        assert not (base / "junk.bin").exists()
+        assert not [
+            p for p in base.parent.iterdir() if p.name.startswith(".stale-")
+        ]
 
 
 class TestCacheInfo:

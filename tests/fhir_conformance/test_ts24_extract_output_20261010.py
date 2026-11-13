@@ -70,27 +70,32 @@ class TestXA1UnknownParamsExtractSearch:
     """XA1 — W4's op tail #3: extract/search."""
 
     def test_x10_extract_bogus_param(self, fhir_client):
-        """bogusParam on $extract GET → 200 (unknown-param rejection
-        never reached this op). Flip when _EXTRACT_KNOWN_PARAMS
-        lands."""
+        """EV-05 pin flip: _EXTRACT_KNOWN_PARAMS landed — bogusParam
+        on $extract GET now 400s naming the param."""
         r = fhir_client.get(
             "/fhir/CodeSystem/$extract",
             params={"text": "diabetes", "bogusParam": "1"},
         )
-        assert r.status_code == 200
+        assert r.status_code == 400
+        assert r.headers["content-type"].startswith("application/fhir+json")
+        assert r.json()["resourceType"] == "OperationOutcome"
+        assert "bogusParam" in r.json()["issue"][0]["diagnostics"]
 
     def test_x11_extract_bogus_engine(self, fhir_client):
-        """engine=bogus on $extract → 200 (enum unguarded — G2's shape
-        on the extract op). Flip with the known-set + enum check."""
+        """EV-05 pin flip: engine is not an $extract param — now 400
+        via the known-set check (was the unguarded-enum 200)."""
         r = fhir_client.get(
             "/fhir/CodeSystem/$extract",
             params={"text": "diabetes", "engine": "bogus"},
         )
-        assert r.status_code == 200
+        assert r.status_code == 400
+        assert r.headers["content-type"].startswith("application/fhir+json")
+        assert r.json()["resourceType"] == "OperationOutcome"
+        assert "engine" in r.json()["issue"][0]["diagnostics"]
 
     def test_x12_search_bogus_param(self, fhir_client):
-        """bogusParam on $search GET → 200. Flip with
-        _SEARCH_KNOWN_PARAMS."""
+        """EV-05 pin flip: _SEARCH_KNOWN_PARAMS landed — bogusParam
+        on $search GET now 400s naming the param."""
         r = fhir_client.get(
             "/fhir/CodeSystem/$search",
             params={
@@ -99,7 +104,10 @@ class TestXA1UnknownParamsExtractSearch:
                 "bogusParam": "1",
             },
         )
-        assert r.status_code == 200
+        assert r.status_code == 400
+        assert r.headers["content-type"].startswith("application/fhir+json")
+        assert r.json()["resourceType"] == "OperationOutcome"
+        assert "bogusParam" in r.json()["issue"][0]["diagnostics"]
 
 
 class TestXA2FilterSpellings:

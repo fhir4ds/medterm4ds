@@ -7,6 +7,132 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.12] - 2026-11-11
+
+### Changed
+
+- **Terminology default release 2026.11.12.2** (encoder space unchanged,
+  `esp_f6c5c18d5f3ee3b5`): supersedes 2026.11.11.1, which carried a
+  plain-`pain` anchor regression — bare "pain" resolves to the bare LOINC
+  `Pain` (LP75331-6) anchor at 1.0 again, with "Chronic Pain" in the
+  symptom-filtered set.
+- **HF Space repointed to the terminology release layout**: the demo
+  container provisions search/extract artifacts from
+  `fhir4ds/terminology` releases (`MEDTERM4DS_LAYOUT=terminology` +
+  `MEDTERM4DS_TERMINOLOGY_DIR` on the persistent volume) instead of the
+  legacy per-dir pins; the Dockerfile no longer `COPY`s the gitignored
+  `scripts/` tree (clean-checkout docker builds work again), and the
+  unused `rank-bm25` requirement was dropped. Patient-friendly JSON
+  reports still come from `joelmontavon/medterm4ds-data` (they are
+  release reports, not terminology artifacts).
+- **New `--version` flag** on the CLI (single-sourced from
+  `medterm4ds.__version__`); MCP `health()` now reports `version`,
+  terminology-release pinned/default source, and embedding-model-dir pin
+  state.
+
+### Fixed
+
+- **Extraction correctness**: conjunction-split parts ("CBC with differential") no
+  longer resolve to inverted ("WITHOUT Differential") anchors on any of
+  the three paths; the legacy single-span canonical path now routes
+  through the same tie rule / ConText lab override / qualifier-abstention
+  logic as batches (same span can no longer resolve LAB alone and
+  MEDICATION in a batch); W/O qualifier folding is case-insensitive
+  ("CBC W/O Differential").
+- **Canonical search**: `canonical()` alias hits now return the merged
+  alias+embedding candidate list (deduped, count-capped) matching the
+  batch path — `$search?query=HLD` returns the full page, not 1 row;
+  `canonical_batch` runs the embedding-space consistency check and the
+  group-dictionary pass it was missing; the ancestor-fallback source
+  filter widens source aliases (SNOMED↔SNOMEDCT_US, RXNORM↔ATC,
+  LNC↔LOINC) up front via one shared map
+  (`core.normalize.SOURCE_SAB_ALIASES`).
+- **FHIR**: `$extract` wraps service ValueError/RuntimeError as 400/503
+  OperationOutcomes (was 500 text/plain); the LOINC SAB spelling in
+  canonical artifacts no longer leaks as a raw `Coding.system` (mapped
+  through the URI alias); the concepts-space check latch can no longer
+  be permanently skipped by one transient failure.
+- **CLI safety**: `data cache-refresh` stages downloads before swapping
+  (an offline failure no longer deletes cache families and report
+  success; a partial swap is detectable by a missing provenance
+  marker); `--db` directory/missing paths, bulk numeric knobs
+  (`--batch-size 0` etc.), and athena commands all fail with clean
+  diagnostics; extract/search wrap RuntimeError cleanly; `--split` +
+  `--terminology` are rejected as mutually exclusive.
+- **MCP/Athena**: `athena_subsumes` refuses athena-less databases
+  before the equal-ids short-circuit (no fabricated "equivalent");
+  `athena_descendants`/`ancestors` validate limit/max_depth loudly;
+  `discover` rejects out-of-range depth instead of silently clamping.
+
+### Added
+
+- Python version classifiers (3.10–3.13) in package metadata.
+- Regression coverage across this release's fixes (unit + conformance
+  suites; the full FHIR conformance suite now stands at 8124 passed /
+  0 failed).
+
+### Post-release hardening (2026-11-12)
+
+Follow-up fixes shipped after the initial 0.0.12 publication. No API,
+data, or version changes — the default terminology release is
+2026.11.12.2 (the entry above originally stated 2026.11.12.1; corrected).
+
+- **FHIR API robustness**: `$extract` GET and POST error paths return
+  proper FHIR OperationOutcomes instead of failing as internal server
+  errors; unknown query parameters on `$search` and `$extract` are
+  rejected with a 400 OperationOutcome instead of silently ignored;
+  whitespace-only `$extract` text returns 400; `$expand` tolerates null
+  compose list fields (`include`/`concept`/`filter`/`exclude`) and null
+  `coding` arrays in submitted ValueSets without crashing; batch
+  `$expand` echoes `expansion.params` like the single-request path; an
+  invented `contextTac` parameter is now classified as unknown while the
+  spec's `contextDirection` is honored.
+- **Canonical search determinism**: single-request canonical search no
+  longer depends on index layout when candidates tie exactly at the
+  count boundary (methotrexate resolves to the medication consistently
+  at count=1, matching batch and larger-count results); vaccine-class
+  twin concepts keep their class-anchor priority; tie detection in
+  extraction shares one tolerance across layers, so last-digit float
+  noise can no longer defeat the lab-override rule.
+- **Extraction (NER) fixes**: Title-case "Without" (LOINC style) now
+  triggers the without-qualifier inversion guard instead of bypassing
+  it; "and/or" conjunctions resolve both parts ("CBC and/or CMP") with
+  no wasted lookups; "w/o" and "w/" abbreviations are folded on both
+  sides of the inversion detector.
+- **Resolve/lookup validation**: `client.resolve()` and every consumer
+  surface now share the same empty/whitespace source and code
+  diagnostics — single calls fail loudly, batches isolate the bad entry
+  with a warning; a batch containing one NDC code no longer flips
+  active-only suppression for other same-source obsolete codes in the
+  same batch; mapping lookups reject null or non-string entries with a
+  clear error.
+- **Terminology cache safety**: a failed `data cache-refresh` download
+  restores the previous good release unconditionally (the good release
+  can no longer be left stranded under a staging name); split-layout
+  data downloads swap per unit, so a bad data-revision pin or a partial
+  new-revision download cannot destroy sibling revisions; `--split` +
+  `--terminology` together exit with a clean error; whitespace-only
+  release/dir pins are treated as unset; a symlinked cache base
+  directory fails with a clear error naming the path; the demo Space
+  honors its terminology layout pin from first start.
+- **CLI hardening**: a corrupt or non-DuckDB `--db` file fails with
+  "is not a valid DuckDB database file" on every read command; queries
+  against a database missing its derived tables now suggest the build
+  command instead of a raw traceback; `--max-results-per-code` rejects
+  zero/negative values before any work starts.
+- **MCP tools**: `search_athena_concepts` checks that athena vocabulary
+  tables exist before probing vocabularies; `health()` no longer runs
+  database probes on the caller's thread and reports an athena-less
+  database as absent rather than failing; evidence-domain tools
+  validate query and limit inputs before any client construction (no
+  work happens for rejected calls); non-string sources (e.g. a list)
+  are rejected at the shared validation boundary; `athena_descendants`
+  `max_depth` and `discover`'s canonical source are validated loudly.
+- **Packaging/docs**: README release tag corrected to 2026.11.12.2,
+  matching the default terminology release served by the code; package
+  version metadata verified consistent; the demo container builds from
+  a clean checkout.
+
 ## [0.0.11] - 2026-11-09
 
 ### Changed
@@ -27,7 +153,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   generic `Ventricular Hypertrophy`, and `Upper respiratory infection`
   keeps its concept; `Bilateral pneumonia` still resolves via the
   fallback.
-- **Composed-sibling parity** (evolution D1): `Bilateral pneumonia with
+- **Composed-sibling parity**: `Bilateral pneumonia with
   sepsis.` emits both mentions — the sibling fallback now applies the
   qualifier variant per fragment.
 - Corpora ratchet tooling moved to `tests/corpora/tools/` so clean

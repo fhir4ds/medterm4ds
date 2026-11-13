@@ -33,7 +33,7 @@ logger = logging.getLogger(__name__)
 
 TERMINOLOGY_DIRNAME = "terminology"
 DEFAULT_TERMINOLOGY_REPO_ID = "fhir4ds/terminology"
-DEFAULT_TERMINOLOGY_RELEASE = "2026.11.08.1"
+DEFAULT_TERMINOLOGY_RELEASE = "2026.11.12.2"
 
 # Canonical render policy of the published release. It is a property of the
 # canonical build that produced the embedded texts (docs/plans/
@@ -81,7 +81,14 @@ def repo_id() -> str:
 
 
 def release() -> str:
-    return os.getenv("MEDTERM4DS_TERMINOLOGY_RELEASE", DEFAULT_TERMINOLOGY_RELEASE)
+    # EV03-QA-01 fix (2026-11-11 evolution): an explicitly-set but EMPTY
+    # env var is "unset", not a pin — `os.getenv(...) or DEFAULT` mirrors
+    # the embedding-space knob's fail-loud/empty semantics instead of
+    # silently diverging from DEFAULT_TERMINOLOGY_RELEASE.
+    # EV03-QA-02 (2026-11-12): WHITESPACE-only is also unset — strip
+    # before the empty check (mirrors MEDTERM4DS_LAYOUT normalization).
+    pinned = (os.getenv("MEDTERM4DS_TERMINOLOGY_RELEASE") or "").strip()
+    return pinned or DEFAULT_TERMINOLOGY_RELEASE
 
 
 def release_explicitly_pinned() -> bool:
@@ -91,8 +98,9 @@ def release_explicitly_pinned() -> bool:
     fetched and served even when a servable legacy/split cache exists
     locally (otherwise the pin silently falls through to the local
     artifacts — seen live during the 2026.11.05.1 flip, 2026-11-05).
+    Whitespace-only counts as unset (EV03-QA-02).
     """
-    return bool(os.getenv("MEDTERM4DS_TERMINOLOGY_RELEASE"))
+    return bool((os.getenv("MEDTERM4DS_TERMINOLOGY_RELEASE") or "").strip())
 
 
 def render_policy_version() -> str:
@@ -105,7 +113,8 @@ def base_dir(
     cache_root: Path, rel: str | None = None
 ) -> Path:
     """Local directory holding release dirs for a cache root."""
-    override = os.getenv("MEDTERM4DS_TERMINOLOGY_DIR")
+    # EV03-QA-02: whitespace-only override is unset (strip before check).
+    override = (os.getenv("MEDTERM4DS_TERMINOLOGY_DIR") or "").strip() or None
     if override:
         return Path(override)
     return Path(cache_root) / TERMINOLOGY_DIRNAME / (rel or release())
@@ -167,7 +176,11 @@ def _verify_space(paths: TerminologyPaths) -> None:
     if declared != paths.space_id:
         raise TerminologyLayoutError(
             f"terminology manifest declares model space {declared!r} but the "
-            f"model directory is {paths.space_id!r}"
+            f"model directory is {paths.space_id!r}. The serving space and "
+            "the release's encoder must agree — pin "
+            "MEDTERM4DS_EMBEDDING_SPACE to the release's declared space "
+            "(or update DEFAULT_SERVING_EMBEDDING_SPACE alongside the "
+            "release rotation)."
         )
     try:
         fp = fingerprint_model_dir(
@@ -269,6 +282,16 @@ def download(
         space_id = effective_embedding_space()
     rel = rel or release()
     base = base_dir(cache_root, rel)
+    if base.is_symlink() and not is_present(base):
+        # EV03-QA-03 (2026-11-12): mirror atomic_rename_dir's refusal —
+        # a manifest-less or dangling symlinked base would crash the
+        # inline swap with an opaque OSError/NotADirectoryError and leave
+        # a .tmp-* staging dir behind. (A symlink to a VALID release
+        # resolves through the link above and never reaches here.)
+        raise TerminologyLayoutError(
+            f"terminology release base {base} is a symlink — refusing to "
+            "rmtree through it. Remove the symlink and re-provision."
+        )
     if is_present(base):
         resolved = resolve(cache_root, space_id=space_id, rel=rel)
         if resolved is not None:

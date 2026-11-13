@@ -150,22 +150,46 @@ class McpRuntime:
         self.engine = None
 
     def health(self) -> dict[str, Any]:
+        import medterm4ds
+        from medterm4ds.core.terminology import (
+            DEFAULT_TERMINOLOGY_RELEASE,
+            release_explicitly_pinned,
+        )
+
         base = {
+            # EV08-QA-04 (MEDIUM): QC-487 version parity with the api/
+            # fhir /health surfaces (single-sourced from __version__).
+            "version": medterm4ds.__version__,
             "status": "ok" if self.ready else "starting",
             "ready": self.ready,
             "database": str(self.settings.db_path),
             "sources": list(self.settings.sources),
             "memory_profile": self.settings.memory_profile,
             "cache_prepared": bool(self.engine.cache_prepared) if self.engine else False,
+            # EV08-QA-04: cheap pin observability for the v0.0.12
+            # rotation knobs (pairs with EV07-QA-11 in artifact_cache)
+            # — env reads only, no network/IO. health() stays pure dict
+            # assembly over Python attributes (no DB access), so it can
+            # safely bypass the db_executor (QC-207) — the athena probe
+            # below is the ONE DB-touching piece and is routed through
+            # the executor by the MCP health tool wrapper instead.
+            "terminology_release_source": (
+                "pinned (MEDTERM4DS_TERMINOLOGY_RELEASE)"
+                if release_explicitly_pinned()
+                else f"default ({DEFAULT_TERMINOLOGY_RELEASE})"
+            ),
+            "embedding_model_dir_pinned": bool(
+                os.getenv("MEDTERM4DS_EMBEDDING_MODEL_DIR")
+            ),
         }
-        # Design §2 + HH1 doctrine: the athena block reports LIVE
-        # table facts (present/vocabularies/loaded_at), only when
-        # the runtime is ready — configured-vs-live made explicit.
-        if self.ready:
-            try:
-                base["athena"] = self.athena_health()
-            except Exception:  # noqa: BLE001 — health never throws
-                base["athena"] = {"present": False}
+        # EV08-QA-04 (MEDIUM, run-2): the athena block (design §2 + HH1
+        # doctrine: live table facts, only when ready) previously ran
+        # inside health() on the caller thread — real DB I/O bypassing
+        # the single-worker db_executor (QC-234/EC-18) while the QC-207
+        # comments claimed "no DB access". It now lives in the MCP
+        # health tool wrapper, which awaits it via _run_db; in-process
+        # consumers call athena_health() directly. health() itself never
+        # touches the database.
         return base
 
     def athena_health(self) -> dict[str, Any]:
@@ -601,10 +625,21 @@ class McpRuntime:
             raise TypeError(
                 f"source must be a string, got {type(source).__name__}"
             )
+        # EV08-QA-03 (LOW): the QC-322 URI/OID guard existed on every
+        # sibling code/source tool but not here — a FHIR system URI got
+        # the service's generic "has no codes in this database" message
+        # instead of the actionable SAB-form diagnostic.
+        _validate_source_sab(source)
         if codes is None or not isinstance(codes, Sequence):
             raise TypeError(
                 f"codes must be a sequence, got {type(codes).__name__}"
             )
+        # EV08-QA-06 (LOW, run-2): codes=[] returned a success-shaped
+        # zero-rule result while every other batch tool raises
+        # "codes must not be empty" (build_code_refs, QC-050/QC-060) —
+        # boundary parity.
+        if not codes:
+            raise ValueError("codes must not be empty")
         for code in codes:
             if not isinstance(code, str):
                 raise TypeError(
@@ -720,6 +755,18 @@ class McpRuntime:
             raise TypeError(f"limit must be an integer, got {type(limit).__name__}")
         if limit < 0:
             raise ValueError("limit must be non-negative")
+        # EV08-QA-06 (LOW, run-2): max_depth=0/-1 silently returned
+        # {'results': []} while the ancestors direction of the same tool
+        # family validates "max_depth must be at least 1" (via
+        # get_code_relations, services/hierarchy.py:46) — intra-family
+        # asymmetry. get_descendants_bfs has no depth validation of its
+        # own (it silently returns [] at depth < 1), so guard here.
+        if not isinstance(max_depth, int) or isinstance(max_depth, bool):
+            raise TypeError(
+                f"max_depth must be an integer, got {type(max_depth).__name__}"
+            )
+        if max_depth < 1:
+            raise ValueError("max_depth must be at least 1")
         results: list[dict[str, Any]] = []
         truncated = False
         for ref in refs:
@@ -825,11 +872,25 @@ def create_mcp_server(
     @mcp.tool()
     async def health() -> dict[str, Any]:
         """Return MCP terminology engine readiness and configuration."""
-        # QC-207 (HIGH): health() is pure dict assembly over Python
-        # attributes (no DB access) — calling it through the single-worker
-        # db_executor made readiness checks queue behind long-running tools
-        # (measured 39.3s behind one LNC optimize). Invoke it directly.
-        return server_runtime.health()
+        # QC-207 (HIGH): the dict assembly in server_runtime.health() is
+        # pure Python-attribute work (no DB access) — call it directly so
+        # readiness never queues behind long-running tools (measured 39.3s
+        # behind one LNC optimize pre-fix).
+        #
+        # EV08-QA-04 (MEDIUM, run-2): the athena probe IS DB I/O
+        # (athena_health → _athena_tables_present + live counts) and
+        # previously ran on the caller thread inside runtime.health(),
+        # silently eroding the QC-234/EC-18 single-worker discipline the
+        # executor exists to enforce. Route just that probe through
+        # _run_db: the readiness fields still answer immediately while a
+        # long tool runs; only the athena block queues behind it.
+        payload = server_runtime.health()
+        if server_runtime.ready:
+            try:
+                payload["athena"] = await _run_db(server_runtime.athena_health)
+            except Exception:  # noqa: BLE001 — health never throws
+                payload["athena"] = {"present": False}
+        return payload
 
     @mcp.tool()
     async def athena_lookup(
@@ -908,7 +969,7 @@ def create_mcp_server(
         source: str,
         resolve_mode: str = "active_only",
         output_format: str = "dict",
-    ) -> dict[str, Any] | str | None:
+    ) -> dict[str, Any] | str:
         """Look up canonical atom information for one clinical code."""
         return await _run_db(server_runtime.lookup_code, code=code, source=source, resolve_mode=resolve_mode, output_format=output_format)
 
@@ -994,6 +1055,9 @@ def create_mcp_server(
         - 'semantic': SapBERT embeddings + FAISS (~100ms). Catches novel phrasings
           like "high blood sugar" → Hyperglycemia.
         - 'hybrid': BM25 retrieve + SapBERT re-rank (~110ms). Best accuracy.
+        - 'canonical': value-set anchored search over the canonical artifacts.
+          Matches consumer-friendly names/abbreviations ('HLD' → Hyperlipidemia)
+          and composite group fan-outs.
 
         result_types: restrict to result categories, e.g. ['condition',
         'medication'] (legacy modes) or canonical result types (canonical
@@ -1003,7 +1067,9 @@ def create_mcp_server(
         legacy LIKE over all sources, limit=25): MCP defaults to
         mode='lexical' (BM25 canonical displays), count=20 (QC-418).
 
-        Each result includes a match_grade: 'certain', 'probable', or 'possible'.
+        Each result includes a match_grade: legacy modes yield 'certain',
+        'probable', or 'possible'; canonical mode yields 'exact', 'probable',
+        'possible', or 'broader' (ancestor fallback matches).
         """
         from medterm4ds.services.search import (
             CANONICAL_RESULT_TYPES,
@@ -1443,18 +1509,29 @@ def _validate_source_sab(source: Any) -> None:
     # record while the FHIR surface answered 422 on the same input. Guard
     # here covers build_code_refs (batch tools) and
     # _validate_single_code_inputs (single-code tools).
-    if isinstance(source, str):
-        if not source.strip():
-            raise ValueError(
-                "source must be a non-empty vocabulary name (UMLS SAB, "
-                f"e.g. SNOMEDCT_US), got {source!r}."
-            )
-        if "://" in source or source.lower().startswith("urn:oid:"):
-            raise ValueError(
-                f"source expects a UMLS SAB string (e.g. SNOMEDCT_US), got "
-                f"{source!r} (looks like a URI/OID). FHIR URIs are not accepted "
-                f"here; use the SAB form."
-            )
+    #
+    # EV08-QA-02 (MEDIUM, run-2): the ``isinstance(source, str)`` wrapper
+    # silently no-op'd on non-string sources — ``source=123`` fell
+    # through to a raw AttributeError inside normalize_source, and
+    # ``source=[]`` was silently accepted into CodeRef. The canonical
+    # guard (core/normalize.py validate_source_sab) now raises TypeError
+    # on non-strings; mirror that here so every source-bearing MCP
+    # surface fails loud with a named parameter.
+    if not isinstance(source, str):
+        raise TypeError(
+            f"source must be a string, got {type(source).__name__}"
+        )
+    if not source.strip():
+        raise ValueError(
+            "source must be a non-empty vocabulary name (UMLS SAB, "
+            f"e.g. SNOMEDCT_US), got {source!r}."
+        )
+    if "://" in source or source.lower().startswith("urn:oid:"):
+        raise ValueError(
+            f"source expects a UMLS SAB string (e.g. SNOMEDCT_US), got "
+            f"{source!r} (looks like a URI/OID). FHIR URIs are not accepted "
+            f"here; use the SAB form."
+        )
 
 
 def _validate_single_code_inputs(*, code: Any, source: Any) -> None:
