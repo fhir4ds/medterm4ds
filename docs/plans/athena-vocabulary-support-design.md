@@ -6,7 +6,8 @@ Campaign: ATHENA VOCABULARY SUPPORT (OMOP pair, medterm4ds side)
 
 ## 0. Source material studied
 
-- Local Athena sample: `/mnt/d/decombustor/omop/CONCEPT.csv` —
+- Local Athena sample (historical development artifact, machine-local
+  path kept for provenance): `/mnt/d/decombustor/omop/CONCEPT.csv` —
   6,313,416 rows; schema `concept_id, concept_name, domain_id,
   vocabulary_id, concept_class_id, standard_concept, concept_code,
   valid_start_date, valid_end_date, invalid_reason`. Vocabulary

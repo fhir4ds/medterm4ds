@@ -136,15 +136,9 @@ class TestSC2OffsetNoOp:
     """SC2 — offset accepted, does nothing."""
 
     def test_sc20_offset_content_identical(self, search_client):
-        """offset=2 vs offset=0: byte-identical top-5 codes. Flip
-        when offset slices (or nonzero offset 400s while
-        unsupported)."""
-        r0 = search_client.get(
-            "/fhir/CodeSystem/$search",
-            params={
-                "query": "diabetes", "searchMode": "lexical", "count": 5,
-            },
-        )
+        """EV-05 pin flip: offset is not an accepted $search param —
+        nonzero offset now 400s via the known-set check (was the
+        accepted-but-no-op 200)."""
         r2 = search_client.get(
             "/fhir/CodeSystem/$search",
             params={
@@ -152,7 +146,10 @@ class TestSC2OffsetNoOp:
                 "count": 5, "offset": 2,
             },
         )
-        assert _codes(r0) == _codes(r2)
+        assert r2.status_code == 400
+        assert r2.headers["content-type"].startswith("application/fhir+json")
+        assert r2.json()["resourceType"] == "OperationOutcome"
+        assert "offset" in r2.json()["issue"][0]["diagnostics"]
 
     def test_sc21_expand_offset_pages_as_contrast(self, search_client):
         """CONTRAST: $expand's offset (QC-241) pages correctly — the

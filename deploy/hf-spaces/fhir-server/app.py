@@ -32,6 +32,14 @@ import shutil
 import tempfile
 from pathlib import Path
 
+# EV03-QA-06 (2026-11-12): set MEDTERM4DS_LAYOUT at MODULE TOP, BEFORE any
+# medterm4ds import can execute (Step 1's data_setup import inside main()
+# pulls in medterm4ds/__init__ → services.search, which freezes its
+# _LAYOUT_ENV sentinel at import time). Setting it only inside
+# _provision_search_artifacts worked on RESTARTS (cached lookup.duckdb
+# returns before any medterm4ds import) but left first starts on "auto".
+os.environ.setdefault("MEDTERM4DS_LAYOUT", "terminology")
+
 # Patient-friendly baseline reports are NOT part of the fhir4ds/terminology
 # release (they are release reports, not terminology artifacts); the legacy
 # dataset remains their distribution channel for this demo Space.
@@ -92,7 +100,9 @@ def _provision_search_artifacts(data_dir: Path) -> None:
     release layout (the 2026-10-31 repoint; see README 'Artifact cache
     layout'). Downloads atomically into /data/terminology/<release>/ and
     pins the layout so the server never falls back to legacy/split."""
-    os.environ["MEDTERM4DS_LAYOUT"] = "terminology"
+    # Redundant with the module-top setdefault (EV03-QA-06) — kept as a
+    # harmless belt-and-braces for anyone importing this function alone.
+    os.environ.setdefault("MEDTERM4DS_LAYOUT", "terminology")
     from medterm4ds.core import terminology as _term
 
     resolved = _term.download(data_dir)

@@ -111,19 +111,16 @@ class TestW2WhitespacePipelineCost:
     """W2 — whitespace-only text pays full pipeline cost."""
 
     def test_w20_whitespace_returns_empty_searchset(self, fhir_client):
-        """Current contract: whitespace runs the pipeline and returns
-        a valid empty searchset (total=0, entry=[]). NOTE: unlike
-        QC-330's valueless omission, entry IS present-and-empty here.
-        WHEN the pre-trim lands, flip to 400 (mirroring empty-string
-        rejection)."""
+        """EV-05 pin flip: the strip() pre-trim landed —
+        whitespace-only text now 400s (mirroring empty-string
+        rejection) instead of running the pipeline for an empty
+        searchset."""
         r = fhir_client.get(
             "/fhir/CodeSystem/$extract", params={"text": "   "}
         )
-        assert r.status_code == 200
-        j = r.json()
-        assert j["resourceType"] == "Bundle"
-        assert j["type"] == "searchset"
-        assert j["total"] == 0
+        assert r.status_code == 400
+        assert r.headers["content-type"].startswith("application/fhir+json")
+        assert r.json()["resourceType"] == "OperationOutcome"
 
 
 class TestW3OperationDefinitionUnresolvable:

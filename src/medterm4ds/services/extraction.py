@@ -586,7 +586,8 @@ def _trailing_form_fallback(text: str) -> str | None:
 # full span first; if it doesn't resolve, we split on conjunctions and search
 # each part. Handles both spaced ("ALT or AST") and unspaced ("ALT/AST") forms.
 _CONJUNCTION_RE = re.compile(
-    r'\s+(?:or|and)\s+'       # " or ", " and " (require spaces)
+    r'\s*(?:and\s*/\s*or|or\s*/\s*and)\s*'  # "and/or" / "or/and" compound
+    r'|\s+(?:or|and)\s+'       # " or ", " and " (require spaces)
     r'|\s*/\s*'                # "/" with optional surrounding spaces (ALT/AST)
     r'|\s*,\s+',              # ", " (comma separator)
     re.IGNORECASE,
@@ -598,6 +599,7 @@ def _split_on_conjunction(text: str) -> list[str] | None:
 
     "ALT or AST" → ["ALT", "AST"]
     "HDL/LDL"    → ["HDL", "LDL"]
+    "CBC and/or CMP" → ["CBC", "CMP"]  # EV01-QA-02: compound conjunction
     "ALT, AST"   → ["ALT", "AST"]
     "metformin"  → None (no conjunction)
 
@@ -2032,13 +2034,20 @@ def _qualifier_inverted(query: str, display: str) -> bool:
     with↔without flip on the SAME qualifier token counts; other tokens
     are irrelevant.
     """
-    qual_re = re.compile(r"\b(without|with)\s+([a-z]{3,})\b", re.IGNORECASE)
-    q_quals = {tok.lower(): q for q, tok in qual_re.findall(query)}
+    # EV01-QA-01: display-side qualifiers are lowercased before the set
+    # compare — LOINC preferred names render Title Case ('Without'), and
+    # {'with', 'Without'} silently passed the inversion guard.
+    # EV01-QA-03: the 'w/'/'w/o' abbreviations fold to with/without the
+    # same way _extract_qualifiers folds them (line ~2516) — the inversion
+    # guard must know the family's full qualifier vocabulary.
+    qual_re = re.compile(r"\b(without|w/o|with|w/)\s+([a-z]{3,})\b", re.IGNORECASE)
+    canon = {"with": "with", "w/": "with", "without": "without", "w/o": "without"}
+    q_quals = {tok.lower(): canon[q.lower()] for q, tok in qual_re.findall(query)}
     if not q_quals:
         return False
     for q, tok in qual_re.findall(display):
         q_tok = q_quals.get(tok.lower())
-        if q_tok is not None and {q_tok, q} == {"with", "without"}:
+        if q_tok is not None and {q_tok, canon[q.lower()]} == {"with", "without"}:
             return True
     return False
 
@@ -2046,6 +2055,17 @@ def _qualifier_inverted(query: str, display: str) -> bool:
 def _result_is_lab(r) -> bool:
     """True when a search result is a canonical lab anchor (VAL-LAB-*)."""
     return (getattr(r, "canonical_id", "") or "").startswith("VAL-LAB-")
+
+
+def _scores_tied(a: float, b: float) -> bool:
+    """Epsilon-based tie detection (EV01-QA-06).
+
+    Shares ONE epsilon definition with the canonical layer
+    (SearchService.CANONICAL_TIE_EPSILON) — exact-float tie compares are
+    defeated by 1-ULP noise between the batch and single embed paths.
+    """
+    from medterm4ds.services.search import SearchService
+    return abs(a - b) < SearchService.CANONICAL_TIE_EPSILON
 
 
 def _result_is_medication(r) -> bool:
@@ -2257,7 +2277,14 @@ def _first_matching_concept(
                 ):
                     continue
                 break
-            if label_pf is None and r.score == chosen.score:
+            # EV01-QA-06: tie detection is score-epsilon based (the canonical
+            # layer's doctrine, 2026-11-12 owner ruling) — exact-float compare
+            # loses to 1-ULP twin noise between the batch and single embed
+            # paths. One epsilon definition, shared with services.search.
+            if (
+                label_pf is None
+                and _scores_tied(r.score, chosen.score)
+            ):
                 # default tie direction: medication wins a cross-type tie
                 if (
                     _result_is_medication(r)

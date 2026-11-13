@@ -110,22 +110,28 @@ class TestSB1UnknownParamsBothTransports:
     """SB1 — $search accepts unknown params everywhere."""
 
     def test_s10_get_unknown_query_param(self, search_client):
-        """GET zzz=1 → 200 (every other op 400s since fixbatch2-4).
-        Flip when _SEARCH_KNOWN_PARAMS lands."""
+        """EV-05 pin flip: _SEARCH_KNOWN_PARAMS landed — GET zzz=1 now
+        400s naming the param."""
         r = search_client.get(
             "/fhir/CodeSystem/$search",
             params={"query": "diabetes", "zzz": "1"},
         )
-        assert r.status_code == 200
+        assert r.status_code == 400
+        assert r.headers["content-type"].startswith("application/fhir+json")
+        assert r.json()["resourceType"] == "OperationOutcome"
+        assert "zzz" in r.json()["issue"][0]["diagnostics"]
 
     def test_s11_get_unknown_mode_like_param(self, search_client):
-        """A second unknown spelling (bogusMode) also 200s. Flip with
-        s10."""
+        """EV-05 pin flip: a second unknown spelling (bogusMode) 400s
+        with s10."""
         r = search_client.get(
             "/fhir/CodeSystem/$search",
             params={"query": "diabetes", "bogusMode": "x"},
         )
-        assert r.status_code == 200
+        assert r.status_code == 400
+        assert r.headers["content-type"].startswith("application/fhir+json")
+        assert r.json()["resourceType"] == "OperationOutcome"
+        assert "bogusMode" in r.json()["issue"][0]["diagnostics"]
 
     def test_s12_post_body_unknown_param(self, search_client):
         """POST body zzz → 200 (FA4 family; $search never got the
@@ -157,14 +163,16 @@ class TestSB2EngineNeverValidated:
     """SB2 — engine param accepted, unvalidated, both transports."""
 
     def test_s20_get_bogus_engine_200(self, search_client):
-        """GET engine=bogus → 200 on the DEFAULT pipeline (XA1 GET
-        pin; kept here as the transport-complete pair). Flip when
-        engine validates (400)."""
+        """EV-05 pin flip: engine is no longer an accepted $search
+        param — GET engine=bogus 400s via the known-set check."""
         r = search_client.get(
             "/fhir/CodeSystem/$search",
             params={"query": "diabetes", "engine": "bogus"},
         )
-        assert r.status_code == 200
+        assert r.status_code == 400
+        assert r.headers["content-type"].startswith("application/fhir+json")
+        assert r.json()["resourceType"] == "OperationOutcome"
+        assert "engine" in r.json()["issue"][0]["diagnostics"]
 
     def test_s21_post_bogus_engine_200(self, search_client):
         """POST body engine=bogus → 200 (NEW this iteration — XA1's

@@ -179,3 +179,77 @@ class TestCodeResolution:
         assert (info.code.source, info.code.code) == ("RXNORM", "860975")
         assert info.name == "24 HR metformin 500 MG Oral Tablet"
         assert info.name != "12345678901"
+
+
+class TestActiveOnlyBatchIndependenceEV04QA02:
+    """EV04-QA-02 (HIGH): active_only answers must not depend on batch
+    composition.
+
+    Pre-fix, the NDC exception on the effective_code_refs fast path was
+    batch-GLOBAL, so ONE NDC code anywhere in the batch made resolutions
+    available for EVERY element; a same-source obsolete code then fell into
+    lookup.py's historical branch and surfaced the SUPPRESSED atom
+    (name='Deprecated term', suppress='O') — data active_only must not
+    return, and a batch-vs-single parity break (single calls and NDC-free
+    batches correctly returned None).
+    """
+
+    def test_obsolete_is_none_single(self, engine):
+        from medterm4ds.services.lookup import get_code_infos
+
+        infos = get_code_infos(
+            [("ICD10CM", "OLD_CODE")], engine=engine, resolve_mode="active_only"
+        )
+        assert infos == [None]
+
+    def test_obsolete_is_none_in_ndc_free_batch(self, engine):
+        from medterm4ds.services.lookup import get_code_infos
+
+        infos = get_code_infos(
+            [("ICD10CM", "OLD_CODE"), ("ICD10CM", "E11")],
+            engine=engine,
+            resolve_mode="active_only",
+        )
+        assert infos[0] is None
+        assert infos[1] is not None and infos[1].name == "Type 2 diabetes"
+
+    def test_obsolete_is_none_in_batch_with_ndc(self, engine):
+        """The core EV04-QA-02 pin: the NDC sibling must NOT flip the
+        obsolete code's active_only answer from None to the suppressed
+        atom. Pre-fix this returned CodeInfo(name='Deprecated term',
+        suppress='O')."""
+        from medterm4ds.services.lookup import get_code_infos
+
+        infos = get_code_infos(
+            [("NDC", "12345678901"), ("ICD10CM", "OLD_CODE")],
+            engine=engine,
+            resolve_mode="active_only",
+        )
+        assert infos[1] is None, f"batch-composition leak: {infos[1]!r}"
+        # QC-401 must keep working in the same batch: the NDC entry still
+        # resolves cross-source to the RXNORM drug display.
+        assert infos[0] is not None
+        assert (infos[0].code.source, infos[0].code.code) == ("RXNORM", "860975")
+        assert infos[0].name == "24 HR metformin 500 MG Oral Tablet"
+
+    def test_modes_stay_distinct_for_obsolete_code(self, engine):
+        """QC-017 guard: the EV04-QA-02 fix must not flatten the three
+        resolve_modes — historical returns the historical atom, resolve_current
+        the active replacement, active_only None."""
+        from medterm4ds.services.lookup import get_code_infos
+
+        historical = get_code_infos(
+            [("ICD10CM", "OLD_CODE")], engine=engine, resolve_mode="historical"
+        )[0]
+        resolve_current = get_code_infos(
+            [("ICD10CM", "OLD_CODE")], engine=engine, resolve_mode="resolve_current"
+        )[0]
+        active_only = get_code_infos(
+            [("ICD10CM", "OLD_CODE")], engine=engine, resolve_mode="active_only"
+        )[0]
+
+        assert historical is not None and historical.name == "Deprecated term"
+        assert historical.suppress == "O"
+        assert resolve_current is not None and resolve_current.name == "Replacement term"
+        assert resolve_current.code.code == "NEW_CODE"
+        assert active_only is None

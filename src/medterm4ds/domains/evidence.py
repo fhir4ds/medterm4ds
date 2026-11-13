@@ -211,6 +211,31 @@ class PubMedGuidelineClient:
         return {key: value for key, value in payload.items() if value}
 
 
+def _validate_nonempty_str(param: str, value: Any) -> None:
+    """EV08-QA-07 (MEDIUM, run-2): evidence tools had zero input
+    validation — an empty/whitespace query hit the LIVE upstream API
+    (guideline_search('') returned 20 live PubMed rows), ``rxcui=None``
+    queried the literal string 'None', and ``limit=-1`` was forwarded
+    raw. Reject the wrong TYPE and empty values at the domain boundary,
+    BEFORE any client is constructed, so a rejected call performs no
+    network egress at all."""
+    if not isinstance(value, str):
+        raise TypeError(
+            f"{param} must be a string, got {type(value).__name__}"
+        )
+    if not value.strip():
+        raise ValueError(f"{param} must be a non-empty string")
+
+
+def _validate_limit(limit: int) -> None:
+    if not isinstance(limit, int) or isinstance(limit, bool):
+        raise TypeError(
+            f"limit must be an integer, got {type(limit).__name__}"
+        )
+    if limit < 1:
+        raise ValueError(f"limit must be at least 1 (got {limit})")
+
+
 def indication_search(
     indication: str,
     *,
@@ -218,6 +243,8 @@ def indication_search(
     client: OpenFDALabelClient | None = None,
 ) -> dict[str, Any]:
     """Search openFDA drug labels by indications and usage text."""
+    _validate_nonempty_str("indication", indication)
+    _validate_limit(limit)
     label_client = client or OpenFDALabelClient()
     try:
         labels = label_client.labels_for_indication(indication, limit=limit)
@@ -245,6 +272,10 @@ def fda_label_by_rxcui(
     client: OpenFDALabelClient | None = None,
 ) -> dict[str, Any]:
     """Search openFDA drug labels by RxCUI."""
+    # EV08-QA-07: rxcui=None previously queried the literal string
+    # 'None' against the live openFDA API.
+    _validate_nonempty_str("rxcui", rxcui)
+    _validate_limit(limit)
     label_client = client or OpenFDALabelClient()
     try:
         labels = label_client.labels_by_rxcui(rxcui, limit=limit)
@@ -272,6 +303,8 @@ def guideline_search(
     client: PubMedGuidelineClient | None = None,
 ) -> dict[str, Any]:
     """Search PubMed for guideline/practice-guideline records."""
+    _validate_nonempty_str("query", query)
+    _validate_limit(limit)
     guideline_client = client or PubMedGuidelineClient()
     try:
         rows = guideline_client.search_guidelines(query, limit=limit)
@@ -299,6 +332,11 @@ def guideline_recommendations(
     client: PubMedGuidelineClient | None = None,
 ) -> dict[str, Any]:
     """Return guideline search context for a topic."""
+    # Validate here (naming 'topic') rather than delegating to
+    # guideline_search, whose guard would name 'query' — a parameter the
+    # caller never sent (the QC-198 parameter-naming rule).
+    _validate_nonempty_str("topic", topic)
+    _validate_limit(limit)
     search = guideline_search(topic, limit=limit, client=client)
     return {
         "query": "guideline_recommendations",
@@ -317,6 +355,7 @@ def guideline_fulltext(
     client: PubMedGuidelineClient | None = None,
 ) -> dict[str, Any]:
     """Fetch PubMed abstract/metadata for one guideline PMID."""
+    _validate_nonempty_str("guideline_id", guideline_id)
     guideline_client = client or PubMedGuidelineClient()
     try:
         article = guideline_client.fetch_article(str(guideline_id))
@@ -345,6 +384,9 @@ def guidelines_for_code(
     client: PubMedGuidelineClient | None = None,
 ) -> dict[str, Any]:
     """Search PubMed guidelines using a code display name when an engine is provided."""
+    _validate_nonempty_str("code", code)
+    _validate_nonempty_str("source", source)
+    _validate_limit(limit)
     ref = CodeRef(source=source, code=code)
     query = f"{ref.source} {ref.code}"
     display = None

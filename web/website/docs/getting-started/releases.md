@@ -6,9 +6,9 @@ This page tracks Medical Terminology for Data Science package releases.
 
 ## 0.0.12
 
-Quality-hardening release + terminology 2026.11.12.1. No breaking API changes.
+Quality-hardening release + terminology 2026.11.12.2. No breaking API changes.
 
-- **Terminology default release 2026.11.12.1**: supersedes 2026.11.11.1
+- **Terminology default release 2026.11.12.2**: supersedes 2026.11.11.1
   (plain-`pain` anchor regression — bare "pain" resolves to the LOINC
   `Pain` anchor at 1.0 again). Encoder space unchanged.
 - **Extraction correctness**: conjunction-split parts never resolve to
@@ -31,6 +31,67 @@ Quality-hardening release + terminology 2026.11.12.1. No breaking API changes.
 - **HF Space**: provisions the `fhir4ds/terminology` release layout on
   its persistent volume; clean-checkout docker builds work (no
   gitignored `scripts/` COPY); `rank-bm25` dropped.
+
+### Post-release hardening (2026-11-12)
+
+Follow-up fixes shipped after the initial 0.0.12 publication. No API,
+data, or version changes.
+
+- **FHIR API robustness**: `$extract` GET and POST error paths return
+  proper FHIR OperationOutcomes instead of failing as internal server
+  errors; unknown query parameters on `$search` and `$extract` are
+  rejected with a 400 OperationOutcome instead of silently ignored;
+  whitespace-only `$extract` text returns 400; `$expand` tolerates null
+  compose list fields (`include`/`concept`/`filter`/`exclude`) and null
+  `coding` arrays in submitted ValueSets without crashing; batch
+  `$expand` echoes `expansion.params` like the single-request path; an
+  invented `contextTac` parameter is now classified as unknown while the
+  spec's `contextDirection` is honored.
+- **Canonical search determinism**: single-request canonical search no
+  longer depends on index layout when candidates tie exactly at the
+  count boundary (methotrexate resolves to the medication consistently
+  at count=1, matching batch and larger-count results); vaccine-class
+  twin concepts keep their class-anchor priority; tie detection in
+  extraction shares one tolerance across layers, so last-digit float
+  noise can no longer defeat the lab-override rule.
+- **Extraction (NER) fixes**: Title-case "Without" (LOINC style) now
+  triggers the without-qualifier inversion guard instead of bypassing
+  it; "and/or" conjunctions resolve both parts ("CBC and/or CMP") with
+  no wasted lookups; "w/o" and "w/" abbreviations are folded on both
+  sides of the inversion detector.
+- **Resolve/lookup validation**: `client.resolve()` and every consumer
+  surface now share the same empty/whitespace source and code
+  diagnostics — single calls fail loudly, batches isolate the bad entry
+  with a warning; a batch containing one NDC code no longer flips
+  active-only suppression for other same-source obsolete codes in the
+  same batch; mapping lookups reject null or non-string entries with a
+  clear error.
+- **Terminology cache safety**: a failed `data cache-refresh` download
+  restores the previous good release unconditionally (the good release
+  can no longer be left stranded under a staging name); split-layout
+  data downloads swap per unit, so a bad data-revision pin or a partial
+  new-revision download cannot destroy sibling revisions; `--split` +
+  `--terminology` together exit with a clean error; whitespace-only
+  release/dir pins are treated as unset; a symlinked cache base
+  directory fails with a clear error naming the path; the demo Space
+  honors its terminology layout pin from first start.
+- **CLI hardening**: a corrupt or non-DuckDB `--db` file fails with
+  "is not a valid DuckDB database file" on every read command; queries
+  against a database missing its derived tables now suggest the build
+  command instead of a raw traceback; `--max-results-per-code` rejects
+  zero/negative values before any work starts.
+- **MCP tools**: `search_athena_concepts` checks that athena vocabulary
+  tables exist before probing vocabularies; `health()` no longer runs
+  database probes on the caller's thread and reports an athena-less
+  database as absent rather than failing; evidence-domain tools
+  validate query and limit inputs before any client construction (no
+  work happens for rejected calls); non-string sources (e.g. a list)
+  are rejected at the shared validation boundary; `athena_descendants`
+  `max_depth` and `discover`'s canonical source are validated loudly.
+- **Packaging/docs**: README release tag corrected to 2026.11.12.2,
+  matching the default terminology release served by the code; package
+  version metadata verified consistent; the demo container builds from
+  a clean checkout.
 
 ## 0.0.11
 

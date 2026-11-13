@@ -407,6 +407,120 @@ class TestAtomicDownloads:
         ]
         assert leftovers == []
 
+    def _seed_split_data_siblings(self, root):
+        """Two coexisting data revisions under the split root."""
+        for rev in ("2026.11.12.1", "2026.11.12.2"):
+            unit = root / "data" / rev
+            unit.mkdir(parents=True, exist_ok=True)
+            (unit / "canonical_anchor_value_sets.json").write_text("[]")
+        return root / "data"
+
+    def test_bogus_data_revision_pin_does_not_wipe_siblings(
+        self, monkeypatch, tmp_path
+    ):
+        """EV03-QA-01(a): a pinned-but-unpublished data revision must fail
+        loud WITHOUT rmtree'ing the shared data/ family — the family-level
+        rename destroyed every coexisting revision before dying."""
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        mod = _reload_search(monkeypatch)
+        data_family = self._seed_split_data_siblings(mod._SPLIT_ROOT)
+
+        def boom(**kw):
+            raise RuntimeError("hub unreachable")
+
+        monkeypatch.setattr("huggingface_hub.snapshot_download", boom)
+        with pytest.raises(RuntimeError, match="hub unreachable"):
+            mod._download_split_data("bogus_rev")
+        # BOTH sibling revisions survive the failed bogus-pin download.
+        assert (data_family / "2026.11.12.1").is_dir()
+        assert (data_family / "2026.11.12.2").is_dir()
+
+    def test_empty_download_does_not_wipe_siblings(self, monkeypatch, tmp_path):
+        """EV03-QA-01(a), empty-local_dir variant: snapshot_download
+        "succeeds" with nothing — the rename of the missing unit raises,
+        but the data/ family (and both siblings) must survive."""
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        mod = _reload_search(monkeypatch)
+        data_family = self._seed_split_data_siblings(mod._SPLIT_ROOT)
+
+        def silent_noop(**kw):
+            return kw["local_dir"]
+
+        monkeypatch.setattr("huggingface_hub.snapshot_download", silent_noop)
+        with pytest.raises((FileNotFoundError, RuntimeError)):
+            mod._download_split_data("9999.01.01.1")
+        assert (data_family / "2026.11.12.1").is_dir()
+        assert (data_family / "2026.11.12.2").is_dir()
+
+    def test_successful_download_keeps_sibling_revisions(
+        self, monkeypatch, tmp_path
+    ):
+        """EV03-QA-01(b): a SUCCESSFUL new-revision download must not
+        swap the data/ family root wholesale — multi-release coexistence
+        is the point of the per-unit layout."""
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        mod = _reload_search(monkeypatch)
+        data_family = self._seed_split_data_siblings(mod._SPLIT_ROOT)
+
+        new_rev = "9999.01.01.1"
+
+        def fake_snapshot(**kw):
+            local = Path(kw["local_dir"])
+            for pattern in kw["allow_patterns"]:
+                unit = local / pattern.rstrip("/*")
+                unit.mkdir(parents=True, exist_ok=True)
+                (unit / "canonical_anchor_value_sets.json").write_text("[]")
+                (unit / "manifest.json").write_text(json.dumps({
+                    "artifact_kind": "data",
+                    "schema_version": 1,
+                    "data_revision": new_rev,
+                    "embedding_space_id": SPACE,
+                    "render_policy_version": "rp_1891c4cb719d",
+                }))
+            return str(local)
+
+        monkeypatch.setattr("huggingface_hub.snapshot_download", fake_snapshot)
+        target = mod._download_split_data(new_rev)
+        assert target == data_family / new_rev
+        # The new unit landed AND both siblings are still there.
+        assert (data_family / new_rev / "manifest.json").is_file()
+        assert (data_family / "2026.11.12.1").is_dir()
+        assert (data_family / "2026.11.12.2").is_dir()
+
+
+class TestSpaceAppLayoutPin:
+    def test_app_py_sets_layout_before_any_medterm4ds_import(self):
+        """EV03-QA-06: MEDTERM4DS_LAYOUT must be pinned at app.py MODULE
+        TOP, before any medterm4ds import can execute (services.search
+        freezes _LAYOUT_ENV at import time — a pin set later inside
+        main() only holds on restarts, leaving first starts on 'auto')."""
+        app_py = (
+            Path(__file__).resolve().parent.parent
+            / "deploy" / "hf-spaces" / "fhir-server" / "app.py"
+        )
+        source = app_py.read_text()
+        pin_line = None
+        import_lines = []
+        for lineno, line in enumerate(source.splitlines(), start=1):
+            stripped = line.strip()
+            if pin_line is None and (
+                'MEDTERM4DS_LAYOUT' in stripped
+                and 'os.environ' in stripped
+                and 'setdefault' in stripped
+            ):
+                pin_line = lineno
+            if stripped.startswith(("import medterm4ds", "from medterm4ds")):
+                import_lines.append(lineno)
+        assert pin_line is not None, (
+            "app.py must call os.environ.setdefault('MEDTERM4DS_LAYOUT', "
+            "'terminology') at module top"
+        )
+        assert import_lines, "app.py is expected to import medterm4ds somewhere"
+        assert pin_line < min(import_lines), (
+            f"layout pin at line {pin_line} must precede the first "
+            f"medterm4ds import at line {min(import_lines)}"
+        )
+
 
 class TestCacheRefreshSplit:
     def test_refresh_split_reports_units(self, monkeypatch, tmp_path):

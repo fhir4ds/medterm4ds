@@ -1303,6 +1303,92 @@ def test_cli_lookup_rejects_directory_db(tmp_path):
     assert "is a directory" in str(exc_info.value)
 
 
+def test_cli_lookup_corrupt_db_file_exits_clean_not_traceback(tmp_path, capsys):
+    """EV07-QA-01 (run-2, MEDIUM): --db pointing at a corrupt/non-DuckDB
+    file must exit with a clean one-liner naming the path, never a raw
+    duckdb.IOException traceback from _connect_read_only."""
+    bad_db = tmp_path / "bad.duckdb"
+    bad_db.write_bytes(b"definitely not a duckdb database file\n" * 16)
+    with pytest.raises(SystemExit) as exc_info:
+        main([
+            "lookup", "--db", str(bad_db),
+            "--source", "ICD10CM", "--code", "E11",
+        ])
+    message = str(exc_info.value.code)
+    assert message.startswith("Error: ")
+    assert "not a valid DuckDB database file" in message
+    assert str(bad_db) in message
+    assert "Traceback" not in capsys.readouterr().err
+
+
+def test_cli_lookup_wrong_schema_db_exits_clean_not_traceback(tmp_path, capsys):
+    """EV07-QA-02 (run-2, MEDIUM): a VALID DuckDB file lacking the UMLS
+    schema (right file, wrong database) must exit with a clean one-liner
+    naming the remedy, never a raw duckdb.CatalogException traceback."""
+    empty_db = tmp_path / "empty.duckdb"
+    con = duckdb.connect(str(empty_db))
+    con.execute("CREATE TABLE unrelated (x INTEGER)")
+    con.close()
+    with pytest.raises(SystemExit) as exc_info:
+        main([
+            "lookup", "--db", str(empty_db),
+            "--source", "ICD10CM", "--code", "E11",
+        ])
+    message = str(exc_info.value.code)
+    assert message.startswith("Error: ")
+    assert "mrconso" in message
+    assert "data build-duckdb" in message
+    assert "Traceback" not in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("bad_value", ["0", "-1"])
+def test_cli_bulk_map_max_results_per_code_rejected_before_artifacts(
+    tmp_path, capsys, bad_value
+):
+    """EV07-QA-03 (run-2, MEDIUM): --max-results-per-code 0/-1 on
+    `bulk map` must be rejected at parse time — BEFORE the connection is
+    opened or output/checkpoint artifacts are created (QC-377 pattern).
+    Pre-fix the flag was type=int and the services ValueError fired
+    lazily inside write_checkpointed_rows, leaving a traceback plus
+    partial artifacts."""
+    output_path = tmp_path / "bulk_map.jsonl"
+    with pytest.raises(SystemExit) as exc_info:
+        main([
+            "bulk", "map",
+            "--db", str(tmp_path / "never_opened.duckdb"),
+            "--sources", "ICD10CM",
+            "--target-sources", "SNOMEDCT_US",
+            "--output", str(output_path),
+            "--max-results-per-code", bad_value,
+        ])
+    assert exc_info.value.code == 2  # argparse usage error
+    assert "--max-results-per-code" in capsys.readouterr().err
+    assert not output_path.exists()
+    assert not (tmp_path / "never_opened.duckdb").exists()
+
+
+@pytest.mark.parametrize("bad_value", ["0", "-1"])
+def test_cli_conceptmap_mapping_max_results_per_code_rejected_before_artifacts(
+    tmp_path, capsys, bad_value
+):
+    """EV07-QA-03 (run-2, MEDIUM), conceptmap mapping twin: the knob is
+    validated at parse time before any filesystem effect."""
+    output_path = tmp_path / "mapping.jsonl"
+    with pytest.raises(SystemExit) as exc_info:
+        main([
+            "conceptmap", "mapping",
+            "--db", str(tmp_path / "never_opened.duckdb"),
+            "--sources", "ICD10CM",
+            "--target-sources", "SNOMEDCT_US",
+            "--output", str(output_path),
+            "--max-results-per-code", bad_value,
+        ])
+    assert exc_info.value.code == 2  # argparse usage error
+    assert "--max-results-per-code" in capsys.readouterr().err
+    assert not output_path.exists()
+    assert not (tmp_path / "never_opened.duckdb").exists()
+
+
 def test_cli_extract_runtimeerror_surfaces_as_error_not_traceback(monkeypatch):
     """EV07-QA-06 regression pin: a service-layer RuntimeError from
     extract (e.g. ManifestError from a rotated serving pin) must surface

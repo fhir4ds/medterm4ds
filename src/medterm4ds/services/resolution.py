@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 
 from medterm4ds.core.models import CodeRef, CodeResolution, Provenance, ProvenanceStep
+from medterm4ds.core.normalize import validate_code_nonempty, validate_source_sab
 from medterm4ds.engines.base import LookupEngine, ResolutionEngine
 
 ResolveMode = str
@@ -49,6 +50,52 @@ def resolve_codes(
     ]
 
 
+def _validated_refs(normalized: list[CodeRef]) -> list[CodeRef]:
+    """Validate source/code at the resolve service boundary.
+
+    EV04-QA-01 (MEDIUM): the EC-19/QC-422 canonical validators were wired
+    into lookup/mapping/patient_friendly but not the resolve surface —
+    ``mt.resolve("", "E11")`` returned a success-shaped not_found row while
+    ``mt.lookup`` raised the same input loud. Mirrors lookup.py's
+    single-vs-batch block (QC01-001): single-code calls keep the hard
+    ValueError (programming-error signal); in BATCH inputs the bad element
+    is isolated to an empty-code ref (not-found row) with a WARNING naming
+    the first offender, so a 1000-row batch does not die on row 501.
+    """
+    if len(normalized) == 1:
+        validate_source_sab(normalized[0].source)
+        validate_code_nonempty(str(normalized[0].code))
+        return normalized
+
+    invalid_count = 0
+    first_invalid: CodeRef | None = None
+    kept: list[CodeRef] = []
+    for ref in normalized:
+        try:
+            validate_source_sab(ref.source)
+            validate_code_nonempty(str(ref.code))
+        except ValueError:
+            invalid_count += 1
+            if first_invalid is None:
+                first_invalid = ref
+            kept.append(CodeRef(source=ref.source, code=""))
+        else:
+            kept.append(ref)
+    if invalid_count:
+        import logging
+
+        logging.getLogger(__name__).warning(
+            "effective_code_refs: %d/%d batch elements invalid and returned "
+            "as not-found rows (first: source=%r code=%r)",
+            invalid_count,
+            len(normalized),
+            first_invalid.source,
+            first_invalid.code,
+        )
+        return kept
+    return normalized
+
+
 def effective_code_refs(
     codes: Sequence[CodeRef | tuple[str, str]],
     *,
@@ -65,14 +112,16 @@ def effective_code_refs(
             f"resolve_mode must be one of {sorted(ALLOWED_RESOLVE_MODES)!r}, "
             f"got {resolve_mode!r}"
         )
-    normalized = [
-        item if isinstance(item, CodeRef) else CodeRef.from_pair(item)
-        for item in codes
-    ]
+    normalized = _validated_refs(
+        [
+            item if isinstance(item, CodeRef) else CodeRef.from_pair(item)
+            for item in codes
+        ]
+    )
     if resolve_mode == "active_only" and all(ref.source != "NDC" for ref in normalized):
         return normalized, None
     resolutions = resolve_codes(normalized, engine=engine)
-    if resolve_mode == "historical":
+    if resolve_mode in ("historical", "active_only"):
         # Historical mode returns the input CodeRef as effective for
         # same-system obsolete codes (e.g. SNOMED->SNOMED where the input
         # IS the historical atom). But for cross-system resolutions like
@@ -82,6 +131,13 @@ def effective_code_refs(
         # mismatch. Found by QC-119 (DATA_INTEGRITY HIGH): for resolutions
         # where input.source != resolved.source, use the resolved CodeRef
         # as effective so effective and resolved_display stay consistent.
+        #
+        # EV04-QA-02 (HIGH): active_only only reaches this branch when the
+        # batch contains an NDC ref (otherwise the fast path above
+        # returned early). The NDC exception must be PER-CODE, not
+        # batch-global: same-source refs keep the input so their answer is
+        # the active-only lookup of the INPUT code (None for obsolete)
+        # regardless of what other codes share the batch.
         effective = [
             resolution.input
             if (resolution.resolved is None or resolution.input.source == resolution.resolved.source)

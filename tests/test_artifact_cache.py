@@ -248,13 +248,79 @@ class TestProvenanceAndRefresh:
     def test_refresh_rejects_split_with_terminology(self, monkeypatch, tmp_path):
         """EV07-QA-12: --split + --terminology is a flag conflict — the
         split branch previously returned before consulting the flag,
-        silently dropping the terminology refresh."""
+        silently dropping the terminology refresh.
+        EV03-QA-05 (2026-11-12): the mutex raises RuntimeError (an
+        operational conflict), NOT ValueError — @_data_cli_errors
+        deliberately lets ValueErrors (programming bugs) escape as
+        tracebacks, so a ValueError here dumped a raw traceback from the
+        CLI (the exact QC-445 shape the envelope exists to prevent)."""
         monkeypatch.setattr(Path, "home", lambda: tmp_path)
         _reload_search(monkeypatch, revision="vX-mut")
         import medterm4ds.core.artifact_cache as ac
 
-        with pytest.raises(ValueError, match="mutually exclusive"):
+        with pytest.raises(RuntimeError, match="mutually exclusive"):
             ac.cache_refresh(split=True, terminology=True)
+
+    def test_split_terminology_mutex_enveloped_by_cli(
+        self, monkeypatch, tmp_path
+    ):
+        """EV03-QA-05: through the CLI runner the mutex must surface as a
+        clean SystemExit one-liner, never a raw ValueError traceback."""
+        import argparse
+
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        _reload_search(monkeypatch, revision="vX-mut2")
+        from medterm4ds.apps import cli
+
+        args = argparse.Namespace(
+            revision=None, split=True, data_revision=None, terminology=True
+        )
+        with pytest.raises(SystemExit, match="mutually exclusive"):
+            cli.run_data_cache_refresh(args)
+
+    def test_terminology_refresh_restores_after_renames_then_fails(
+        self, monkeypatch, tmp_path
+    ):
+        """EV03-QA-04 (HIGH): when download() renames tmp→base and THEN
+        fails its own resolve, the except-path restore must be
+        UNCONDITIONAL — base holds the failed download's junk, and the
+        operator's good release is stranded in .stale-* unless that junk
+        is cleared before restoring."""
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setenv("MEDTERM4DS_LAYOUT", "terminology")
+        monkeypatch.setenv("MEDTERM4DS_TERMINOLOGY_RELEASE", "2099.01.01.1")
+        _reload_search(monkeypatch, revision="vT-stale")
+        import medterm4ds.core.artifact_cache as ac
+        import medterm4ds.core.terminology as term
+        import medterm4ds.services.search as search_mod
+
+        root = search_mod._terminology_root()
+        base = term.base_dir(root)
+        base.mkdir(parents=True)
+        (base / "good.txt").write_text("good release")
+
+        def renames_then_fails(dl_root):
+            # Reproduce the historian shape: download() swaps its (junk)
+            # tmp dir onto base BEFORE its own resolve check raises.
+            if base.exists():
+                import shutil as _shutil
+
+                _shutil.rmtree(base)
+            base.mkdir(parents=True)
+            (base / "junk.bin").write_bytes(b"x")
+            raise term.TerminologyLayoutError(
+                f"download completed but release is not resolvable at {base}"
+            )
+
+        monkeypatch.setattr(term, "download", renames_then_fails)
+        with pytest.raises(term.TerminologyLayoutError, match="not resolvable"):
+            ac.cache_refresh(terminology=True)
+        # The good release is back at base, junk gone, no .stale leftover.
+        assert (base / "good.txt").read_text() == "good release"
+        assert not (base / "junk.bin").exists()
+        assert not [
+            p for p in base.parent.iterdir() if p.name.startswith(".stale-")
+        ]
 
 
 class TestCacheInfo:

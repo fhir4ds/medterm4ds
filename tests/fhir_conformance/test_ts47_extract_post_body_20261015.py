@@ -40,8 +40,6 @@ Controls (fresh): POST body BINDS text/resultTypes (medication
 
 from __future__ import annotations
 
-import time
-
 import pytest
 
 pytestmark = pytest.mark.filterwarnings("ignore::FutureWarning")
@@ -79,21 +77,21 @@ class TestE1ResultTypes500:
     """E1 — resultTypes=bogus → plaintext 500, both transports."""
 
     def test_e10_get_500_plaintext(self, extract_client):
-        """GET resultTypes=bogus → 500, text/plain body (not an
-        OperationOutcome). Registered 20261005 (E1 MEDIUM); pinned
-        with the plaintext-body severity marker. Flip when the
-        ValueError is wrapped to 400 (QA-005 pattern)."""
+        """EV-05 pin flip: GET resultTypes=bogus now 400 FHIR
+        OperationOutcome (the QA-005 wrap covers the GET form; was
+        500 text/plain 'Internal Server Error')."""
         r = extract_client.get(
             "/fhir/CodeSystem/$extract",
             params={"text": TEXT, "resultTypes": "bogus"},
         )
-        assert r.status_code == 500
-        assert r.headers["content-type"].startswith("text/plain")
-        assert "Internal Server Error" in r.text
+        assert r.status_code == 400
+        assert r.headers["content-type"].startswith("application/fhir+json")
+        assert r.json()["resourceType"] == "OperationOutcome"
+        assert "bogus" in r.json()["issue"][0]["diagnostics"]
 
     def test_e11_post_500_plaintext(self, extract_client):
-        """POST body resultTypes=bogus → same plaintext 500 (the
-        POST half, new this iteration). Flip with E1's fix."""
+        """EV-05 pin flip: POST body resultTypes=bogus → same 400
+        FHIR OperationOutcome (no plaintext 500 on either transport)."""
         body = {
             "resourceType": "Parameters",
             "parameter": [
@@ -104,8 +102,9 @@ class TestE1ResultTypes500:
         r = extract_client.post(
             "/fhir/CodeSystem/$extract", json=body
         )
-        assert r.status_code == 500
-        assert r.headers["content-type"].startswith("text/plain")
+        assert r.status_code == 400
+        assert r.headers["content-type"].startswith("application/fhir+json")
+        assert r.json()["resourceType"] == "OperationOutcome"
 
 
 class TestW1LimitStatusDivergence:
@@ -133,12 +132,9 @@ class TestW2WhitespacePipeline:
     """W2 — whitespace-only text runs the full pipeline."""
 
     def test_w20_whitespace_200_slow(self, extract_client):
-        """Whitespace-only text → 200 after the FULL pipeline (the
-        fresh-run measurement: 89s cold). Registered 20261006; pinned
-        behaviorally (200 + zero concepts). Flip when a strip()
-        pre-check fails fast (400) — also add a duration assertion
-        then."""
-        t0 = time.monotonic()
+        """EV-05 pin flip: the strip() pre-check landed —
+        whitespace-only text now fails fast with 400 (the pipeline no
+        longer runs; the slow-path pin is superseded)."""
         r = extract_client.post(
             "/fhir/CodeSystem/$extract",
             json={
@@ -148,13 +144,9 @@ class TestW2WhitespacePipeline:
                 ],
             },
         )
-        elapsed = time.monotonic() - t0
-        assert r.status_code == 200
-        assert r.json().get("entry", []) == []
-        # The pipeline ran (not a fast rejection): with a warm module
-        # fixture this is seconds, but the no-fast-reject contract is
-        # the pin; the 400 flip makes this assert fail loudly.
-        assert elapsed >= 0
+        assert r.status_code == 400
+        assert r.headers["content-type"].startswith("application/fhir+json")
+        assert r.json()["resourceType"] == "OperationOutcome"
 
 
 class TestEX1PostBodyUnknownParam:
