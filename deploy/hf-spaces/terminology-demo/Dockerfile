@@ -9,7 +9,7 @@
 # Runtime volumes (read-only):
 #   /data/lookup.duckdb      CPT-excluded lookup DB (deploy/scripts/export_lookup_db_public.py)
 #   /data/cache              terminology release root, containing
-#                            terminology/2026.10.31.1/{canonical,lexical,semantic,model}
+#                            terminology/<release>/{canonical,lexical,semantic,model}
 
 FROM python:3.11-slim
 
@@ -24,12 +24,12 @@ RUN pip install --no-cache-dir -r /app/requirements.txt \
     && pip install --no-cache-dir \
         https://github.com/explosion/spacy-models/releases/download/en_core_web_sm-3.8.0/en_core_web_sm-3.8.0-py3-none-any.whl
 
-# medterm4ds from the PUBLIC GitHub repo at the pinned release commit
-# (the v0.0.9 release tree: hybrid RRF fusion + agreement grades,
-# AMUX-18/20/49 ranking, AMUX-44 portability, demo hardening). Installed
-# from the release tarball so the image needs no git binary.
-RUN pip install --no-cache-dir \
-        "medterm4ds[fhir,search,extraction] @ https://github.com/fhir4ds/medterm4ds/archive/d7bcee94e0f9.tar.gz"
+# medterm4ds v0.0.12 from PyPI (post-release hardening build:
+# canonical tie determinism, $extract/$expand robustness, BM25 pinned
+# guard, terminology default release 2026.11.12.2). The interim git-pin
+# (a381503, pre-0.0.12 CR-302 fix) is superseded — PyPI 0.0.12 published
+# 2026-11-13.
+RUN pip install --no-cache-dir "medterm4ds[fhir,search,extraction]==0.0.12"
 
 # Bake the pinned GLiNER NER weights into the image so /extract needs no
 # runtime download (pinned revision from services/extraction.py).
