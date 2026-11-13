@@ -356,7 +356,6 @@ class TestFhirEndpoints:
         )
         # fhir_api imports get_search_service inside the handler; patch it
         # at its import source too so the handler sees the stub.
-        import medterm4ds.apps.fhir_api as fhir_api_module
         monkeypatch.setattr(
             "medterm4ds.services.search.get_search_service",
             lambda: _UnavailableService(),
@@ -459,6 +458,186 @@ class TestFhirEndpoints:
                 f"expected 400 for valueBoolean on codeA, got "
                 f"{resp.status_code}: {resp.text}"
             )
+
+    # -- EV-06 run-2 regression tests --
+
+    def test_validate_code_null_coding_in_codeable_concept_ev06qa01(self, fhir_app):
+        """EV06-QA-01 (HIGH): explicit ``"coding": null`` inside a
+        valueCodeableConcept must produce a FHIR OperationOutcome, not a
+        TypeError → 500 + text/plain.
+
+        ``cc.get("coding", [])`` returns None when the key EXISTS with
+        JSON null (the default only fires on absence); iterating None
+        raised TypeError. QC-245 idiom ``(cc.get("coding") or [])`` fixes
+        both codeableConcept extractors (single-pair and all-pairs).
+        Wire-probes all three POST ops + the batch entry variant.
+        """
+        from starlette.testclient import TestClient
+        body = {
+            "resourceType": "Parameters",
+            "parameter": [{
+                "name": "codeableConcept",
+                "valueCodeableConcept": {"coding": None},
+            }],
+        }
+        with TestClient(fhir_app) as client:
+            for op in (
+                "/fhir/CodeSystem/$validate-code",
+                "/fhir/ValueSet/$validate-code",
+                "/fhir/ConceptMap/$translate",
+            ):
+                resp = client.post(op, json=body)
+                assert resp.status_code < 500, (
+                    f"{op} returned {resp.status_code} for coding:null — "
+                    "must be a FHIR-level response, not 500 + traceback"
+                )
+                assert resp.headers["content-type"].startswith(
+                    "application/fhir+json"
+                ), f"{op} content-type {resp.headers['content-type']!r}"
+                assert resp.json()["resourceType"] in (
+                    "Parameters", "OperationOutcome",
+                )
+            # Batch entry variant: per-entry FHIR status, never a raw 500.
+            bundle = {
+                "resourceType": "Bundle",
+                "type": "batch",
+                "entry": [{
+                    "request": {
+                        "method": "POST",
+                        "url": "CodeSystem/$validate-code",
+                    },
+                    "resource": body,
+                }],
+            }
+            resp = client.post("/fhir", json=bundle)
+            assert resp.status_code == 200
+            entry_status = resp.json()["entry"][0]["response"]["status"]
+            assert not entry_status.startswith("5"), entry_status
+
+    def test_expand_null_compose_list_fields_ev06qa02(self, fhir_app):
+        """EV06-QA-02 (HIGH): JSON-null list fields inside compose
+        (include / concept / filter / exclude / exclude[].filter) must not
+        TypeError → 500 on POST ValueSet/$expand with an inline ValueSet.
+
+        Null list field = absent (FHIR JSON null semantics for 0..*
+        elements); the expansion proceeds over the remaining fields.
+        """
+        from starlette.testclient import TestClient
+        base_include = {
+            "system": "http://snomed.info/sct",
+            "filter": [{
+                "property": "concept",
+                "op": "is-a",
+                "value": "73211009",
+            }],
+        }
+        variants = {
+            "include-null": {"compose": {"include": None}},
+            "concept-null": {
+                "compose": {"include": [{**base_include, "concept": None}]},
+            },
+            "filter-null": {
+                "compose": {"include": [
+                    {"system": "http://snomed.info/sct", "filter": None},
+                ]},
+            },
+            "exclude-null": {
+                "compose": {
+                    "include": [base_include],
+                    "exclude": None,
+                },
+            },
+            "exclude-filter-null": {
+                "compose": {
+                    "include": [base_include],
+                    "exclude": [{
+                        "system": "http://snomed.info/sct",
+                        "filter": None,
+                    }],
+                },
+            },
+        }
+        with TestClient(fhir_app) as client:
+            for name, compose in variants.items():
+                resp = client.post(
+                    "/fhir/ValueSet/$expand",
+                    json={"resourceType": "ValueSet", "compose": compose},
+                )
+                assert resp.status_code < 500, (
+                    f"variant {name}: got {resp.status_code} — "
+                    f"{resp.text[:200]}"
+                )
+                assert resp.headers["content-type"].startswith(
+                    "application/fhir+json"
+                )
+                body = resp.json()
+                assert body["resourceType"] in ("ValueSet", "OperationOutcome")
+
+    def test_expand_batch_params_echo_parity_ev06qa03(self, fhir_app):
+        """EV06-QA-03 (MEDIUM): batch $expand must emit the same
+        ``expansion.params`` echo as the direct route (single-vs-batch
+        parity; R4 §4.9.2 — the response self-describes which params
+        took effect). Pre-fix the batch dispatcher called ``_do_expand``
+        directly, skipping ``_expand_with_params_echo``."""
+        from starlette.testclient import TestClient
+        url = "http://snomed.info/sct/73211009?fhir_vs=isa"
+        with TestClient(fhir_app) as client:
+            direct = client.get(
+                "/fhir/ValueSet/$expand",
+                params={"url": url, "count": 2},
+            )
+            assert direct.status_code == 200
+            bundle = {
+                "resourceType": "Bundle",
+                "type": "batch",
+                "entry": [{
+                    "request": {
+                        "method": "GET",
+                        "url": f"ValueSet/$expand?url={url}&count=2",
+                    },
+                }],
+            }
+            batch = client.post("/fhir", json=bundle)
+            assert batch.status_code == 200
+            entry = batch.json()["entry"][0]
+            assert entry["response"]["status"] == "200", entry
+            direct_params = direct.json()["expansion"].get("params")
+            batch_params = entry["resource"]["expansion"].get("params")
+            assert batch_params == direct_params, (
+                f"batch params echo {batch_params!r} != direct "
+                f"{direct_params!r}"
+            )
+            assert batch_params and "url=" in batch_params
+
+    def test_expand_context_direction_and_kebab_params_ev06qa04(self, fhir_app):
+        """EV06-QA-04 (LOW): the R4-declared ``contextDirection`` param
+        (and the kebab-case version params) must be classified
+        R4-declared-but-unsupported, not unknown; the invented
+        ``contextTac`` (no FHIR version declares it) must be unknown."""
+        from starlette.testclient import TestClient
+        with TestClient(fhir_app) as client:
+            base = {"url": "http://snomed.info/sct/73211009?fhir_vs=isa"}
+            for param, value in (
+                ("contextDirection", "incoming"),
+                ("exclude-system", "http://snomed.info/sct"),
+                ("system-version", "http://snomed.info/sct|731124"),
+                ("check-system-version", "true"),
+                ("force-system-version", "http://snomed.info/sct|731124"),
+                ("contextTac", "loinc"),
+            ):
+                resp = client.get(
+                    "/fhir/ValueSet/$expand", params={**base, param: value},
+                )
+                assert resp.status_code == 400, (
+                    f"{param}: expected 400, got {resp.status_code}"
+                )
+                assert resp.headers["content-type"].startswith(
+                    "application/fhir+json"
+                )
+                diagnostics = str(
+                    resp.json()["issue"][0]["diagnostics"]
+                )
+                assert param in diagnostics
 
     def test_expand_with_filter(self, fhir_app):
         """$expand with filter returns ValueSet containing matching codes."""
@@ -1771,7 +1950,10 @@ class TestFhirEndpoints:
         with TestClient(fhir_app) as client:
             resp = client.get(
                 "/fhir/CodeSystem/$search",
-                params={"query": "diabetes", "mode": "lexical", "count": 2},
+                # EV05-QA-04: use the declared param name (searchMode) —
+                # unknown params like mode= now 400 instead of being
+                # silently dropped.
+                params={"query": "diabetes", "searchMode": "lexical", "count": 2},
             )
         assert resp.status_code == 200
         # The handler MUST hand the engine to the service (QC-400 wiring).
@@ -2088,3 +2270,183 @@ class TestFhirEndpoints:
         assert bool_resp.status_code == 400
         assert "string/integer" in bool_resp.json()["issue"][0]["diagnostics"]
         assert calls == [], "service must not run on invalid annotationFields"
+
+    # -- EV-05 run-2 QA wire-level regressions (EV05-QA-01..05) --
+
+    def test_extract_service_valueerror_is_400_operation_outcome_ev05qa01(
+        self, fhir_app, monkeypatch,
+    ):
+        """EV05-QA-01: a ValueError from the extraction service must surface
+        as a 400 OperationOutcome with application/fhir+json — not a 500
+        plain-text 'Internal Server Error' from json.dumps(Response)."""
+        from starlette.testclient import TestClient
+
+        import medterm4ds.services.extraction as extraction_module
+
+        def _boom(*args, **kwargs):
+            raise ValueError("bogus resultTypes")
+
+        monkeypatch.setattr(extraction_module, "extract", _boom)
+        with TestClient(fhir_app) as client:
+            get_resp = client.get(
+                "/fhir/CodeSystem/$extract", params={"text": "diabetes"},
+            )
+            post_resp = client.post(
+                "/fhir/CodeSystem/$extract",
+                json={"resourceType": "Parameters", "parameter": [
+                    {"name": "text", "valueString": "diabetes"}]},
+            )
+        for resp in (get_resp, post_resp):
+            assert resp.status_code == 400, resp.text
+            assert resp.headers["content-type"].startswith("application/fhir+json")
+            assert resp.json()["resourceType"] == "OperationOutcome"
+            assert "bogus resultTypes" in resp.json()["issue"][0]["diagnostics"]
+
+    def test_extract_service_runtimeerror_is_503_operation_outcome_ev05qa01(
+        self, fhir_app, monkeypatch,
+    ):
+        """EV05-QA-01: a RuntimeError from the extraction service (artifact
+        failure shape) must surface as a 503 OperationOutcome on both the
+        GET and the POST route."""
+        from starlette.testclient import TestClient
+
+        import medterm4ds.services.extraction as extraction_module
+
+        def _boom(*args, **kwargs):
+            raise RuntimeError("search artifacts unavailable")
+
+        monkeypatch.setattr(extraction_module, "extract", _boom)
+        with TestClient(fhir_app) as client:
+            get_resp = client.get(
+                "/fhir/CodeSystem/$extract", params={"text": "diabetes"},
+            )
+            post_resp = client.post(
+                "/fhir/CodeSystem/$extract",
+                json={"resourceType": "Parameters", "parameter": [
+                    {"name": "text", "valueString": "diabetes"}]},
+            )
+        for resp in (get_resp, post_resp):
+            assert resp.status_code == 503, resp.text
+            assert resp.headers["content-type"].startswith("application/fhir+json")
+            assert resp.json()["resourceType"] == "OperationOutcome"
+            assert "search artifacts unavailable" in resp.json()["issue"][0]["diagnostics"]
+
+    def test_extract_invalid_mode_post_is_400_operation_outcome_ev05qa01(
+        self, fhir_app,
+    ):
+        """Bad mode on POST must be a 400 OperationOutcome (pre-NER enum
+        validation), never a plaintext 500 from the NER executor."""
+        from starlette.testclient import TestClient
+
+        with TestClient(fhir_app) as client:
+            resp = client.post(
+                "/fhir/CodeSystem/$extract",
+                json={"resourceType": "Parameters", "parameter": [
+                    {"name": "text", "valueString": "diabetes"},
+                    {"name": "mode", "valueCode": "bogus"}]},
+            )
+        assert resp.status_code == 400
+        assert resp.headers["content-type"].startswith("application/fhir+json")
+        assert resp.json()["resourceType"] == "OperationOutcome"
+
+    def test_lifespan_shutdown_resets_search_service_singleton_ev05qa02(
+        self, tmp_path,
+    ):
+        """EV05-QA-02: the lifespan replaces the process-wide SearchService
+        singleton with one pinned at the app's search_index_dir; shutdown
+        MUST drop that pin so later consumers (other test suites in the same
+        process) lazily rebuild from env instead of inheriting the poisoned
+        nonexistent dir."""
+        from starlette.testclient import TestClient
+
+        from medterm4ds.apps.fhir_api import FhirApiSettings, create_fhir_app
+        from medterm4ds.services import search as search_module
+
+        db_path = tmp_path / "umls.duckdb"
+        _make_fhir_db(db_path)
+        settings = FhirApiSettings(
+            db_path=db_path,
+            memory_profile="low",
+            search_index_dir=str(tmp_path / "nonexistent"),
+            prepare_cache=False,
+        )
+        app = create_fhir_app(settings)
+        search_module.reset_search_service()  # deterministic prior state
+        with TestClient(app):
+            assert search_module._service is not None
+            assert "nonexistent" in str(search_module._service._bm25_dir)
+        assert search_module._service is None, (
+            "lifespan shutdown must reset the search-service singleton"
+        )
+
+    def test_ensure_bm25_pinned_missing_never_downloads_ev05qa03(
+        self, tmp_path, monkeypatch,
+    ):
+        """EV05-QA-03: when MEDTERM4DS_SEARCH_INDEX_DIR is pinned and the
+        dir is missing, _ensure_bm25 must raise the pinned RuntimeError —
+        never attempt an HF network download (QC2-A11 pinned contract)."""
+        import medterm4ds.services.search as search_module
+
+        def _no_download(*args, **kwargs):
+            raise AssertionError(
+                "HF download attempted while the BM25 dir is pinned"
+            )
+
+        monkeypatch.setattr(search_module, "_hf_download_atomic", _no_download)
+        service = search_module.SearchService(
+            search_index_dir=str(tmp_path / "pinned-missing"),
+        )
+        assert service._bm25_dir_pinned
+        with pytest.raises(RuntimeError, match="BM25 index directory not found"):
+            service._ensure_bm25()
+
+    def test_search_get_rejects_unknown_query_param_ev05qa04(self, fhir_app):
+        """EV05-QA-04: unknown query params on $search GET must 400 with an
+        OperationOutcome, not be silently dropped with a 200."""
+        from starlette.testclient import TestClient
+
+        with TestClient(fhir_app) as client:
+            resp = client.get(
+                "/fhir/CodeSystem/$search",
+                params={"query": "diabetes", "bogusParam": "1"},
+            )
+        assert resp.status_code == 400
+        assert resp.headers["content-type"].startswith("application/fhir+json")
+        assert resp.json()["resourceType"] == "OperationOutcome"
+        assert "bogusParam" in resp.json()["issue"][0]["diagnostics"]
+
+    def test_extract_get_rejects_unknown_query_param_ev05qa04(self, fhir_app):
+        """EV05-QA-04: unknown query params on $extract GET must 400 with an
+        OperationOutcome, not be silently dropped with a 200."""
+        from starlette.testclient import TestClient
+
+        with TestClient(fhir_app) as client:
+            resp = client.get(
+                "/fhir/CodeSystem/$extract",
+                params={"text": "diabetes", "bogusParam": "1"},
+            )
+        assert resp.status_code == 400
+        assert resp.headers["content-type"].startswith("application/fhir+json")
+        assert resp.json()["resourceType"] == "OperationOutcome"
+        assert "bogusParam" in resp.json()["issue"][0]["diagnostics"]
+
+    def test_extract_whitespace_only_text_rejected_ev05qa05(self, fhir_app):
+        """EV05-QA-05: whitespace-only text must 400 on $extract GET and
+        POST (QC-122 parity with $search) — not burn a full NER pass to
+        return an empty Bundle."""
+        from starlette.testclient import TestClient
+
+        with TestClient(fhir_app) as client:
+            get_resp = client.get(
+                "/fhir/CodeSystem/$extract", params={"text": "   "},
+            )
+            post_resp = client.post(
+                "/fhir/CodeSystem/$extract",
+                json={"resourceType": "Parameters", "parameter": [
+                    {"name": "text", "valueString": "   "}]},
+            )
+        for resp in (get_resp, post_resp):
+            assert resp.status_code == 400, resp.text
+            assert resp.headers["content-type"].startswith("application/fhir+json")
+            assert resp.json()["resourceType"] == "OperationOutcome"
+            assert "whitespace" in resp.json()["issue"][0]["diagnostics"]

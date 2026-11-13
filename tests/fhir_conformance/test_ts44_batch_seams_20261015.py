@@ -192,14 +192,17 @@ class TestFA3XA1Reconfirmed:
     """FA3 — XA1 re-confirmation (engine param at $extract)."""
 
     def test_f30_extract_unknown_engine_200(self, fhir_client):
-        """XA1 (iter 35, MEDIUM) still open: engine=bogus runs the
-        default pipeline at 200. Registered; pinned here as the
-        fixbatch-era tail marker."""
+        """EV-05 pin flip (XA1 closed): engine is not an $extract
+        param — engine=bogus now 400s via the known-set check
+        (was the fixbatch-era 200 tail marker)."""
         r = fhir_client.get(
             "/fhir/CodeSystem/$extract",
             params={"text": "patient has diabetes", "engine": "bogus"},
         )
-        assert r.status_code == 200
+        assert r.status_code == 400
+        assert r.headers["content-type"].startswith("application/fhir+json")
+        assert r.json()["resourceType"] == "OperationOutcome"
+        assert "engine" in r.json()["issue"][0]["diagnostics"]
 
 
 class TestCSRowsRecheck:

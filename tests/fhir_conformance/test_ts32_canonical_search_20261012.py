@@ -113,11 +113,21 @@ class TestCA3EngineNoOpOnCanonical:
 
     @pytest.mark.parametrize("engine", ["bm25", "sapbert", "hybrid", "bogus"])
     def test_c30_engine_all_200(self, fhir_client, engine):
-        """Every engine value (including garbage) returns 200 on
-        canonical mode — no validation, no mode semantics. Flip when
-        400'd or documented."""
-        body = _first_entry(fhir_client, engine=engine)
-        assert body["resourceType"] == "Bundle"
+        """EV-05 pin flip: engine is no longer an accepted $search
+        param — every value (plausible or garbage) now 400s via the
+        known-set check instead of silently no-op'ing on canonical
+        mode."""
+        r = fhir_client.get(
+            "/fhir/CodeSystem/$search",
+            params={
+                "query": QUERY, "searchMode": "canonical",
+                "count": "3", "engine": engine,
+            },
+        )
+        assert r.status_code == 400, r.text
+        assert r.headers["content-type"].startswith("application/fhir+json")
+        assert r.json()["resourceType"] == "OperationOutcome"
+        assert "engine" in r.json()["issue"][0]["diagnostics"]
 
 
 class TestCanonicalControls:

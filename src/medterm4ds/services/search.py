@@ -491,9 +491,13 @@ def _download_split_data(revision: str | None = None) -> Path:
     if rev:
         target = _SPLIT_ROOT / "data" / rev
         if not (target / "manifest.json").exists():
+            # Per-revision atomic unit (EV03-QA-01): the shared data/
+            # root holds coexisting revisions — a family-level rename
+            # rmtree's every sibling (a bogus pin or even a SUCCESSFUL
+            # new-revision download destroyed all other revisions).
             _hf_download_atomic(
                 [f"data/{rev}/*"], target_root=_SPLIT_ROOT, family="data",
-                revision="main",
+                revision="main", unit_subpath=rev,
             )
     else:
         local = _local_latest_data_dir()
@@ -501,9 +505,10 @@ def _download_split_data(revision: str | None = None) -> Path:
             return local
         rev = _remote_latest_data_revision()
         target = _SPLIT_ROOT / "data" / rev
+        # EV03-QA-01: unit_subpath here too — same sibling-wipe shape.
         _hf_download_atomic(
             [f"data/{rev}/*"], target_root=_SPLIT_ROOT, family="data",
-            revision="main",
+            revision="main", unit_subpath=rev,
         )
     manifest = read_manifest(target)
     if manifest is None:
@@ -1135,6 +1140,17 @@ class SearchService:
             p.name.endswith("_bm25.json") or p.suffix == ".json"
             for p in self._bm25_dir.iterdir()
         ):
+            # EV05-QA-03 (QC2-A11 pinned contract): an explicitly pinned
+            # index dir is an operator/test isolation contract — when it is
+            # missing, raise (below) instead of attempting an HF download.
+            # The lexical/semantic ensure paths already honor this; $extract
+            # mode=lexical reaches _ensure_bm25 with no ensure_lexical gate.
+            if self._bm25_dir_pinned:
+                raise RuntimeError(
+                    f"BM25 index directory not found: {self._bm25_dir} "
+                    "(MEDTERM4DS_SEARCH_INDEX_DIR is pinned; refusing to "
+                    "download)"
+                )
             _hf_download_atomic(
                 ["lexical/*"], target_root=_CACHE_DIR, family="lexical",
                 revision=_HF_REVISION,
@@ -1831,10 +1847,14 @@ class SearchService:
                 for r in group
             )
             if class_preferred:
+                # EV02-QA-02 (run 2): DRUGCLASS first, but keep the type
+                # priority for the non-class members of the group (a VAX
+                # twin must not be demoted below the class anchor).
                 group = sorted(
                     group,
                     key=lambda r: (
                         (0 if r.canonical_id.startswith("VAL-DRUGCLASS-") else 1),
+                        *cls._tie_type_rank(r.canonical_id),
                         r.canonical_id,
                     ),
                 )
@@ -1964,8 +1984,11 @@ class SearchService:
                 members=vset.get("members", []),
                 combination_members=vset.get("combination_members", []),
             ))
-            if len(results) >= count:
-                break
+        # EV02-QA-01 (run 2): do NOT break at count inside the loop — the
+        # FAISS-layout-first twin would win the boundary slot BEFORE the
+        # tie rule runs (top-1 became index-layout-dependent at count=1).
+        # Collect the full above-threshold pool, then order, then slice —
+        # mirroring the batch path. The k over-fetch bounds the pool.
         # Cross-type twin ties: FAISS tie order is index-layout-dependent
         # (undefined across builds) — apply the deterministic content rule.
         return self._break_exact_ties(results)[:count]

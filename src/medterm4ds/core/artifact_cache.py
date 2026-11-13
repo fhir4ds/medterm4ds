@@ -228,7 +228,11 @@ def cache_refresh(
     # terminology flag is consulted, silently dropping an explicit
     # --terminology. Reject the combination loudly instead.
     if split and terminology is True:
-        raise ValueError(
+        # RuntimeError (not ValueError): this is an operational conflict
+        # the @_data_cli_errors CLI envelope must surface as a clean
+        # error, and the envelope deliberately lets ValueErrors (programming
+        # bugs) propagate as tracebacks (EV03-QA-05).
+        raise RuntimeError(
             "--split and --terminology are mutually exclusive layouts; "
             "run them separately"
         )
@@ -270,7 +274,14 @@ def cache_refresh(
         try:
             resolved = _term.download(root)
         except Exception:
-            if stale is not None and not base.exists():
+            # EV03-QA-04 (HIGH): restore UNCONDITIONALLY. download()
+            # renames tmp→base BEFORE its own resolve check — when that
+            # resolve fails, base holds the failed download's output
+            # (junk), not operator data. Clear it so the good release
+            # stranded in .stale-* comes back; the restore must not
+            # depend on base's existence.
+            if stale is not None:
+                shutil.rmtree(base, ignore_errors=True)
                 stale.rename(base)
             raise
         if stale is not None:

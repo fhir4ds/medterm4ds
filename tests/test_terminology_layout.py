@@ -187,6 +187,50 @@ def _reload_search(monkeypatch, **env):
     return importlib.reload(search_mod)
 
 
+class TestWhitespacePinsAreUnset:
+    """EV03-QA-02: whitespace-only MEDTERM4DS_TERMINOLOGY_RELEASE /
+    MEDTERM4DS_TERMINOLOGY_DIR pins are "unset", mirroring the run-1
+    empty-pin fix (strip before the empty check)."""
+
+    def test_whitespace_release_pin_falls_back_to_default(
+        self, monkeypatch
+    ):
+        monkeypatch.setenv("MEDTERM4DS_TERMINOLOGY_RELEASE", "   ")
+        assert term.release() == term.DEFAULT_TERMINOLOGY_RELEASE
+        assert term.release_explicitly_pinned() is False
+
+    def test_whitespace_dir_override_is_unset(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("MEDTERM4DS_TERMINOLOGY_DIR", " ")
+        assert term.base_dir(tmp_path) == (
+            tmp_path / "terminology" / term.DEFAULT_TERMINOLOGY_RELEASE
+        )
+
+
+class TestDownloadSymlinkRefusal:
+    def test_symlinked_release_base_refused_loud(self, tmp_path, monkeypatch):
+        """EV03-QA-03: a symlinked/dangling release base must fail with a
+        clear TerminologyLayoutError naming the path — never an opaque
+        OSError from rmtree-on-symlink (atomic_rename_dir already refuses;
+        download()'s inline swap is the sibling)."""
+        real = tmp_path / "elsewhere"
+        real.mkdir()
+        link = tmp_path / "linked-release"
+        link.symlink_to(real)
+        monkeypatch.delenv("MEDTERM4DS_EMBEDDING_SPACE", raising=False)
+        monkeypatch.delenv("MEDTERM4DS_TERMINOLOGY_RELEASE", raising=False)
+        monkeypatch.setenv("MEDTERM4DS_TERMINOLOGY_DIR", str(link))
+
+        def boom(**kw):
+            raise AssertionError(
+                "download must refuse the symlink BEFORE any download"
+            )
+
+        monkeypatch.setattr("huggingface_hub.snapshot_download", boom)
+        with pytest.raises(term.TerminologyLayoutError, match="symlink"):
+            term.download(tmp_path)
+        assert link.is_symlink(), "the symlink itself must survive"
+
+
 class TestResolve:
     def test_maps_families_and_admits_space(self, tmp_path, monkeypatch):
         built = _build_release(tmp_path / "rel")

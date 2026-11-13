@@ -102,22 +102,38 @@ def get_code_infos(
         if resolution is None or resolution.status == "not_found":
             out.append(info)
             continue
+        # QC-401 (HIGH): a CROSS-SOURCE resolution (input.source !=
+        # resolved.source — NDC→RXNORM is the production case) must use
+        # the resolved atom's display regardless of mode. The resolved
+        # system has no atom for the input code, so the historical
+        # fallthrough's input_display is the raw NDC string — the record
+        # then echoes the 11-digit code as its own name while
+        # cui/aui/tty/suppress come from the resolved RXNORM atom
+        # (internally inconsistent; display-is-never-a-raw-code rule).
+        # Same cross-source semantics effective_code_refs applies for
+        # historical mode (QC-119).
+        cross_source = (
+            resolution.resolved is not None
+            and resolution.input.source != resolution.resolved.source
+        )
+        if resolve_mode == "active_only" and not cross_source:
+            # EV04-QA-02 (HIGH): active_only answers must not depend on
+            # batch composition. The NDC exception on the
+            # effective_code_refs fast path is batch-GLOBAL, so one NDC
+            # ref anywhere makes resolutions available for EVERY element;
+            # without this gate a same-source obsolete code fell into the
+            # historical branch below and surfaced the SUPPRESSED atom
+            # (name='Deprecated term', suppress='O') — data active_only
+            # must not return. Same-source codes on the active_only path
+            # take the active-only lookup answer (info is None for
+            # obsolete/suppressed codes), matching single-call and
+            # NDC-free-batch behavior. Cross-source (NDC) resolutions
+            # still use the resolved atom per QC-401 above.
+            out.append(info)
+            continue
         use_resolved = resolution.is_resolved and (
             resolve_mode == "resolve_current"
-            # QC-401 (HIGH): a CROSS-SOURCE resolution (input.source !=
-            # resolved.source — NDC→RXNORM is the production case) must use
-            # the resolved atom's display regardless of mode. The resolved
-            # system has no atom for the input code, so the historical
-            # fallthrough's input_display is the raw NDC string — the record
-            # then echoes the 11-digit code as its own name while
-            # cui/aui/tty/suppress come from the resolved RXNORM atom
-            # (internally inconsistent; display-is-never-a-raw-code rule).
-            # Same cross-source semantics effective_code_refs applies for
-            # historical mode (QC-119).
-            or (
-                resolution.resolved is not None
-                and resolution.input.source != resolution.resolved.source
-            )
+            or cross_source
         )
         if use_resolved:
             target_ref = resolution.resolved or ref

@@ -74,17 +74,20 @@ class TestE1ResultTypes500:
     """E1 — invalid resultTypes crashes with 500, not 400."""
 
     def test_e10_get_500(self, extract_client):
-        """GET resultTypes=bogus → 500 (CURRENT, deviation). Flip
-        when fixed: expect 400 OperationOutcome naming valid types."""
+        """EV-05 pin flip: GET resultTypes=bogus now 400
+        OperationOutcome naming the valid types (was 500 text/plain)."""
         r = extract_client.get(
             EXTRACT,
             params={"text": "diabetes", "resultTypes": "bogus"},
         )
-        assert r.status_code == 500
+        assert r.status_code == 400
+        assert r.headers["content-type"].startswith("application/fhir+json")
+        assert r.json()["resourceType"] == "OperationOutcome"
+        assert "bogus" in r.json()["issue"][0]["diagnostics"]
 
     def test_e11_post_500(self, extract_client):
-        """POST valueCode resultTypes=bogus → 500 (same root cause
-        on the POST form)."""
+        """POST valueCode resultTypes=bogus → same 400
+        OperationOutcome (the QA-005 wrap now covers the POST form)."""
         body = {
             "resourceType": "Parameters",
             "parameter": [
@@ -93,7 +96,9 @@ class TestE1ResultTypes500:
             ],
         }
         r = extract_client.post(EXTRACT, json=body)
-        assert r.status_code == 500
+        assert r.status_code == 400
+        assert r.headers["content-type"].startswith("application/fhir+json")
+        assert r.json()["resourceType"] == "OperationOutcome"
 
 
 class TestExtractControls:
@@ -115,13 +120,14 @@ class TestExtractControls:
         assert r.status_code == 422
 
     def test_e22_whitespace_text_200(self, fhir_client):
-        """Whitespace-only text is accepted (content-free input,
-        empty result) — deliberate, pinned so it can't drift."""
+        """EV-05 pin flip: whitespace-only text is now rejected 400
+        (pre-trim landed; mirrors empty-string rejection)."""
         r = fhir_client.get(
             EXTRACT, params={"text": "   ", "format": "codes"}
         )
-        assert r.status_code == 200
-        assert r.json().get("resourceType") == "Bundle"
+        assert r.status_code == 400
+        assert r.headers["content-type"].startswith("application/fhir+json")
+        assert r.json()["resourceType"] == "OperationOutcome"
 
     def test_e23_annotation_fields_400(self, fhir_client):
         """QA-005 pre-NER validation held: garbage annotationFields

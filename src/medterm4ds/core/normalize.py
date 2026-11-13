@@ -70,8 +70,22 @@ SOURCE_MAP = {
 
 
 def normalize_source(source: str) -> str:
-    """Normalize source aliases to UMLS source abbreviations."""
-    if not source or not source.strip():
+    """Normalize source aliases to UMLS source abbreviations.
+
+    EV08-QA-02 (MEDIUM, run-2): non-string input previously either
+    crashed deep inside with a raw ``AttributeError`` (``source=123`` →
+    "'int' object has no attribute 'strip'") or — for falsy non-strings
+    like ``[]`` — was returned unchanged and silently accepted
+    downstream (``CodeRef(source=[])`` constructed fine). Fail loud on
+    the wrong TYPE at this canonical boundary; empty/whitespace string
+    passthrough is preserved (emptiness is rejected by
+    ``validate_source_sab`` at the tool boundaries).
+    """
+    if not isinstance(source, str):
+        raise TypeError(
+            f"source must be a string, got {type(source).__name__}"
+        )
+    if not source.strip():
         return source
     return SOURCE_MAP.get(source.strip().upper(), source.strip().upper())
 
@@ -87,6 +101,15 @@ def validate_source_sab(source: str) -> None:
     valid (it legitimately resolves to not-found); only malformed forms are
     rejected.
     """
+    # EV08-QA-02 (MEDIUM, run-2): non-string input crashed on the
+    # ``source.strip()`` below with a raw AttributeError. Fail loud on
+    # the wrong TYPE (mirroring normalize_source) so every surface that
+    # funnels through this canonical guard gets an identical, named
+    # TypeError instead.
+    if not isinstance(source, str):
+        raise TypeError(
+            f"source must be a string, got {type(source).__name__}"
+        )
     if not source.strip():
         raise ValueError(
             "source must be a non-empty vocabulary name (UMLS SAB, "

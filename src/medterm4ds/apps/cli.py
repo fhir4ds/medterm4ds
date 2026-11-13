@@ -120,7 +120,29 @@ def main(argv: list[str] | None = None) -> int:
     except (ValueError, argparse.ArgumentTypeError) as exc:
         raise SystemExit(f"Error: {exc}") from None
     args = parser.parse_args(argv)
-    return args.func(args)
+    # EV07-QA-02 (run-2, MEDIUM): a VALID DuckDB file without the UMLS
+    # schema (right file, wrong database) raised a raw
+    # duckdb.CatalogException traceback ("Table with name mrconso does not
+    # exist") out of the query handlers — _require_db_file cannot see
+    # schema shape. There is no shared query-handler wrapper (each run_*
+    # has its own narrow inline except tuple), so this dispatch point is
+    # the single chokepoint every query command inherits; data commands
+    # convert duckdb.Error earlier via @_data_cli_errors and never reach
+    # this catch.
+    try:
+        import duckdb
+    except ImportError:
+        return args.func(args)
+    try:
+        return args.func(args)
+    except duckdb.Error as exc:
+        message = f"Error: {exc}"
+        if isinstance(exc, duckdb.CatalogException):
+            message += (
+                " — not a medterm4ds UMLS database; "
+                "build one with 'medterm4ds data build-duckdb'."
+            )
+        raise SystemExit(message) from None
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -667,9 +689,13 @@ def _add_bulk_mapping_args(parser: argparse.ArgumentParser) -> None:
     )
     parser.add_argument(
         "--max-results-per-code",
-        type=int,
+        # EV07-QA-03: validated at parse time (must be >= 1). Pre-fix the
+        # plain int let 0/-1 through and iter_mapping_bulk deferred the
+        # services ValueError to iteration time — firing inside
+        # write_checkpointed_rows after partial artifacts existed.
+        type=_positive_int,
         default=50,
-        help="Maximum target mappings per input code.",
+        help="Maximum target mappings per input code (must be >= 1).",
     )
     parser.add_argument(
         "--max-depth",
@@ -747,9 +773,12 @@ def _add_mapping_conceptmap_args(parser: argparse.ArgumentParser) -> None:
     )
     parser.add_argument(
         "--max-results-per-code",
-        type=int,
+        # EV07-QA-03 (conceptmap mapping twin): eager parse-time guard,
+        # same as the bulk map flag. Pre-fix the lazy services ValueError
+        # fired inside write_checkpointed_rows after partial artifacts.
+        type=_positive_int,
         default=50,
-        help="Maximum target mappings per input code.",
+        help="Maximum target mappings per input code (must be >= 1).",
     )
     parser.add_argument(
         "--max-depth",
@@ -2505,7 +2534,19 @@ def _connect_read_only(db_path: Path, *, output: str | None = None):
     """
     import duckdb
 
-    con = duckdb.connect(str(db_path), read_only=True)
+    # EV07-QA-01 (run-2, MEDIUM): _require_db_file only checks
+    # dir-vs-file, so a corrupt/non-DuckDB file passed every precheck and
+    # died here with a raw duckdb.IOException traceback ("exists, but it
+    # is not a valid DuckDB database file"). Every query command routes
+    # through this helper (14 call sites), so the clean SystemExit
+    # envelope here covers them all — mirroring _require_db_file's own
+    # dir/not-found exits two lines below.
+    try:
+        con = duckdb.connect(str(db_path), read_only=True)
+    except duckdb.IOException as exc:
+        raise SystemExit(
+            f"Error: {db_path} is not a valid DuckDB database file ({exc})."
+        ) from None
     if not output:
         con.execute("SET enable_progress_bar = false")
     return con
@@ -2524,7 +2565,11 @@ def _require_db_file(db_path: Path) -> Path:
             f"Error: {db_path} is a directory, expected a DuckDB database file."
         )
     if not db_path.is_file():
-        raise SystemExit(f"Database not found: {db_path}")
+        # EV07-QA-04 (LOW, trivial subset): harmonized with the "Error: "
+        # prefix used by the rest of the surface (sibling dir-message
+        # above already carries it); the remaining prefix-less exits are
+        # deferred as cosmetic.
+        raise SystemExit(f"Error: Database not found: {db_path}")
     return db_path
 
 

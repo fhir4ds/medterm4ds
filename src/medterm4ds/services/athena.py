@@ -639,6 +639,13 @@ def search_athena_concepts(
         raise ValueError("query must be a non-empty string")
     if limit < 1:
         raise ValueError("limit must be at least 1")
+    # EV08-QA-01 (MEDIUM, run-2): the last athena query surface without
+    # the schema guard (run-1 fixed subsumes only) — on a UMLS-only DB
+    # (the standard MCP configuration) a raw duckdb.CatalogException
+    # leaked through the fastmcp transport, including from the
+    # validate_closed_enum probes below (they query athena_* tables
+    # too). Guard before any table access, mirroring :518/:557/:607.
+    _check_athena_schema(con)
     # AS2 fix (TS-93): unknown vocabularies were silently dropped
     # (results [] indistinguishable from a legitimate empty search;
     # AF3's sibling gap). Validate against the ingested vocabulary

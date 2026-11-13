@@ -85,7 +85,10 @@ def release() -> str:
     # env var is "unset", not a pin — `os.getenv(...) or DEFAULT` mirrors
     # the embedding-space knob's fail-loud/empty semantics instead of
     # silently diverging from DEFAULT_TERMINOLOGY_RELEASE.
-    return os.getenv("MEDTERM4DS_TERMINOLOGY_RELEASE") or DEFAULT_TERMINOLOGY_RELEASE
+    # EV03-QA-02 (2026-11-12): WHITESPACE-only is also unset — strip
+    # before the empty check (mirrors MEDTERM4DS_LAYOUT normalization).
+    pinned = (os.getenv("MEDTERM4DS_TERMINOLOGY_RELEASE") or "").strip()
+    return pinned or DEFAULT_TERMINOLOGY_RELEASE
 
 
 def release_explicitly_pinned() -> bool:
@@ -95,8 +98,9 @@ def release_explicitly_pinned() -> bool:
     fetched and served even when a servable legacy/split cache exists
     locally (otherwise the pin silently falls through to the local
     artifacts — seen live during the 2026.11.05.1 flip, 2026-11-05).
+    Whitespace-only counts as unset (EV03-QA-02).
     """
-    return bool(os.getenv("MEDTERM4DS_TERMINOLOGY_RELEASE"))
+    return bool((os.getenv("MEDTERM4DS_TERMINOLOGY_RELEASE") or "").strip())
 
 
 def render_policy_version() -> str:
@@ -109,7 +113,8 @@ def base_dir(
     cache_root: Path, rel: str | None = None
 ) -> Path:
     """Local directory holding release dirs for a cache root."""
-    override = os.getenv("MEDTERM4DS_TERMINOLOGY_DIR")
+    # EV03-QA-02: whitespace-only override is unset (strip before check).
+    override = (os.getenv("MEDTERM4DS_TERMINOLOGY_DIR") or "").strip() or None
     if override:
         return Path(override)
     return Path(cache_root) / TERMINOLOGY_DIRNAME / (rel or release())
@@ -277,6 +282,16 @@ def download(
         space_id = effective_embedding_space()
     rel = rel or release()
     base = base_dir(cache_root, rel)
+    if base.is_symlink() and not is_present(base):
+        # EV03-QA-03 (2026-11-12): mirror atomic_rename_dir's refusal —
+        # a manifest-less or dangling symlinked base would crash the
+        # inline swap with an opaque OSError/NotADirectoryError and leave
+        # a .tmp-* staging dir behind. (A symlink to a VALID release
+        # resolves through the link above and never reaches here.)
+        raise TerminologyLayoutError(
+            f"terminology release base {base} is a symlink — refusing to "
+            "rmtree through it. Remove the symlink and re-provision."
+        )
     if is_present(base):
         resolved = resolve(cache_root, space_id=space_id, rel=rel)
         if resolved is not None:

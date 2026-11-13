@@ -189,15 +189,17 @@ class TestG2AvailabilityBeforeValidation:
     """G2 — 503 availability gate precedes input validation."""
 
     def test_g20_engine_bogus_503_not_422(self, search_client):
-        """Default (hybrid) mode with engine=bogus → 503 (index
-        unavailable), not 422 — the malformed parameter is invisible
-        until the index exists (CURRENT, deviation). Flip when enum
-        params are route-guarded: expect 422 regardless of index."""
+        """EV-05 pin flip: engine=bogus is now rejected by param
+        validation (400 OperationOutcome) BEFORE the index-availability
+        gate — no longer the 503-before-422 ordering deviation."""
         r = search_client.get(
             SEARCH,
             params={"query": "diabetes", "engine": "bogus"},
         )
-        assert r.status_code == 503
+        assert r.status_code == 400
+        assert r.headers["content-type"].startswith("application/fhir+json")
+        assert r.json()["resourceType"] == "OperationOutcome"
+        assert "engine" in r.json()["issue"][0]["diagnostics"]
 
     def test_g21_result_types_bogus_503_not_422(self, search_client):
         """Same ordering issue for resultTypes under hybrid."""

@@ -1337,19 +1337,19 @@ class TestLens8SourceReadStructuralContracts:
         found_guard = False
         for node in ast.walk(tree):
             if isinstance(node, ast.For):
-                # Check iter is compose.get('include', [])
-                if (isinstance(node.iter, ast.Call) and
-                    isinstance(node.iter.func, ast.Attribute) and
-                    node.iter.func.attr == "get"):
-                    if node.iter.args and isinstance(node.iter.args[0], ast.Constant):
-                        if node.iter.args[0].value == "include":
-                            # Walk the first 5 statements of the loop body
-                            body_stmts = node.body[:5]
-                            for stmt in body_stmts:
-                                stmt_src = ast.get_source_segment(src, stmt) or ""
-                                if "isinstance" in stmt_src and "include" in stmt_src:
-                                    found_guard = True
-                                    break
+                # EV06-QA-02: the iter is now the null-safe QC-245 idiom
+                # ``(compose.get("include") or [])`` (BoolOp-wrapped), so
+                # match the iter source instead of a bare Call node —
+                # accepts both the old and the null-safe shapes.
+                iter_src = ast.get_source_segment(src, node.iter) or ""
+                if "include" in iter_src and "compose" in iter_src:
+                    # Walk the first 5 statements of the loop body
+                    body_stmts = node.body[:5]
+                    for stmt in body_stmts:
+                        stmt_src = ast.get_source_segment(src, stmt) or ""
+                        if "isinstance" in stmt_src and "include" in stmt_src:
+                            found_guard = True
+                            break
         assert found_guard, (
             "_expand_intensional MUST have isinstance(include, dict) guard "
             "in the first 5 statements of the compose.include[] loop "
@@ -1391,17 +1391,17 @@ class TestLens8SourceReadStructuralContracts:
         found_guard = False
         for node in ast.walk(tree):
             if isinstance(node, ast.For):
-                if (isinstance(node.iter, ast.Call) and
-                    isinstance(node.iter.func, ast.Attribute) and
-                    node.iter.func.attr == "get"):
-                    if node.iter.args and isinstance(node.iter.args[0], ast.Constant):
-                        if node.iter.args[0].value == "filter":
-                            body_stmts = node.body[:5]
-                            for stmt in body_stmts:
-                                stmt_src = ast.get_source_segment(src, stmt) or ""
-                                if "isinstance" in stmt_src and "filt" in stmt_src.lower():
-                                    found_guard = True
-                                    break
+                # EV06-QA-02: null-safe BoolOp iter — match iter source
+                # (accepts ``include.get("filter", [])`` and
+                # ``(include.get("filter") or [])`` alike).
+                iter_src = ast.get_source_segment(src, node.iter) or ""
+                if "filter" in iter_src and "include" in iter_src:
+                    body_stmts = node.body[:5]
+                    for stmt in body_stmts:
+                        stmt_src = ast.get_source_segment(src, stmt) or ""
+                        if "isinstance" in stmt_src and "filt" in stmt_src.lower():
+                            found_guard = True
+                            break
         assert found_guard, (
             "_expand_intensional MUST have isinstance(filt, dict) guard "
             "in the compose.include[].filter[] loop"
@@ -1415,17 +1415,17 @@ class TestLens8SourceReadStructuralContracts:
         found_guard = False
         for node in ast.walk(tree):
             if isinstance(node, ast.For):
-                if (isinstance(node.iter, ast.Call) and
-                    isinstance(node.iter.func, ast.Attribute) and
-                    node.iter.func.attr == "get"):
-                    if node.iter.args and isinstance(node.iter.args[0], ast.Constant):
-                        if node.iter.args[0].value == "exclude":
-                            body_stmts = node.body[:5]
-                            for stmt in body_stmts:
-                                stmt_src = ast.get_source_segment(src, stmt) or ""
-                                if "isinstance" in stmt_src and "exclude" in stmt_src:
-                                    found_guard = True
-                                    break
+                # EV06-QA-02: null-safe BoolOp iter — match iter source
+                # (accepts ``compose.get("exclude", [])`` and
+                # ``(compose.get("exclude") or [])`` alike).
+                iter_src = ast.get_source_segment(src, node.iter) or ""
+                if "exclude" in iter_src and "compose" in iter_src:
+                    body_stmts = node.body[:5]
+                    for stmt in body_stmts:
+                        stmt_src = ast.get_source_segment(src, stmt) or ""
+                        if "isinstance" in stmt_src and "exclude" in stmt_src:
+                            found_guard = True
+                            break
         assert found_guard, (
             "_expand_intensional MUST have isinstance(exclude, dict) guard "
             "in the compose.exclude[] loop"

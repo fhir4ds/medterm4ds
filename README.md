@@ -144,7 +144,7 @@ Search/extract artifacts are cached from the `fhir4ds/terminology` HF repo
 Three layouts are accepted; the release layout is preferred:
 
 - **Release (current default)** — one self-contained release per dated tag
-  (the default release tag, `2026.11.12.1` today): `canonical/<release>/value_sets.json` +
+  (the default release tag, `2026.11.12.2` today): `canonical/<release>/value_sets.json` +
   `claimant_details.json` + `decomposition_links.json`,
   `lexical/<release>/<category>.json`, `semantic/<release>/<category>.faiss`
   + metadata plus `anchors.faiss`/`anchors_metadata.json` (the canonical

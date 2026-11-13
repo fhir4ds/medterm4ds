@@ -199,10 +199,9 @@ class TestExtractXMLGuards:
         assert "fhir+xml" in r.headers["content-type"]
 
     def test_x21_outputformat_ignored_in_xml_too(self, fhir_client):
-        """AN1 transport-independent: outputFormat=annotated silently
-        ignored with _format=xml as well (200 plain Bundle XML, no
-        annotated_text). No new row — AN1 already registers
-        'everywhere'."""
+        """EV-05 pin flip: outputFormat is rejected on the XML
+        transport too — 400 FHIR XML OperationOutcome (was 200 plain
+        Bundle XML with the param silently ignored)."""
         r = fhir_client.get(
             "/fhir/CodeSystem/$extract",
             params={
@@ -210,5 +209,7 @@ class TestExtractXMLGuards:
                 "outputFormat": "annotated", "_format": "xml",
             },
         )
-        assert r.status_code == 200
+        assert r.status_code == 400
+        assert "fhir+xml" in r.headers["content-type"]
+        assert "OperationOutcome" in r.text
         assert "annotated_text" not in r.text

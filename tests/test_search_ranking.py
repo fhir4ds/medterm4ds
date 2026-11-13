@@ -724,6 +724,30 @@ class TestCanonicalTieRule:
         # same type (no prefix) -> id asc within the tie group
         assert [r.canonical_id for r in out] == ["A", "B", "C", "D", "E"]
 
+    def test_class_preferred_preserves_type_priority_for_rest(self):
+        # EV02-QA-02 (run 2): within a class-preferred tie group, the
+        # DRUGCLASS anchor leads but non-class members keep the type
+        # priority (a VAX twin must not be demoted below the class).
+        from medterm4ds.services.search import get_search_service
+
+        svc = get_search_service().__class__
+
+        def _term(name, cid):
+            h = self._hit(cid, 1.0, 1)
+            h.patient_friendly_name = name
+            return h
+
+        out = svc._break_exact_ties([
+            _term("Estrogens", "VAL-MED-RXNORM-4474"),
+            _term("Estrogens", "VAL-VAX-CVX-1"),
+            _term("Estrogens", "VAL-DRUGCLASS-ATC-G03C"),
+        ])
+        assert [r.canonical_id for r in out] == [
+            "VAL-DRUGCLASS-ATC-G03C",  # class preference
+            "VAL-VAX-CVX-1",           # type priority for the rest
+            "VAL-MED-RXNORM-4474",
+        ]
+
     def test_class_preferred_terms_outrank_ingredient(self):
         from medterm4ds.services.search import get_search_service
 
