@@ -219,25 +219,25 @@ data, or version changes — the default terminology release is
 
 ### Changed
 
-- **Lexical orphan-surface pass is cached per index** (AMUX-63). The
+- **Lexical orphan-surface pass is cached per index**. The
   pass rebuilt `f"{name} {friendly}"` and lowercased it per row on
   every query (180–256ms of pure string construction); it now builds
   `_orphan_surfaces_lower` once per index and pre-filters with a
   longest-token-first plain substring check. Lexical query latency
   180–256ms → 12–56ms.
-- **`HYBRID_CANDIDATE_DEPTH` lowered 100 → 25** (AMUX-63). A depth
+- **`HYBRID_CANDIDATE_DEPTH` lowered 100 → 25**. A depth
   sweep (benchmarks/results_depth_sweep.md) showed retrieval quality
   flat from depth 10 to 100 while latency is depth-independent;
   25 keeps headroom. Hybrid $search latency ~360ms → ~130–170ms.
-- **Lexical posting lookups are v3-index ready** (AMUX-22). Exact
+- **Lexical posting lookups are v3-index ready**. Exact
   alphanumeric posting keys are tried first (v2 pure ≥3-letter keys
   keep their self+stem dual lookup unchanged); the expensive
   surface-distance sort tier is computed only for rows reaching the
   cut (`_sorted_lazy_surface_tiebreak`, exact-equivalent by boundary
   tie extension); v3 keys not matching the v2 shape with df > 15% are
   pruned from scoring and fall to the orphan pass ('mg' at 40% df).
-- **2-character alpha posting keys carry a casing guard** (AMUX-22,
-  Joel ruling: keep the postings). A 2-char alpha token ('mi', 'iv')
+- **2-character alpha posting keys carry a casing guard**
+  (Joel ruling: keep the postings). A 2-char alpha token ('mi', 'iv')
   only scores rows carrying it as-typed or uppercased ('(MI)'); with
   no corroboration the token falls to the orphan pass. Benchmark
   evidence on the v3 candidate indexes vs serving v2: hit@1 63.0%
@@ -265,7 +265,7 @@ data, or version changes — the default terminology release is
 ### Changed
 
 - **Hybrid search is now reciprocal-rank fusion over the UNION of both
-  systems' candidates** (AMUX-46). The previous cascade (BM25 pool →
+  systems' candidates**. The previous cascade (BM25 pool →
   SapBERT re-rank) made lexical recall a hard gate: BM25's tf-tie
   lottery could drop the semantic best row ('lisinopril 5mg' → the
   5mg-tablet row at 0.93 cosine) from the pool entirely. Ranking is now
@@ -281,14 +281,14 @@ data, or version changes — the default terminology release is
   calibrated underlying value (cosine when semantic saw the row, else
   normalized BM25) — two scales, documented per-row by `match_grade`.
 - **Lexical ranking gains an exact-surface tier and unified
-  surface-distance tie-break** (AMUX-18/49), and **two-character
-  acronyms and alphanumeric tokens are searchable** (AMUX-20): tokens
+  surface-distance tie-break**, and **two-character acronyms and
+  alphanumeric tokens are searchable**: tokens
   the index build digitized out of the postings (MI, PE, PT, HbA1c) are
   recovered by a surface pass over indexed names. Rows matched ONLY by
   that pass cap at `probable` — substring coincidences ('MS' matching
   'LC/MS/MS' mass-spec notation) must never grade `certain`.
-- **Machine-specific path defaults are gone; one acquisition story**
-  (AMUX-44). `MEDTERM4DS_CACHE_DIR`-derived defaults resolve through
+- **Machine-specific path defaults are gone; one acquisition story**.
+  `MEDTERM4DS_CACHE_DIR`-derived defaults resolve through
   `medterm4ds.core.paths` (single source; `~` in env pins expands);
   unset pins mean first-use auto-provisioning from the terminology
   release, and the FHIR startup banner now says so instead of telling
@@ -673,35 +673,34 @@ count=5): lexical median ~1ms; semantic ~67ms; hybrid ~76ms; canonical
   extraction cost before raising (QA-004).
 - ConText copula pattern no longer includes "at" — clock times and
   whole-number doses ("given at 8") no longer fire MEASUREMENT
-  sentence-wide (CR-052; integer results like "platelets was 150" keep
+  sentence-wide (integer results like "platelets was 150" keep
   firing).
 - FHIR `$extract` POST rejects parameters carrying more than one
   `value[x]` (FHIR R4 param-1) instead of silently dropping the extra
-  value (CR-053).
+  value.
 - Past-the-end `$expand` pages omit `contains` instead of emitting an
-  empty array (CR-058).
+  empty array.
 - MCP `discover` no longer flags exactly-at-limit result sets as
-  truncated (CR-055 — fetch limit+1 pattern).
-- CSV reader docstring no longer claims type-preserving round-trips
-  (CR-060); data setup replaces the output database atomically without
+  truncated (fetch limit+1 pattern).
+- CSV reader docstring no longer claims type-preserving round-trips;
+  data setup replaces the output database atomically without
   the unlink crash window, with an actionable error when the target is
-  held open on Windows (CR-061).
+  held open on Windows.
 
 ### Changed
 
 - Resolve paths fetch resolved-atom TTYs in one batch instead of per-code
-  engine round-trips (CR-056).
+  engine round-trips.
 - Closure-table walks are bounded (10k relations per direction); a cap
   hit marks the closure incomplete with a WARNING instead of walking
-  unbounded hierarchies (CR-057).
-- `search_names` source-presence probe is memoized per engine instance
-  (CR-059).
+  unbounded hierarchies.
+- `search_names` source-presence probe is memoized per engine instance.
 - The en_core_web_sm parse runs only for texts that have entities, in
-  both single and batch paths (CR-054).
+  both single and batch paths.
 - `SemanticSearchEngine.embed_batch()` is the public batch-embed API;
   the search service no longer touches engine-private attributes
   (ARCH-001). Single-path dedup now shares `_dedup_concepts` with the
-  batch path (CR-063).
+  batch path.
 - `uv.lock` regenerates with version bumps and the release checklist
   gains lock + stale-literal-grep steps (QA-006).
 
@@ -857,14 +856,14 @@ derived tables on existing databases** — see Upgrade notes.
   [QC-474, QC-494]
 - **Empty-input DataFrame parity**: all `*_df()` methods return a
   correctly-columned 0-row DataFrame on empty or all-missing input instead of
-  a 0-column frame. [QC-045, QC-072, QC-073, QC-080, QC-105, QC-106]
+  a 0-column frame.
 - **API robustness**: `/health` no longer leaks the DB filesystem path; error
   bodies echoed into `RuntimeError` messages truncate at 2,048 chars (was
   430,291 chars on a 10,001-code batch error); body-size cap actually enforced
   on list length. [QC-477]
 - **CLI**: `--limit`/`--threads`/`--memory-limit` garbage values fail with a
   clean one-line error, no raw tracebacks; `--max-depth` no longer silently
-  overridden to 1 for `parents`/`children`. [QC-058, QC-380, CR-043]
+  overridden to 1 for `parents`/`children`.
 
 ### Fixed
 
@@ -875,7 +874,7 @@ Of ~340 fixes in this release; the most user-visible:
   silently killed `find_terms` on every lock-based install — callers got
   empty results with no error. Pins are now `gliner>=0.2.28` +
   `transformers>=4.30.0,<5`, and uv.lock resolves gliner 0.2.28.
-  [287f00e, CR-049]
+  [287f00e]
 - **Extraction lab-vs-med disambiguation now arbitrates with three signals
   in priority order.** Two higher-precision signals run before the ConText
   tie-breaker: head-noun analysis of the noun phrase containing the span
@@ -887,8 +886,7 @@ Of ~340 fixes in this release; the most user-visible:
   bare lab values arbitrate to lab [cf8920d]). ConText
   MEASUREMENT/ADMINISTRATION cues remain
   the Signal 3 fallback; no signal fired keeps the GLiNER label mapping.
-  Evaluation on the 212-item v2 corpus (docs/.ai_loop/qc_comp/
-  three_signal_results.md): signals 1-2 fired 62/62 correct, overall
+  Evaluation on the 212-item v2 corpus: signals 1-2 fired 62/62 correct, overall
   in-scope accuracy 78.3% → 84.4%, TDM group E 65% → 94%. Requires the new
   `en-core-web-sm` dependency in the `extraction` extra (absent model
   degrades gracefully to ConText-only arbitration).
@@ -915,7 +913,7 @@ Of ~340 fixes in this release; the most user-visible:
   (with the existing filter-aware over-fetch), and lexical/semantic/hybrid
   restrict the category indexes searched before retrieval, so `--limit`
   caps the filtered set. Unknown `--result-types` values still return an
-  empty result (with the QC-129 warning on legacy modes), never a crash.
+  empty result (with a warning on legacy modes), never a crash.
 - **Prepared-table correctness** — CPT prepared priority ranked ETCF above PT,
   returning the wrong CUI/display/TTY for ~90% of CPT codes; the RxNorm
   hierarchy was entirely absent from `mt4ds.walk_edges` (0 of 238,329 isa
@@ -929,7 +927,7 @@ Of ~340 fixes in this release; the most user-visible:
   candidates are deduped to one row per distinct target (resolution /
   `code_replacements` previously emitted one row per replacement EDGE, so a
   code with two historical names mapping to the same target yielded
-  duplicates). [QC-017, QC-398, QC-401, QC-406, QC-119, QC-120, a5dc3a9]
+  duplicates). [a5dc3a9]
 - **ConceptMap `equivalence` mislabeling.** `snomed_fallback`, TTY-traversal
   `group` matches, and 6+ other depth>0 match types were emitted as
   `equivalent`; in a production-scale sample 3,970/3,970 RxNorm rows at
@@ -947,20 +945,17 @@ Of ~340 fixes in this release; the most user-visible:
 - **`$extract` correctness**: family history now detected (`is_family` was
   ignored); a negated mention can no longer REPLACE the affirmed mention of
   the same condition; the default-mode matrix no longer silently drops
-  affirmed concepts; `format=annotated` returns 200 on GET and POST (CLI and
-  MCP too). [QC-152, QC-183, QC-165, QC-151, QC-164]
+  affirmed concepts; `format=annotated` returns 200 on GET and POST (CLI and MCP too).
 - **Valueset optimizer**: dead exclude branch restored;
   `original_count`/`optimized_count`/`reduction` computed on the same basis
   (previously reported up to 98.85% "reduction" on valuesets whose expansion
   *grew*); the lexical tie-break no longer prefers hierarchy ancestors over
   the user's own input code; deep-subtree leaves no longer dropped silently.
-  [QC-192, QC-194, QC-215, QC-212, QC-214]
 - **Search**: empty/whitespace queries no longer return "results" in
   semantic/hybrid/canonical modes; unknown `resultTypes` returns a clean 400
   (was plaintext 500); `result_types` filter works on every path;
   `total_member_count` no longer 0 on every result; accented queries
-  (Guillain-Barré, Chédiak) no longer silently return 0 hits. [QC-122,
-  QC-123, QC-153, QC-143, QC-148, QC-329]
+  (Guillain-Barré, Chédiak) no longer silently return 0 hits.
 - **`$subsumes` correctness** (`codeA=parent, codeB=child` returned
   `not-subsumed`; `valueBoolean:true` coerced to the string `'True'` across
   all 5 FHIR POST handlers). [QC-071, QC-056]
@@ -994,8 +989,7 @@ Of ~340 fixes in this release; the most user-visible:
   women, men, children, infants, elderly, neonates, males, females) are
   added to the NER false-positive blocklist (previously extracted as
   disorders). Explicit caller `result_types` remains a hard filter.
-- **CR-031 (HIGH) — closure-accelerated walks returned `[]` for
-  RXNORM/ATC/MSH.** `walk_closure_table()` dispatched to
+- **Closure-accelerated walks returned `[]` for RXNORM/ATC/MSH (HIGH).** `walk_closure_table()` dispatched to
   `mt4ds.walk_closure_limited` whenever the table existed and depth ≤ 5,
   with no per-source coverage probe — for a source with zero closure rows
   every ancestor walk silently returned `[]` (hierarchy-assisted mappings,
@@ -1010,15 +1004,14 @@ Of ~340 fixes in this release; the most user-visible:
   the BFS fallback (correct, unaccelerated); `PREPARED_SCHEMA_VERSION`
   intentionally stays 0.9 so an in-flight rebuild's output is not gated
   stale for this.
-- **CR-032 (HIGH) — `$extract` POST now expresses the four `include*`
-  booleans.** A POSTed `{name: "includeNegated", valueBoolean: true}` was
+- **`$extract` POST now expresses the four `include*` booleans (HIGH).** A POSTed `{name: "includeNegated", valueBoolean: true}` was
   silently dropped and defaulted to `false` with no 400 (POST was the only
   dead surface; GET and the CLI worked). The booleans are extracted through
   a parallel `valueBoolean` channel, and a wrong-typed scalar for them
   (`valueInteger`, `valueString`, …) now 400s naming `valueBoolean`
-  (inverse of the QC-127 scalar contract; `valueBoolean: null` still means
-  absent per QC-245).
-- **CR-035 — `_EngineState` broad excepts narrowed.** The three remaining
+  (inverse of the scalar-value contract; `valueBoolean: null` still means
+  absent).
+- **`_EngineState` broad excepts narrowed.** The three remaining
   `except Exception: logger.debug` blocks (prepare-cache index DDL, SNOMED
   parent-link cache table/index) are now `except duckdb.Error` +
   `logger.warning`, so programming bugs propagate and degraded paths are
@@ -1079,7 +1072,7 @@ uv pip install "en-core-web-sm>=3.7,<4" \
 ```
 
 (the pipeline degrades gracefully to ConText-only arbitration without it;
-[3b5323f, CR-049/050]).
+[3b5323f]).
 
 ## [0.0.1] - 2026-07-14
 
@@ -1178,10 +1171,10 @@ uv pip install "en-core-web-sm>=3.7,<4" \
 - `$extract` input length cap (100K chars).
 - `$expand` count validation tightened (POST: reject <1 and >1000; batch
   dispatcher now raises ValueError on invalid count instead of silently
-  substituting default — was CR-006/CR-017).
+  substituting default).
 - HF Spaces auth divergence documented in SECURITY.md.
 - Patient-friendly cache parse failures now log at WARNING (was INFO) —
-  output-degrading failures must be operator-visible (CR-004/CR-015).
+  output-degrading failures must be operator-visible.
 
 ### Fixed
 

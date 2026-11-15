@@ -192,7 +192,7 @@ Search quality (the headline change):
   tie-break across all three modes; substring-only matches cap at
   `probable`.
 
-Portability (AMUX-44): machine-specific path defaults are gone — one
+Portability: machine-specific path defaults are gone — one
 acquisition story via `medterm4ds.core.paths`, `~` expands in env pins,
 and unset pins mean first-use auto-provisioning from the terminology
 release (the startup banner says so instead of prescribing a fix for a
