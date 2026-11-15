@@ -7,6 +7,52 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.13] - 2026-11-15
+
+### Changed
+
+- **Terminology default release 2026.11.14.2** (encoder space
+  unchanged, `esp_f6c5c18d5f3ee3b5` — no model re-download): supersedes
+  2026.11.12.2.
+
+### Fixed
+
+- **Extraction**: conjunction splits survive fused separators
+  ("CBC /CMP" — the tokenizer fuses a space-then-slash into the
+  following word, which previously dropped both concepts);
+  qualifier-preserving conjunction bases — "history of CBC and CMP"
+  keeps its qualifier part instead of resolving the stripped base;
+  comparator-head variants strip identically on the pipeline and
+  manual-span paths.
+- **Search**: source aliases (SNOMED↔SNOMEDCT_US, RXNORM↔ATC,
+  LNC↔LOINC) widen on lexical, semantic, and hybrid modes too
+  (previously canonical-only — `sources=['SNOMED']` silently returned
+  nothing); canonical batch counts match single requests when alias
+  metadata shrinks the candidate pool.
+- **Lookup**: patient-friendly lookups honor `resolve_mode` —
+  historical/resolve_current resolve obsolete-brand codes (Vicodin →
+  Acetaminophen / Hydrocodone) while active-only behavior is unchanged;
+  prepared lookups never return suppressed atoms as canonical answers
+  (crosswalk and hierarchy displays no longer surface retired terms).
+- **FHIR**: `$extract` min-grade defaults defer to the service floor,
+  so CLI, MCP, and FHIR agree — borderline conjunctions ("CBC and CMP")
+  resolve both parts everywhere; unknown-parameter guards cover every
+  terminology operation's GET and POST routes; ValueSet `$validate-code`
+  accepts the spec's `valueSet` parameter; malformed compose bodies
+  (non-list `include`/`concept`/`filter`/`exclude`) return 400
+  OperationOutcomes instead of server errors; `$lookup` validates date
+  parameters.
+- **CLI**: bulk hierarchy validates max-depth before creating any
+  artifacts; athena ingest failures return clean errors; `extract
+  --min-grade` defers to the service.
+- **MCP**: bare-string code arguments are rejected instead of exploding
+  into per-character codes; a directory passed as the database path
+  fails with a named remedy.
+- **Packaging**: installs without the extraction extra import cleanly
+  (no spaCy requirement on the base/CLI/FHIR paths); the sdist manifest
+  no longer lists content it cannot ship (`/scripts` — gitignored, so
+  the entry shipped nothing).
+
 ## [0.0.12] - 2026-11-11
 
 ### Changed

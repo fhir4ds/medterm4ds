@@ -29,7 +29,7 @@ for c in concepts:
     print(f"  {c.source:15s} {c.code:12s} {c.display:35s} matched='{c.matched_text}'")
 ```
 
-Output (medterm4ds 0.0.12, release 2026.11.14.2):
+Output (medterm4ds 0.0.13, release 2026.11.14.2):
 ```
   SNOMEDCT_US  44054006     Type 2 Diabetes                      matched='T2DM'
   RXNORM       6809         Metformin                            matched='metformin'
