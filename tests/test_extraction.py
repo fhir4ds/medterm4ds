@@ -326,6 +326,17 @@ def context_arbiter():
     return nlp
 
 
+@pytest.fixture(scope="module")
+def cue_annotator():
+    """spaCy cue/guard component (AMUX-102) on a plain medspaCy pipeline,
+    no GLiNER — the parity spec for the pre/post-span cue and
+    clause/pediatric guard behaviors."""
+    medspacy = pytest.importorskip("medspacy")
+    from medterm4ds.services.extraction_cues import Mt4dsCueAnnotator
+    nlp = medspacy.load(medspacy_disable=["medspacy_target_matcher"])
+    return Mt4dsCueAnnotator(nlp)
+
+
 def _context_decide(nlp, text, target, label="therapeutic agent"):
     """Run one (text, target) through ConText arbitration — mirrors
     NlpPipeline.process Steps 3-4 minus GLiNER."""
@@ -958,41 +969,39 @@ class TestNerBattery20261107:
 
     # --- 1. sentence-local post-span negation ('Breast cancer ruled out.') ---
 
-    def test_post_span_cue_regex_binds_directly_after_span(self):
-        from medterm4ds.services.extraction import _POST_SPAN_CUE_RE
+    def test_post_span_cue_regex_binds_directly_after_span(self, cue_annotator):
+        # AMUX-102: same tails, checked through the spaCy component on
+        # real docs ('Cancer' + tail, span end at 6).
+        def binds(tail):
+            text = "Cancer" + tail
+            doc = cue_annotator._nlp(text)
+            return cue_annotator.post_span_negation_cue(doc, 6)
+
         for tail in (" ruled out.", " was ruled out.", " excluded;",
                      " not seen in the follow-up", " negative for disease",
                      " denied."):
-            assert _POST_SPAN_CUE_RE.match(tail), tail
+            assert binds(tail), tail
         for tail in (" reported.", " ruled", " routine screening.",
                      " was noted"):
-            assert not _POST_SPAN_CUE_RE.match(tail), tail
+            assert not binds(tail), tail
 
-    def test_post_span_cue_sentence_limited(self):
-        from medterm4ds.services.extraction import _post_span_negation_cue
-
-        class _Sent:
-            def __init__(self, s, e):
-                self.start_char, self.end_char = s, e
-
-        class _Doc:
-            def __init__(self, *sents):
-                self.sents = list(sents)
-
+    def test_post_span_cue_sentence_limited(self, cue_annotator):
         # cue inside the same sentence, within the window -> binds
         text = "Breast cancer ruled out. Continue screening."
-        doc = _Doc(_Sent(0, 26))
-        assert _post_span_negation_cue(text, 13, doc)
+        doc = cue_annotator._nlp(text)
+        assert cue_annotator.post_span_negation_cue(doc, 13)
         # cue in the NEXT sentence -> does not bind (sentence 1 has no cue)
         text2 = "Breast cancer is present. It was ruled out later."
-        doc2 = _Doc(_Sent(0, 26), _Sent(26, len(text2)))
-        assert not _post_span_negation_cue(text2, 13, doc2)
+        doc2 = cue_annotator._nlp(text2)
+        assert not cue_annotator.post_span_negation_cue(doc2, 13)
         # no sentence info -> window fallback still binds a direct cue
-        class _NoSents:
-            sents = ()
-            def __iter__(self):
-                return iter(())
-        assert _post_span_negation_cue("Chest pain excluded.", 10, _NoSents())
+        # (a pipeline without a sentence iterator produces docs whose
+        # .sents access raises; the component falls back to the window).
+        import spacy
+        blank = spacy.blank("en")
+        from medterm4ds.services.extraction_cues import Mt4dsCueAnnotator
+        bare = Mt4dsCueAnnotator(blank)
+        assert bare.post_span_negation_cue(blank("Chest pain excluded."), 10)
 
     # --- 2. with/without qualifier inversion ('CBC with differential') ---
 
@@ -1040,7 +1049,7 @@ class TestNerBattery20261107:
 
     # --- 3. drug-fragment stitching (lisinopril/HCTZ) ---
 
-    def test_stitch_drug_fragments_slash_and_dash(self):
+    def test_stitch_drug_fragments_slash_and_dash(self, cue_annotator):
         from medterm4ds.services.extraction import (
             FilteredSpan,
             _stitch_drug_fragments,
@@ -1051,12 +1060,14 @@ class TestNerBattery20261107:
             FilteredSpan(text="HCTZ", entity_type="therapeutic agent",
                          span_start=11, span_end=15, ner_confidence=0.7),
         ]
-        out = _stitch_drug_fragments(spans, "lisinopril/HCTZ")
+        out = _stitch_drug_fragments(
+            spans, "lisinopril/HCTZ", cue_annotator._nlp("lisinopril/HCTZ")
+        )
         assert len(out) == 1
         assert out[0].text == "lisinopril/HCTZ"
         assert (out[0].span_start, out[0].span_end) == (0, 15)
 
-    def test_stitch_blocked_by_non_separator_gap(self):
+    def test_stitch_blocked_by_non_separator_gap(self, cue_annotator):
         # 'Norco q6h' — the frequency token blocks the merge (measured
         # regression in the model team's blind-stitch prototype)
         from medterm4ds.services.extraction import (
@@ -1069,9 +1080,11 @@ class TestNerBattery20261107:
             FilteredSpan(text="q6h", entity_type="therapeutic agent",
                          span_start=6, span_end=9),
         ]
-        assert len(_stitch_drug_fragments(spans, "Norco q6h")) == 2
+        assert len(_stitch_drug_fragments(
+            spans, "Norco q6h", cue_annotator._nlp("Norco q6h")
+        )) == 2
 
-    def test_stitch_only_drug_labels(self):
+    def test_stitch_only_drug_labels(self, cue_annotator):
         from medterm4ds.services.extraction import (
             FilteredSpan,
             _stitch_drug_fragments,
@@ -1082,9 +1095,11 @@ class TestNerBattery20261107:
             FilteredSpan(text="pain", entity_type="disorder",
                          span_start=6, span_end=10),
         ]
-        assert len(_stitch_drug_fragments(spans, "chest/pain")) == 2
+        assert len(_stitch_drug_fragments(
+            spans, "chest/pain", cue_annotator._nlp("chest/pain")
+        )) == 2
 
-    def test_stitch_blocked_across_statuses(self):
+    def test_stitch_blocked_across_statuses(self, cue_annotator):
         from medterm4ds.services.extraction import (
             FilteredSpan,
             _stitch_drug_fragments,
@@ -1095,7 +1110,9 @@ class TestNerBattery20261107:
             FilteredSpan(text="plavix", entity_type="medication",
                          span_start=8, span_end=14),
         ]
-        assert len(_stitch_drug_fragments(spans, "aspirin/plavix")) == 2
+        assert len(_stitch_drug_fragments(
+            spans, "aspirin/plavix", cue_annotator._nlp("aspirin/plavix")
+        )) == 2
 
 
 class TestSmallResolutionRule20261110:
@@ -1213,35 +1230,38 @@ class TestDeterministicFixes20261111:
     """NER deterministic-fix package (2026-11-11 handoff, fhir4px-model
     pressure-test defect classes verified on HEAD a381503)."""
 
-    def test_post_span_bare_negative_binds(self):
+    def test_post_span_bare_negative_binds(self, cue_annotator):
         # as-hist-02: 'now COVID-19 negative.' — bare 'negative' predicate
         # binds ONLY when the span is directly preceded by 'now'; the
         # unmarked 'HIV negative.' form stays affirmed (q-hiv-02 keeps its
         # concept for default consumers).
-        from medterm4ds.services.extraction import _POST_SPAN_CUE_RE, _post_span_negation_cue
-        assert _POST_SPAN_CUE_RE.match(" was negative.")
-        assert not _POST_SPAN_CUE_RE.match(" negative.")
-        assert _POST_SPAN_CUE_RE.match(" negative for disease.")
+        def binds(text, end, start=None):
+            doc = cue_annotator._nlp(text)
+            return cue_annotator.post_span_negation_cue(doc, end, start)
+
+        assert binds("Cancer was negative.", 6)                    # copula prefix
+        assert not binds("Cancer negative.", 6)                    # bare, unmarked
+        assert binds("Cancer negative for disease.", 6)            # 'negative for'
         text = "Previously had COVID-19, now COVID-19 negative."
         end = text.index("negative.")
         start = text.rindex("COVID-19")  # the 'now'-marked second span
-        class _Doc:
-            sents = ()
-            def __iter__(self):
-                return iter(())
-        assert _post_span_negation_cue(text, end, _Doc(), span_start=start)
+        assert binds(text, end, start)
         # unmarked span keeps the affirmed default
         hiv = "HIV negative."
-        assert not _post_span_negation_cue(hiv, hiv.index("negative"), _Doc(), span_start=0)
+        assert not binds(hiv, hiv.index("negative"), 0)
 
-    def test_pediatric_subject_demotes_family(self):
-        from medterm4ds.services.extraction import _pediatric_subject
+    def test_pediatric_subject_demotes_family(self, cue_annotator):
+        def pediatric(text, start, end):
+            return cue_annotator.pediatric_subject(
+                cue_annotator._nlp(text), start, end
+            )
+
         # 'Child with asthma' — patient descriptor, not a relative
-        assert _pediatric_subject("Child with asthma.", 11, 17)
-        assert _pediatric_subject("Neonate with jaundice.", 13, 22)
+        assert pediatric("Child with asthma.", 11, 17)
+        assert pediatric("Neonate with jaundice.", 13, 22)
         # a real relative keeps family status
-        assert not _pediatric_subject("Father had colon cancer.", 11, 23)
-        assert not _pediatric_subject("Family history of CAD.", 18, 21)
+        assert not pediatric("Father had colon cancer.", 11, 23)
+        assert not pediatric("Family history of CAD.", 18, 21)
 
     def test_boilerplate_and_furniture_stoplisted(self):
         from medterm4ds.services.extraction import _is_false_positive
@@ -1259,7 +1279,7 @@ class TestDeterministicFixes20261111:
     """Model-team expanded edge corpus (2026-11-07, ~202 cases): the
     list false-merge side effect, pseudonegation, and pre-span cues."""
 
-    def test_coprescription_list_never_merges(self):
+    def test_coprescription_list_never_merges(self, cue_annotator):
         # 'Home meds: metformin, glipizide, and insulin.' — three
         # mentions, NOT the fake combination 'metformin/glipizide'.
         from medterm4ds.services.extraction import (
@@ -1275,10 +1295,10 @@ class TestDeterministicFixes20261111:
             FilteredSpan(text="insulin", entity_type="therapeutic agent",
                          span_start=37, span_end=44),
         ]
-        out = _stitch_drug_fragments(spans, text)
+        out = _stitch_drug_fragments(spans, text, cue_annotator._nlp(text))
         assert [s.text for s in out] == ["metformin", "glipizide", "insulin"]
 
-    def test_hyphen_compound_still_stitches(self):
+    def test_hyphen_compound_still_stitches(self, cue_annotator):
         from medterm4ds.services.extraction import (
             FilteredSpan,
             _stitch_drug_fragments,
@@ -1290,22 +1310,12 @@ class TestDeterministicFixes20261111:
             FilteredSpan(text="HCTZ", entity_type="therapeutic agent",
                          span_start=11, span_end=15),
         ]
-        out = _stitch_drug_fragments(spans, text)
+        out = _stitch_drug_fragments(spans, text, cue_annotator._nlp(text))
         assert len(out) == 1 and out[0].text == "lisinopril/HCTZ"
 
-    def test_pre_span_cue_classes(self):
-        from medterm4ds.services.extraction import _pre_span_cue
-
-        class _Sent:
-            def __init__(self, s, e):
-                self.start_char, self.end_char = s, e
-
-        class _Doc:
-            def __init__(self, *sents):
-                self.sents = list(sents)
-
-        def cue(text, start, doc=None):
-            return _pre_span_cue(text, start, doc or _Doc(_Sent(0, len(text))))
+    def test_pre_span_cue_classes(self, cue_annotator):
+        def cue(text, start):
+            return cue_annotator.pre_span_cue(cue_annotator._nlp(text), start)
 
         # pseudonegation — 'cannot rule out X' is UNCERTAIN, never negated
         assert cue("Cannot rule out pneumonia.", "Cannot rule out pneumonia.".index("pneumonia")) == "pseudo_negation"
@@ -1321,20 +1331,12 @@ class TestDeterministicFixes20261111:
         # a cue from an EARLIER clause never binds (anchored adjacency)
         assert cue("We ruled out the flu. Pneumonia noted today.", "We ruled out the flu. Pneumonia noted today.".index("Pneumonia")) is None
 
-    def test_post_span_cue_still_negates(self):
+    def test_post_span_cue_still_negates(self, cue_annotator):
         # the original battery fix keeps working alongside the new guards
-        from medterm4ds.services.extraction import _post_span_negation_cue
-
-        class _Sent:
-            def __init__(self, s, e):
-                self.start_char, self.end_char = s, e
-
-        class _Doc:
-            def __init__(self, *sents):
-                self.sents = list(sents)
-
         text = "Breast cancer ruled out."
-        assert _post_span_negation_cue(text, 13, _Doc(_Sent(0, len(text))))
+        assert cue_annotator.post_span_negation_cue(
+            cue_annotator._nlp(text), 13
+        )
 
 
 class TestAddendum20261111:
@@ -1503,21 +1505,11 @@ class TestPostSpanClauseBinding:
     as-mixed-01, as-scope-03): the post-span cue and ConText scope must
     not cross clause boundaries — false negations delete real findings."""
 
-    def test_post_span_cue_blocked_by_clause_boundary(self):
-        from medterm4ds.services.extraction import _post_span_negation_cue
-
-        class _Sent:
-            def __init__(self, s, e):
-                self.start_char, self.end_char = s, e
-
-        class _Doc:
-            def __init__(self, *sents):
-                self.sents = list(sents)
-
+    def test_post_span_cue_blocked_by_clause_boundary(self, cue_annotator):
         def negated(text, span_text):
-            return _post_span_negation_cue(
-                text, text.index(span_text) + len(span_text),
-                _Doc(_Sent(0, len(text))),
+            doc = cue_annotator._nlp(text)
+            return cue_annotator.post_span_negation_cue(
+                doc, text.index(span_text) + len(span_text)
             )
 
         # cue in a DIFFERENT clause -> must NOT negate
@@ -1530,20 +1522,23 @@ class TestPostSpanClauseBinding:
         assert negated("Breast cancer ruled out.", "Breast cancer")
         assert negated("Chest pain was ruled out today.", "Chest pain")
 
-    def test_context_negation_needs_clause_support(self):
-        from medterm4ds.services.extraction import _clause_negation_supported
+    def test_context_negation_needs_clause_support(self, cue_annotator):
+        def supported(text, start, end):
+            return cue_annotator.clause_negation_supported(
+                cue_annotator._nlp(text), start, end
+            )
 
         # sepsis clause ('started ceftriaxone for sepsis') has no cue
         text = "No evidence of pneumonia; started ceftriaxone for sepsis."
-        assert not _clause_negation_supported(
+        assert not supported(
             text, text.index("sepsis"), text.index("sepsis") + len("sepsis")
         )
         # cue in the same clause -> supported
-        assert _clause_negation_supported(
+        assert supported(
             "Denies chest pain at rest.", 7, 17
         )
         # comma is NOT a boundary: the list item keeps its support
-        assert _clause_negation_supported(
+        assert supported(
             "Denies chest pain, arm pain now.", 18, 26
         )
 
@@ -1553,42 +1548,29 @@ class TestParentheticalAndStoplist20261107:
     assertion cues, neither/nor residual, abbreviation stoplist, and
     leading-qualifier query stripping."""
 
-    def test_parenthetical_negation_and_uncertainty(self):
-        from medterm4ds.services.extraction import (
-            _post_span_negation_cue,
-            _post_span_uncertainty_cue,
-        )
+    def test_parenthetical_negation_and_uncertainty(self, cue_annotator):
+        def negated(text, end):
+            return cue_annotator.post_span_negation_cue(
+                cue_annotator._nlp(text), end
+            )
 
-        class _Sent:
-            def __init__(self, s, e):
-                self.start_char, self.end_char = s, e
-
-        class _Doc:
-            def __init__(self, *sents):
-                self.sents = list(sents)
+        def uncertain(text, end):
+            return cue_annotator.post_span_uncertainty_cue(
+                cue_annotator._nlp(text), end
+            )
 
         text1 = "Pneumonia (ruled out)."
-        doc1 = _Doc(_Sent(0, len(text1)))
-        assert _post_span_negation_cue(text1, text1.index("(") - 1, doc1)
+        assert negated(text1, text1.index("(") - 1)
 
         text2 = "Sepsis (possible)."
-        doc2 = _Doc(_Sent(0, len(text2)))
-        assert _post_span_uncertainty_cue(text2, text2.index("(") - 1, doc2)
-        assert not _post_span_negation_cue(text2, text2.index("(") - 1, doc2)
+        assert uncertain(text2, text2.index("(") - 1)
+        assert not negated(text2, text2.index("(") - 1)
 
-    def test_nor_pre_span_negation(self):
-        from medterm4ds.services.extraction import _pre_span_cue
-
-        class _Sent:
-            def __init__(self, s, e):
-                self.start_char, self.end_char = s, e
-
-        class _Doc:
-            def __init__(self, s):
-                self.sents = [_Sent(0, len(s))]
-
+    def test_nor_pre_span_negation(self, cue_annotator):
         text = "Neither pneumonia nor pulmonary embolism."
-        assert _pre_span_cue(text, text.index("pulmonary embolism"), _Doc(text)) == "negation"
+        assert cue_annotator.pre_span_cue(
+            cue_annotator._nlp(text), text.index("pulmonary embolism")
+        ) == "negation"
 
     def test_abbreviation_stoplist(self):
         from medterm4ds.services.extraction import _is_false_positive
@@ -1638,7 +1620,7 @@ class TestFragmentCompositionRanking:
             ner_confidence=0.5,
         )
 
-    def test_composes_across_qualifier_linker(self):
+    def test_composes_across_qualifier_linker(self, cue_annotator):
         from medterm4ds.services.extraction import _compose_compound_spans
 
         text = "CBC with differential ordered."
@@ -1646,12 +1628,12 @@ class TestFragmentCompositionRanking:
             self._span("CBC", "lab test", 0, 3),
             self._span("differential", "lab test", 9, 21),
         ]
-        merged = _compose_compound_spans(spans, text)
+        merged = _compose_compound_spans(spans, text, cue_annotator._nlp(text))
         assert len(merged) == 1
         assert merged[0].text == "CBC with differential"
         assert merged[0].composed_from == ["CBC", "differential"]
 
-    def test_never_merges_across_comma(self):
+    def test_never_merges_across_comma(self, cue_annotator):
         from medterm4ds.services.extraction import _compose_compound_spans
 
         text = "Home meds: metformin, glipizide."
@@ -1659,9 +1641,11 @@ class TestFragmentCompositionRanking:
             self._span("metformin", "therapeutic agent", 11, 20),
             self._span("glipizide", "therapeutic agent", 22, 31),
         ]
-        assert len(_compose_compound_spans(spans, text)) == 2
+        assert len(_compose_compound_spans(
+            spans, text, cue_annotator._nlp(text)
+        )) == 2
 
-    def test_never_merges_across_and(self):
+    def test_never_merges_across_and(self, cue_annotator):
         from medterm4ds.services.extraction import _compose_compound_spans
 
         text = "metformin and glipizide"
@@ -1669,9 +1653,11 @@ class TestFragmentCompositionRanking:
             self._span("metformin", "therapeutic agent", 0, 9),
             self._span("glipizide", "therapeutic agent", 14, 23),
         ]
-        assert len(_compose_compound_spans(spans, text)) == 2
+        assert len(_compose_compound_spans(
+            spans, text, cue_annotator._nlp(text)
+        )) == 2
 
-    def test_never_merges_numeric_or_unit_fragment(self):
+    def test_never_merges_numeric_or_unit_fragment(self, cue_annotator):
         from medterm4ds.services.extraction import _compose_compound_spans
 
         text = "metformin 500 mg"
@@ -1679,9 +1665,11 @@ class TestFragmentCompositionRanking:
             self._span("metformin", "therapeutic agent", 0, 9),
             self._span("500 mg", "lab test", 10, 16),
         ]
-        assert len(_compose_compound_spans(spans, text)) == 2
+        assert len(_compose_compound_spans(
+            spans, text, cue_annotator._nlp(text)
+        )) == 2
 
-    def test_never_merges_across_labels(self):
+    def test_never_merges_across_labels(self, cue_annotator):
         from medterm4ds.services.extraction import _compose_compound_spans
 
         text = "CBC pain"
@@ -1689,7 +1677,9 @@ class TestFragmentCompositionRanking:
             self._span("CBC", "lab test", 0, 3),
             self._span("pain", "symptom", 4, 8),
         ]
-        assert len(_compose_compound_spans(spans, text)) == 2
+        assert len(_compose_compound_spans(
+            spans, text, cue_annotator._nlp(text)
+        )) == 2
 
     def test_completeness_rejects_dropped_fragment(self):
         from medterm4ds.services.extraction import _fragment_completeness
@@ -1785,7 +1775,7 @@ class TestFusedDoseNotComposed:
         for frag in ("metformin", "b12", "lisinopril", "HbA1c"):
             assert not _is_neutral_fragment(frag), frag
 
-    def test_drug_and_fused_dose_do_not_compose(self):
+    def test_drug_and_fused_dose_do_not_compose(self, cue_annotator):
         from medterm4ds.services.extraction import (
             FilteredSpan,
             _compose_compound_spans,
@@ -1798,7 +1788,7 @@ class TestFusedDoseNotComposed:
             FilteredSpan(text="500mg", entity_type="therapeutic agent",
                          span_start=24, span_end=29),
         ]
-        out = _compose_compound_spans(spans, text)
+        out = _compose_compound_spans(spans, text, cue_annotator._nlp(text))
         assert [s.text for s in out] == ["metformin", "500mg"]
 
 
@@ -1845,7 +1835,7 @@ class TestStitchedCombinationAllModes:
     the correct combination and hybrid returned single Lisinopril with
     HCTZ dropped entirely."""
 
-    def test_stitch_sets_composed_from(self):
+    def test_stitch_sets_composed_from(self, cue_annotator):
         from medterm4ds.services.extraction import (
             FilteredSpan,
             _stitch_drug_fragments,
@@ -1856,7 +1846,9 @@ class TestStitchedCombinationAllModes:
             FilteredSpan(text="HCTZ", entity_type="therapeutic agent",
                          span_start=11, span_end=15),
         ]
-        out = _stitch_drug_fragments(spans, "lisinopril/HCTZ")
+        out = _stitch_drug_fragments(
+            spans, "lisinopril/HCTZ", cue_annotator._nlp("lisinopril/HCTZ")
+        )
         assert out[0].composed_from == ["lisinopril", "HCTZ"]
 
     def test_combination_resolves_in_every_mode(self):
@@ -1882,7 +1874,7 @@ class TestStrengthDesign20261109:
         assert _strength_components(None) is None
         assert _strength_components("daily") is None
 
-    def test_absorb_trailing_strength_spans(self):
+    def test_absorb_trailing_strength_spans(self, cue_annotator):
         from medterm4ds.services.extraction import (
             FilteredSpan,
             _absorb_trailing_strength,
@@ -1897,12 +1889,12 @@ class TestStrengthDesign20261109:
             FilteredSpan(text="12.5 mg", entity_type="vital sign",
                          span_start=drug_end + 3, span_end=drug_end + 10),
         ]
-        out = _absorb_trailing_strength(spans, text)
+        out = _absorb_trailing_strength(spans, text, cue_annotator._nlp(text))
         assert len(out) == 1
         assert out[0].strength == "20/12.5 mg"
         assert out[0].span_end == drug_end + 10
 
-    def test_plus_and_word_plus_separators_stitch(self):
+    def test_plus_and_word_plus_separators_stitch(self, cue_annotator):
         from medterm4ds.services.extraction import (
             FilteredSpan,
             _stitch_drug_fragments,
@@ -1916,10 +1908,10 @@ class TestStrengthDesign20261109:
                 FilteredSpan(text="HCTZ", entity_type="therapeutic agent",
                              span_start=cut, span_end=len(text)),
             ]
-            out = _stitch_drug_fragments(spans, text)
+            out = _stitch_drug_fragments(spans, text, cue_annotator._nlp(text))
             assert len(out) == 1 and out[0].composed_from == ["lisinopril", "HCTZ"], gap
 
-    def test_gated_list_join_requires_strength_corroboration(self):
+    def test_gated_list_join_requires_strength_corroboration(self, cue_annotator):
         from medterm4ds.services.extraction import (
             FilteredSpan,
             _stitch_gated_list_pairs,
@@ -1933,7 +1925,7 @@ class TestStrengthDesign20261109:
             FilteredSpan(text="HCTZ", entity_type="therapeutic agent",
                          span_start=cut, span_end=len(text), strength="20/12.5"),
         ]
-        out = _stitch_gated_list_pairs(spans, text)
+        out = _stitch_gated_list_pairs(spans, text, cue_annotator._nlp(text))
         assert len(out) == 1 and out[0].text == "lisinopril/HCTZ"
         assert out[0].strength == "20/12.5"
         # uncorroborated list ('metformin, glipizide, and insulin') stays 3
@@ -1946,9 +1938,11 @@ class TestStrengthDesign20261109:
             FilteredSpan(text="insulin", entity_type="medication",
                          span_start=26, span_end=33),
         ]
-        assert len(_stitch_gated_list_pairs(spans2, text2)) == 3
+        assert len(_stitch_gated_list_pairs(
+            spans2, text2, cue_annotator._nlp(text2)
+        )) == 3
 
-    def test_in_span_strength_captured(self):
+    def test_in_span_strength_captured(self, cue_annotator):
         from medterm4ds.services.extraction import (
             FilteredSpan,
             _absorb_trailing_strength,
@@ -1956,7 +1950,9 @@ class TestStrengthDesign20261109:
         spans = [FilteredSpan(text="metformin 500mg",
                               entity_type="therapeutic agent",
                               span_start=0, span_end=15)]
-        out = _absorb_trailing_strength(spans, "metformin 500mg")
+        out = _absorb_trailing_strength(
+            spans, "metformin 500mg", cue_annotator._nlp("metformin 500mg")
+        )
         assert out[0].strength == "500mg"
         assert out[0].text == "metformin 500mg"
 
@@ -2008,7 +2004,7 @@ class TestStrengthDesign20261109:
             ),
         )
 
-    def test_raw_text_strength_fallback(self):
+    def test_raw_text_strength_fallback(self, cue_annotator):
         from medterm4ds.services.extraction import (
             FilteredSpan,
             _absorb_trailing_strength,
@@ -2021,7 +2017,7 @@ class TestStrengthDesign20261109:
             FilteredSpan(text="HCTZ", entity_type="immunization",
                          span_start=cut, span_end=cut + 4),
         ]
-        out = _absorb_trailing_strength(spans, text)
+        out = _absorb_trailing_strength(spans, text, cue_annotator._nlp(text))
         assert out[1].strength == "20/12.5 mg"
         assert out[1].span_end == cut + 4  # boundaries unchanged
 
@@ -2307,3 +2303,88 @@ class TestEv01Run2QualifiersAndTies:
             result_type_prefixes=None, grade_threshold="probable",
         )
         assert got is not None and got.source == "LOINC"
+
+class TestPrecomputedMentionFields:
+    """AMUX-102 stage 3 (design F6/F8): mention-only resolve decisions are
+    precomputed at NLP time onto FilteredSpan (search_variants /
+    conjunction_parts); manually constructed spans (fields None) resolve
+    identically through the legacy mention-text fallbacks."""
+
+    @staticmethod
+    def _finalize(service, text, mentions):
+        """Deterministic pipeline run: synthetic GLiNER entities through
+        NlpPipeline._finalize_doc (no model inference)."""
+        pipe = service._nlp
+        pipe._ensure_loaded()
+        doc = pipe._nlp(text)
+        raw = []
+        for label, mention in mentions:
+            start = text.index(mention)
+            raw.append({
+                "start": start, "end": start + len(mention),
+                "label": label, "score": 0.9, "text": mention,
+            })
+        return pipe._finalize_doc(text, doc, None, raw)
+
+    def test_pipeline_spans_carry_precomputed_fields(self, service):
+        spans = self._finalize(
+            service, "Heart rate 80 and type 2 diabetes noted.", [
+                ("vital sign", "Heart rate 80"),
+                ("disease", "type 2 diabetes"),
+            ])
+        by_text = {s.text: s for s in spans}
+        assert by_text["Heart rate 80"].search_variants == ["Heart rate"]
+        assert by_text["Heart rate 80"].conjunction_parts == []
+        # QC-188: 'type 2 diabetes' keeps its full form — nothing strips
+        assert by_text["type 2 diabetes"].search_variants == []
+        assert by_text["type 2 diabetes"].conjunction_parts == []
+        for span in spans:
+            assert span.search_variants is not None
+            assert span.conjunction_parts is not None
+            # internal only — never serialized
+            assert "search_variants" not in span.to_dict()
+            assert "conjunction_parts" not in span.to_dict()
+
+    def test_pipeline_conjunction_parts_precomputed(self, service):
+        spans = self._finalize(
+            service, "CBC and/or CMP ordered.", [("panel", "CBC and/or CMP")])
+        assert spans[0].conjunction_parts == ["CBC", "CMP"]
+        assert spans[0].search_variants == []
+
+    def test_manual_span_resolves_like_pipeline_span(self, monkeypatch):
+        """Fallback parity: a manually constructed FilteredSpan (fields
+        None) and a pipeline-shaped span (fields precomputed) with the same
+        text resolve to the same concept via the same fallback query."""
+        import medterm4ds.services.search as search_module
+
+        pneumo = _anchor("VAL-COND-233604", 0.95)
+        stub = _StubSearchService({
+            "Bilateral pneumonia|*": [],   # full mention fails both paths
+            "pneumonia|*": [pneumo],       # qualifier fallback resolves
+        })
+        monkeypatch.setattr(search_module, "get_search_service", lambda: stub)
+        svc = ExtractionService()
+        # a second span so the canonical batch path runs (len(spans) > 1)
+        stub.routes.setdefault("metformin|*", [_anchor("VAL-MED-6809", 0.9, "RXNORM")])
+        candidates = (
+            # pipeline-shaped span: the ladder is precomputed (NLP time)
+            FilteredSpan(
+                text="Bilateral pneumonia", entity_type="disorder",
+                search_variants=["pneumonia"], conjunction_parts=[],
+            ),
+            # manually constructed span: fields None -> legacy fallback
+            FilteredSpan(text="Bilateral pneumonia", entity_type="disorder"),
+        )
+        results = []
+        for span in candidates:
+            concepts = svc.resolve_spans([
+                span,
+                FilteredSpan(text="metformin", entity_type="therapeutic agent"),
+            ])
+            results.append(sorted(
+                (c.canonical_id, c.matched_text) for c in concepts
+            ))
+        assert results[0] == results[1]
+        assert ("VAL-COND-233604", "Bilateral pneumonia") in results[1]
+        # both paths issued the same stripped fallback query
+        assert stub.called_with("pneumonia")
