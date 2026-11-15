@@ -399,3 +399,62 @@ class TestConjunctionSplit:
         assert self.parts(cues, "20/12.5") == []
         # not ALL parts numeric -> the split stands (regex parity)
         assert self.parts(cues, "BP 120/80") == ["BP 120", "80"]
+
+
+class TestEv01SkepticLeadingSlashFusion:
+    """EV01-SKEPTIC-1: spaCy fuses a leading '/' into the following word
+    after a space ('CBC /CMP' -> ['CBC', '/CMP']); the token split must
+    still see the separator — legacy mention regex parity (\\s*/\\s*
+    split the same shapes)."""
+
+    @staticmethod
+    def parts(cues, text):
+        return Mt4dsCueAnnotator.conjunction_split(
+            [t for t in cues._nlp(text) if not t.is_space])
+
+    def test_space_slash_fused_token_splits(self, cues):
+        # tokenizer emits ['CBC', '/CMP'] — one fused token
+        assert self.parts(cues, "CBC /CMP") == ["CBC", "CMP"]
+
+    def test_fused_slash_after_conjunction(self, cues):
+        # ['CBC', 'and', '/CMP'] — pre-fix this yielded the garbage part '/CMP'
+        assert self.parts(cues, "CBC and /CMP") == ["CBC", "CMP"]
+
+    def test_fused_slash_before_word_reversed(self, cues):
+        assert self.parts(cues, "CMP /CBC") == ["CMP", "CBC"]
+
+    def test_numeric_guard_still_applies_to_fused_slash(self, cues):
+        # '20 /12.5' — all parts numeric -> no split (legacy guard)
+        assert self.parts(cues, "20 /12.5") == []
+
+
+class TestEv01SkepticComparatorHead:
+    """EV01-SKEPTIC-2: a comparator-headed all-value span ('high 80') stays
+    whole — the token stripper pins this (never-empty guard: the comparator
+    word belongs to the run). The legacy mention fallback used to diverge
+    (bare regex matched only ' 80' and left the junk query 'high')."""
+
+    @staticmethod
+    def toks(cues, text):
+        return [t for t in cues._nlp(text) if not t.is_space]
+
+    def test_token_side_never_strips(self, cues):
+        strip = Mt4dsCueAnnotator.strip_trailing_values
+        assert strip(self.toks(cues, "high 80")) == ""
+        assert strip(self.toks(cues, "low 120")) == ""
+
+    def test_fallback_parity_comparator_headed(self, cues):
+        from medterm4ds.services.extraction_cues import (
+            mention_strip_trailing_values,
+        )
+        # manual spans (fields None) must resolve identically to pipeline
+        # spans: no 'high'/'low' junk variant from the fallback regex
+        assert mention_strip_trailing_values("high 80") == "high 80"
+        assert mention_strip_trailing_values("low 120") == "low 120"
+
+    def test_fallback_still_strips_inner_comparator(self, cues):
+        from medterm4ds.services.extraction_cues import (
+            mention_strip_trailing_values,
+        )
+        assert mention_strip_trailing_values("glucose high") == "glucose"
+        assert mention_strip_trailing_values("heart rate 80") == "heart rate"
