@@ -2450,3 +2450,253 @@ class TestFhirEndpoints:
             assert resp.headers["content-type"].startswith("application/fhir+json")
             assert resp.json()["resourceType"] == "OperationOutcome"
             assert "whitespace" in resp.json()["issue"][0]["diagnostics"]
+
+    # -- EV-05 v0.0.13 iteration 13 (SKEPTIC) --
+
+    def test_search_post_rejects_unknown_query_param_ev05skeptic1(self, fhir_app):
+        """EV05-SKEPTIC-1: unknown query params on $search POST must 400
+        (GET sibling rejects per EV05-QA-04; $closure POST precedent rejects
+        per TS-19 W4) — not be silently dropped with a 200."""
+        from starlette.testclient import TestClient
+
+        with TestClient(fhir_app) as client:
+            resp = client.post(
+                "/fhir/CodeSystem/$search",
+                params={"bogusParam": "1"},
+                json={"resourceType": "Parameters", "parameter": [
+                    {"name": "query", "valueString": "diabetes"}]},
+            )
+        assert resp.status_code == 400, resp.text
+        assert resp.headers["content-type"].startswith("application/fhir+json")
+        assert resp.json()["resourceType"] == "OperationOutcome"
+        assert "bogusParam" in resp.json()["issue"][0]["diagnostics"]
+
+    def test_extract_post_rejects_unknown_query_param_ev05skeptic1(self, fhir_app):
+        """EV05-SKEPTIC-1: unknown query params on $extract POST must 400 —
+        GET↔POST parity on the SAME operation (extract_get rejects)."""
+        from starlette.testclient import TestClient
+
+        with TestClient(fhir_app) as client:
+            resp = client.post(
+                "/fhir/CodeSystem/$extract",
+                params={"bogusParam": "1"},
+                json={"resourceType": "Parameters", "parameter": [
+                    {"name": "text", "valueString": "diabetes"}]},
+            )
+        assert resp.status_code == 400, resp.text
+        assert resp.json()["resourceType"] == "OperationOutcome"
+        assert "bogusParam" in resp.json()["issue"][0]["diagnostics"]
+
+    def test_search_post_rejects_unknown_body_param_ev05skeptic1(self, fhir_app):
+        """EV05-SKEPTIC-1: unknown Parameters-body names on $search POST
+        must 400 (TS-19 W4 $closure precedent) — a typo'd body param
+        silently no-ops today while the client believes it applied."""
+        from starlette.testclient import TestClient
+
+        with TestClient(fhir_app) as client:
+            resp = client.post(
+                "/fhir/CodeSystem/$search",
+                json={"resourceType": "Parameters", "parameter": [
+                    {"name": "query", "valueString": "diabetes"},
+                    {"name": "quer", "valueString": "typo"}]},
+            )
+        assert resp.status_code == 400, resp.text
+        assert resp.json()["resourceType"] == "OperationOutcome"
+        assert "quer" in resp.json()["issue"][0]["diagnostics"]
+
+    def test_extract_post_rejects_unknown_body_param_ev05skeptic1(self, fhir_app):
+        """EV05-SKEPTIC-1: unknown Parameters-body names on $extract POST
+        must 400 — e.g. a typo'd includeNegated1 silently no-ops today."""
+        from starlette.testclient import TestClient
+
+        with TestClient(fhir_app) as client:
+            resp = client.post(
+                "/fhir/CodeSystem/$extract",
+                json={"resourceType": "Parameters", "parameter": [
+                    {"name": "text", "valueString": "diabetes"},
+                    {"name": "includeNegated1", "valueBoolean": True}]},
+            )
+        assert resp.status_code == 400, resp.text
+        assert resp.json()["resourceType"] == "OperationOutcome"
+        assert "includeNegated1" in resp.json()["issue"][0]["diagnostics"]
+
+    def test_search_post_known_body_params_still_accepted_ev05skeptic1(self, fhir_app):
+        """No-regression: every declared $search body param (incl. the
+        _query alias) stays accepted after the unknown-param guard."""
+        from starlette.testclient import TestClient
+
+        with TestClient(fhir_app) as client:
+            resp = client.post(
+                "/fhir/CodeSystem/$search",
+                json={"resourceType": "Parameters", "parameter": [
+                    {"name": "_query", "valueString": "diabetes"},
+                    {"name": "count", "valueInteger": 5},
+                    {"name": "searchMode", "valueCode": "lexical"}]},
+            )
+        assert resp.status_code == 503, resp.text  # no index on fixture
+        assert resp.json()["resourceType"] == "OperationOutcome"
+
+    # -- EV-05 v0.0.13 iteration 15 (EXPLORER) --
+
+    def test_extract_default_min_grade_defers_to_service_ev05explorer1(
+        self, fhir_app, monkeypatch,
+    ):
+        """EV05-EXPLORER-1: when the client omits minGrade, $extract must
+        pass min_grade=None so the SERVICE default applies (canonical-mode
+        floor 'probable' per the v0.0.3 doctrine, env-overridable). The
+        prior explicit DEFAULT_MIN_GRADE ('certain') default made the FHIR
+        surface silently drop probable-graded concepts that the
+        Python/MCP surfaces return for the identical default request —
+        the QC-155/167 single-source fix was incomplete on the min-grade
+        axis."""
+        from starlette.testclient import TestClient
+
+        import medterm4ds.services.extraction as extraction_module
+
+        captured: list[dict] = []
+
+        def _capture(text, **kwargs):
+            captured.append(kwargs)
+            return []
+
+        monkeypatch.setattr(extraction_module, "extract", _capture)
+        with TestClient(fhir_app) as client:
+            get_resp = client.get(
+                "/fhir/CodeSystem/$extract", params={"text": "diabetes"})
+            post_resp = client.post(
+                "/fhir/CodeSystem/$extract",
+                json={"resourceType": "Parameters", "parameter": [
+                    {"name": "text", "valueString": "diabetes"}]},
+            )
+        assert get_resp.status_code == post_resp.status_code == 200
+        assert len(captured) == 2
+        assert all(c["min_grade"] is None for c in captured), captured
+
+    def test_extract_explicit_min_grade_forwarded_and_garbage_400_ev05explorer1(
+        self, fhir_app, monkeypatch,
+    ):
+        """Explicit minGrade forwards verbatim; garbage still 400s pre-NER
+        (GET via Query pattern -> 422, POST via the enum loop -> 400)."""
+        from starlette.testclient import TestClient
+
+        import medterm4ds.services.extraction as extraction_module
+
+        captured: list[dict] = []
+
+        def _capture(text, **kwargs):
+            captured.append(kwargs)
+            return []
+
+        monkeypatch.setattr(extraction_module, "extract", _capture)
+        with TestClient(fhir_app) as client:
+            r1 = client.get("/fhir/CodeSystem/$extract",
+                            params={"text": "diabetes", "minGrade": "broader"})
+            r2 = client.post("/fhir/CodeSystem/$extract", json={
+                "resourceType": "Parameters", "parameter": [
+                    {"name": "text", "valueString": "diabetes"},
+                    {"name": "minGrade", "valueCode": "possible"}]})
+            r3 = client.get("/fhir/CodeSystem/$extract",
+                            params={"text": "diabetes", "minGrade": "nope"})
+            r4 = client.post("/fhir/CodeSystem/$extract", json={
+                "resourceType": "Parameters", "parameter": [
+                    {"name": "text", "valueString": "diabetes"},
+                    {"name": "minGrade", "valueCode": "nope"}]})
+        assert r1.status_code == r2.status_code == 200
+        assert [c["min_grade"] for c in captured] == ["broader", "possible"]
+        assert r3.status_code == 422
+        assert r4.status_code == 400
+
+    def test_extract_post_known_body_params_still_accepted_ev05skeptic1(self, fhir_app):
+        """No-regression: every declared $extract body param stays accepted
+        after the unknown-param guard (booleans via valueBoolean)."""
+        from starlette.testclient import TestClient
+
+        with TestClient(fhir_app) as client:
+            resp = client.post(
+                "/fhir/CodeSystem/$extract",
+                json={"resourceType": "Parameters", "parameter": [
+                    {"name": "text", "valueString": "diabetes"},
+                    {"name": "includeFamily", "valueBoolean": True},
+                    {"name": "mode", "valueCode": "lexical"}]},
+            )
+        assert resp.status_code == 503, resp.text  # no search artifacts
+        assert resp.json()["resourceType"] == "OperationOutcome"
+
+    # -- EV-05 v0.0.13 iteration 14 (HISTORIAN) --
+
+    @pytest.mark.parametrize("mode", ["lexical", "semantic", "hybrid", "canonical"])
+    def test_search_forward_result_types_on_all_modes_ev05historian(
+        self, fhir_app, monkeypatch, mode,
+    ):
+        """EV05-HISTORIAN contract pin (G1/QC-153 + EV-03-alias-widening
+        inheritance): the FHIR $search surface forwards resultTypes to the
+        service on EVERY searchMode — canonical AND the legacy modes — so
+        the service-level filtering (and EV-03's alias widening inside it)
+        is inherited by this surface."""
+        from starlette.testclient import TestClient
+
+        import medterm4ds.services.search as search_module
+
+        received: list[dict] = []
+
+        class _FakeService:
+            def ensure_lexical(self):
+                return True
+
+            def ensure_semantic(self):
+                return True
+
+            def search(self, query, **kw):
+                received.append(kw)
+                return []
+
+            def canonical(self, query, **kw):
+                received.append(kw)
+                return []
+
+        monkeypatch.setattr(
+            search_module, "get_search_service", lambda: _FakeService())
+        with TestClient(fhir_app) as client:
+            resp = client.get(
+                "/fhir/CodeSystem/$search",
+                params={"query": "diabetes", "searchMode": mode,
+                        "resultTypes": "condition,medication"},
+            )
+        assert resp.status_code == 200, resp.text
+        assert len(received) == 1
+        assert received[0]["result_types"] == ["condition", "medication"]
+
+    def test_search_forwards_engine_for_display_canonicalization_ev05historian(
+        self, fhir_app, monkeypatch,
+    ):
+        """EV05-HISTORIAN contract pin (QC-400/EC-18): _do_search passes
+        the engine into SearchService.search so apply_preferred_display
+        canonicalizes entry displays service-side (the FHIR surface must
+        NOT post-process displays itself)."""
+        from starlette.testclient import TestClient
+
+        import medterm4ds.services.search as search_module
+
+        received: list[dict] = []
+
+        class _FakeService:
+            def ensure_lexical(self):
+                return True
+
+            def ensure_semantic(self):
+                return True
+
+            def search(self, query, **kw):
+                received.append(kw)
+                return []
+
+        monkeypatch.setattr(
+            search_module, "get_search_service", lambda: _FakeService())
+        with TestClient(fhir_app) as client:
+            resp = client.get(
+                "/fhir/CodeSystem/$search",
+                params={"query": "diabetes", "searchMode": "lexical"},
+            )
+        assert resp.status_code == 200, resp.text
+        assert received[0].get("engine") is not None
+

@@ -111,6 +111,17 @@ DEFAULT_NER_CALIBRATION_ID: str = ""
 # matches. Hybrid/lexical modes still available for callers who want raw UMLS.
 DEFAULT_SEARCH_MODE = os.getenv("MEDTERM4DS_EXTRACTION_MODE", "canonical")
 DEFAULT_MIN_GRADE = os.getenv("MEDTERM4DS_EXTRACTION_MIN_GRADE", "certain")
+
+
+def _env_min_grade_override() -> str | None:
+    """MEDTERM4DS_EXTRACTION_MIN_GRADE when the operator set it.
+
+    EV05-EXPLORER-1: read at CALL time (not import time) so the canonical
+    default-floor resolution below honors operator overrides without a
+    module reload, and stays testable.
+    """
+    return os.getenv("MEDTERM4DS_EXTRACTION_MIN_GRADE")
+
 DEFAULT_SECTIONS = tuple(
     s.strip()
     for s in os.getenv(
@@ -2410,7 +2421,15 @@ class ExtractionService:
 
         search = get_search_service()
         search_mode = mode or self._search_mode
-        default_threshold = "probable" if search_mode == "canonical" else self._min_grade
+        # EV05-EXPLORER-1: the canonical-mode default floor is 'probable'
+        # (v0.0.3 doctrine — anchors grade exact/probable at best, so
+        # 'certain' returns exact-only) and the operator env override
+        # MEDTERM4DS_EXTRACTION_MIN_GRADE wins (QC-165), read at call
+        # time. Legacy modes keep the service-configured self._min_grade.
+        if search_mode == "canonical":
+            default_threshold = _env_min_grade_override() or "probable"
+        else:
+            default_threshold = self._min_grade
         grade_threshold = min_grade or default_threshold
         # QC-153: validate result_types EAGERLY (raises ValueError for bogus
         # values, which the FHIR layer maps to a 400 per the service-

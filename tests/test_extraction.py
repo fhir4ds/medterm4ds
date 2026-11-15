@@ -2540,3 +2540,57 @@ class TestEv02HistorianConjunctionBase:
         assert markers[0] == ""
         # the value-stripped variant (strip fired) still associates
         assert markers[1] == "VAL-LAB-GLU"
+
+
+class TestEv05ExplorerCanonicalDefaultGrade:
+    """EV05-EXPLORER-1: the canonical-mode default grade floor.
+
+    Doctrine (v0.0.3 NOT A BUG registry): the default floor is 'probable'
+    — canonical anchors grade exact/probable at best, so a 'certain' floor
+    returns exact-only. The operator env override
+    MEDTERM4DS_EXTRACTION_MIN_GRADE still wins (QC-165), read at call
+    time. Found via the FHIR $extract surface defaulting to
+    DEFAULT_MIN_GRADE ('certain') — silently dropping probable-graded
+    concepts the Python/MCP surfaces return for the same default request.
+    """
+
+    @pytest.fixture
+    def stub(self, monkeypatch):
+        def _install(routes):
+            import medterm4ds.services.search as search_module
+            stub = _StubSearchService(routes)
+            monkeypatch.setattr(search_module, "get_search_service",
+                                lambda: stub)
+            return stub
+        return _install
+
+    def test_canonical_default_floor_is_probable(self, stub, monkeypatch):
+        monkeypatch.delenv("MEDTERM4DS_EXTRACTION_MIN_GRADE", raising=False)
+        stub({"diabetes|*": [_anchor("VAL-COND-44054006", 0.88)]})  # probable
+        svc = ExtractionService()
+        concepts = svc.resolve_spans(
+            [FilteredSpan(text="diabetes", entity_type="disorder")])
+        assert [c.canonical_id for c in concepts] == ["VAL-COND-44054006"]
+
+    def test_env_override_tightens_canonical_default_floor(
+        self, stub, monkeypatch,
+    ):
+        monkeypatch.setenv("MEDTERM4DS_EXTRACTION_MIN_GRADE", "certain")
+        stub({"diabetes|*": [_anchor("VAL-COND-44054006", 0.88)]})  # probable
+        svc = ExtractionService()
+        concepts = svc.resolve_spans(
+            [FilteredSpan(text="diabetes", entity_type="disorder")])
+        assert concepts == [], (
+            "env MEDTERM4DS_EXTRACTION_MIN_GRADE=certain must tighten the "
+            "canonical default floor below probable"
+        )
+
+    def test_env_override_loosens_canonical_default_floor(
+        self, stub, monkeypatch,
+    ):
+        monkeypatch.setenv("MEDTERM4DS_EXTRACTION_MIN_GRADE", "broader")
+        stub({"diabetes|*": [_anchor("VAL-COND-44054006", 0.70)]})  # possible
+        svc = ExtractionService()
+        concepts = svc.resolve_spans(
+            [FilteredSpan(text="diabetes", entity_type="disorder")])
+        assert [c.canonical_id for c in concepts] == ["VAL-COND-44054006"]

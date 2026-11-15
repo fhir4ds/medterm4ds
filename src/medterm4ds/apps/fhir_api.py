@@ -60,12 +60,13 @@ from medterm4ds.services.discovery import MAX_DISCOVERY_LIMIT as _SEARCH_NAMES_M
 from medterm4ds.services.discovery import search_names
 
 # Env-configurable $extract defaults (QC-167). Previously the service's
-# env-var support (MEDTERM4DS_EXTRACTION_MODE / _MIN_GRADE) was silently
-# ignored by the FHIR surface, which hardcoded hybrid/certain. Importing the
-# service defaults keeps one source of truth.
-from medterm4ds.services.extraction import (  # noqa: E402
-    DEFAULT_MIN_GRADE as DEFAULT_EXTRACT_MIN_GRADE,
-)
+# env-var support (MEDTERM4DS_EXTRACTION_MODE) was silently ignored by the
+# FHIR surface, which hardcoded hybrid. Importing the service default
+# keeps one source of truth. minGrade is deliberately NOT defaulted here:
+# EV05-EXPLORER-1 — the service's canonical-mode default floor
+# ('probable', env-overridable via MEDTERM4DS_EXTRACTION_MIN_GRADE)
+# differs from DEFAULT_MIN_GRADE ('certain'), so an explicit constant
+# default would silently tighten the floor below every other surface.
 from medterm4ds.services.extraction import (
     DEFAULT_SEARCH_MODE as DEFAULT_EXTRACT_MODE,
 )
@@ -5247,6 +5248,28 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
         not_ready = _check_ready(request)
         if not_ready is not None:
             return not_ready
+        # EV05-SKEPTIC-1 (2026-11-15): reject unknown params on the POST
+        # sibling too — the GET route rejects them (EV05-QA-04) and the
+        # $closure POST set the precedent (TS-19 W4 + QC-306). FastAPI
+        # silently drops undeclared query params and _parse_parameters
+        # ignores unknown body names, so a typo'd param silently no-ops
+        # while the client believes it applied.
+        try:
+            reject_unknown_query_params(
+                request, _SEARCH_KNOWN_PARAMS, "$search",
+            )
+        except ValueError as exc:
+            return _fhir_error_response(request, 400, str(exc))
+        unknown_body = (
+            _parameter_names_present(body) - _SEARCH_KNOWN_PARAMS - {"_query"}
+        )
+        if unknown_body:
+            return _fhir_error_response(
+                request, 400,
+                f"Unsupported $search parameter(s): "
+                f"{', '.join(sorted(unknown_body))}. This server declares "
+                "query, system, count, searchMode, resultTypes.",
+            )
         # QC-127/QC-136: reject wrong-typed values (e.g. searchMode sent as
         # valueBoolean) instead of silently dropping them to the default —
         # the QC-046 fix removed valueBoolean from _parse_parameters to stop
@@ -5297,7 +5320,13 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
         nerLabels: str | None = Query(None, description="Comma-separated NER labels to detect (default: lab test,vital sign,panel,therapeutic agent,therapeutic class,immunization,medical intervention,disorder,symptom)"),
         resultTypes: str | None = Query(None, description="Comma-separated result types to filter (condition,medication,drug_class,lab,vital,procedure,vaccine,symptom)"),
         mode: str = Query(DEFAULT_EXTRACT_MODE, pattern="^(lexical|semantic|hybrid|canonical)$"),
-        minGrade: str = Query(DEFAULT_EXTRACT_MIN_GRADE, pattern="^(certain|exact|probable|possible|broader)$"),
+        # EV05-EXPLORER-1: default None — the SERVICE resolves the
+        # effective floor (canonical: 'probable' per the v0.0.3 doctrine,
+        # env-overridable via MEDTERM4DS_EXTRACTION_MIN_GRADE). The prior
+        # explicit DEFAULT_MIN_GRADE ('certain') default silently dropped
+        # probable-graded concepts the Python/MCP surfaces return for the
+        # identical default request.
+        minGrade: str | None = Query(None, pattern="^(certain|exact|probable|possible|broader)$"),
         annotationFields: str | None = Query(None, description="Comma-separated annotated-marker fields (format=annotated only; ignored otherwise): text, name, type, source_code, canonical_id, status"),
         includeNegated: bool = Query(False),
         includeUncertain: bool = Query(False),
@@ -5362,6 +5391,28 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
         not_ready = _check_ready(request)
         if not_ready is not None:
             return not_ready
+        # EV05-SKEPTIC-1 (2026-11-15): reject unknown params on the POST
+        # sibling too (extract_get rejects per EV05-QA-04; $closure POST
+        # precedent TS-19 W4). A typo'd include* name or a query-string
+        # param on POST silently no-ops otherwise.
+        try:
+            reject_unknown_query_params(
+                request, _EXTRACT_KNOWN_PARAMS, "$extract",
+            )
+        except ValueError as exc:
+            return _fhir_error_response(request, 400, str(exc))
+        unknown_body = (
+            _parameter_names_present(body) - _EXTRACT_KNOWN_PARAMS
+        )
+        if unknown_body:
+            return _fhir_error_response(
+                request, 400,
+                f"Unsupported $extract parameter(s): "
+                f"{', '.join(sorted(unknown_body))}. This server declares "
+                "text, format, nerLabels, resultTypes, mode, minGrade, "
+                "annotationFields, includeNegated, includeUncertain, "
+                "includeHistorical, includeFamily.",
+            )
         # QC-156: reject wrong-typed values (e.g. includeNegated sent as
         # valueBoolean) instead of silently dropping them to the default —
         # same QC-127/QC-136 fix shape as $search POST. _parse_parameters
@@ -5423,13 +5474,15 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
         # hybrid/certain — the env vars were documented but silently ignored
         # by every wire surface.
         mode = params.get("mode") or DEFAULT_EXTRACT_MODE
-        min_grade = params.get("minGrade") or DEFAULT_EXTRACT_MIN_GRADE
+        # EV05-EXPLORER-1: defer to the service default when the client
+        # omitted minGrade (see extract_get).
+        min_grade = params.get("minGrade")
         for name, value, pattern in (
             ("format", fmt, r"^(codes|terms|annotated)$"),
             ("mode", mode, r"^(lexical|semantic|hybrid|canonical)$"),
             ("minGrade", min_grade, r"^(certain|exact|probable|possible|broader)$"),
         ):
-            if not re.fullmatch(pattern, value):
+            if value is not None and not re.fullmatch(pattern, value):
                 return _fhir_error_response(
                     request, 400,
                     f"Invalid {name} {value!r}: must match {pattern}.",
