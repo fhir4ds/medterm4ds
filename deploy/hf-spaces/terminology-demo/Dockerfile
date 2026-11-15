@@ -3,7 +3,7 @@
 # Build context: THIS DIRECTORY (deploy/hf-spaces/terminology-demo, or the
 # root of the HF Space repo, which contains the same files):
 #   docker build -t terminology-demo deploy/hf-spaces/terminology-demo
-# medterm4ds is pip-installed from the pinned public GitHub commit, so the
+# medterm4ds is pip-installed from PyPI at a pinned release version, so the
 # image needs no repo sources in the build context.
 #
 # Runtime volumes (read-only):
