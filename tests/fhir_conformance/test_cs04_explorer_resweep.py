@@ -819,14 +819,16 @@ class TestLens4AppRoutesHostileBodyAudit:
 # strict mode). The KEY invariant is no 5xx and a FHIR Content-Type.
 
 class TestLens5SubsumesDisplayAlternativeEncoding:
-    """L5: $subsumes POST with an extra ``display`` parameter — the
-    server accepts it (per Parameters-body liberalism) without 5xx."""
+    """L5: $subsumes POST with an extra ``display`` parameter — ``display``
+    is not an $subsumes In parameter (R4 declares system/version/codeA/
+    codeB/codingA/codingB only), so the FA4 body-name check rejects it
+    with a 400 naming it (CR-001 flip from the pre-guard accepted pin)."""
 
     def test_e50_post_subsumes_with_extra_display_param_accepted(
         self, fhir_client
     ) -> None:
         """POST $subsumes with a ``display`` parameter alongside the
-        canonical ones — the server MUST accept it without 5xx."""
+        canonical ones — the server MUST reject it by name without 5xx."""
         body = {
             "resourceType": "Parameters",
             "parameter": [
@@ -837,9 +839,15 @@ class TestLens5SubsumesDisplayAlternativeEncoding:
             ],
         }
         r = fhir_client.post("/fhir/CodeSystem/$subsumes", json=body)
-        assert r.status_code == 200, (
+        assert r.status_code == 400, (
             f"display param: {r.status_code}; body: {r.text[:300]}"
         )
+        assert r.json()["resourceType"] == "OperationOutcome"
+        assert "display" in r.json()["issue"][0]["diagnostics"]
+        # The canonical body without the extra param still answers.
+        del body["parameter"][-1]
+        r = fhir_client.post("/fhir/CodeSystem/$subsumes", json=body)
+        assert r.status_code == 200
         assert _outcome(r.json()) == "subsumes"
 
     def test_e51_post_subsumes_with_display_per_coding(
