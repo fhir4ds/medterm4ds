@@ -3484,3 +3484,166 @@ class TestEv06ExplorerExpandFilterPreferredDisplay(_Ev06Client):
         assert contains["44054006"] == _ev06_out(
             lookup.json(), "display", "valueString")
         assert contains["44054006"] == "Type 2 diabetes mellitus"
+
+
+def _cr001_lookup_body():
+    return {"resourceType": "Parameters", "parameter": [
+        {"name": "system", "valueUri": "http://snomed.info/sct"},
+        {"name": "code", "valueCode": "44054006"},
+    ]}
+
+
+def _cr001_subsumes_body():
+    return {"resourceType": "Parameters", "parameter": [
+        {"name": "system", "valueUri": "http://snomed.info/sct"},
+        {"name": "codeA", "valueCode": "73211009"},
+        {"name": "codeB", "valueCode": "44054006"},
+    ]}
+
+
+def _cr001_expand_body():
+    return {"resourceType": "Parameters", "parameter": [
+        {"name": "url",
+         "valueUri": "http://snomed.info/sct/73211009?fhir_vs=isa"},
+    ]}
+
+
+
+class TestCr001PostSiblingUnknownParamGuards(_Ev06Client):
+    """CR-001 (v0.0.13 code review, MEDIUM): the EV-05/EV-06 unknown-param
+    guards (query side + Parameters body-name side) were wired into
+    $search/$extract/VS-$validate-code POST but NOT the 4 POST siblings:
+    CodeSystem $lookup, CodeSystem $validate-code, $subsumes, $expand —
+    the TS-45 FA4/FA5 carry-forward. Each op pins: unknown query param →
+    400 OperationOutcome naming the param with the FHIR Content-Type;
+    unknown body name → 400; a spec-conformant request still 200s."""
+
+    SNOMED = "http://snomed.info/sct"
+    T2DM = "44054006"
+    DM = "73211009"
+    DM_ISA = f"{SNOMED}/{DM}?fhir_vs=isa"
+
+    def _lookup_body(self):
+        return {"resourceType": "Parameters", "parameter": [
+            {"name": "system", "valueUri": self.SNOMED},
+            {"name": "code", "valueCode": self.T2DM},
+        ]}
+
+    def _validate_body(self):
+        return self._lookup_body()
+
+    def _subsumes_body(self):
+        return {"resourceType": "Parameters", "parameter": [
+            {"name": "system", "valueUri": self.SNOMED},
+            {"name": "codeA", "valueCode": self.DM},
+            {"name": "codeB", "valueCode": self.T2DM},
+        ]}
+
+    def _expand_body(self):
+        return {"resourceType": "Parameters", "parameter": [
+            {"name": "url", "valueUri": self.DM_ISA},
+        ]}
+
+    # -- unknown QUERY param on POST -> 400 (FA5 flip shape) --
+
+    @pytest.mark.parametrize("path,body", [
+        ("/fhir/CodeSystem/$lookup", _cr001_lookup_body()),
+        ("/fhir/CodeSystem/$validate-code", _cr001_lookup_body()),
+        ("/fhir/CodeSystem/$subsumes", _cr001_subsumes_body()),
+        ("/fhir/ValueSet/$expand", _cr001_expand_body()),
+    ], ids=["lookup", "cs-validate", "subsumes", "expand"])
+    def test_unknown_query_param_400_cr001(self, fhir_app, path, body):
+        from starlette.testclient import TestClient
+        with TestClient(fhir_app) as client:
+            r = client.post(path, params={"bogusParam": "1"}, json=body)
+        assert r.status_code == 400, r.text
+        assert r.headers["content-type"].startswith("application/fhir+json")
+        assert r.json()["resourceType"] == "OperationOutcome"
+        assert "bogusParam" in r.json()["issue"][0]["diagnostics"]
+
+    # -- unknown Parameters BODY name on POST -> 400 (FA4 flip shape) --
+
+    @pytest.mark.parametrize("path,body", [
+        ("/fhir/CodeSystem/$lookup", _cr001_lookup_body()),
+        ("/fhir/CodeSystem/$validate-code", _cr001_lookup_body()),
+        ("/fhir/CodeSystem/$subsumes", _cr001_subsumes_body()),
+        ("/fhir/ValueSet/$expand", _cr001_expand_body()),
+    ], ids=["lookup", "cs-validate", "subsumes", "expand"])
+    def test_unknown_body_name_400_cr001(self, fhir_app, path, body):
+        from starlette.testclient import TestClient
+        body["parameter"].append({"name": "zzz", "valueString": "x"})
+        with TestClient(fhir_app) as client:
+            r = client.post(path, json=body)
+        assert r.status_code == 400, r.text
+        assert r.headers["content-type"].startswith("application/fhir+json")
+        assert r.json()["resourceType"] == "OperationOutcome"
+        assert "zzz" in r.json()["issue"][0]["diagnostics"]
+
+    # -- spec-listed-but-unsupported query params -> 400 (GET twin parity) --
+
+    @pytest.mark.parametrize("path,params,body", [
+        ("/fhir/CodeSystem/$lookup", {"version": "9.9"}, _cr001_lookup_body()),
+        ("/fhir/CodeSystem/$lookup",
+         {"systemVersion": "9.9"}, _cr001_lookup_body()),
+        ("/fhir/ValueSet/$expand",
+         {"includeDesignations": "true"}, _cr001_expand_body()),
+    ], ids=["lookup-version", "lookup-systemversion",
+            "expand-includedesignations"])
+    def test_unsupported_query_param_400_cr001(self, fhir_app, path, params, body):
+        from starlette.testclient import TestClient
+        with TestClient(fhir_app) as client:
+            r = client.post(path, params=params, json=body)
+        assert r.status_code == 400, r.text
+        assert r.json()["resourceType"] == "OperationOutcome"
+
+    # -- spec-conformant requests still 200 --
+
+    def test_conformant_lookup_post_200_cr001(self, fhir_app):
+        from starlette.testclient import TestClient
+        with TestClient(fhir_app) as client:
+            r = client.post(
+                "/fhir/CodeSystem/$lookup", json=self._lookup_body())
+        assert r.status_code == 200, r.text
+        assert r.json()["resourceType"] == "Parameters"
+
+    def test_conformant_cs_validate_post_200_cr001(self, fhir_app):
+        from starlette.testclient import TestClient
+        with TestClient(fhir_app) as client:
+            r = client.post(
+                "/fhir/CodeSystem/$validate-code",
+                json=self._validate_body())
+        assert r.status_code == 200, r.text
+        assert r.json()["resourceType"] == "Parameters"
+
+    def test_conformant_subsumes_post_200_cr001(self, fhir_app):
+        from starlette.testclient import TestClient
+        with TestClient(fhir_app) as client:
+            r = client.post(
+                "/fhir/CodeSystem/$subsumes", json=self._subsumes_body())
+        assert r.status_code == 200, r.text
+        assert r.json()["resourceType"] == "Parameters"
+
+    def test_conformant_expand_post_200_cr001(self, fhir_app):
+        from starlette.testclient import TestClient
+        with TestClient(fhir_app) as client:
+            r = client.post(
+                "/fhir/ValueSet/$expand", json=self._expand_body())
+        assert r.status_code == 200, r.text
+        assert r.json()["resourceType"] == "ValueSet"
+
+    def test_expand_inline_valueset_unknown_coparam_400_cr001(self, fhir_app):
+        """The Parameters-with-valueSet branch must also reject unknown
+        co-located body names (the guard is not tail-branch-only)."""
+        from starlette.testclient import TestClient
+        body = {"resourceType": "Parameters", "parameter": [
+            {"name": "valueSet", "resource": {
+                "resourceType": "ValueSet",
+                "compose": {"include": [{"concept": [
+                    {"code": self.T2DM, "display": "Type 2 diabetes"}]}]}},
+            },
+            {"name": "zzz", "valueString": "x"},
+        ]}
+        with TestClient(fhir_app) as client:
+            r = client.post("/fhir/ValueSet/$expand", json=body)
+        assert r.status_code == 400, r.text
+        assert "zzz" in r.json()["issue"][0]["diagnostics"]

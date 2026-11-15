@@ -3064,6 +3064,30 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
 
     @app.post("/fhir/CodeSystem/$lookup")
     async def lookup_post(request: Request, body: dict[str, Any]):
+        # CR-001 (v0.0.13 review): GET↔POST parity on the unknown-param
+        # guards (TS-45 FA4/FA5 carry-forward — the EV-05/EV-06 wiring
+        # covered $search/$extract/VS-$validate-code but not this POST
+        # sibling). Query side mirrors lookup_get's U3 call (the
+        # ``property.`` prefix admits R4's dotted sub-selectors); body
+        # side mirrors vs_validate_post's name-set check.
+        try:
+            reject_unknown_query_params(
+                request, _LOOKUP_KNOWN_PARAMS, "$lookup",
+                known_prefixes=("property.",),
+            )
+        except ValueError as exc:
+            return _fhir_error_response(request, 400, str(exc))
+        unknown_body = {
+            name
+            for name in _parameter_names_present(body) - _LOOKUP_KNOWN_PARAMS
+            if not name.startswith("property.")
+        }
+        if unknown_body:
+            return _fhir_error_response(
+                request, 400,
+                f"Unsupported $lookup parameter(s): "
+                f"{', '.join(sorted(unknown_body))}.",
+            )
         params = _parse_parameters(body)
         system = params.get("system")
         code = params.get("code")
@@ -3085,6 +3109,14 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
             reject_unsupported_version_params(
                 version=params.get("version"),
                 system_version=_raw_parameter_value(body, "systemVersion"),
+            )
+            # CR-001 (TS-45 FA5): query-string version/systemVersion are
+            # first-class on POST per R4 §3.1.0.1.1 — reject them exactly
+            # as the GET twin does (previously a POST-only bypass of the
+            # H1/U4 family).
+            reject_unsupported_version_params(
+                version=request.query_params.get("version"),
+                system_version=request.query_params.get("systemVersion"),
             )
             # EV06-SKEPTIC-2: body-side date parity with validate_post
             # (EB/H4 family sibling).
@@ -3303,6 +3335,29 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
 
     @app.post("/fhir/CodeSystem/$validate-code")
     async def validate_post(request: Request, body: dict[str, Any]):
+        # CR-001 (v0.0.13 review): GET↔POST parity on the unknown-param
+        # guards (TS-45 FA4/FA5 — mirrors lookup_post / vs_validate_post).
+        try:
+            reject_unknown_query_params(
+                request, _CS_VALIDATE_KNOWN_PARAMS, "$validate-code",
+            )
+            # CR-001 (TS-45 FA5): query-string version/systemVersion
+            # rejected like the GET twin (H1/U4 family).
+            reject_unsupported_version_params(
+                version=request.query_params.get("version"),
+                system_version=request.query_params.get("systemVersion"),
+            )
+        except ValueError as exc:
+            return _fhir_error_response(request, 400, str(exc))
+        unknown_body = (
+            _parameter_names_present(body) - _CS_VALIDATE_KNOWN_PARAMS
+        )
+        if unknown_body:
+            return _fhir_error_response(
+                request, 400,
+                f"Unsupported $validate-code parameter(s): "
+                f"{', '.join(sorted(unknown_body))}.",
+            )
         params = _parse_parameters(body)
         system = params.get("system")
         code = params.get("code")
@@ -4147,6 +4202,29 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
 
     @app.post("/fhir/CodeSystem/$subsumes")
     async def subsumes_post(request: Request, body: dict[str, Any]):
+        # CR-001 (v0.0.13 review): GET↔POST parity on the unknown-param
+        # guards (TS-45 FA4/FA5 — mirrors lookup_post / vs_validate_post).
+        try:
+            reject_unknown_query_params(
+                request, _SUBSUMES_KNOWN_PARAMS, "$subsumes",
+            )
+            # CR-001 (TS-45 FA5): query-string version/systemVersion
+            # rejected like the GET twin (H1/U4 family).
+            reject_unsupported_version_params(
+                version=request.query_params.get("version"),
+                system_version=request.query_params.get("systemVersion"),
+            )
+        except ValueError as exc:
+            return _fhir_error_response(request, 400, str(exc))
+        unknown_body = (
+            _parameter_names_present(body) - _SUBSUMES_KNOWN_PARAMS
+        )
+        if unknown_body:
+            return _fhir_error_response(
+                request, 400,
+                f"Unsupported $subsumes parameter(s): "
+                f"{', '.join(sorted(unknown_body))}.",
+            )
         params = _parse_parameters(body)
         system = params.get("system")
         code_a = params.get("codeA")
@@ -4554,7 +4632,44 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
         body-overrides-query contract). Default (omitted) is active-only, a
         documented divergence from the R4 default of false.
         """
+        # CR-001 (v0.0.13 review): GET↔POST parity on the unknown-param
+        # guards (TS-45 FA5 — the GET route rejects unknown AND
+        # unsupported-but-declared query params; the POST route previously
+        # silently accepted both). Mirrors the EV-05 search/extract wiring.
+        try:
+            reject_unknown_query_params(
+                request, _EXPAND_KNOWN_PARAMS, "$expand",
+            )
+            unsupported = [
+                p for p in _EXPAND_UNSUPPORTED_PARAMS
+                if request.query_params.get(p) is not None
+            ]
+            if unsupported:
+                raise ValueError(
+                    f"Unsupported $expand parameter(s): "
+                    f"{', '.join(sorted(unsupported))}. This server does "
+                    "not implement them; per FHIR R4 §4.9.2 they are "
+                    "rejected rather than silently ignored."
+                )
+        except ValueError as exc:
+            return _fhir_error_response(request, 400, str(exc))
         resource_type = body.get("resourceType", "")
+        # CR-001 (TS-45 FA4): unknown body-name rejection for EVERY
+        # Parameters-shaped branch (the tail branch already checked; the
+        # inline Parameters-with-valueSet branch silently 200'd unknown
+        # co-located names). Bare ValueSet bodies carry no Parameters
+        # entries, so the check is a no-op there.
+        if resource_type != "ValueSet":
+            unknown_body = (
+                _parameter_names_present(body)
+                - set(_EXPAND_KNOWN_PARAMS) - {"valueSet"}
+            )
+            if unknown_body:
+                return _fhir_error_response(
+                    request, 400,
+                    f"Unknown $expand parameter(s): "
+                    f"{', '.join(sorted(unknown_body))}.",
+                )
         if resource_type == "ValueSet":
             payload = await _run_db(
                 _executor(request), _expand_with_params_echo,
