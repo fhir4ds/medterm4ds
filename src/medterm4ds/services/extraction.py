@@ -2490,22 +2490,19 @@ class ExtractionService:
                     continue
 
                 # Conjunction split on failure (individual search for split parts).
-                # This site splits the VALUE-STRIPPED text (AMUX-102 stage
-                # 3: the precomputed conjunction_parts come from the FULL
-                # token slice, so they are only consulted when the
-                # value-strip is a no-op; otherwise the legacy mention-text
-                # fallback splits the stripped string).
-                if span.search_variants is not None:
-                    search_text = (
-                        span.search_variants[0] if span.search_variants else span.text
-                    )
-                    parts = (
-                        span.conjunction_parts
-                        if search_text == span.text
-                        else _split_on_conjunction(search_text)
-                    )
+                # This site splits the VALUE-STRIPPED text (pre-migration
+                # semantics). The value-stripped base is computed with the
+                # legacy mention helper on this cold path — NOT from
+                # search_variants[0], which is the value-stripped variant
+                # only when the value-strip fired; when the strip is a no-op
+                # the first ladder entry is the form/qualifier variant
+                # (EV02-HISTORIAN-1: 'history of CBC and CMP' lost its
+                # qualifier part). The precomputed conjunction_parts (full
+                # token slice) are consulted when the strip is a no-op.
+                search_text = _strip_trailing_values(span.text)
+                if span.conjunction_parts is not None and search_text == span.text:
+                    parts = span.conjunction_parts
                 else:
-                    search_text = _strip_trailing_values(span.text)
                     parts = _split_on_conjunction(search_text)
                 if parts:
                     # Same constrain-then-fallback per split part.
@@ -3161,17 +3158,15 @@ class ExtractionService:
             entity_text = text[span.span_start:span.span_end]
 
             # Look up resolved concept (may also match conjunction-split parts).
-            # AMUX-102 stage 3: the value-stripped variant is precomputed
-            # for pipeline spans (span.search_variants[0]); composed spans
-            # and manual spans use the legacy mention-text fallback.
-            if span.search_variants:
-                concept = concept_by_text.get(span.text.lower()) or concept_by_text.get(
-                    span.search_variants[0].lower()
-                )
-            else:
-                concept = concept_by_text.get(span.text.lower()) or concept_by_text.get(
-                    _strip_trailing_values(span.text).lower()
-                )
+            # The lookup base is the VALUE-STRIPPED text via the legacy
+            # mention helper — NOT search_variants[0] (EV02-HISTORIAN-1
+            # sibling: when the value-strip is a no-op the first ladder
+            # entry is the form/qualifier variant, and a concept keyed by
+            # that variant (e.g. resolved for a different span) would leak
+            # into this span's marker).
+            concept = concept_by_text.get(span.text.lower()) or concept_by_text.get(
+                _strip_trailing_values(span.text).lower()
+            )
 
             # Determine the annotation label: prefer result_type (corrected),
             # fall back to ner_label if unresolved.
