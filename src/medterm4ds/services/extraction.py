@@ -32,6 +32,46 @@ from typing import Any
 from medterm4ds.core.env import env_int
 from medterm4ds.core.models import CodeRef
 from medterm4ds.core.normalize import expand_source_aliases, source_label
+from medterm4ds.services.extraction_cues import (
+    ASSERTION_FRAGMENT_RE as _ASSERTION_FRAGMENT_RE,
+)
+from medterm4ds.services.extraction_cues import (
+    CONCENTRATION_UNIT_RE as _CONCENTRATION_UNIT_RE,
+)
+from medterm4ds.services.extraction_cues import (
+    DOSE_UNIT_RE as _DOSE_UNIT_RE,
+)
+from medterm4ds.services.extraction_cues import (
+    FUSED_VALUE_TOKEN_RE as _FUSED_VALUE_TOKEN_RE,
+)
+from medterm4ds.services.extraction_cues import (
+    Mt4dsCueAnnotator,
+    absorb_sep_gap,
+    compose_gap,
+    list_gap,
+    slash_gap,
+    stitch_gap,
+)
+from medterm4ds.services.extraction_cues import (
+    is_false_positive as _is_false_positive,
+)
+
+# Legacy mention-text fallbacks (design F6/F8): pipeline spans carry
+# search_variants/conjunction_parts precomputed at NLP time from the doc's
+# token slice; these pure-text helpers remain only for manually constructed
+# spans (public resolve_spans API + tests). Relocated to extraction_cues.
+from medterm4ds.services.extraction_cues import (
+    mention_leading_qualifier_fallback as _leading_qualifier_fallback,
+)
+from medterm4ds.services.extraction_cues import (
+    mention_split_on_conjunction as _split_on_conjunction,
+)
+from medterm4ds.services.extraction_cues import (
+    mention_strip_trailing_values as _strip_trailing_values,
+)
+from medterm4ds.services.extraction_cues import (
+    mention_trailing_form_fallback as _trailing_form_fallback,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -290,25 +330,8 @@ _MED_HEAD_NOUNS = frozenset({
     "patch", "solution", "suspension", "syrup", "elixir",
 })
 
-# Signal 2 regexes: number+unit immediately after the span.
-# Concentration units (mass or amount per volume) → lab result values.
-# The separator accepts "/" and the word "per" (with optional spaces —
-# the parser tokenizer splits "mg/dL" into mg / dL and "mg per dL" into
-# three tokens; combined matching is done by the caller).
-_CONCENTRATION_UNIT_RE = re.compile(
-    r'^(?:\d+\.?\d*\s*)?'
-    r'(mg|mcg|µg|ug|g|mmol|µmol|umol|meq|iu|u|ng)'
-    r'\s*(?:/|\s*per\s*|\s*per)'
-    r'\s*(dl|l|ml)\s*$',
-    re.IGNORECASE,
-)
-# Bare dose units (no denominator) → administered amounts.
-_DOSE_UNIT_RE = re.compile(
-    r'^(?:\d+\.?\d*\s*)?'
-    r'(?:mg|mcg|g|meq|units?|tablets?|tabs?|capsules?|caps?|'
-    r'pills?|drops?|puffs?|ml|cc)\s*$',
-    re.IGNORECASE,
-)
+# Signal 2: number+unit immediately after the span — unit validators are
+# mention-text regexes relocated to extraction_cues (AMUX-102 design F9).
 
 
 def _head_noun_signal(span, parser_doc, parser_chunks=None) -> list[str] | None:
@@ -494,362 +517,50 @@ _LABEL_TO_SOURCES: dict[str, list[str] | None] = {
 # want lossy broader matches by default. Pass min_grade="broader" to include.
 _GRADE_ORDER = {"certain": 0, "exact": 0, "probable": 1, "possible": 2, "broader": 3}
 
-# Regex to strip trailing numeric values and units from span text before search.
-# GLiNER often includes the value in the span ("heart rate 80", "BP 120/80",
-# "HbA1c 7.2%"). SapBERT embeds "heart rate 80" differently from "heart rate"
-# and fails to match the Heart Rate anchor. Stripping values before search
-# (while preserving the original span in `matched_text`) fixes this.
-# Matches trailing tokens like: "80", "120/80", "7.2%", "37C", "98%", "+", "-".
-# QC-188: the unit part must be a single unspaced token — the previous
-# `(?:\s*[%°a-zA-Z/]+)?` let " 2 diabetes" match as number+unit, mangling
-# "type 2 diabetes" → "type" before search.
-_TRAILING_VALUE_RE = re.compile(
-    r'\s+'                              # whitespace before value
-    r'(?:'
-        r'\d+(?:[./]\d+)*'              # number: 80, 120/80, 7.2
-        r'(?:[%°a-zA-Z/]+)?'            # optional unspaced unit: %, C, mmHg, mg/dL
-        r'|[+\-]'                       # bare + or -
-        r'|less|greater|high|low|normal|abnormal'  # common qualifiers
-    r')'
-    r'(?:[,;]?\s*\d+(?:[./]\d+)*(?:[%°a-zA-Z/]+)?)*'  # additional values
-    r'\s*$'
-)
+# Regex to strip trailing numeric values and units from span text before
+# search — token-based since AMUX-102 stage 3 (design F6):
+# Mt4dsCueAnnotator.strip_trailing_values / search_variant_ladder compute
+# the fallback query ladder from the entity's token slice at NLP time
+# (FilteredSpan.search_variants). The legacy mention-text regexes remain
+# in extraction_cues as the fallback for manually constructed spans.
+#
+# Leading-qualifier strip (CR-301) and the trailing form-noun fallback
+# (2026-11-11 addendum B) follow the same pattern; the conjunction split
+# (design F8) is Mt4dsCueAnnotator.conjunction_split with the result
+# precomputed onto FilteredSpan.conjunction_parts.
 
 
-def _strip_trailing_values(text: str) -> str:
-    """Strip trailing numeric values and units from a span for search.
+def _span_fallback_queries(span: FilteredSpan) -> list[str]:
+    """Ordered fallback query variants after the full-mention query fails:
+    value-stripped, form-noun-stripped, leading-qualifier-stripped (each
+    form/qualifier strip applied on the value-stripped base — the order
+    every resolve site uses today).
 
-    "heart rate 80" → "heart rate"
-    "BP 120/80" → "BP"
-    "HbA1c 7.2%" → "HbA1c"
-    "temperature" → "temperature" (unchanged — no trailing value)
-
-    Leading qualifiers are NOT removed here: the qualifier is part of the
-    concept for some terms ('left ventricular hypertrophy', 'upper
-    respiratory infection') and furniture for others ('bilateral
-    pneumonia'). They are tried as a FALLBACK query instead (CR-301) —
-    see ``_leading_qualifier_fallback``.
+    Pipeline spans carry the ladder precomputed at NLP time
+    (span.search_variants, token-based); manually constructed spans
+    (fields None) fall back to the legacy mention-text helpers.
     """
-    return _TRAILING_VALUE_RE.sub('', text).strip()
+    if span.search_variants is not None:
+        return list(span.search_variants)
+    out: list[str] = []
+    stripped = _strip_trailing_values(span.text)
+    for variant in (
+        stripped,
+        _trailing_form_fallback(span.text),
+        _leading_qualifier_fallback(span.text),
+    ):
+        if variant and variant != span.text and variant not in out:
+            out.append(variant)
+    return out
 
+# Common non-medical-word stoplist + false-positive validators are
+# spaCy-era mention-text helpers in extraction_cues (AMUX-102 stage 2,
+# design F7): is_false_positive is re-exported above for the hot path.
 
-_LEADING_QUALIFIER_RE = re.compile(
-    r"^(?:left|right|bilateral|unilateral|upper|lower|"
-    r"history\s+of|hx\s+of|status\s+post|s/p)\s+",
-    re.IGNORECASE,
-)
-
-
-def _strip_leading_qualifiers(text: str) -> str:
-    """Remove leading laterality/descriptor furniture from a query."""
-    while True:
-        m = _LEADING_QUALIFIER_RE.match(text)
-        if not m:
-            return text
-        rest = text[m.end():].strip()
-        if not rest:
-            return text
-        text = rest
-
-
-def _leading_qualifier_fallback(text: str) -> str | None:
-    """The stripped variant to retry when the primary query finds nothing.
-
-    Returns None when stripping would not change the query.
-    """
-    base = _strip_trailing_values(text)
-    stripped = _strip_leading_qualifiers(base)
-    return stripped if stripped and stripped != base else None
-
-
-# Trailing dose-form/administration nouns (2026-11-11 addendum B,
-# re-tv-11): 'Normal saline bolus' names the substance — the form noun is
-# furniture for anchor lookup. Tried ONLY as a fallback query, after the
-# full mention fails, so 'ceftriaxone injection' keeps its full form when
-# the full mention resolves.
-_TRAILING_FORM_NOUN_RE = re.compile(
-    r"\s+(?:bolus|drip|push|infusion|injection|tablet|tablets|capsule|"
-    r"capsules|solution|suspension)\s*$",
-    re.IGNORECASE,
-)
-
-
-def _trailing_form_fallback(text: str) -> str | None:
-    """The form-noun-stripped variant to retry when the primary fails."""
-    base = _strip_trailing_values(text)
-    stripped = _TRAILING_FORM_NOUN_RE.sub("", base).strip()
-    return stripped if stripped and stripped != base else None
-
-
-# Conjunction patterns for splitting compound spans.
-# GLiNER sometimes returns "ALT or AST" or "ALT/AST" as one span. We try the
-# full span first; if it doesn't resolve, we split on conjunctions and search
-# each part. Handles both spaced ("ALT or AST") and unspaced ("ALT/AST") forms.
-_CONJUNCTION_RE = re.compile(
-    r'\s*(?:and\s*/\s*or|or\s*/\s*and)\s*'  # "and/or" / "or/and" compound
-    r'|\s+(?:or|and)\s+'       # " or ", " and " (require spaces)
-    r'|\s*/\s*'                # "/" with optional surrounding spaces (ALT/AST)
-    r'|\s*,\s+',              # ", " (comma separator)
-    re.IGNORECASE,
-)
-
-
-def _split_on_conjunction(text: str) -> list[str] | None:
-    """Split a span on conjunctions into individual entity candidates.
-
-    "ALT or AST" → ["ALT", "AST"]
-    "HDL/LDL"    → ["HDL", "LDL"]
-    "CBC and/or CMP" → ["CBC", "CMP"]  # EV01-QA-02: compound conjunction
-    "ALT, AST"   → ["ALT", "AST"]
-    "metformin"  → None (no conjunction)
-
-    Returns None if no split happened (single entity).
-    Filters out parts that look like pure numbers (e.g., "120/80" → keep as-is).
-    """
-    parts = _CONJUNCTION_RE.split(text)
-    parts = [p.strip() for p in parts if p.strip()]
-    if len(parts) <= 1:
-        return None
-    # Don't split if all parts are numeric (e.g., "120/80" is one value, not two entities)
-    if all(re.fullmatch(r'\d+(?:\.\d+)?', p) for p in parts):
-        return None
-    return parts
-
-# Common non-medical words that GLiNER may wrongly classify at threshold 0.3
-_FALSE_POSITIVE_WORDS = frozenset({
-    "patient", "patients", "male", "female", "man", "woman", "child",
-    # QC report (2026-08-16) pattern 3: populations extracted as disorders
-    # (adults 140x, women 73x, patients, ...). Complete the population set —
-    # the singular forms were already filtered but plurals/inflections and
-    # age-group nouns leaked through and resolved to condition anchors.
-    "adults", "men", "women", "children", "infant", "infants",
-    "neonate", "neonates", "elderly", "males", "females",
-    "year", "years", "old", "age", "date", "time", "day", "days", "week",
-    "hospital", "clinic", "center", "department", "service",
-    "doctor", "nurse", "physician", "provider",
-    "family", "mother", "father", "brother", "sister",
-    # QC-189: complete the kinship set — aunt/uncle/cousin/daughter/son/
-    # maternal/paternal/grandmother (etc.) leaked through as GLiNER spans
-    # in family-history sentences while father/mother were filtered.
-    "aunt", "uncle", "cousin", "daughter", "son",
-    "maternal", "paternal", "grandmother", "grandfather",
-    "grandparent", "grandparents", "sibling", "siblings",
-    "nephew", "niece", "relative", "relatives",
-    "plan", "assessment", "note", "notes", "report",
-    "presents", "presenting", "admitted", "discharged",
-    "normal", "stable", "unremarkable", "well", "good",
-    "left", "right", "bilateral", "upper", "lower",
-    "yes", "no", "not", "and", "or", "with", "without",
-    # QC-160: note furniture GLiNER wrongly affirmed at low threshold.
-    "evidence", "history", "social history", "family history",
-    "past medical history", "review of systems", "physical exam",
-    "stage",
-    # 2026-11-11 batteries: bare section-header/boilerplate words that
-    # resolved confidently wrong ('exam' -> Assessment lab, 'risks' ->
-    # Injury risk, 'Follow-up' -> Follow-Up Encounter, 'Objective' ->
-    # Goals).
-    "exam", "risks", "follow-up", "objective",
-})
-
-# Negation/uncertainty/historical trigger patterns that GLiNER may include
-# in the entity span itself. When detected, the trigger is stripped and the
-# status is set accordingly.
-
-_NEGATION_TRIGGERS = [
-    (r"^(no\s+evidence\s+of\s+|no\s+sign\s+of\s+|no\s+signs\s+of\s+|no\s+history\s+of\s+)", "negated"),
-    (r"^(no\s+|without\s+|absent\s+|negative\s+for\s+|denies?\s+|denied\s+|rules?\s+out\s+|ruled\s+out\s+|free\s+of\s+)", "negated"),
-    (r"^(possible\s+|possibly\s+|may\s+have\s+|might\s+have\s+|could\s+be\s+|suspected\s+|suspect\s+|suggestive\s+of\s+|concerning\s+for\s+|likely\s+)", "uncertain"),
-    (r"^(history\s+of\s+|hx\s+of\s+|hx\s+|past\s+|previously\s+had\s+|prior\s+|remote\s+)", "historical"),
-]
-
-# Post-entity negation triggers (QC-188): "breast cancer ruled out" carries
-# the trigger AFTER the entity. medspaCy ConText missed these in GLiNER
-# spans (it annotates its own cue window, not inline span text).
-_POST_ENTITY_NEGATION_RE = re.compile(
-    r"\s+(?:ruled\s+out|rules\s+out|is\s+ruled\s+out|was\s+ruled\s+out)\s*$",
-    re.IGNORECASE,
-)
-
-# Sentence-local post-span negation cues (2026-11-07 NER battery, model
-# team finding 1): when GLiNER leaves the trigger OUTSIDE the span
-# ('Breast cancer ruled out.' → span 'Breast cancer'), ConText is the
-# only line of defense and missed it. These cues are checked in the
-# sentence tail AFTER a span whose status would otherwise be affirmed.
-_POST_SPAN_CUE_RE = re.compile(
-    r"^\s*[(\[\"\u201c]?\s*"
-    r"(?:(?:was\s+|is\s+|are\s+|has\s+been\s+|have\s+been\s+|now\s+)?"
-    r"(?:ruled\s+out|rules\s+out|excluded|not\s+seen|not\s+appreciated|"
-    r"negative\s+for|free\s+of|denied|denies)"
-    # Bare 'negative' as a post-span predicate (2026-11-11 as-hist-02:
-    # 'now COVID-19 negative') — but ONLY with an explicit copula/'now':
-    # unprefixed 'HIV negative.' (qualifier battery q-hiv-02) must keep
-    # its resolvable affirmed span for default consumers.
-    r"|(?:was\s+|is\s+|are\s+|has\s+been\s+|have\s+been\s+|now\s+)negative)"
-    r"\b",
-    re.IGNORECASE,
-)
-# Post-span uncertainty cues — the same parenthetical form ('Sepsis
-# (possible)', 'Pneumonia (suspected)'). Uncertain, not negated.
-_POST_SPAN_UNCERTAINTY_RE = re.compile(
-    r"^\s*[(\[\"\u201c]?\s*(?:possible|possibly|suspected|suspect|"
-    r"likely|concerning\s+for|cannot\s+rule\s+out|can't\s+rule\s+out|"
-    r"cannot\s+exclude)\b",
-    re.IGNORECASE,
-)
-# How far past the span end a post-span cue may sit and still bind to it
-# (same sentence; conservative window — cue must effectively follow the
-# mention directly).
-_POST_SPAN_CUE_WINDOW = 32
-
-# Pre-span cues (2026-11-07 edge corpus): cues that sit immediately
-# BEFORE a span GLiNER left bare. Two safety classes:
-#   PSEUDONEGATION — 'Cannot rule out pneumonia': medspaCy ConText reads
-#   'rule out' as a forward NEGATION and marks the span negated, but the
-#   'cannot' inverts it — the finding is UNCERTAIN, and a negated status
-#   would silently drop a possible diagnosis.
-#   UNCERTAINTY — 'Suspected urinary tract infection': ConText missed the
-#   forward uncertainty cue; the span affirmed.
-_PRE_SPAN_PSEUDONEGATION_RE = re.compile(
-    r"\b(?:cannot|can't|could\s+not|unable\s+to|not\s+able\s+to)\s+"
-    r"(?:rule\s+out|exclude|be\s+ruled\s+out|be\s+excluded)\s*$",
-    re.IGNORECASE,
-)
-_PRE_SPAN_UNCERTAINTY_RE = re.compile(
-    r"\b(?:suspected|suspect|possibly|possible|concerning\s+for|"
-    r"likely|question\s+of|cannot\s+rule\s+out|can't\s+rule\s+out|"
-    r"cannot\s+exclude|unable\s+to\s+exclude)\s+(?:a|an|the)?\s*$",
-    re.IGNORECASE,
-)
-_PRE_SPAN_NEGATION_RE = re.compile(
-    r"\b(?:neither|nor|denies|denied|negative\s+for|free\s+of)\s*$",
-    re.IGNORECASE,
-)
-_PRE_SPAN_HISTORICAL_RE = re.compile(
-    r"\b(?:history\s+of|hx\s+of|hx|prior|previous|past)\s+(?:hx\s+of\s+)?"
-    r"(?:a|an|the)?\s*$",
-    re.IGNORECASE,
-)
-_PRE_SPAN_WINDOW = 48
-
-
-def _pre_span_cue(text: str, span_start: int, doc) -> str | None:
-    """Cue immediately before a span, in its sentence.
-
-    Returns 'pseudo_negation' | 'uncertainty' | 'negation' |
-    'historical' | None. Only the text directly adjacent to the span
-    (anchored with $) matches — a cue from a previous clause never binds.
-    """
-    sent_start = None
-    try:
-        for sent in doc.sents:
-            if sent.start_char <= span_start < sent.end_char:
-                sent_start = sent.start_char
-                break
-    except Exception:  # noqa: BLE001 — no sentence iterator → window only
-        sent_start = None
-    begin = max(span_start - _PRE_SPAN_WINDOW, sent_start or 0)
-    head = text[begin:span_start]
-    if _PRE_SPAN_PSEUDONEGATION_RE.search(head):
-        return "pseudo_negation"
-    if _PRE_SPAN_UNCERTAINTY_RE.search(head):
-        return "uncertainty"
-    if _PRE_SPAN_NEGATION_RE.search(head):
-        return "negation"
-    if _PRE_SPAN_HISTORICAL_RE.search(head):
-        return "historical"
-    return None
-
-
-def _post_span_negation_cue(text: str, span_end: int, doc, span_start: int | None = None) -> bool:
-    """True when a negation cue sits just after the span, in its sentence.
-
-    Only consulted when inline triggers and ConText both left the status
-    affirmed (the ConText safety net already having had its chance).
-    The cue must follow the span across WHITESPACE ONLY — a clause
-    boundary (',' ';') between span and cue means the cue belongs to a
-    different clause ('Hypertension, negative for proteinuria' must not
-    negate Hypertension; adversarial corpus as-window-01, 2026-11-07).
-    """
-    sent_end = None
-    try:
-        for sent in doc.sents:
-            if sent.start_char <= span_end <= sent.end_char:
-                sent_end = sent.end_char
-                break
-    except Exception:  # noqa: BLE001 — no sentence iterator → window only
-        sent_end = None
-    limit = min(span_end + _POST_SPAN_CUE_WINDOW, sent_end or len(text))
-    tail = text[span_end:limit]
-    if _POST_SPAN_CUE_RE.match(tail):
-        return True
-    # Bare 'negative' predicate on a 'now'-marked span (2026-11-11
-    # assertion-scope battery, as-hist-02: 'now COVID-19 negative'): the
-    # temporal marker directly before the span makes the bare predicate a
-    # current-status negation. Unmarked 'HIV negative.' stays affirmed so
-    # default (affirmed-only) consumers keep the concept (q-hiv-02).
-    if span_start is not None and re.match(r"^\s*negative\b", tail, re.IGNORECASE):
-        return bool(re.search(r"\bnow\s*$", text[:span_start], re.IGNORECASE))
-    return False
-
-
-def _post_span_uncertainty_cue(text: str, span_end: int, doc) -> bool:
-    """True when an uncertainty cue sits just after the span ('X (possible)')."""
-    sent_end = None
-    try:
-        for sent in doc.sents:
-            if sent.start_char <= span_end <= sent.end_char:
-                sent_end = sent.end_char
-                break
-    except Exception:  # noqa: BLE001
-        sent_end = None
-    limit = min(span_end + _POST_SPAN_CUE_WINDOW, sent_end or len(text))
-    return bool(_POST_SPAN_UNCERTAINTY_RE.match(text[span_end:limit]))
-
-
-# Strong clause boundaries for the ConText scope guard. Comma is
-# deliberately NOT a boundary: 'denies chest pain, arm pain' keeps its
-# negation for the second item. Semicolon/colon/dash/' but ' separate
-# independent clauses whose cues must not leak ('No evidence of
-# pneumonia; started ceftriaxone for sepsis' — sepsis is not negated).
-_CLAUSE_BOUNDARY_RE = re.compile(r"[;:\u2014]|\bbut\b", re.IGNORECASE)
-_CLAUSE_NEGATION_SUPPORT_RE = re.compile(
-    r"\b(?:no|not|non-|denies|denied|deny|negative|without|absent|free|"
-    r"neither|nor|ruled\s+out|rules\s+out|negative\s+for)\b",
-    re.IGNORECASE,
-)
-
-
-def _clause_negation_supported(text: str, span_start: int, span_end: int) -> bool:
-    """True when the span's own clause carries a negation cue.
-
-    Guards against ConText's token-window scope crossing clause
-    boundaries: a 'negated' ConText verdict is only trusted when the
-    span's clause (strong boundaries only) itself supports it.
-    """
-    boundary = 0
-    for m in _CLAUSE_BOUNDARY_RE.finditer(text[:span_start]):
-        boundary = m.end()
-    clause = text[boundary:span_end]
-    return bool(_CLAUSE_NEGATION_SUPPORT_RE.search(clause))
-
-
-# Pediatric patient descriptors (2026-11-11 regex-trap battery, re-fp-10):
-# 'Child with asthma' names the PATIENT, not a relative — but medspaCy
-# ConText fires FAMILY_HISTORY on the kinship word and silently hides the
-# finding from default (affirmed-only) consumers. An age/role descriptor
-# directly governing 'with <finding>' is the note's subject.
-_PEDIATRIC_SUBJECT_RE = re.compile(
-    r"\b(?:child|infant|neonate|newborn|toddler|adolescent|teenager)\s+with\b",
-    re.IGNORECASE,
-)
-
-
-def _pediatric_subject(text: str, span_start: int, span_end: int) -> bool:
-    """True when the span's clause describes a pediatric PATIENT descriptor."""
-    boundary = 0
-    for m in _CLAUSE_BOUNDARY_RE.finditer(text[:span_start]):
-        boundary = m.end()
-    return bool(_PEDIATRIC_SUBJECT_RE.search(text[boundary:span_end]))
+# Negation/uncertainty/historical INLINE triggers, post-entity negation
+# tails, and the stitching/compose gap classifiers are token-based since
+# AMUX-102 stage 2: see extraction_cues.Mt4dsCueAnnotator.inline_trigger
+# (design F3) and the extraction_cues gap helpers (design F5).
 
 
 # Drug-ish GLiNER labels whose fragments may be stitched (2026-11-07 NER
@@ -865,16 +576,11 @@ _DRUG_NER_LABELS = frozenset({
 # oral-drug fragments ('lisinopril', 'HCTZ'). These may join a stitch
 # ONLY across a bare '/' — 'flu and covid vaccine' must never merge.
 _MISLABELED_DRUG_LABELS = frozenset({"immunization"})
-_STITCH_SLASH_GAP_RE = re.compile(r"^\s*(?:/|\+|plus)\s*$", re.IGNORECASE)
-# Gap that may sit between two stitchable fragments: SLASH, HYPHEN, PLUS
-# and the word 'plus' — characters that (almost) never separate a
-# co-prescription LIST. ',' and 'and' are list separators and are gated
-# separately (see _stitch_gated_list_pairs): they may only join when a
-# shared trailing strength corroborates a combination product.
-_STITCH_GAP_RE = re.compile(r"^\s*(?:/|\\|-|\+|plus)\s*$", re.IGNORECASE)
-# LIST separators — joinable ONLY with strength corroboration + an
-# anchor that covers every fragment at resolve time.
-_LIST_GAP_RE = re.compile(r"^\s*(?:,|\band\b)\s*$", re.IGNORECASE)
+# Gap classifiers (slash/stitch/list/compose) are token-based since
+# AMUX-102 stage 2 — see extraction_cues.slash_gap/stitch_gap/list_gap/
+# compose_gap (design F5): a bare '/' (slash gap) is the only separator
+# that may join a mislabeled fragment; ',' and 'and' are LIST separators
+# and are gated separately (see _stitch_gated_list_pairs).
 
 
 def _strength_components(strength: str | None) -> int | None:
@@ -919,7 +625,7 @@ def _is_value_like_span(span) -> bool:
     )
 
 
-def _absorb_trailing_strength(spans: list, text: str) -> list:
+def _absorb_trailing_strength(spans: list, text: str, doc) -> list:
     """Capture the dose/strength following a drug mention as metadata.
 
     'lisinopril/HCTZ' + '20' + '12.5 mg' (three GLiNER spans) -> one span
@@ -957,11 +663,10 @@ def _absorb_trailing_strength(spans: list, text: str) -> list:
         j = i + 1
         while j < len(spans):
             nxt = spans[j]
-            gap = text[end:nxt.span_start]
             if (
                 _is_value_like_span(nxt)
                 and 0 < nxt.span_start - end <= 4
-                and re.fullmatch(r"[\s./-]*", gap)
+                and absorb_sep_gap(doc, end, nxt.span_start)
             ):
                 end = nxt.span_end
                 j += 1
@@ -996,7 +701,7 @@ def _absorb_trailing_strength(spans: list, text: str) -> list:
     return out
 
 
-def _stitch_gated_list_pairs(spans: list, text: str) -> list:
+def _stitch_gated_list_pairs(spans: list, text: str, doc) -> list:
     """Corroboration-gated join across ',' / 'and' (2026-11-09 design).
 
     A list separator may join two drug fragments ONLY when the merged
@@ -1020,7 +725,7 @@ def _stitch_gated_list_pairs(spans: list, text: str) -> list:
             and span.status == "affirmed"
             and prev.section == span.section
             and 0 < span.span_start - prev.span_end <= 8
-            and _LIST_GAP_RE.match(text[prev.span_end:span.span_start])
+            and list_gap(doc, prev.span_end, span.span_start)
             and _strength_components(span.strength) == 2
             and prev.strength is None
         ):
@@ -1033,12 +738,16 @@ def _stitch_gated_list_pairs(spans: list, text: str) -> list:
             prev.strength = span.strength
             prev.composed_strict = True
             prev.ner_confidence = max(prev.ner_confidence, span.ner_confidence)
+            # NLP-time precomputed fields are stale for the merged text —
+            # drop them so resolve falls back to the mention-text helpers.
+            prev.search_variants = None
+            prev.conjunction_parts = None
             continue
         out.append(span)
     return out
 
 
-def _stitch_drug_fragments(spans: list, text: str) -> list:
+def _stitch_drug_fragments(spans: list, text: str, doc) -> list:
     """Merge adjacent drug-label fragments separated only by separators.
 
     'lisinopril' + '/' + 'HCTZ' (two GLiNER spans) becomes one span
@@ -1054,7 +763,6 @@ def _stitch_drug_fragments(spans: list, text: str) -> list:
         if prev is None:
             out.append(span)
             continue
-        gap = text[prev.span_end:span.span_start]
         prev_drug = prev.entity_type in _DRUG_NER_LABELS
         span_drug = span.entity_type in _DRUG_NER_LABELS
         prev_mis = prev.entity_type in _MISLABELED_DRUG_LABELS
@@ -1062,9 +770,9 @@ def _stitch_drug_fragments(spans: list, text: str) -> list:
         eligible = (
             (prev_drug and span_drug)
             # a mislabeled fragment may only join through a bare '/'
-            or (prev_drug and span_mis and _STITCH_SLASH_GAP_RE.match(gap))
-            or (prev_mis and span_drug and _STITCH_SLASH_GAP_RE.match(gap))
-            or (prev_mis and span_mis and _STITCH_SLASH_GAP_RE.match(gap))
+            or (prev_drug and span_mis and slash_gap(doc, prev.span_end, span.span_start))
+            or (prev_mis and span_drug and slash_gap(doc, prev.span_end, span.span_start))
+            or (prev_mis and span_mis and slash_gap(doc, prev.span_end, span.span_start))
         )
         if (
             eligible
@@ -1072,7 +780,7 @@ def _stitch_drug_fragments(spans: list, text: str) -> list:
             and span.status == "affirmed"
             and prev.section == span.section
             and 0 < span.span_start - prev.span_end <= 8
-            and _STITCH_GAP_RE.match(gap)
+            and stitch_gap(doc, prev.span_end, span.span_start)
         ):
             # CR-302 (focused review, now measured live): a stitched span
             # MUST carry composed_from — otherwise the resolver treats it
@@ -1089,6 +797,10 @@ def _stitch_drug_fragments(spans: list, text: str) -> list:
             prev.span_end = span.span_end
             prev.strength = prev.strength or span.strength
             prev.ner_confidence = max(prev.ner_confidence, span.ner_confidence)
+            # NLP-time precomputed fields are stale for the merged text —
+            # drop them so resolve falls back to the mention-text helpers.
+            prev.search_variants = None
+            prev.conjunction_parts = None
             continue
         out.append(span)
     return out
@@ -1100,12 +812,10 @@ def _stitch_drug_fragments(spans: list, text: str) -> list:
 # search, and search on the head noun alone is what produced the inverted
 # 'CBC' -> 'Hemogram ... WITHOUT Differential' answer.
 #
-# Linkers only: '/', '-', whitespace, parentheses, with/without/w-of/of.
+# Linkers only: '/', '-', whitespace, parentheses, with/without/w-of/of
+# — classified by extraction_cues.compose_gap since AMUX-102 stage 2.
 # Comma and 'and' are NEVER linkers: 'metformin, glipizide, and insulin' is a
 # co-prescription list and must stay three mentions (measured false merge).
-_COMPOSE_GAP_RE = re.compile(
-    r"^\s*(?:(?:with|without|w/|w/o|of)\s*|[/\-()]\s*|\s+)*$", re.IGNORECASE
-)
 _MAX_COMPOSE_GAP = 18  # chars between fragments; longer gaps are separate mentions
 
 # Fragments that never compose: values, units, dosing, frequency, note verbs.
@@ -1147,13 +857,8 @@ def _labels_composable(left: str, right: str) -> bool:
     return False
 _TOKEN_RE = re.compile(r"[a-z0-9]+")
 
-
-_ASSERTION_FRAGMENT_RE = re.compile(
-    r"^(?:ruled?\s+out|rules?\s+out|excluded?|not\s+seen|not\s+appreciated"
-    r"|negative(?:\s+for)?|denies?|denied|free\s+of|no\s+evidence(?:\s+of)?"
-    r"|cannot|suspect(?:ed)?|possible|possibly|likely)\b",
-    re.IGNORECASE,
-)
+# The assertion-fragment and fused-value validators are mention-text
+# regexes relocated to extraction_cues (AMUX-102 stage 2, design F5).
 
 
 def _is_assertion_fragment(text: str) -> bool:
@@ -1164,16 +869,6 @@ def _is_assertion_fragment(text: str) -> bool:
     unresolvable span (2026-11-07 port regression).
     """
     return bool(_ASSERTION_FRAGMENT_RE.match(text.strip()))
-
-
-# Fused dose/value tokens ('500mg', '7.2%', '120/80') survive _TOKEN_RE as
-# ONE alnum token, so isdigit()/set membership never classify them —
-# measured regression (ts99): 'metformin' + '500mg' composed into
-# 'metformin 500mg' and resolved to the glyburide/metformin combination
-# anchor instead of plain metformin.
-_FUSED_VALUE_TOKEN_RE = re.compile(
-    r"^\d+(?:\.\d+)?(?:[a-z]+(?:/[a-z]+)?|%)$", re.IGNORECASE
-)
 
 
 def _is_neutral_fragment(text: str) -> bool:
@@ -1189,7 +884,7 @@ def _is_neutral_fragment(text: str) -> bool:
     )
 
 
-def _compose_compound_spans(spans: list, text: str) -> list:
+def _compose_compound_spans(spans: list, text: str, doc) -> list:
     """Merge adjacent same-label spans separated by linker-only gaps.
 
     'CBC' + 'with differential' -> 'CBC with differential' (the phrase that
@@ -1207,14 +902,13 @@ def _compose_compound_spans(spans: list, text: str) -> list:
         if prev is None:
             out.append(span)
             continue
-        gap = text[prev.span_end:span.span_start]
         if not (
             prev.status == "affirmed"
             and span.status == "affirmed"
             and prev.section == span.section
             and _labels_composable(prev.entity_type, span.entity_type)
             and 0 < span.span_start - prev.span_end <= _MAX_COMPOSE_GAP
-            and _COMPOSE_GAP_RE.match(gap)
+            and compose_gap(doc, prev.span_end, span.span_start)
             and not _is_neutral_fragment(prev.text)
             and not _is_neutral_fragment(span.text)
             and not _is_assertion_fragment(prev.text)
@@ -1228,6 +922,10 @@ def _compose_compound_spans(spans: list, text: str) -> list:
         prev.span_end = span.span_end
         prev.ner_confidence = max(prev.ner_confidence, span.ner_confidence)
         prev.composed_from = fragments
+        # NLP-time precomputed fields are stale for the merged text —
+        # drop them so resolve falls back to the mention-text helpers.
+        prev.search_variants = None
+        prev.conjunction_parts = None
         continue
     return out
 
@@ -1313,87 +1011,10 @@ def _token_covered(token: str, display_tokens: set[str]) -> bool:
     )
 
 
-def _detect_inline_trigger(entity_text: str) -> tuple[str, str]:
-    """Check if entity text starts with a negation/uncertainty/historical trigger.
-
-    Returns (cleaned_text, status). If no trigger found, returns (text, "affirmed").
-    """
-    lower = entity_text.lower().strip()
-    for pattern, status in _NEGATION_TRIGGERS:
-        match = re.match(pattern, lower)
-        if match:
-            # Strip the trigger from the entity text
-            cleaned = entity_text[match.end():].strip()
-            if cleaned and len(cleaned) >= 2:
-                return cleaned, status
-    # QC-188: post-entity negation ("breast cancer ruled out") — GLiNER
-    # includes the trailing trigger in the span.
-    post = _POST_ENTITY_NEGATION_RE.search(lower)
-    if post:
-        cleaned = entity_text[:post.start()].strip()
-        if cleaned and len(cleaned) >= 2:
-            return cleaned, "negated"
-    return entity_text, "affirmed"
-
-
-def _is_false_positive(text: str) -> bool:
-    """Check if an entity text is a common non-medical word."""
-    lower = text.lower().strip()
-    if lower in _FALSE_POSITIVE_WORDS:
-        return True
-    # QC-160: 'Pt' (patient abbreviation) and staging fragments ('stage 2',
-    # 'stage 3') leak into affirmed output and resolve to LOINC codes.
-    if lower == "pt":
-        return True
-    if re.fullmatch(r"stage\s+\d+(?:[a-d])?", lower):
-        return True
-    # Filter single-character spans (bullet chars, punctuation, etc.)
-    if len(lower) <= 1:
-        return True
-    # Abbreviation/code/markup stoplist (2026-11-07 adversarial battery):
-    # non-clinical shorthand resolved to confident wrong answers
-    # ('NPO' -> Narcissistic Personality Disorder, 'HEDIS' -> hypermobile
-    # EDS, 'MD' -> Multicore Myopathy, '<b>' -> 'B').
-    if lower in _ABBREVIATION_STOPLIST:
-        return True
-    if lower in _BOILERPLATE_PHRASES:
-        return True
-    if _CODE_PATTERN_RE.fullmatch(lower):
-        return True
-    if re.search(r"[<>{}]|&[a-z]+;", lower):
-        return True
-    return False
-
-
-_ABBREVIATION_STOPLIST = frozenset({
-    "npo", "nkda", "nka", "md", "hedis", "cms", "fda", "cdc",
-    "icd", "icd-10", "icd10", "cpt", "loinc", "ndc", "drg", "snomed",
-    "umls", "rxnorm", "hcpcs",
-    # Bare units/dosing/frequency tokens (2026-11-07 verification): a
-    # lone 'mg' resolved to Myasthenia Gravis in 'lisinopril/HCTZ
-    # 20/12.5 mg daily'. A unit is never a concept — drop it.
-    "mg", "mcg", "ug", "ng", "g", "kg", "ml", "cc", "dl", "l",
-    "iu", "meq", "unit", "units", "mmol", "mol", "percent", "%",
-    "tab", "tabs", "tablet", "tablets", "cap", "caps", "capsule",
-    "capsules", "pill", "pills", "drop", "drops", "puff", "puffs",
-    "po", "iv", "im", "sq", "prn", "bid", "tid", "qid", "qd", "qhs",
-    "hs", "q6h", "q8h", "q12h", "q24h", "daily", "nightly", "weekly",
-})
-# Clinical boilerplate phrases (2026-11-11 assertion-scope battery,
-# as-status-01/02): 'no acute distress' is the exam-finding template —
-# the phrase 'acute distress' in a span of its own is boilerplate, not a
-# finding ('in acute distress' phrasing is rare and the measured battery
-# noise is 2/2).
-_BOILERPLATE_PHRASES = frozenset({"acute distress"})
-
-# Bare billing/terminology codes that leak as spans ('99213' CPT,
-# 'E11.9' ICD, '4548-4' LOINC) carry no clinical surface text to
-# resolve. Deliberately NOT matching short alnum clinical tokens:
-# 'b12'/'a1c' stay extractable (the alnum ICD form requires a decimal).
-_CODE_PATTERN_RE = re.compile(
-    r"(?:[a-z]\d{2}\.\d+|\d{4,5}-\d|\d{5}|\d{1,3}\.\d+)",
-    re.IGNORECASE,
-)
+# Inline-trigger detection (_detect_inline_trigger) is token-based since
+# AMUX-102 stage 2: Mt4dsCueAnnotator.inline_trigger (design F3). The
+# false-positive stoplists and validators (_is_false_positive) live in
+# extraction_cues (design F7) and are re-exported above.
 
 
 @dataclass
@@ -1428,6 +1049,18 @@ class FilteredSpan:
     # so 'aspirin and clopidogrel' can never land on aspirin/caffeine just
     # because it also has two members.
     composed_strict: bool = False
+    # Fallback query ladder computed at NLP time from the entity's token
+    # slice (design F6): [value-stripped, form-noun-stripped,
+    # leading-qualifier-stripped], non-empty and != the full text. The
+    # FULL mention is NOT in the list — resolve paths query span.text
+    # first, then these variants. None on manually constructed spans
+    # (resolve then uses the legacy mention-text fallbacks). Internal
+    # only — omitted from to_dict.
+    search_variants: list[str] | None = None
+    # Conjunction-split parts computed at NLP time from the entity's
+    # token slice (design F8; [] = no valid split). None on manually
+    # constructed spans. Internal only — omitted from to_dict.
+    conjunction_parts: list[str] | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -1568,6 +1201,10 @@ class NlpPipeline:
         # (ConText-only arbitration still works).
         self._parser_nlp = None
         self._parser_loaded = False
+        # spaCy-native cue/guard component (AMUX-102): token-indexed
+        # pre/post-span cue annotations, built once the medspaCy
+        # pipeline exists (_ensure_loaded).
+        self._cue_annotator = None
 
     def _ensure_loaded(self):
         if self._nlp is not None:
@@ -1638,6 +1275,7 @@ class NlpPipeline:
         import medspacy
         self._nlp = medspacy.load(medspacy_disable=["medspacy_target_matcher"])
         _register_context_arbiter(self._nlp)
+        self._cue_annotator = Mt4dsCueAnnotator(self._nlp)
 
         # Parser for the three-signal arbiter (Signals 1-2: head noun,
         # unit type). Separate en_core_web_sm model, not a component of
@@ -1830,6 +1468,11 @@ class NlpPipeline:
                 context = self._nlp.get_pipe("medspacy_context")
                 context(doc)
 
+        # Cue/guard annotations (AMUX-102): token-indexed pre/post-span
+        # cue matches + clause/pediatric guard tokens, computed once per
+        # doc right after the ConText re-run.
+        self._cue_annotator(doc)
+
         # Step 4: Build FilteredSpan results with ConText annotations.
         # Materialize noun chunks ONCE per doc: doc.noun_chunks regenerates
         # the syntax iterator on every access, so per-span iteration made
@@ -1849,7 +1492,10 @@ class NlpPipeline:
                 continue
 
             # Check for negation/uncertainty/historical triggers embedded in the entity text
-            cleaned_text, inline_status = _detect_inline_trigger(ent_text)
+            # (token-based since AMUX-102 stage 2; still computed from the
+            # RAW char offsets, before any overlap filtering, like the old
+            # raw-slice helper).
+            cleaned_text, inline_status = self._cue_annotator.inline_trigger(doc, start, end)
             # ConText annotations from the overlapping spaCy entity: ConText
             # status (negation/uncertainty/...) plus the MEASUREMENT/
             # ADMINISTRATION arbitration result for lab-vs-med resolution.
@@ -1888,7 +1534,7 @@ class NlpPipeline:
                         # kinship cue is wrong when an age descriptor
                         # governs the finding; the span stays affirmed.
                         context_status = (
-                            None if _pediatric_subject(text, start, end) else "family"
+                            None if self._cue_annotator.pediatric_subject(doc, start, end) else "family"
                         )
                     elif hypothetical:
                         context_status = "hypothetical"
@@ -1910,14 +1556,14 @@ class NlpPipeline:
                 # span's own clause carries a negation cue.
                 if (
                     status == "negated"
-                    and not _clause_negation_supported(text, start, end)
+                    and not self._cue_annotator.clause_negation_supported(doc, start, end)
                 ):
                     status = "affirmed"
                 # Pre-span cues (2026-11-07 edge corpus). PSEUDONEGATION
                 # overrides even a ConText negation ('cannot rule out X' is
                 # uncertain, never negated); the weaker cues only lift an
                 # otherwise-affirmed span.
-                pre_cue = _pre_span_cue(text, start, doc)
+                pre_cue = self._cue_annotator.pre_span_cue(doc, start)
                 if pre_cue == "pseudo_negation" and status in ("affirmed", "negated"):
                     status = "uncertain"
                 elif status == "affirmed" and pre_cue:
@@ -1925,11 +1571,39 @@ class NlpPipeline:
                 # Sentence-local post-span cues (2026-11-07): negation and
                 # uncertainty may follow the span, parenthetical or bare.
                 if status == "affirmed":
-                    if _post_span_negation_cue(text, end, doc, span_start=start):
+                    if self._cue_annotator.post_span_negation_cue(doc, end, start):
                         status = "negated"
-                    elif _post_span_uncertainty_cue(text, end, doc):
+                    elif self._cue_annotator.post_span_uncertainty_cue(doc, end):
                         status = "uncertain"
                 display_text = ent_text
+
+            # AMUX-102 stage 3 (design F6/F8): precompute the mention-only
+            # resolve decisions at NLP time, from the doc's token slice for
+            # the DISPLAY text (an inline trigger may have cleaned the raw
+            # slice; the cleaned text is a contiguous sub-slice).
+            cstart, cend = start, end
+            if display_text != ent_text:
+                off = (
+                    ent_text.rfind(display_text)
+                    if ent_text.endswith(display_text)
+                    else ent_text.find(display_text)
+                )
+                if off >= 0:
+                    cstart, cend = start + off, start + off + len(display_text)
+            ent_tokens = [
+                t for t in doc
+                if not t.is_space
+                and t.idx >= cstart
+                and t.idx + len(t.text) <= cend
+            ]
+            if ent_tokens:
+                search_variants = self._cue_annotator.search_variant_ladder(ent_tokens)
+                conjunction_parts = self._cue_annotator.conjunction_split(ent_tokens)
+            else:
+                # token alignment failed — leave unset so resolve falls
+                # back to the legacy mention-text helpers (exact parity).
+                search_variants = None
+                conjunction_parts = None
 
             spans.append(FilteredSpan(
                 text=display_text,
@@ -1939,11 +1613,15 @@ class NlpPipeline:
                 span_end=end,
                 ner_confidence=score,
                 context_categories=context_categories,
+                search_variants=search_variants,
+                conjunction_parts=conjunction_parts,
             ))
 
-        spans = _absorb_trailing_strength(spans, text)
-        spans = _stitch_gated_list_pairs(spans, text)
-        return _compose_compound_spans(_stitch_drug_fragments(spans, text), text)
+        spans = _absorb_trailing_strength(spans, text, doc)
+        spans = _stitch_gated_list_pairs(spans, text, doc)
+        return _compose_compound_spans(
+            _stitch_drug_fragments(spans, text, doc), text, doc
+        )
 
 
 # Inline-marker field vocabulary for format="annotated". source_code is the
@@ -2795,12 +2473,9 @@ class ExtractionService:
                     continue
                 # 2026-11-09: strength-stripped fallback, then qualifier
                 # variant — only after the primary (full mention) failed.
-                stripped = _strip_trailing_values(span.text)
-                for fallback_query in (
-                    stripped,
-                    _trailing_form_fallback(span.text),
-                    _leading_qualifier_fallback(span.text),
-                ):
+                # AMUX-102 stage 3: the ladder is precomputed at NLP time
+                # for pipeline spans (span.search_variants).
+                for fallback_query in _span_fallback_queries(span):
                     if not fallback_query or fallback_query == span.text:
                         continue
                     matched = _first_matching_concept(
@@ -2814,9 +2489,24 @@ class ExtractionService:
                 if matched is not None:
                     continue
 
-                # Conjunction split on failure (individual search for split parts)
-                search_text = _strip_trailing_values(span.text)
-                parts = _split_on_conjunction(search_text)
+                # Conjunction split on failure (individual search for split parts).
+                # This site splits the VALUE-STRIPPED text (AMUX-102 stage
+                # 3: the precomputed conjunction_parts come from the FULL
+                # token slice, so they are only consulted when the
+                # value-strip is a no-op; otherwise the legacy mention-text
+                # fallback splits the stripped string).
+                if span.search_variants is not None:
+                    search_text = (
+                        span.search_variants[0] if span.search_variants else span.text
+                    )
+                    parts = (
+                        span.conjunction_parts
+                        if search_text == span.text
+                        else _split_on_conjunction(search_text)
+                    )
+                else:
+                    search_text = _strip_trailing_values(span.text)
+                    parts = _split_on_conjunction(search_text)
                 if parts:
                     # Same constrain-then-fallback per split part.
                     rt_attempts: list[str | list[str] | None]
@@ -2952,16 +2642,13 @@ class ExtractionService:
             # is the primary query in every mode — lexical product rows and
             # canonical/semantic strength aliases key on it; the stripped
             # form is a fallback, as is the leading-qualifier variant.
-            stripped = _strip_trailing_values(span.text)
             search_texts = [span.text.strip()]
-            if stripped and stripped != search_texts[0]:
-                search_texts.append(stripped)
-            form_variant = _trailing_form_fallback(span.text)
-            if form_variant and form_variant not in search_texts:
-                search_texts.append(form_variant)
-            variant = _leading_qualifier_fallback(span.text)
-            if variant and variant not in search_texts:
-                search_texts.append(variant)
+            # AMUX-102 stage 3: fallback ladder precomputed at NLP time
+            # for pipeline spans (span.search_variants) — value-stripped,
+            # form-noun, leading-qualifier variants in resolve order.
+            for variant in _span_fallback_queries(span):
+                if variant and variant not in search_texts:
+                    search_texts.append(variant)
             search_text = search_texts[0]
             ss = _LABEL_TO_SOURCES.get(span.entity_type.lower())
             ss_key = ",".join(ss) if ss else ""
@@ -3007,7 +2694,14 @@ class ExtractionService:
                     break
 
             if not resolved:
-                parts = _split_on_conjunction(search_text)
+                # This site splits the FULL mention text — the precomputed
+                # conjunction_parts (full token slice) apply directly;
+                # manual spans fall back to the mention-text helper.
+                parts = (
+                    span.conjunction_parts
+                    if span.conjunction_parts is not None
+                    else _split_on_conjunction(search_text)
+                )
                 if parts:
                     for part in parts:
                         part_resolved = False
@@ -3141,12 +2835,9 @@ class ExtractionService:
                     continue
                 # 2026-11-09: strength-stripped fallback, then qualifier
                 # variant — only after the primary (full mention) failed.
-                stripped = _strip_trailing_values(span.text)
-                for fallback_query in (
-                    stripped,
-                    _trailing_form_fallback(span.text),
-                    _leading_qualifier_fallback(span.text),
-                ):
+                # AMUX-102 stage 3: the ladder is precomputed at NLP time
+                # for pipeline spans (span.search_variants).
+                for fallback_query in _span_fallback_queries(span):
                     if not fallback_query or fallback_query == t:
                         continue
                     matched = _first_matching_concept(
@@ -3159,7 +2850,14 @@ class ExtractionService:
                         break
                 if matched is not None:
                     continue
-                parts = _split_on_conjunction(t)
+                # Full-mention conjunction split — the precomputed
+                # conjunction_parts (full token slice) apply directly;
+                # manual spans fall back to the mention-text helper.
+                parts = (
+                    span.conjunction_parts
+                    if span.conjunction_parts is not None
+                    else _split_on_conjunction(t)
+                )
                 if parts:
                     rt_attempts: list[str | list[str] | None]
                     if result_types is not None:
@@ -3462,9 +3160,18 @@ class ExtractionService:
             result_parts.append(text[last_pos:span.span_start])
             entity_text = text[span.span_start:span.span_end]
 
-            # Look up resolved concept (may also match conjunction-split parts)
-            concept = (concept_by_text.get(span.text.lower())
-                       or concept_by_text.get(_strip_trailing_values(span.text).lower()))
+            # Look up resolved concept (may also match conjunction-split parts).
+            # AMUX-102 stage 3: the value-stripped variant is precomputed
+            # for pipeline spans (span.search_variants[0]); composed spans
+            # and manual spans use the legacy mention-text fallback.
+            if span.search_variants:
+                concept = concept_by_text.get(span.text.lower()) or concept_by_text.get(
+                    span.search_variants[0].lower()
+                )
+            else:
+                concept = concept_by_text.get(span.text.lower()) or concept_by_text.get(
+                    _strip_trailing_values(span.text).lower()
+                )
 
             # Determine the annotation label: prefer result_type (corrected),
             # fall back to ner_label if unresolved.
