@@ -295,9 +295,6 @@ def build_parser() -> argparse.ArgumentParser:
     # grades) and default to the env-configurable service defaults rather
     # than hardcoded hybrid/certain.
     from medterm4ds.services.extraction import (
-        DEFAULT_MIN_GRADE as _EXTRACT_DEFAULT_MIN_GRADE,
-    )
-    from medterm4ds.services.extraction import (
         DEFAULT_SEARCH_MODE as _EXTRACT_DEFAULT_MODE,
     )
     extract.add_argument(
@@ -305,10 +302,20 @@ def build_parser() -> argparse.ArgumentParser:
         choices=["lexical", "semantic", "hybrid", "canonical"],
         help="Search mode used to resolve extracted spans to codes (default: canonical).",
     )
+    # EV07-EXPLORER-1 (MEDIUM — EV05-EXPLORER-1 carry-in): default None so
+    # the SERVICE resolves the mode-dependent floor (canonical: probable —
+    # anchors grade exact/probable at best, so an explicit 'certain' wire
+    # default silently returned exact-only; legacy modes: certain). The
+    # MEDTERM4DS_EXTRACTION_MIN_GRADE override is honored call-time by the
+    # service. Same deferral FHIR gained at fhir_api.py (EV05 fix); the
+    # module constant DEFAULT_MIN_GRADE stays the LEGACY-mode default and
+    # must not be wired as a cross-mode CLI default.
     extract.add_argument(
-        "--min-grade", default=_EXTRACT_DEFAULT_MIN_GRADE,
+        "--min-grade", default=None,
         choices=["certain", "exact", "probable", "possible", "broader"],
-        help="Minimum ConText certainty grade to keep (default: certain).",
+        help="Minimum ConText certainty grade to keep. Default: defer to the "
+             "service (probable in canonical mode, certain in legacy modes; "
+             "$MEDTERM4DS_EXTRACTION_MIN_GRADE overrides both).",
     )
     # QA-005: annotation_fields existed only on the Python API — wire
     # surfaces either ignored it (FHIR, silently) or rejected it (MCP).
@@ -1066,7 +1073,9 @@ def _add_data_verify_args(parser: argparse.ArgumentParser) -> None:
     )
 
 
-def _validate_cli_max_depth(args: argparse.Namespace, *, warn_on_zero: bool = False) -> None:
+def _validate_cli_max_depth(
+    args: argparse.Namespace, *, warn_on_zero: bool = False, min_depth: int = 0
+) -> None:
     # QC-079/QC-083/QC-084/QC-085 (MEDIUM): pre-fix, ``--max-depth -5`` on
     # ``conceptmap mapping`` raised a raw Python traceback (ValueError from
     # services/mapping.py:36), while ``conceptmap patient-friendly`` silently
@@ -1078,6 +1087,15 @@ def _validate_cli_max_depth(args: argparse.Namespace, *, warn_on_zero: bool = Fa
     # max_depth=0 silently skips the broader walk. The mapping surface uses
     # depth=0 as the canonical "no ancestor walk" default — no warning
     # needed.
+    #
+    # EV07-SKEPTIC-1 (MEDIUM): ``min_depth=1`` for the hierarchy surfaces.
+    # get_code_relations requires max_depth >= 1 (services/hierarchy.py
+    # "max_depth must be at least 1"), but this guard only rejected
+    # negatives — ``bulk hierarchy --max-depth 0`` passed validation, opened
+    # the DB, and raised the service ValueError inside
+    # write_checkpointed_rows AFTER a 0-byte output artifact existed (the
+    # QC-377 validate-before-filesystem family). Patient-friendly keeps 0
+    # ("exact/same-CUI only"); mapping keeps 0 ("no ancestor walk").
     max_depth = getattr(args, "max_depth", None)
     if max_depth is None:
         return
@@ -1085,8 +1103,13 @@ def _validate_cli_max_depth(args: argparse.Namespace, *, warn_on_zero: bool = Fa
         raise SystemExit(
             f"Error: --max-depth must be an integer, got {type(max_depth).__name__}"
         )
-    if max_depth < 0:
-        raise SystemExit("Error: --max-depth must be non-negative")
+    if max_depth < min_depth:
+        if min_depth <= 0:
+            raise SystemExit("Error: --max-depth must be non-negative")
+        raise SystemExit(
+            f"Error: max_depth must be at least {min_depth} "
+            f"for this command (got {max_depth})"
+        )
     if max_depth == 0 and warn_on_zero:
         # patient_friendly surface: max_depth=0 silently skips the broader
         # walk. The service now logs a WARNING, but for the CLI bulk path
@@ -1380,6 +1403,10 @@ def run_bulk_mapping(args: argparse.Namespace) -> int:
 
 
 def run_bulk_hierarchy(args: argparse.Namespace) -> int:
+    # EV07-SKEPTIC-1: hierarchy requires max_depth >= 1 — validate BEFORE
+    # _run_bulk_record_export opens the DB / creates output artifacts (the
+    # sibling single-shot run_hierarchy validates pre-DB the same way).
+    _validate_cli_max_depth(args, min_depth=1)
     sources = _normalize_sources_or_exit(args.sources)
     return _run_bulk_record_export(
         args,
@@ -1532,6 +1559,11 @@ def run_hierarchy(args: argparse.Namespace) -> int:
         import duckdb
     except ImportError as exc:
         raise SystemExit("DuckDB is required. Install medterm4ds[duckdb].") from exc
+
+    # EV07-SKEPTIC-1: validate max_depth (>= 1 on this surface) BEFORE the
+    # DB connection so the QC-049/QC-059 post-connect ValueError wrapper is
+    # a belt-and-suspenders backstop, not the only guard.
+    _validate_cli_max_depth(args, min_depth=1)
 
     db_path = _require_db_file(Path(args.db))
 
@@ -2181,9 +2213,14 @@ def run_athena_hierarchy(args: argparse.Namespace) -> int:
     return 0
 
 
+@_data_cli_errors
 def run_data_ingest_athena(args: argparse.Namespace) -> int:
     """Athena ingestion CLI (design note §1): licensing notice first,
     then the staging-swap load with a provenance block."""
+    # EV07-HISTORIAN-1 (MEDIUM): this handler was added after the QC-445
+    # data-family error-envelope sweep and never got @_data_cli_errors —
+    # a missing CONCEPT.csv dumped a raw FileNotFoundError traceback, and
+    # the service's RuntimeError paths (768/779) escaped uncaught too.
     import duckdb
 
     from medterm4ds.services.athena import (
@@ -2215,7 +2252,11 @@ def run_data_ingest_athena(args: argparse.Namespace) -> int:
     # AF3 fix (TS-83): unknown vocabularies were silently dropped —
     # loud per the HQ1 doctrine. The VOCABULARY.csv from the download
     # tells us what exists; reopen read-only to check.
-    con = duckdb.connect(args.db, read_only=True)
+    # EV07-HISTORIAN-1 companion: route through _connect_read_only so the
+    # QC-360 progress-bar guard applies (this handler prints JSON to
+    # stdout; a bare read-only connect could emit a terminal progress bar
+    # that corrupts piped output).
+    con = _connect_read_only(Path(args.db))
     try:
         known = {
             r[0]
