@@ -100,7 +100,11 @@ class McpRuntime:
     def open(self) -> None:
         if self.ready:
             return
-        if not self.settings.db_path.exists():
+        # EV08-SKEPTIC-2 (LOW): ``exists()`` passes for directories — a
+        # directory (or any non-regular path) as MEDTERM4DS_DB leaked a raw
+        # duckdb.IOException from connect(). Named remedy instead (BL2/AF2
+        # doctrine), mirroring the CLI's _require_db_file.
+        if not self.settings.db_path.is_file():
             raise RuntimeError(f"Database not found: {self.settings.db_path}")
         # AM1 fix (TS-100): an athena-ONLY database (no UMLS
         # mrconso) died in prepare_cache with a raw
@@ -630,9 +634,11 @@ class McpRuntime:
         # the service's generic "has no codes in this database" message
         # instead of the actionable SAB-form diagnostic.
         _validate_source_sab(source)
-        if codes is None or not isinstance(codes, Sequence):
+        # EV08-SKEPTIC-1: str/bytes are Sequences — reject the bare-string
+        # form before it silently splits into per-character CodeRefs.
+        if codes is None or isinstance(codes, (str, bytes)) or not isinstance(codes, Sequence):
             raise TypeError(
-                f"codes must be a sequence, got {type(codes).__name__}"
+                f"codes must be a sequence of strings, got {type(codes).__name__}"
             )
         # EV08-QA-06 (LOW, run-2): codes=[] returned a success-shaped
         # zero-rule result while every other batch tool raises
@@ -1146,7 +1152,7 @@ def create_mcp_server(
         - ner_labels: Override default GLiNER labels (disease, medication, symptom, procedure, lab test, vital).
         - result_types: Filter resolved concepts by result type (condition, medication, drug_class, lab, vital, procedure, vaccine, symptom).
         - mode: Search mode for code resolution (lexical, semantic, hybrid, canonical). Default: canonical (env-configurable via MEDTERM4DS_EXTRACTION_MODE).
-        - min_grade: Minimum match grade (certain, exact, probable, possible, broader). Default: certain (env-configurable via MEDTERM4DS_EXTRACTION_MIN_GRADE).
+        - min_grade: Minimum match grade (certain, exact, probable, possible, broader). Default: service-resolved — 'probable' in canonical mode, 'certain' in legacy modes (MEDTERM4DS_EXTRACTION_MIN_GRADE overrides both, read at call time).
         - annotation_fields: Fields rendered in each annotated inline marker (format='annotated' only): text, name, type, source_code (SOURCE:code), canonical_id, status. Default: text,type; unresolved fields render as UNKNOWN.
         - include_negated: Include negated mentions (default: excluded).
         - include_uncertain: Include uncertain mentions (default: excluded).
@@ -1460,8 +1466,14 @@ def build_code_refs(codes: Sequence[str], sources: Sequence[str]) -> list[CodeRe
     # ``{'results': []}`` while ``sources=[]`` raised ValueError —
     # asymmetric. Now both empty-codes and empty-sources raise clean
     # ValueErrors. Sibling of EC-02 FIX-003/004 (mapping validation).
-    if codes is None or not isinstance(codes, Sequence):
-        raise TypeError(f"codes must be a sequence, got {type(codes).__name__}")
+    # EV08-SKEPTIC-1 (MEDIUM): a bare string IS a Sequence, so
+    # ``codes="E11.9"`` silently iterated per-character and constructed
+    # one CodeRef per char ('E', '1', '1', ...) — a silent-wrong-answer
+    # batch. Reject str/bytes explicitly before the Sequence check.
+    if codes is None or isinstance(codes, (str, bytes)) or not isinstance(codes, Sequence):
+        raise TypeError(
+            f"codes must be a sequence of strings, got {type(codes).__name__}"
+        )
     if not codes:
         raise ValueError("codes must not be empty")
     if not sources:

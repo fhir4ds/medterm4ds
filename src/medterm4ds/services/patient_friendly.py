@@ -81,9 +81,22 @@ def get_patient_friendly_names(
     get_infos = getattr(engine, "get_code_infos", None)
     if get_infos is not None:
         try:
+            # EV04-HISTORIAN-1 (HIGH): the pre-check MUST run in the
+            # CALLER's resolve_mode. Pre-fix it always used the default
+            # active_only, so historical/resolve_current calls on
+            # obsolete codes were classified unknown and silently
+            # replaced with ''/'none' miss rows even though the engine
+            # resolves them (real-data repro: RxNorm 128793 Vicodin —
+            # engine answers 'Acetaminophen / Hydrocodone' via ingredient
+            # edges while the service returned a miss). The deferred
+            # QC-017 sibling from EC-01 (resolution-result-discarding),
+            # confirmed. active_only keeps the miss-row contract: an
+            # obsolete code is not an active code.
             known_mask = [
                 info is not None
-                for info in get_code_infos(effective, engine=engine)
+                for info in get_code_infos(
+                    effective, engine=engine, resolve_mode=resolve_mode
+                )
             ]
         except NotImplementedError:
             known_mask = None

@@ -107,7 +107,8 @@ def _bm25_index_available() -> bool:
     return d.exists() and any(d.glob("*_bm25.json"))
 
 class TestSB1UnknownParamsBothTransports:
-    """SB1 — $search accepts unknown params everywhere."""
+    """SB1 — GET half CLOSED (EV-05); $search POST body half CLOSED
+    (EV-05 body-name check; EV-10 HISTORIAN flipped s12)."""
 
     def test_s10_get_unknown_query_param(self, search_client):
         """EV-05 pin flip: _SEARCH_KNOWN_PARAMS landed — GET zzz=1 now
@@ -144,7 +145,13 @@ class TestSB1UnknownParamsBothTransports:
             ],
         }
         r = search_client.post("/fhir/CodeSystem/$search", json=body)
-        assert r.status_code == 200
+        # EV-05 pin flip (EV-10 HISTORIAN stale-pin sweep): the $search
+        # POST body-name check landed with _SEARCH_KNOWN_PARAMS
+        # (EV05-SKEPTIC-1) — FA4's $search body half is closed.
+        assert r.status_code == 400
+        assert r.headers["content-type"].startswith("application/fhir+json")
+        assert r.json()["resourceType"] == "OperationOutcome"
+        assert "zzz" in r.json()["issue"][0]["diagnostics"]
 
     def test_s13_sibling_ops_reject_control(self, search_client):
         """Premise control: the family exists — $lookup 400s the same
@@ -175,8 +182,10 @@ class TestSB2EngineNeverValidated:
         assert "engine" in r.json()["issue"][0]["diagnostics"]
 
     def test_s21_post_bogus_engine_200(self, search_client):
-        """POST body engine=bogus → 200 (NEW this iteration — XA1's
-        POST half). Flip when engine validates."""
+        """EV-05 pin flip (EV-10 HISTORIAN stale-pin sweep): POST body
+        engine=bogus now 400s — the $search POST body-name check landed
+        with _SEARCH_KNOWN_PARAMS (EV05-SKEPTIC-1); engine is not a
+        declared $search param, so the unguarded-enum 200 is gone."""
         body = {
             "resourceType": "Parameters",
             "parameter": [
@@ -185,7 +194,10 @@ class TestSB2EngineNeverValidated:
             ],
         }
         r = search_client.post("/fhir/CodeSystem/$search", json=body)
-        assert r.status_code == 200
+        assert r.status_code == 400
+        assert r.headers["content-type"].startswith("application/fhir+json")
+        assert r.json()["resourceType"] == "OperationOutcome"
+        assert "engine" in r.json()["issue"][0]["diagnostics"]
 
     def test_s22_searchmode_validates_control(self, search_client):
         """Control: the SIBLING param validates — searchMode=bogus

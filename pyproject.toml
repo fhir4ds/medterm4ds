@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "medterm4ds"
-version = "0.0.12"
+version = "0.0.13"
 description = "Medical terminology utilities for data science workflows"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -117,7 +117,6 @@ include = [
     "/docs",
     "/notebooks",
     "/pyproject.toml",
-    "/scripts",
     "/src",
     "/tests",
 ]

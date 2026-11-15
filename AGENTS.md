@@ -2,7 +2,7 @@
 
 Clinical terminology layer for the fhir4ds stack: lexical + semantic + canonical
 serving over UMLS-derived vocabularies, shipped on PyPI as `medterm4ds`
-(v0.0.12). Consumed by fhir4ds (pinned dep) and the canonical curation team.
+(v0.0.13). Consumed by fhir4ds (pinned dep) and the canonical curation team.
 
 ## Layout
 - `src/medterm4ds/` — the library (lexical/semantic/canonical serving, embedding
@@ -15,7 +15,7 @@ serving over UMLS-derived vocabularies, shipped on PyPI as `medterm4ds`
   duplicate GLiNER/HF-download storms — fleet rule, medterm4ds iter-107/110)
 
 ## Commands
-- Install: `pip install -e .` (or `pip install medterm4ds==0.0.12` for released)
+- Install: `pip install -e .` (or `pip install medterm4ds==0.0.13` for released)
 - Test: `pytest -x` (serial; see the one-gate rule)
 - Space build: `docker build -f deploy/hf-spaces/fhir-server/Dockerfile ...`
 - The AI loop advances via `fleet-loop-v2 status medterm4ds` / amux sends

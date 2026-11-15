@@ -32,9 +32,11 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
+from typing import TYPE_CHECKING
 
-from spacy.matcher import Matcher
-from spacy.tokens import Doc
+if TYPE_CHECKING:  # spacy stays a lazy, extraction-extra-only import (see
+    from spacy.matcher import Matcher  # _register_doc_extensions below)
+    from spacy.tokens import Doc
 
 # F6 — trailing-value run vocabulary (token equivalents of the legacy
 # _TRAILING_VALUE_RE; see Mt4dsCueAnnotator.strip_trailing_values).
@@ -67,9 +69,18 @@ _LEADING_QUALIFIER_PHRASES = frozenset({
 # number is a value, not a standalone query).
 _PURE_NUMBER_RE = re.compile(r"\d+(?:\.\d+)?")
 
-# Registered once at import (component may be constructed per pipeline).
-if not Doc.has_extension("mt4ds_cues"):
-    Doc.set_extension("mt4ds_cues", default=None)
+# Registered lazily (component may be constructed per pipeline). The
+# spacy import must stay OUT of module scope: this module's constants are
+# re-exported by services/extraction.py, which apps/cli.py (build_parser)
+# and apps/fhir_api.py import at module level — a module-level spacy
+# import here crashed the base install's `medterm4ds --version` and the
+# `[fhir]`-only install's create_fhir_app (EV09-EXPLORER-1). spacy is an
+# extraction-extra dependency (via medspacy), not a base dependency.
+def _register_doc_extensions() -> None:
+    from spacy.tokens import Doc
+
+    if not Doc.has_extension("mt4ds_cues"):
+        Doc.set_extension("mt4ds_cues", default=None)
 
 # Cue class labels (match the strings the old helpers returned).
 PSEUDO_NEGATION = "pseudo_negation"
@@ -187,6 +198,8 @@ class Mt4dsCueAnnotator:
     def _ensure_matcher(self) -> Matcher:
         """Build the Matcher on first use (the pipeline object may be a
         stand-in while NlpPipeline._ensure_loaded is still mocking loads)."""
+        from spacy.matcher import Matcher
+
         if self._matcher is None:
             self._matcher = Matcher(self._nlp.vocab)
             self._add_patterns()
@@ -233,6 +246,7 @@ class Mt4dsCueAnnotator:
     # Annotation
 
     def __call__(self, doc: Doc) -> Doc:
+        _register_doc_extensions()
         cues = CueAnnotations()
         matcher = self._ensure_matcher()
         for match_id, start, end in matcher(doc):
@@ -277,6 +291,7 @@ class Mt4dsCueAnnotator:
                     cues.pediatric_subject_tokens.add(i)
 
     def _cues_for(self, doc: Doc) -> CueAnnotations:
+        _register_doc_extensions()
         if doc._.mt4ds_cues is None:
             self(doc)
         return doc._.mt4ds_cues
@@ -688,8 +703,20 @@ class Mt4dsCueAnnotator:
         is preserved (all parts pure numbers -> no split). Returns [] when
         no valid split (pipeline spans store []; manual spans carry None)."""
         ns = cls._nonspace(tokens)
-        lows = [t.lower_ for t in ns]
-        n = len(ns)
+        # spaCy fuses a leading '/' into the following word after a space
+        # ('CBC /CMP' -> ['CBC', '/CMP']); split it back so the separator
+        # is seen — the legacy \\s*/\\s* mention regex split these shapes.
+        units: list[tuple[str, str]] = []  # (LOWER, join text)
+        for t in ns:
+            low = t.lower_
+            if len(low) > 1 and low[0] == "/":
+                units.append(("/", ""))
+                low = low[1:]
+                units.append((low, t.text[1:] + t.whitespace_))
+            else:
+                units.append((low, t.text_with_ws))
+        lows = [u[0] for u in units]
+        n = len(units)
 
         def _sep_len(i: int) -> int:
             # longest-first: the 3-token compound ('and / or') beats the
@@ -706,19 +733,22 @@ class Mt4dsCueAnnotator:
                 return 1
             return 0
 
+        def _join(a: int, b: int) -> str:
+            return "".join(u[1] for u in units[a:b]).strip()
+
         parts: list[str] = []
         seg_start = 0
         i = 0
         while i < n:
             length = _sep_len(i)
             if length and seg_start < i:
-                parts.append(cls._joined(ns[seg_start:i]))
+                parts.append(_join(seg_start, i))
                 seg_start = i + length
             elif length:
                 seg_start = i + length  # leading separator: empty segment
             i += length if length else 1
         if seg_start < n:
-            parts.append(cls._joined(ns[seg_start:]))
+            parts.append(_join(seg_start, n))
         if len(parts) <= 1:
             return []
         if all(_PURE_NUMBER_RE.fullmatch(p) for p in parts):
@@ -1083,8 +1113,17 @@ _TRAILING_VALUE_RE = re.compile(
 
 def mention_strip_trailing_values(text: str) -> str:
     """Legacy mention-text fallback for manually constructed spans —
-    pipeline spans carry precomputed search_variants."""
-    return _TRAILING_VALUE_RE.sub('', text).strip()
+    pipeline spans carry precomputed search_variants.
+
+    Parity with the token stripper (Mt4dsCueAnnotator.strip_trailing_values):
+    a comparator-headed all-value span ('high 80') stays whole — the
+    comparator word belongs to the value run, so the never-empty guard
+    fires. The bare regex would otherwise match only the trailing chain
+    (' 80') and leave the bare comparator 'high' as a junk query."""
+    stripped = _TRAILING_VALUE_RE.sub("", text).strip()
+    if stripped in _COMPARATOR_WORDS or stripped in ("+", "-"):
+        return text
+    return stripped
 
 
 _LEADING_QUALIFIER_RE = re.compile(

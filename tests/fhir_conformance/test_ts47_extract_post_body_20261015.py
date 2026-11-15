@@ -150,11 +150,12 @@ class TestW2WhitespacePipeline:
 
 
 class TestEX1PostBodyUnknownParam:
-    """EX1 — $extract POST body accepts unknown params."""
+    """EX1 — CLOSED (EV-05): $extract POST body rejects unknown params."""
 
     def test_ex10_post_body_zzz_200(self, extract_client):
-        """zzz parameter entry → 200 (SB1's body half at $extract).
-        Flip when _EXTRACT_KNOWN_PARAMS body check lands."""
+        """EV-05 pin flip (EV-10 HISTORIAN stale-pin sweep): zzz
+        parameter entry → 400 — the _EXTRACT_KNOWN_PARAMS body check
+        landed (EV05-SKEPTIC-1), so EX1's body half is closed."""
         body = {
             "resourceType": "Parameters",
             "parameter": [
@@ -165,7 +166,10 @@ class TestEX1PostBodyUnknownParam:
         r = extract_client.post(
             "/fhir/CodeSystem/$extract", json=body
         )
-        assert r.status_code == 200
+        assert r.status_code == 400
+        assert r.headers["content-type"].startswith("application/fhir+json")
+        assert r.json()["resourceType"] == "OperationOutcome"
+        assert "zzz" in r.json()["issue"][0]["diagnostics"]
 
 
 class TestControls:
@@ -207,10 +211,12 @@ class TestControls:
         assert entries[0]["resource"]["source"] == "RXNORM"
 
     def test_c12_outputformat_annotated_post(self, extract_client):
-        """outputFormat=annotated is ACCEPTED on POST (200, no 4xx)
-        — but the annotated envelope is the CLI/MCP surface's shape;
-        the FHIR POST body returns the Bundle. Pins acceptance
-        (XA2's family: accepted-typed-param behavior)."""
+        """EV-05 pin flip (EV-10 HISTORIAN stale-pin sweep):
+        outputFormat=annotated on the POST body now 400s naming the
+        param — outputFormat is not a declared $extract param (the
+        declared name is format), and the _EXTRACT_KNOWN_PARAMS
+        body-name check (EV05-SKEPTIC-1) closes TS-58 AN1's bypass
+        loudly instead of silently defaulting."""
         body = {
             "resourceType": "Parameters",
             "parameter": [
@@ -221,5 +227,7 @@ class TestControls:
         r = extract_client.post(
             "/fhir/CodeSystem/$extract", json=body
         )
-        assert r.status_code == 200
-        assert r.json()["resourceType"] == "Bundle"
+        assert r.status_code == 400
+        assert r.headers["content-type"].startswith("application/fhir+json")
+        assert r.json()["resourceType"] == "OperationOutcome"
+        assert "outputFormat" in r.json()["issue"][0]["diagnostics"]

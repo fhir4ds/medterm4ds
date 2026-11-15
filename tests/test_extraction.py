@@ -2388,3 +2388,209 @@ class TestPrecomputedMentionFields:
         assert ("VAL-COND-233604", "Bilateral pneumonia") in results[1]
         # both paths issued the same stripped fallback query
         assert stub.called_with("pneumonia")
+
+
+class TestEv02SkepticFieldConsultation:
+    """EV-02: hostile/edge consultation discipline at the resolve sites —
+    the legacy mention-text fallback fires EXACTLY when the precomputed
+    field is None; an empty list is a precomputed 'no variants'/'no split'
+    verdict and must suppress the legacy fallback (numeric-parts guard,
+    never-empty guard)."""
+
+    def test_fallback_fires_only_on_none(self):
+        from medterm4ds.services.extraction import _span_fallback_queries
+
+        manual = FilteredSpan(text="glucose 500", entity_type="lab")
+        assert _span_fallback_queries(manual) == ["glucose"]
+        # precomputed empty ladder: no legacy recomputation
+        empty = FilteredSpan(text="glucose 500", entity_type="lab",
+                             search_variants=[], conjunction_parts=[])
+        assert _span_fallback_queries(empty) == []
+        # precomputed ladder consulted verbatim, order preserved,
+        # empty-string entries dropped by the resolve site guards (not here)
+        ladder = FilteredSpan(text="glucose 500", entity_type="lab",
+                              search_variants=["a", "b"], conjunction_parts=[])
+        assert _span_fallback_queries(ladder) == ["a", "b"]
+
+    def test_empty_conjunction_parts_suppress_legacy_split(self, monkeypatch):
+        """conjunction_parts == [] is a precomputed NO-SPLIT verdict (numeric
+        guard / no separator) — the legacy _split_on_conjunction fallback must
+        NOT run for it. Contrast with None (manual span) where it does."""
+        import medterm4ds.services.search as search_module
+
+        stub = _StubSearchService({})
+        monkeypatch.setattr(search_module, "get_search_service", lambda: stub)
+        svc = ExtractionService()
+        # '20/12.5' has no conjunction split on either path (numeric guard),
+        # so use a text where the legacy helper WOULD split but the field
+        # precomputed an empty verdict.
+        pipeline = FilteredSpan(text="CBC and CMP", entity_type="panel",
+                                search_variants=[], conjunction_parts=[])
+        manual = FilteredSpan(text="CBC and CMP", entity_type="panel")
+        for span in (pipeline, manual):
+            svc.resolve_spans([
+                span,
+                FilteredSpan(text="metformin", entity_type="therapeutic agent"),
+            ])
+        part_queries = [q for q, _ in stub.calls if q in ("CBC", "CMP")]
+        # the precomputed [] suppressed per-part searches; the manual span's
+        # legacy fallback issued them (each part twice: constrain-then-fallback)
+        assert part_queries == ["CBC", "CBC", "CMP", "CMP"]
+
+    def test_variant_equal_to_text_not_requeried(self, monkeypatch):
+        """A hostile/desynced ladder entry equal to the full mention must not
+        produce a duplicate full-mention query (site guard)."""
+        import medterm4ds.services.search as search_module
+
+        calls: list[str] = []
+
+        class _Recorder:
+            def canonical(self, query, **kw):
+                calls.append(query)
+                return []
+            def canonical_batch(self, queries, **kw):
+                calls.extend(queries)
+                return [[] for _ in queries]
+            def search(self, query, **kw):
+                calls.append(query)
+                return []
+
+        monkeypatch.setattr(search_module, "get_search_service", lambda: _Recorder())
+        svc = ExtractionService()
+        svc.resolve_spans([
+            FilteredSpan(text="full text", entity_type="disorder",
+                         search_variants=["full text", "stripped"],
+                         conjunction_parts=[]),
+            FilteredSpan(text="metformin", entity_type="therapeutic agent"),
+        ])
+        # primary batch query once; the duplicate 'full text' ladder entry
+        # skipped by the fallback_query == span.text guard
+        assert calls.count("full text") == 1
+        assert calls.count("stripped") == 1
+
+
+class TestEv02HistorianConjunctionBase:
+    """EV02-HISTORIAN-1: the batch-canonical conjunction site must base its
+    split decision on the VALUE-STRIPPED text (pre-migration semantics,
+    E:2818 of 1eeb607~1) — NOT on search_variants[0], which is the
+    value-stripped variant only when the value-strip fired; when the strip
+    is a no-op it is the form/qualifier variant ('history of CBC and CMP'
+    lost its qualifier part on the batch path)."""
+
+    def test_qualifier_conjunction_batch_pipeline_matches_manual(self, monkeypatch):
+        import medterm4ds.services.search as search_module
+
+        stub = _StubSearchService({
+            "history of CBC|*": [_anchor("VAL-LAB-HXCBC", 0.9)],
+            "CBC|*": [_anchor("VAL-LAB-CBC", 0.9)],
+            "CMP|*": [_anchor("VAL-LAB-CMP", 0.9)],
+        })
+        monkeypatch.setattr(search_module, "get_search_service", lambda: stub)
+        svc = ExtractionService()
+        # precomputed fields as the pipeline produces them for this text
+        # (qualifier variant first — the value-strip is a no-op)
+        pipeline = FilteredSpan(
+            text="history of CBC and CMP", entity_type="panel",
+            search_variants=["CBC and CMP"],
+            conjunction_parts=["history of CBC", "CMP"],
+        )
+        manual = FilteredSpan(text="history of CBC and CMP", entity_type="panel")
+        filler = FilteredSpan(text="metformin", entity_type="therapeutic agent")
+        results = []
+        for span in (pipeline, manual):
+            concepts = svc.resolve_spans([span, filler])
+            results.append(sorted(
+                (c.canonical_id, c.matched_text) for c in concepts
+            ))
+        assert results[0] == results[1]
+        # both split the VALUE-STRIPPED (= full) text: the qualifier part
+        # survives ('history of CBC'), matching the manual/pre-migration path
+        assert ("VAL-LAB-HXCBC", "history of CBC") in results[0]
+
+    def test_annotated_lookup_uses_value_stripped_base(self):
+        """EV02-HISTORIAN-1 sibling (annotated site): a pipeline span whose
+        ladder's first entry is the QUALIFIER variant must not look up
+        concepts by that variant — pre-migration the lookup used the
+        value-stripped text (a no-op here), so a concept keyed by the bare
+        variant (e.g. resolved for a DIFFERENT span) must not leak into this
+        span's marker. The value-stripped (fired) case must still match."""
+        svc = ExtractionService()
+        foreign = ExtractedConcept(
+            code="F", source="LOINC", display="foreign", matched_text="CBC and CMP",
+            status="affirmed", canonical_id="VAL-LAB-FOREIGN")
+        stripped_match = ExtractedConcept(
+            code="G", source="LOINC", display="glucose", matched_text="glucose",
+            status="affirmed", canonical_id="VAL-LAB-GLU")
+        out = svc._build_annotated(
+            "history of CBC and CMP and glucose 500 noted",
+            [
+                FilteredSpan(text="history of CBC and CMP", entity_type="panel",
+                             span_start=0, span_end=22,
+                             search_variants=["CBC and CMP"],
+                             conjunction_parts=["history of CBC", "CMP"]),
+                FilteredSpan(text="glucose 500", entity_type="lab",
+                             span_start=28, span_end=39,
+                             search_variants=["glucose"], conjunction_parts=[]),
+            ],
+            [foreign, stripped_match],
+            annotation_fields="canonical_id",
+        )
+        markers = [m["canonical_id"] for m in out["spans"]]
+        # the qualifier-variant key must NOT associate the foreign concept
+        assert markers[0] == ""
+        # the value-stripped variant (strip fired) still associates
+        assert markers[1] == "VAL-LAB-GLU"
+
+
+class TestEv05ExplorerCanonicalDefaultGrade:
+    """EV05-EXPLORER-1: the canonical-mode default grade floor.
+
+    Doctrine (v0.0.3 NOT A BUG registry): the default floor is 'probable'
+    — canonical anchors grade exact/probable at best, so a 'certain' floor
+    returns exact-only. The operator env override
+    MEDTERM4DS_EXTRACTION_MIN_GRADE still wins (QC-165), read at call
+    time. Found via the FHIR $extract surface defaulting to
+    DEFAULT_MIN_GRADE ('certain') — silently dropping probable-graded
+    concepts the Python/MCP surfaces return for the same default request.
+    """
+
+    @pytest.fixture
+    def stub(self, monkeypatch):
+        def _install(routes):
+            import medterm4ds.services.search as search_module
+            stub = _StubSearchService(routes)
+            monkeypatch.setattr(search_module, "get_search_service",
+                                lambda: stub)
+            return stub
+        return _install
+
+    def test_canonical_default_floor_is_probable(self, stub, monkeypatch):
+        monkeypatch.delenv("MEDTERM4DS_EXTRACTION_MIN_GRADE", raising=False)
+        stub({"diabetes|*": [_anchor("VAL-COND-44054006", 0.88)]})  # probable
+        svc = ExtractionService()
+        concepts = svc.resolve_spans(
+            [FilteredSpan(text="diabetes", entity_type="disorder")])
+        assert [c.canonical_id for c in concepts] == ["VAL-COND-44054006"]
+
+    def test_env_override_tightens_canonical_default_floor(
+        self, stub, monkeypatch,
+    ):
+        monkeypatch.setenv("MEDTERM4DS_EXTRACTION_MIN_GRADE", "certain")
+        stub({"diabetes|*": [_anchor("VAL-COND-44054006", 0.88)]})  # probable
+        svc = ExtractionService()
+        concepts = svc.resolve_spans(
+            [FilteredSpan(text="diabetes", entity_type="disorder")])
+        assert concepts == [], (
+            "env MEDTERM4DS_EXTRACTION_MIN_GRADE=certain must tighten the "
+            "canonical default floor below probable"
+        )
+
+    def test_env_override_loosens_canonical_default_floor(
+        self, stub, monkeypatch,
+    ):
+        monkeypatch.setenv("MEDTERM4DS_EXTRACTION_MIN_GRADE", "broader")
+        stub({"diabetes|*": [_anchor("VAL-COND-44054006", 0.70)]})  # possible
+        svc = ExtractionService()
+        concepts = svc.resolve_spans(
+            [FilteredSpan(text="diabetes", entity_type="disorder")])
+        assert [c.canonical_id for c in concepts] == ["VAL-COND-44054006"]

@@ -1544,24 +1544,12 @@ class SearchService:
         row_cids += [c for c in hit["member_cids"] if c != hit["parent_cid"]]
 
         result_type_prefixes = _result_types_to_prefixes(result_types)
-        source_set = set(sources or []) or None
-        if source_set:
-            # Pairwise system aliasing only (same pairs the extraction-side
-            # source filter uses) — NOT an admit-all widening. The previous
-            # form added every major system whenever ANY filter was set,
-            # so canonical("lipid panel", sources=["CVX"]) returned LOINC
-            # rows: the caller's filter became a no-op (caught by
-            # test_source_filter_excludes_foreign_rows).
-            upper = {s.upper() for s in source_set}
-            aliases = {
-                "LNC": {"LOINC"}, "LOINC": {"LNC"},
-                "RXNORM": {"ATC"}, "ATC": {"RXNORM"},
-                "SNOMED": {"SNOMEDCT_US"}, "SNOMEDCT_US": {"SNOMED"},
-            }
-            widened = set(upper)
-            for s in upper:
-                widened |= aliases.get(s, set())
-            source_set = widened
+        # EV03-SKEPTIC-1: pairwise system aliasing via the ONE shared map
+        # (core.normalize.SOURCE_SAB_ALIASES) — NOT an admit-all widening
+        # and not a local copy of the pairs. The previous inline dict was
+        # byte-equivalent today but duplicated the shared vocabulary (the
+        # TestSourceSabAliasesSingleSource contract).
+        source_set = expand_source_aliases(sources) if sources else None
 
         rows: list[CanonicalSearchResult] = []
         for cid in row_cids:
@@ -1597,9 +1585,12 @@ class SearchService:
         if sources is None:
             return list(SEARCH_CATEGORIES)
         cats: list[str] = []
-        for source in sources:
-            source_upper = source.upper()
-            cats.extend(_SOURCE_TO_CATEGORIES.get(source_upper, []))
+        # EV03-SKEPTIC-1: widen via the shared SAB alias map (one source
+        # of truth, core.normalize) — the canonical passes already did;
+        # legacy modes silently returned [] for 'SNOMED'/'LOINC' while
+        # canonical() served them.
+        for source in expand_source_aliases(sources):
+            cats.extend(_SOURCE_TO_CATEGORIES.get(source, []))
         return list(dict.fromkeys(cats))  # dedupe, preserve order
 
     @staticmethod
@@ -1638,7 +1629,10 @@ class SearchService:
         """
         if not sources:
             return results
-        allowed = {s.upper() for s in sources}
+        # EV03-SKEPTIC-1: same shared-map widening as _resolve_categories —
+        # the post-filter must not undo the category-level widening
+        # ('SNOMED' would otherwise drop every SNOMEDCT_US row again).
+        allowed = expand_source_aliases(sources)
         return [r for r in results if r.source.upper() in allowed]
 
     @staticmethod
@@ -1908,30 +1902,14 @@ class SearchService:
         k = min(self._concepts_faiss.ntotal, max(count * 5 if needs_filter else count, 50))
         scores, ids = self._concepts_faiss.search(query_emb, k)
 
-        source_set = set(sources) if sources else None
-        # Normalize source names. RXNORM ↔ ATC because drug-class queries
-        # commonly filter to ["RXNORM"] but expect class anchors (ATC) to be
-        # included — without this normalization, "ACE inhibitors" filters out
-        # the ATC class anchor and falls back to a specific drug (Perindopril).
-        # Same pattern as LNC ↔ LOINC and SNOMEDCT_US ↔ SNOMED.
-        if source_set:
-            normalized = set()
-            for s in source_set:
-                su = s.upper()
-                normalized.add(su)
-                if su == "LNC":
-                    normalized.add("LOINC")
-                elif su == "LOINC":
-                    normalized.add("LNC")
-                elif su == "SNOMED":
-                    normalized.add("SNOMEDCT_US")
-                elif su == "SNOMEDCT_US":
-                    normalized.add("SNOMED")
-                elif su == "RXNORM":
-                    normalized.add("ATC")
-                elif su == "ATC":
-                    normalized.add("RXNORM")
-            source_set = normalized
+        # EV03-SKEPTIC-1: source-name normalization via the ONE shared
+        # pairwise alias map (core.normalize.SOURCE_SAB_ALIASES).
+        # RXNORM ↔ ATC because drug-class queries commonly filter to
+        # ["RXNORM"] but expect class anchors (ATC) to be included —
+        # without this normalization, "ACE inhibitors" filters out the
+        # ATC class anchor and falls back to a specific drug. Same pairs
+        # as LNC ↔ LOINC and SNOMEDCT_US ↔ SNOMED.
+        source_set = expand_source_aliases(sources) if sources else None
         results: list[CanonicalSearchResult] = []
         seen_ids: set[str] = set()
         for score, idx in zip(scores[0], ids[0], strict=False):
@@ -2222,8 +2200,14 @@ class SearchService:
         # the service no longer reaches into _tokenizer/_model internals.
         query_embs = engine.embed_batch(queries)
 
-        # Batch FAISS search (over-fetch to leave room for per-query filtering)
-        k = min(self._concepts_faiss.ntotal, max(count * 3, 20))
+        # Batch FAISS search (over-fetch to leave room for per-query filtering).
+        # EV03-HISTORIAN-1: the pool floor MUST be >= the single path's
+        # (max(count, 50)) — a 20 floor under-filled count when alias
+        # metadata entries crowded the candidate list (dedup shrank the
+        # k=20 pool below count while the single path's k=50 pool held
+        # count rows: canonical_batch(['Methotrexate'], count=5) -> 3
+        # rows vs canonical(..., count=5) -> 5).
+        k = min(self._concepts_faiss.ntotal, max(count * 3, 50))
         scores, ids = self._concepts_faiss.search(query_embs, k)
 
         # Process results per query

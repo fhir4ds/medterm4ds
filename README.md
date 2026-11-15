@@ -84,8 +84,8 @@ data/canonical/
 ```
 
 These are produced by the **`medterm4ds-canonical`** private repo (separate
-from this one). The build pipeline — rules registry, per-domain build scripts,
-AI loop infrastructure — lives there. To rebuild or modify canonical anchors,
+from this one). The build pipeline — rules registry and per-domain build
+scripts — lives there. To rebuild or modify canonical anchors,
 clone `medterm4ds-canonical` and run its build pipeline; see
 [`docs/BUILD.md`](https://github.com/fhir4ds/medterm4ds-canonical/blob/main/docs/BUILD.md)
 in that repo.
