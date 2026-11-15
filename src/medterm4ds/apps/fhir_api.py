@@ -1162,7 +1162,13 @@ def expand_intensional_value_set(
     contains: list[dict[str, Any]] = []
     depth_cap_hit = False
 
-    for include in (compose.get("include") or []):
+    # EV06-SKEPTIC-3: non-list ``include`` container guard (10th-PROMOTED
+    # -pattern container boundary — a non-list value raised TypeError at
+    # the for statement itself).
+    compose_includes = compose.get("include")
+    if not isinstance(compose_includes, list):
+        compose_includes = []
+    for include in compose_includes:
         if not isinstance(include, dict):
             continue
         inc_system = include.get("system", "")
@@ -1176,7 +1182,15 @@ def expand_intensional_value_set(
 
         # Explicit concept list
         if "concept" in include:
-            for concept in (include.get("concept") or []):
+            # EV06-SKEPTIC-3: the per-entry isinstance(concept, dict)
+            # guards exist, but the CONTAINER was unguarded — a non-list
+            # ``concept`` value (42, "x") raised TypeError at the for
+            # statement itself (500 + text/plain). 10th-PROMOTED-pattern
+            # container boundary: treat a non-list container as absent.
+            inc_concepts = include.get("concept")
+            if not isinstance(inc_concepts, list):
+                inc_concepts = []
+            for concept in inc_concepts:
                 if not isinstance(concept, dict):
                     continue
                 # QC-246 (MEDIUM): a null/empty code previously became
@@ -1245,7 +1259,12 @@ def expand_intensional_value_set(
                 })
 
         # Intensional filter (is-a, descendent-of)
-        for filt in (include.get("filter") or []):
+        # EV06-SKEPTIC-3: non-list ``filter`` container guard (same
+        # container boundary as the concept list above).
+        inc_filters = include.get("filter")
+        if not isinstance(inc_filters, list):
+            inc_filters = []
+        for filt in inc_filters:
             if not isinstance(filt, dict):
                 continue
             prop = filt.get("property", "")
@@ -1296,7 +1315,12 @@ def expand_intensional_value_set(
     # under-exclusion is the dangerous direction — a capped walk would
     # silently re-include truncated exclusion members. Cost is still bounded
     # by FHIR_VS_MAX_DEPTH.
-    for exclude in (compose.get("exclude") or []):
+    # EV06-SKEPTIC-3: non-list ``exclude`` container guard (mirror of
+    # the include loop above).
+    compose_excludes = compose.get("exclude")
+    if not isinstance(compose_excludes, list):
+        compose_excludes = []
+    for exclude in compose_excludes:
         if not isinstance(exclude, dict):
             continue
         exc_system = exclude.get("system", "")
@@ -1316,7 +1340,12 @@ def expand_intensional_value_set(
                 if raw is None or not str(raw).strip():
                     continue
                 excluded.add((canonical_exc, str(raw)))
-        for filt in (exclude.get("filter") or []):
+        # EV06-SKEPTIC-3: non-list ``filter`` container guard (mirror of
+        # the include loop).
+        exc_filters = exclude.get("filter")
+        if not isinstance(exc_filters, list):
+            exc_filters = []
+        for filt in exc_filters:
             if not isinstance(filt, dict):
                 continue
             prop = filt.get("property", "")
@@ -3008,6 +3037,14 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
                 request, _LOOKUP_KNOWN_PARAMS, "$lookup",
                 known_prefixes=("property.",),
             )
+            # EV06-SKEPTIC-2: date shape-validation parity with the
+            # sibling $validate-code/$expand routes (EB/H4 family — the
+            # validate_fhir_date helper existed but was never wired to
+            # $lookup; garbage dates silently 200'd here while 400ing on
+            # the siblings).
+            date_qp = request.query_params.get("date")
+            if date_qp:
+                validate_fhir_date(date_qp, "date")
         except ValueError as exc:
             return _fhir_error_response(request, 400, str(exc))
         payload = await _run_db(
@@ -3043,6 +3080,11 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
                 version=params.get("version"),
                 system_version=_raw_parameter_value(body, "systemVersion"),
             )
+            # EV06-SKEPTIC-2: body-side date parity with validate_post
+            # (EB/H4 family sibling).
+            raw_date = _raw_parameter_value(body, "date")
+            if raw_date:
+                validate_fhir_date(str(raw_date), "date")
         except ValueError as exc:
             return _fhir_error_response(request, 400, str(exc))
         payload = await _run_db(
@@ -3463,6 +3505,17 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
             ),
         ),
     ):
+        # EV06-SKEPTIC-1: the TS-17/U3 unknown-param rejection family was
+        # wired to every GET route EXCEPT this one — _VS_VALIDATE_KNOWN_PARAMS
+        # existed but no reject_unknown_query_params call consulted it, so
+        # bogusParam=1 silently 200'd here while 400ing on every sibling
+        # operation's GET (the EA family's last GET gap).
+        try:
+            reject_unknown_query_params(
+                request, _VS_VALIDATE_KNOWN_PARAMS, "$validate-code",
+            )
+        except ValueError as exc:
+            return _fhir_error_response(request, 400, str(exc))
         # c-fixbatch2 (H3): inferSystem is a ValueSet/$validate-code-only
         # parameter; honored here (SCTID-shape inference fills a missing
         # system), rejected on the CodeSystem surface.
@@ -3492,6 +3545,23 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
 
     @app.post("/fhir/ValueSet/$validate-code")
     async def vs_validate_post(request: Request, body: dict[str, Any]):
+        # EV06-SKEPTIC-1 (POST mirror): query-side + body-side unknown-param
+        # rejection, matching the GET route's guard. Body names beyond the
+        # declared set were silently 200'd (same shape as TS-45 FA4's three
+        # open ops — wired here because this chunk owns the surface).
+        try:
+            reject_unknown_query_params(
+                request, _VS_VALIDATE_KNOWN_PARAMS, "$validate-code",
+            )
+        except ValueError as exc:
+            return _fhir_error_response(request, 400, str(exc))
+        unknown_body = _parameter_names_present(body) - _VS_VALIDATE_KNOWN_PARAMS
+        if unknown_body:
+            return _fhir_error_response(
+                request, 400,
+                f"Unsupported $validate-code parameter(s): "
+                f"{', '.join(sorted(unknown_body))}.",
+            )
         params = _parse_parameters(body)
         url = params.get("url")
         code = params.get("code")

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import duckdb
@@ -2700,3 +2701,738 @@ class TestFhirEndpoints:
         assert resp.status_code == 200, resp.text
         assert received[0].get("engine") is not None
 
+
+
+# ---------------------------------------------------------------------------
+# EV-06 (fhir-terminology-ops) — iterations 16-18
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def ev06_app(tmp_path):
+    """Synthetic-DB FHIR app for the EV-06 classes (mirrors the
+    TestFhirEndpoints.fhir_app fixture, which is class-local)."""
+    from medterm4ds.apps.fhir_api import FhirApiSettings, create_fhir_app
+    db_path = tmp_path / "umls.duckdb"
+    _make_fhir_db(db_path)
+    settings = FhirApiSettings(
+        db_path=db_path,
+        memory_profile="low",
+        search_index_dir=str(tmp_path / "nonexistent"),
+        prepare_cache=False,
+    )
+    return create_fhir_app(settings)
+
+
+class _Ev06Client:
+    @pytest.fixture
+    def fhir_app(self, ev06_app):
+        return ev06_app
+
+
+class TestEv06SkepticVsValidateUnknownParams(_Ev06Client):
+    """EV06-SKEPTIC-1 (MEDIUM): the TS-17/U3 unknown-param rejection
+    family was wired to every GET route except ValueSet/$validate-code —
+    _VS_VALIDATE_KNOWN_PARAMS existed but no reject_unknown_query_params
+    call consulted it, so bogusParam=1 silently 200'd on this operation
+    while 400ing on every sibling's GET."""
+
+    def test_get_unknown_query_param_400_ev06skeptic1(self, fhir_app):
+        from starlette.testclient import TestClient
+        with TestClient(fhir_app) as client:
+            resp = client.get(
+                "/fhir/ValueSet/$validate-code",
+                params={
+                    "system": "http://snomed.info/sct",
+                    "code": "44054006",
+                    "bogusParam": "1",
+                },
+            )
+        assert resp.status_code == 400, resp.text
+        assert resp.headers["content-type"].startswith("application/fhir+json")
+        assert resp.json()["resourceType"] == "OperationOutcome"
+        assert "bogusParam" in resp.json()["issue"][0]["diagnostics"]
+
+    def test_post_unknown_query_param_400_ev06skeptic1(self, fhir_app):
+        from starlette.testclient import TestClient
+        with TestClient(fhir_app) as client:
+            resp = client.post(
+                "/fhir/ValueSet/$validate-code",
+                params={"bogusParam": "1"},
+                json={"resourceType": "Parameters", "parameter": [
+                    {"name": "system", "valueUri": "http://snomed.info/sct"},
+                    {"name": "code", "valueCode": "44054006"},
+                ]},
+            )
+        assert resp.status_code == 400, resp.text
+        assert resp.json()["resourceType"] == "OperationOutcome"
+
+    def test_post_unknown_body_param_400_ev06skeptic1(self, fhir_app):
+        from starlette.testclient import TestClient
+        with TestClient(fhir_app) as client:
+            resp = client.post(
+                "/fhir/ValueSet/$validate-code",
+                json={"resourceType": "Parameters", "parameter": [
+                    {"name": "system", "valueUri": "http://snomed.info/sct"},
+                    {"name": "code", "valueCode": "44054006"},
+                    {"name": "zzz", "valueString": "x"},
+                ]},
+            )
+        assert resp.status_code == 400, resp.text
+        assert "zzz" in resp.json()["issue"][0]["diagnostics"]
+
+    def test_get_known_params_still_accepted_ev06skeptic1(self, fhir_app):
+        from starlette.testclient import TestClient
+        with TestClient(fhir_app) as client:
+            resp = client.get(
+                "/fhir/ValueSet/$validate-code",
+                params={
+                    "system": "http://snomed.info/sct",
+                    "code": "44054006",
+                    # declared-but-unimplemented params stay accepted on the
+                    # VS surface (pinned intended — vs05 s10/s20 precedent)
+                    "version": "2024-09",
+                    "abstract": "true",
+                },
+            )
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["resourceType"] == "Parameters"
+
+    def test_post_known_body_params_still_accepted_ev06skeptic1(self, fhir_app):
+        from starlette.testclient import TestClient
+        with TestClient(fhir_app) as client:
+            resp = client.post(
+                "/fhir/ValueSet/$validate-code",
+                json={"resourceType": "Parameters", "parameter": [
+                    {"name": "system", "valueUri": "http://snomed.info/sct"},
+                    {"name": "code", "valueCode": "44054006"},
+                    {"name": "display", "valueString": "Type 2 diabetes mellitus"},
+                ]},
+            )
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["resourceType"] == "Parameters"
+
+
+class TestEv06SkepticLookupDateValidation(_Ev06Client):
+    """EV06-SKEPTIC-2 (LOW): date shape-validation parity — the
+    validate_fhir_date helper (EB/H4 family) was wired to
+    CodeSystem/$validate-code and $expand but never to the $lookup
+    sibling; garbage dates silently 200'd on $lookup while 400ing on
+    the siblings."""
+
+    def test_get_bogus_date_400_ev06skeptic2(self, fhir_app):
+        from starlette.testclient import TestClient
+        with TestClient(fhir_app) as client:
+            resp = client.get(
+                "/fhir/CodeSystem/$lookup",
+                params={
+                    "system": "http://snomed.info/sct",
+                    "code": "44054006",
+                    "date": "not-a-date",
+                },
+            )
+        assert resp.status_code == 400, resp.text
+        assert "date" in resp.json()["issue"][0]["diagnostics"]
+
+    def test_post_bogus_body_date_400_ev06skeptic2(self, fhir_app):
+        from starlette.testclient import TestClient
+        with TestClient(fhir_app) as client:
+            resp = client.post(
+                "/fhir/CodeSystem/$lookup",
+                json={"resourceType": "Parameters", "parameter": [
+                    {"name": "system", "valueUri": "http://snomed.info/sct"},
+                    {"name": "code", "valueCode": "44054006"},
+                    {"name": "date", "valueDateTime": "not-a-date"},
+                ]},
+            )
+        assert resp.status_code == 400, resp.text
+
+    def test_valid_date_still_accepted_ev06skeptic2(self, fhir_app):
+        from starlette.testclient import TestClient
+        with TestClient(fhir_app) as client:
+            for date in ("2026", "2026-11", "2026-11-15",
+                         "2026-11-15T10:00:00Z"):
+                resp = client.get(
+                    "/fhir/CodeSystem/$lookup",
+                    params={
+                        "system": "http://snomed.info/sct",
+                        "code": "44054006",
+                        "date": date,
+                    },
+                )
+                assert resp.status_code == 200, (date, resp.text)
+
+
+class TestEv06SkepticHostileMatrixHeld(_Ev06Client):
+    """EV-06 SKEPTIC held behaviors — hostile inputs that must never 5xx
+    or emit a non-FHIR body (no bugs found; pins the lens matrix)."""
+
+    def test_empty_codes_rejected_not_wrong_answer_ev06(self, fhir_app):
+        from starlette.testclient import TestClient
+        with TestClient(fhir_app) as client:
+            for raw in ("", " ", "   "):
+                resp = client.get(
+                    "/fhir/CodeSystem/$lookup",
+                    params={
+                        "system": "http://snomed.info/sct",
+                        "code": raw,
+                    },
+                )
+                assert resp.status_code in (400, 422), (raw, resp.status_code)
+
+    def test_oversized_code_no_5xx_ev06(self, fhir_app):
+        from starlette.testclient import TestClient
+        with TestClient(fhir_app) as client:
+            resp = client.get(
+                "/fhir/CodeSystem/$lookup",
+                params={
+                    "system": "http://snomed.info/sct",
+                    "code": "A" * 5000,
+                },
+            )
+        assert resp.status_code < 500
+        assert resp.headers["content-type"].startswith("application/fhir+json")
+
+    @pytest.mark.parametrize("url,expected", [
+        ("http://snomed.info/sct?fhir_vs", 200),
+        ("http://snomed.info/sct/44054006?fhir_vs=isa", 200),
+        ("http://snomed.info/sct?fhir_vs=isa/44054006", 200),
+        ("http://snomed.info/sct?fhir_vs=ISA/44054006", 200),  # case-normalized (VS-04 QA-060)
+        ("http://snomed.info/sct?fhir_vs=refset/447562003", 400),  # explicit unimplemented (QA-062)
+        ("http://snomed.info/sct?fhir_vs=BOGUS", 400),  # unknown value (QA-060)
+        ("http://snomed.info:80/sct?fhir_vs", 400),  # explicit port (CF-EXPLORER-VS04-01 deferred)
+        ("HTTP://snomed.info/sct?fhir_vs", 200),  # scheme normalized
+        ("http://unknown.example/vs", 400),  # unknown implicit system
+        ("http://loinc.org/vs", 200),  # known-but-empty source carries extension
+    ])
+    def test_hostile_expand_url_matrix_ev06(self, fhir_app, url, expected):
+        from starlette.testclient import TestClient
+        with TestClient(fhir_app) as client:
+            resp = client.get(
+                "/fhir/ValueSet/$expand", params={"url": url},
+            )
+        assert resp.status_code == expected, (url, resp.text[:200])
+        assert resp.headers["content-type"].startswith("application/fhir+json")
+
+    def test_hostile_compose_bodies_no_5xx_ev06(self, fhir_app):
+        from starlette.testclient import TestClient
+        hostile = [
+            {"resourceType": "ValueSet", "compose": "string"},
+            {"resourceType": "ValueSet", "compose": {"include": "string"}},
+            {"resourceType": "ValueSet", "compose": {"include": 42}},
+            {"resourceType": "ValueSet",
+             "compose": {"include": [42, None, "x", {"system": "http://snomed.info/sct"}]}},
+            {"resourceType": "ValueSet",
+             "compose": {"include": [{"system": "http://snomed.info/sct", "concept": 42}]}},
+            {"resourceType": "ValueSet",
+             "compose": {"include": [{"system": "http://snomed.info/sct", "filter": 42}]}},
+            {"resourceType": "ValueSet", "compose": {"exclude": 42}},
+            {"resourceType": "ValueSet", "compose": {"exclude": [{"concept": 42}]}},
+            {"resourceType": "ValueSet",
+             "compose": {"exclude": [{"system": "http://snomed.info/sct", "filter": 42}]}},
+        ]
+        with TestClient(fhir_app) as client:
+            for body in hostile:
+                resp = client.post("/fhir/ValueSet/$expand", json=body)
+                assert resp.status_code < 500, body
+                assert resp.headers["content-type"].startswith(
+                    "application/fhir+json")
+
+    @pytest.mark.parametrize("count,offset", [
+        (0, 0), (-1, 0), (1001, 0), (20, -1),
+    ])
+    def test_expand_count_offset_bounds_422_ev06(self, fhir_app, count, offset):
+        from starlette.testclient import TestClient
+        with TestClient(fhir_app) as client:
+            resp = client.get(
+                "/fhir/ValueSet/$expand",
+                params={
+                    "url": "http://snomed.info/sct/vs",
+                    "count": count,
+                    "offset": offset,
+                },
+            )
+        assert resp.status_code == 422, resp.text[:150]
+        assert resp.json()["resourceType"] == "OperationOutcome"
+
+
+class _Ev06HistorianFixture:
+    """HISTORIAN fixture: base DB + LNC rows incl. MTHU surrogates."""
+
+    @pytest.fixture
+    def fhir_app(self, tmp_path, monkeypatch):
+        from medterm4ds.apps.fhir_api import FhirApiSettings, create_fhir_app
+        db_path = tmp_path / "umls.duckdb"
+        _make_fhir_db(db_path)
+        con = duckdb.connect(str(db_path))
+        con.executemany("INSERT INTO mrconso VALUES (?, ?, ?, ?, ?, ?, ?)", [
+            ("LP12345-6", "LC", "Fasting glucose", "ALP123", "N", "LNC", "C_LP"),
+            ("MTHU000001", "CN", "MTH surrogate one", "AMTHU1", "N", "LNC", "C_M1"),
+            ("MTHU000002", "CN", "MTH surrogate two", "AMTHU2", "N", "LNC", "C_M2"),
+        ])
+        con.close()
+        # H7: synthesized patient-friendly artifact with a RAW SAB label
+        pf_dir = tmp_path / "fhir4px"
+        pf_dir.mkdir()
+        (pf_dir / "patient_friendly_snomedct_us.json").write_text(
+            json.dumps({
+                "44054006": {
+                    "name": "type 2 diabetes",
+                    "match_type": "exact",
+                    "canonical_code": "E11",
+                    "canonical_system": "icd10",
+                },
+            }),
+        )
+        monkeypatch.setenv("MEDTERM4DS_FHIR4PX_BASELINE", str(pf_dir))
+        settings = FhirApiSettings(
+            db_path=db_path,
+            memory_profile="low",
+            search_index_dir=str(tmp_path / "nonexistent"),
+            prepare_cache=False,
+        )
+        return create_fhir_app(settings)
+
+
+def _ev06_param(body, name):
+    for p in body.get("parameter", []):
+        if p.get("name") == name:
+            return p
+    return None
+
+
+def _ev06_out(body, name, key):
+    p = _ev06_param(body, name)
+    return p.get(key) if p else None
+
+
+class TestEv06HistorianCanonicalDisplayAgreement(_Ev06HistorianFixture):
+    """EV-06 HISTORIAN family pin: canonical-DISPLAY cross-operation
+    agreement ($lookup ↔ $validate-code ↔ $expand contains) — the
+    canonical-DISPLAY META-PATTERN (count=5 PROMOTED) must survive the
+    EV-01..05 service-layer changes beneath the FHIR ops."""
+
+    @pytest.mark.parametrize("system,code", [
+        ("http://snomed.info/sct", "44054006"),
+        ("http://snomed.info/sct", "73211009"),
+        ("http://hl7.org/fhir/sid/icd-10-cm", "E11"),
+        ("http://www.nlm.nih.gov/research/umls/rxnorm", "860975"),
+    ])
+    def test_lookup_and_validate_agree_on_display_ev06h1(
+            self, fhir_app, system, code):
+        from starlette.testclient import TestClient
+        with TestClient(fhir_app) as client:
+            lookup = client.get("/fhir/CodeSystem/$lookup",
+                                params={"system": system, "code": code})
+            validate = client.get("/fhir/CodeSystem/$validate-code",
+                                  params={"system": system, "code": code})
+        assert lookup.status_code == validate.status_code == 200
+        d1 = _ev06_out(lookup.json(), "display", "valueString")
+        d2 = _ev06_out(validate.json(), "display", "valueString")
+        assert d1 == d2
+        assert d1  # never empty
+
+    def test_expand_contains_display_agrees_with_lookup_ev06h1(self, fhir_app):
+        from starlette.testclient import TestClient
+        with TestClient(fhir_app) as client:
+            expand = client.get(
+                "/fhir/ValueSet/$expand",
+                params={"url": "http://snomed.info/sct/vs", "count": 1000})
+            lookup = client.get(
+                "/fhir/CodeSystem/$lookup",
+                params={"system": "http://snomed.info/sct", "code": "44054006"})
+        contains = {e["code"]: e["display"]
+                    for e in expand.json()["expansion"]["contains"]}
+        assert (contains["44054006"]
+                == _ev06_out(lookup.json(), "display", "valueString"))
+
+
+class TestEv06HistorianCanonicalSystemPrecedence(_Ev06HistorianFixture):
+    """EV-06 HISTORIAN family pin: client-input-as-canonical drift —
+    Out `system` must be the canonical URI under every alias input
+    (QA-047/QA-051/CR-011 family)."""
+
+    @pytest.mark.parametrize("alias", [
+        "urn:oid:2.16.840.1.113883.6.96",
+        "http://snomed.info/sct/",
+        "HTTP://snomed.info/sct",
+    ])
+    def test_out_system_canonical_on_alias_input_ev06h2(
+            self, fhir_app, alias):
+        from starlette.testclient import TestClient
+        with TestClient(fhir_app) as client:
+            for path in ("/fhir/CodeSystem/$lookup",
+                         "/fhir/CodeSystem/$validate-code"):
+                resp = client.get(path, params={
+                    "system": alias, "code": "44054006"})
+                assert resp.status_code == 200, resp.text
+                assert _ev06_out(resp.json(), "system", "valueUri") == (
+                    "http://snomed.info/sct")
+
+
+class TestEv06HistorianDisplayMismatchFormat(_Ev06HistorianFixture):
+    """EV-06 HISTORIAN family pin: display-mismatch enforcement message
+    format on BOTH $validate-code surfaces (QA-048/QA-069 — spec example
+    byte-exact: wrong value in message, canonical in separate display)."""
+
+    @pytest.mark.parametrize("path", [
+        "/fhir/CodeSystem/$validate-code",
+        "/fhir/ValueSet/$validate-code",
+    ])
+    def test_mismatch_message_byte_exact_ev06h3(self, fhir_app, path):
+        from starlette.testclient import TestClient
+        with TestClient(fhir_app) as client:
+            resp = client.get(path, params={
+                "system": "http://snomed.info/sct",
+                "code": "44054006",
+                "display": "totally wrong display",
+            })
+        body = resp.json()
+        assert _ev06_out(body, "result", "valueBoolean") is False
+        assert _ev06_out(body, "message", "valueString") == (
+            'The display "totally wrong display" is incorrect')
+        assert _ev06_out(body, "display", "valueString") == (
+            "Type 2 diabetes mellitus")
+
+
+class TestEv06HistorianBatchParity(_Ev06HistorianFixture):
+    """EV-06 HISTORIAN family pin: batch dispatcher parity with direct
+    routes — byte-exact clinical content across all 6 terminology ops in
+    ONE heterogeneous batch (TS-04 + CM-02 EXPLORER family)."""
+
+    def test_heterogeneous_batch_byte_exact_parity_ev06h4(self, fhir_app):
+        from starlette.testclient import TestClient
+        sct = "http://snomed.info/sct"
+        icd = "http://hl7.org/fhir/sid/icd-10-cm"
+        ops = [
+            ("CodeSystem/$lookup", f"system={sct}&code=44054006"),
+            ("CodeSystem/$validate-code", f"system={sct}&code=44054006"),
+            ("ValueSet/$validate-code", f"system={sct}&code=44054006"),
+            ("CodeSystem/$subsumes",
+             f"system={sct}&codeA=44054006&codeB=73211009"),
+            ("ConceptMap/$translate",
+             f"system={sct}&code=44054006&targetsystem={icd}"),
+            ("ValueSet/$expand", f"url={sct}/vs&count=50"),
+        ]
+        entries = [{"request": {"method": "GET", "url": f"{path}?{q}"}}
+                   for path, q in ops]
+        # $closure is POST-only on BOTH surfaces (GET batch entry 404s,
+        # mirroring the direct route) — include it via a POST entry.
+        entries.append({
+            "request": {"method": "POST", "url": "CodeSystem/$closure?name=ev06h4"},
+            "resource": {"resourceType": "Parameters", "parameter": [
+                {"name": "name", "valueString": "ev06h4"},
+            ]},
+        })
+        with TestClient(fhir_app) as client:
+            batch = client.post("/fhir", json={
+                "resourceType": "Bundle", "type": "batch", "entry": entries})
+            assert batch.status_code == 200, batch.text[:300]
+            resp_entries = batch.json()["entry"]
+            assert len(resp_entries) == len(ops) + 1
+            for (path, q), entry in zip(ops, resp_entries, strict=False):
+                direct = client.get(f"/fhir/{path}", params=dict(
+                    kv.split("=", 1) for kv in q.split("&")))
+                assert entry["response"]["status"] == "200", entry
+                assert entry["resource"] == direct.json(), path
+            # $closure POST parity (direct POST vs batch POST)
+            direct_closure = client.post(
+                "/fhir/CodeSystem/$closure",
+                params={"name": "ev06h4"},
+                json={"resourceType": "Parameters", "parameter": [
+                    {"name": "name", "valueString": "ev06h4"},
+                ]})
+            closure_entry = resp_entries[-1]
+            assert closure_entry["response"]["status"] == "200", closure_entry
+            assert closure_entry["resource"] == direct_closure.json()
+
+    def test_mixed_batch_expand_all_modes_ev06h4(self, fhir_app):
+        from starlette.testclient import TestClient
+        sct = "http://snomed.info/sct"
+        urls = [f"{sct}/vs", f"{sct}/73211009?fhir_vs=isa"]
+        entries = [{"request": {"method": "GET",
+                                "url": f"ValueSet/$expand?url={u}&count=50"}}
+                   for u in urls]
+        with TestClient(fhir_app) as client:
+            batch = client.post("/fhir", json={
+                "resourceType": "Bundle", "type": "batch", "entry": entries})
+            assert batch.status_code == 200
+            for u, entry in zip(urls, batch.json()["entry"], strict=True):
+                direct = client.get("/fhir/ValueSet/$expand",
+                                    params={"url": u, "count": 50})
+                b = entry["resource"]
+                d = direct.json()
+                b["expansion"].pop("timestamp", None)
+                d["expansion"].pop("timestamp", None)
+                assert b == d, u
+
+
+class TestEv06HistorianMthuFiltering(_Ev06HistorianFixture):
+    """EV-06 HISTORIAN family pin: MTHU surrogate codes must never leak
+    into http://loinc.org expansions (QC-296) — both the direct inline
+    site and the batch site."""
+
+    def test_loinc_expansion_filters_mthu_direct_and_batch_ev06h5(
+            self, fhir_app):
+        from starlette.testclient import TestClient
+        with TestClient(fhir_app) as client:
+            direct = client.get("/fhir/ValueSet/$expand",
+                                params={"url": "http://loinc.org/vs",
+                                        "count": 1000})
+            batch = client.post("/fhir", json={
+                "resourceType": "Bundle", "type": "batch",
+                "entry": [{"request": {
+                    "method": "GET",
+                    "url": "ValueSet/$expand?url=http://loinc.org/vs&count=1000",
+                }}],
+            })
+        for body in (direct.json(),
+                     batch.json()["entry"][0]["resource"]):
+            codes = [e["code"] for e in body["expansion"]["contains"]]
+            assert "LP12345-6" in codes
+            assert not any(c.startswith("MTHU") for c in codes), codes
+
+
+class TestEv06HistorianEquivalenceEnum(_Ev06HistorianFixture):
+    """EV-06 HISTORIAN family pin: _INTERNAL_REL_TO_FHIR_EQUIVALENCE
+    values ⊆ FHIR R4 10-value closed set (CF-HISTORIAN-VS01-01 was fixed
+    — subsumedby→specializes, not-relatedto gone; keep it fixed)."""
+
+    def test_internal_rel_map_subset_of_r4_closed_set_ev06h6(self):
+        from medterm4ds.engines.fhir.responses import (
+            _INTERNAL_REL_TO_FHIR_EQUIVALENCE,
+        )
+        r4 = {
+            "relatedto", "equivalent", "equal", "wider", "subsumes",
+            "narrower", "specializes", "inexact", "unmatched", "disjoint",
+        }
+        bad = {k: v for k, v in _INTERNAL_REL_TO_FHIR_EQUIVALENCE.items()
+               if v not in r4}
+        assert not bad, bad
+
+    def test_translate_emitted_equivalence_in_r4_enum_ev06h6(self, fhir_app):
+        from starlette.testclient import TestClient
+        with TestClient(fhir_app) as client:
+            resp = client.get(
+                "/fhir/ConceptMap/$translate",
+                params={
+                    "system": "http://snomed.info/sct",
+                    "code": "44054006",
+                    "targetsystem": "http://hl7.org/fhir/sid/icd-10-cm",
+                })
+        r4 = {
+            "relatedto", "equivalent", "equal", "wider", "subsumes",
+            "narrower", "specializes", "inexact", "unmatched", "disjoint",
+        }
+        for m in [p for p in resp.json()["parameter"] if p["name"] == "match"]:
+            for part in m.get("part", []):
+                if part["name"] == "equivalence":
+                    assert part["valueCode"] in r4, part
+
+
+class TestEv06HistorianPatientFriendlyLookup(_Ev06HistorianFixture):
+    """EV-06 HISTORIAN family pin: $lookup custom properties from the
+    patient-friendly artifacts — canonical-system translated from the raw
+    SAB label via sab_label_to_fhir_uri (QA-043/QA-044), canonical-code
+    preserved, name + match-type surfaced (the EV04-HISTORIAN-1 service
+    fix feeds these artifacts upstream)."""
+
+    @staticmethod
+    def _props(body):
+        props = {}
+        for p in body.get("parameter", []):
+            if p["name"] == "property":
+                parts = p.get("part", [])
+                it = iter(parts)
+                for a, b in zip(it, it, strict=False):
+                    if a["name"] == "code":
+                        props[a.get("valueCode")] = (
+                            b.get("valueString") or b.get("valueCode")
+                            or b.get("valueUri"))
+        return props
+
+    def test_lookup_custom_properties_ev06h7(self, fhir_app):
+        from starlette.testclient import TestClient
+        with TestClient(fhir_app) as client:
+            resp = client.get(
+                "/fhir/CodeSystem/$lookup",
+                params={"system": "http://snomed.info/sct",
+                        "code": "44054006"})
+        assert resp.status_code == 200, resp.text
+        props = self._props(resp.json())
+        assert props.get("patient-friendly") == "type 2 diabetes"
+        assert props.get("match-type") == "exact"
+        assert props.get("canonical-code") == "E11"
+        # raw SAB label 'icd10' MUST be translated to the FHIR canonical URI
+        assert props.get("canonical-system") == (
+            "http://hl7.org/fhir/sid/icd-10-cm")
+
+
+class TestEv06ExplorerVsUrlScoping(_Ev06Client):
+    """EV-06 EXPLORER: canonical-release ValueSet urls (VAL-VAX-* ids,
+    medterm4ds canonical URL forms) must 400 loudly on BOTH $validate-code
+    and $expand — never a silent unscoped TRUE (the V1 gate). The isa
+    form DOES scope membership."""
+
+    @pytest.mark.parametrize("url", [
+        "VAL-VAX-CVX-88",
+        "http://medterm4ds.org/fhir/ValueSet/VAL-VAX-CVX-88",
+        "http://example.org/ValueSet/flu",
+    ])
+    def test_unresolvable_vs_url_400_both_ops_ev06e1(self, fhir_app, url):
+        from starlette.testclient import TestClient
+        with TestClient(fhir_app) as client:
+            v = client.get("/fhir/ValueSet/$validate-code", params={
+                "url": url, "system": "http://snomed.info/sct",
+                "code": "44054006"})
+            e = client.get("/fhir/ValueSet/$expand", params={"url": url})
+        assert v.status_code == 400, v.text
+        assert v.json()["resourceType"] == "OperationOutcome"
+        assert e.status_code == 400, e.text
+
+    def test_isa_url_scopes_membership_ev06e1(self, fhir_app):
+        from starlette.testclient import TestClient
+        isa = "http://snomed.info/sct/73211009?fhir_vs=isa"
+        with TestClient(fhir_app) as client:
+            root = client.get("/fhir/ValueSet/$validate-code", params={
+                "url": isa, "system": "http://snomed.info/sct",
+                "code": "73211009"})
+            out_of_set = client.get("/fhir/ValueSet/$validate-code", params={
+                "url": isa,
+                "system": "http://www.nlm.nih.gov/research/umls/rxnorm",
+                "code": "860975"})
+        assert _ev06_out(root.json(), "result", "valueBoolean") is True
+        assert _ev06_out(out_of_set.json(), "result", "valueBoolean") is False
+
+
+class TestEv06ExplorerTranslateTargetAliases(_Ev06Client):
+    """EV-06 EXPLORER: $translate targetsystem aliases — oid, trailing
+    slash, uppercase scheme, and the camelCase spec name all resolve;
+    the Out target Coding.system is always the canonical URI."""
+
+    @pytest.mark.parametrize("alias", [
+        "urn:oid:2.16.840.1.113883.6.90",
+        "http://hl7.org/fhir/sid/icd-10-cm/",
+        "HTTP://hl7.org/fhir/sid/icd-10-cm",
+    ])
+    def test_targetsystem_alias_canonical_out_ev06e2(self, fhir_app, alias):
+        from starlette.testclient import TestClient
+        with TestClient(fhir_app) as client:
+            resp = client.get("/fhir/ConceptMap/$translate", params={
+                "system": "http://snomed.info/sct", "code": "44054006",
+                "targetsystem": alias})
+        assert resp.status_code == 200, resp.text
+        for m in [p for p in resp.json()["parameter"]
+                  if p["name"] == "match"]:
+            for part in m.get("part", []):
+                if part["name"] == "concept":
+                    assert part["valueCoding"]["system"] == (
+                        "http://hl7.org/fhir/sid/icd-10-cm")
+
+    def test_targetsystem_camel_case_accepted_ev06e2(self, fhir_app):
+        from starlette.testclient import TestClient
+        with TestClient(fhir_app) as client:
+            resp = client.get("/fhir/ConceptMap/$translate", params={
+                "system": "http://snomed.info/sct", "code": "44054006",
+                "targetSystem": "http://hl7.org/fhir/sid/icd-10-cm"})
+        assert resp.status_code == 200, resp.text
+
+
+class TestEv06ExplorerClosureMixedSystemSequence(_Ev06Client):
+    """EV-06 EXPLORER: $closure init → add(mixed-system + same-digit
+    codes in two systems) → re-add no-op → init-reset sequence on the
+    synthetic fixture (which carries 44054006 in BOTH SNOMED and
+    ICD-10-CM — the QC-266 same-digit collision shape)."""
+
+    @staticmethod
+    def _closure_body(name, concepts=()):
+        params = [{"name": "name", "valueString": name}]
+        for sysu, code in concepts:
+            params.append({"name": "concept",
+                           "valueCoding": {"system": sysu, "code": code}})
+        return {"resourceType": "Parameters", "parameter": params}
+
+    def test_init_add_readd_reset_sequence_ev06e3(self, fhir_app):
+        from starlette.testclient import TestClient
+        nm = "ev06e3"
+        concepts = [
+            ("http://snomed.info/sct", "73211009"),
+            ("http://snomed.info/sct", "44054006"),
+            ("http://hl7.org/fhir/sid/icd-10-cm", "E11"),
+            ("http://hl7.org/fhir/sid/icd-10-cm", "44054006"),  # same digits
+        ]
+        with TestClient(fhir_app) as client:
+            r1 = client.post("/fhir/CodeSystem/$closure",
+                             json=self._closure_body(nm))
+            assert r1.status_code == 200, r1.text
+            h1 = _ev06_out(r1.json(), "return", "valueString")
+
+            r2 = client.post("/fhir/CodeSystem/$closure",
+                             json=self._closure_body(nm, concepts))
+            assert r2.status_code == 200, r2.text
+            h2 = _ev06_out(r2.json(), "return", "valueString")
+            assert h2 != h1  # add changed state
+
+            r3 = client.post("/fhir/CodeSystem/$closure",
+                             json=self._closure_body(nm, concepts))
+            h3 = _ev06_out(r3.json(), "return", "valueString")
+            assert h3 == h2  # re-add is a no-op (QC-278)
+            ret_pairs = {
+                (p["valueCoding"]["system"], p["valueCoding"]["code"])
+                for p in r3.json()["parameter"] if p["name"] == "concept"
+            }
+            # same-digit codes keyed per system — 4 distinct entries
+            assert ("http://snomed.info/sct", "44054006") in ret_pairs
+            assert ("http://hl7.org/fhir/sid/icd-10-cm", "44054006") in ret_pairs
+            assert len(ret_pairs) == 4
+
+            r4 = client.post("/fhir/CodeSystem/$closure",
+                             json=self._closure_body(nm))
+            h4 = _ev06_out(r4.json(), "return", "valueString")
+            assert h4 == h1  # init resets state
+            assert not [p for p in r4.json()["parameter"]
+                        if p["name"] == "concept"]
+
+
+class TestEv06ExplorerOffsetWalkDeterminism(_Ev06Client):
+    """EV-06 EXPLORER: deep pagination on implicit value sets — pages
+    are ORDER BY CODE deterministic, disjoint, globally sorted, and
+    repeatable (QC-291/293 + EC-10 offset paging)."""
+
+    def test_offset_walk_disjoint_sorted_repeatable_ev06e6(self, fhir_app):
+        from starlette.testclient import TestClient
+        with TestClient(fhir_app) as client:
+            def codes(offset):
+                r = client.get("/fhir/ValueSet/$expand", params={
+                    "url": "http://snomed.info/sct/vs",
+                    "count": 1, "offset": offset})
+                return [e["code"] for e in
+                        r.json()["expansion"].get("contains", [])]
+
+            p0, p1, p2 = codes(0), codes(1), codes(2)
+            assert p0 and p1  # fixture has 2 active SNOMED codes
+            assert p2 == []   # past the end → empty page (no contains)
+            all_codes = p0 + p1 + p2
+            assert len(set(all_codes)) == len(all_codes)  # disjoint
+            assert all_codes == sorted(all_codes)  # globally ordered
+            assert codes(0) == p0  # deterministic repeat
+
+
+class TestEv06ExplorerExpandFilterPreferredDisplay(_Ev06Client):
+    """EV-06 EXPLORER: $expand filter-mode contains[].display is the
+    engine preferred term (QC-258), not the matched synonym — the
+    fixture seeds a prefix-matching SYNONYM that outranks the PT in
+    search_names ranking."""
+
+    def test_filter_display_is_preferred_term_ev06e4(self, fhir_app):
+        from starlette.testclient import TestClient
+        with TestClient(fhir_app) as client:
+            r = client.get("/fhir/ValueSet/$expand",
+                           params={"filter": "diabetes", "count": 20})
+            lookup = client.get("/fhir/CodeSystem/$lookup", params={
+                "system": "http://snomed.info/sct", "code": "44054006"})
+        contains = {e["code"]: e["display"]
+                    for e in r.json()["expansion"]["contains"]}
+        assert contains["44054006"] == _ev06_out(
+            lookup.json(), "display", "valueString")
+        assert contains["44054006"] == "Type 2 diabetes mellitus"
