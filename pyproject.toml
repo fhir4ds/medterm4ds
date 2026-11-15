@@ -117,7 +117,6 @@ include = [
     "/docs",
     "/notebooks",
     "/pyproject.toml",
-    "/scripts",
     "/src",
     "/tests",
 ]

@@ -68,12 +68,12 @@ results = mt.search("metformin pill", mode="hybrid")
 concepts = mt.extract(
     "65yo M with T2DM on metformin. No CKD.",
     format="codes",
-    categories=["condition", "medication"],
+    result_types=["condition", "medication"],
 )
 for c in concepts:
     print(f"  {c.code:12s} {c.display:35s} matched='{c.matched_text}' status={c.status}")
-# → 44054006     Type 2 diabetes mellitus            matched='T2DM'      status=affirmed
-# → 860975       Metformin Oral Product              matched='metformin' status=affirmed
+# → 44054006     Type 2 Diabetes                      matched='T2DM'      status=affirmed
+# → 6809         Metformin                            matched='metformin' status=affirmed
 # CKD excluded — negated by ConText
 ```
 

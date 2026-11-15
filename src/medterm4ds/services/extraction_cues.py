@@ -32,9 +32,11 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
+from typing import TYPE_CHECKING
 
-from spacy.matcher import Matcher
-from spacy.tokens import Doc
+if TYPE_CHECKING:  # spacy stays a lazy, extraction-extra-only import (see
+    from spacy.matcher import Matcher  # _register_doc_extensions below)
+    from spacy.tokens import Doc
 
 # F6 — trailing-value run vocabulary (token equivalents of the legacy
 # _TRAILING_VALUE_RE; see Mt4dsCueAnnotator.strip_trailing_values).
@@ -67,9 +69,18 @@ _LEADING_QUALIFIER_PHRASES = frozenset({
 # number is a value, not a standalone query).
 _PURE_NUMBER_RE = re.compile(r"\d+(?:\.\d+)?")
 
-# Registered once at import (component may be constructed per pipeline).
-if not Doc.has_extension("mt4ds_cues"):
-    Doc.set_extension("mt4ds_cues", default=None)
+# Registered lazily (component may be constructed per pipeline). The
+# spacy import must stay OUT of module scope: this module's constants are
+# re-exported by services/extraction.py, which apps/cli.py (build_parser)
+# and apps/fhir_api.py import at module level — a module-level spacy
+# import here crashed the base install's `medterm4ds --version` and the
+# `[fhir]`-only install's create_fhir_app (EV09-EXPLORER-1). spacy is an
+# extraction-extra dependency (via medspacy), not a base dependency.
+def _register_doc_extensions() -> None:
+    from spacy.tokens import Doc
+
+    if not Doc.has_extension("mt4ds_cues"):
+        Doc.set_extension("mt4ds_cues", default=None)
 
 # Cue class labels (match the strings the old helpers returned).
 PSEUDO_NEGATION = "pseudo_negation"
@@ -187,6 +198,8 @@ class Mt4dsCueAnnotator:
     def _ensure_matcher(self) -> Matcher:
         """Build the Matcher on first use (the pipeline object may be a
         stand-in while NlpPipeline._ensure_loaded is still mocking loads)."""
+        from spacy.matcher import Matcher
+
         if self._matcher is None:
             self._matcher = Matcher(self._nlp.vocab)
             self._add_patterns()
@@ -233,6 +246,7 @@ class Mt4dsCueAnnotator:
     # Annotation
 
     def __call__(self, doc: Doc) -> Doc:
+        _register_doc_extensions()
         cues = CueAnnotations()
         matcher = self._ensure_matcher()
         for match_id, start, end in matcher(doc):
@@ -277,6 +291,7 @@ class Mt4dsCueAnnotator:
                     cues.pediatric_subject_tokens.add(i)
 
     def _cues_for(self, doc: Doc) -> CueAnnotations:
+        _register_doc_extensions()
         if doc._.mt4ds_cues is None:
             self(doc)
         return doc._.mt4ds_cues
