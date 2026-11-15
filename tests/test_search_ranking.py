@@ -812,3 +812,156 @@ class TestSourceSabAliasesSingleSource:
         assert expand_source_aliases(["snomed"]) == {"SNOMED", "SNOMEDCT_US"}
         assert expand_source_aliases(["LNC", "atc"]) == {"LNC", "LOINC", "ATC", "RXNORM"}
         assert expand_source_aliases(["ICD10CM"]) == {"ICD10CM"}
+
+
+class TestEv03SkepticSourceAliasWidening:
+    """EV03-SKEPTIC-1: the pairwise SAB alias contract (one shared map,
+    core.normalize.SOURCE_SAB_ALIASES) was honored by every canonical
+    pass (alias dictionary, group dictionary, ancestor fallback, concept
+    index) but NOT by the legacy modes: ``_resolve_categories`` keyed
+    only canonical names (SNOMEDCT_US/LNC), so
+    ``lexical('diabetes', sources=['SNOMED'])`` silently returned []
+    where ``sources=['SNOMEDCT_US']`` returned rows — and where
+    ``canonical(sources=['SNOMED'])`` happily served results. Same
+    service, same input, three behaviors. Both the category resolution
+    AND the post-filter (``_filter_by_source``) must widen via the
+    shared map."""
+
+    @pytest.fixture()
+    def svc(self, tmp_path: Path):
+        (tmp_path / "condition_bm25.json").write_text(json.dumps(_build_index(
+            "condition",
+            [{"code": "73211009", "system": "snomedct_us",
+              "name": "Diabetes mellitus"}],
+        )))
+        (tmp_path / "lab_bm25.json").write_text(json.dumps(_build_index(
+            "lab",
+            [{"code": "L1", "system": "lnc", "name": "Complete Blood Count"}],
+        )))
+        s = SearchService(
+            search_index_dir=str(tmp_path),
+            embedding_model_dir=str(tmp_path / "no_model"),
+        )
+        return s
+
+    def _stub_semantic(self, svc):
+        class _Stub:
+            def search(self, query, *, categories=None, top_k=20):
+                return [{
+                    "system": "snomedct_us", "code": "73211009",
+                    "display": "Diabetes mellitus", "score": 0.95,
+                    "match_grade": "certain", "category": "condition",
+                }]
+        svc._semantic_engine = _Stub()
+        svc._ensure_semantic = lambda: svc._semantic_engine
+
+    def test_lexical_snomed_alias_finds_snomedct_us_rows(self, svc):
+        rows = svc.lexical("diabetes", sources=["SNOMEDCT_US"])
+        assert [r.code for r in rows] == ["73211009"]
+        alias = svc.lexical("diabetes", sources=["SNOMED"])
+        assert [r.code for r in alias] == ["73211009"], (
+            "legacy lexical mode must widen 'SNOMED' via the shared "
+            "SAB alias map — same input as canonical()"
+        )
+
+    def test_lexical_loinc_alias_finds_lnc_rows(self, svc):
+        rows = svc.lexical("complete blood count", sources=["LOINC"])
+        assert [r.code for r in rows] == ["L1"]
+
+    def test_semantic_alias_keeps_snomedct_us_rows(self, svc):
+        self._stub_semantic(svc)
+        rows = svc.semantic("diabetes", sources=["SNOMED"])
+        assert [r.code for r in rows] == ["73211009"]
+
+    def test_hybrid_alias_keeps_snomedct_us_rows(self, svc):
+        self._stub_semantic(svc)
+        rows = svc.hybrid("diabetes", sources=["SNOMED"])
+        assert [r.code for r in rows] == ["73211009"]
+
+    def test_alias_widening_is_pairwise_not_admit_all(self, svc):
+        # A filter that shares a category index with the rows must NOT
+        # admit them: ICD10CM and SNOMEDCT_US both map to 'condition'.
+        assert svc.lexical("diabetes", sources=["ICD10CM"]) == []
+        assert svc.lexical("diabetes", sources=["CVX"]) == []
+        assert svc.lexical("diabetes", sources=["NOTAVOCAB"]) == []
+
+
+class TestEv03HistorianBatchCountParity:
+    """EV03-HISTORIAN-1: canonical_batch under-fills count relative to
+    canonical(). The single path searches k = max(count, 50); the batch
+    path searched k = max(count*3, 20) — with alias entries crowding the
+    candidate list (many metadata rows map to the same canonical_id),
+    the smaller pool deduped below count, so
+    canonical_batch(['Methotrexate'], count=5) returned 3 rows where
+    canonical('Methotrexate', count=5) returned 5 (release 2026.11.14.2).
+    The batch surface must return AT LEAST the single surface's rows for
+    the same count — extraction's post-filters assume the headroom."""
+
+    @staticmethod
+    def _hit(cid, score):
+        from medterm4ds.services.search import CanonicalSearchResult
+
+        return CanonicalSearchResult(
+            canonical_id=cid, domain=["lab"], anchor_system="LNC",
+            anchor_code=cid, patient_friendly_name=cid, score=score,
+            match_grade="probable", matched_via_code="concept:x",
+            matched_via_display=cid, total_member_count=1,
+            members=[], combination_members=[],
+        )
+
+    @pytest.fixture()
+    def svc(self, tmp_path: Path, monkeypatch):
+        s = SearchService(
+            search_index_dir=str(tmp_path),
+            embedding_model_dir=str(tmp_path / "no_model"),
+        )
+        # Synthetic concept index: 50 vectors, mostly alias rows for the
+        # first few anchors, so a k=20 pool dedupes to 3 unique ids while
+        # a k=50 pool holds 5.
+        ids_order = (
+            ["C1"] * 6 + ["C2"] * 6 + ["C3"] * 6 + ["C4"] * 6 + ["C5"] * 6
+            + [f"pad{i}" for i in range(20)]
+        )
+        scores_order = [0.99] * 30 + [0.71] * 20  # all above 0.70
+        meta = [{"canonical_id": cid, "name": cid} for cid in ids_order]
+        faiss_stub = type("F", (), {"ntotal": 50})()
+
+        def _search(embs, k):
+            import numpy as np
+
+            n = min(k, 50)
+            nq = 1 if embs is None else len(embs)
+            return (
+                np.array([scores_order[:n]] * nq),
+                np.array([list(range(n))] * nq),
+            )
+
+        faiss_stub.search = _search
+        s._ensure_canonical = lambda: None  # type: ignore[method-assign]
+        s._canonical_loaded = True
+        s._ensure_concepts = lambda: None  # type: ignore[method-assign]
+        s._concepts_loaded = True
+        s._concepts_faiss = faiss_stub
+        s._concepts_meta = meta
+
+        class _StubEngine:
+            def _ensure_loaded(self):
+                return None
+
+            def _embed(self, q):
+                return None
+
+            def embed_batch(self, qs):
+                return [None] * len(qs)
+
+        s._semantic_engine = _StubEngine()
+        s._ensure_semantic = lambda: s._semantic_engine  # type: ignore[method-assign]
+        return s
+
+    def test_batch_returns_at_least_single_count_rows(self, svc):
+        single = svc.canonical("query", count=5)
+        batch = svc.canonical_batch(["query"], count=5)[0]
+        assert [r.canonical_id for r in single] == ["C1", "C2", "C3", "C4", "C5"]
+        assert [r.canonical_id for r in batch] == ["C1", "C2", "C3", "C4", "C5"], (
+            f"batch under-filled: {[r.canonical_id for r in batch]}"
+        )
