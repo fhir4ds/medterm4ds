@@ -725,7 +725,13 @@ _VS_VALIDATE_KNOWN_PARAMS = frozenset(
      "inferSystem", "abstract", "display", "displayLanguage",
      "coding", "codeableConcept", "property", "url",
      "valueSetVersion", "context", "contextDirection", "filter",
-     "_format"),
+     "_format",
+     # EV10-EXPLORER-1: valueSet is a spec-listed R4 In param
+     # (0..1 ValueSet, https://hl7.org/fhir/R4/valueset-operation-validate-code.html)
+     # sent as parameter[].resource. Declared-but-unimplemented on this
+     # surface (membership is the bare existence check per the NOT A BUG
+     # registry) — accepted like version/abstract, never rejected.
+     "valueSet"),
 )
 
 _SUBSUMES_KNOWN_PARAMS = frozenset(

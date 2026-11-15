@@ -111,15 +111,18 @@ class TestXA1UnknownParamsExtractSearch:
 
 
 class TestXA2FilterSpellings:
-    """XA2 — plausible spellings 200 with confident-empty answers."""
+    """XA2 — CLOSED (EV-05): descriptive spellings now 400 naming
+    the param (the confident-empty answer is gone)."""
 
     @pytest.mark.parametrize(
         "param", ["includeFamilyHistory", "includeHistoricalFamily"]
     )
     def test_x20_descriptive_spelling_empty(self, fhir_client, param):
-        """The descriptive spellings are silently accepted with ZERO
-        results — the client believes it requested family history.
-        Flip when XA1's known-sets 400 these names."""
+        """EV-05 pin flip (EV-10 HISTORIAN stale-pin sweep): the
+        descriptive spellings are now 400s naming the param — the
+        $extract POST body-name check landed with _EXTRACT_KNOWN_PARAMS
+        (EV05-SKEPTIC-1), so a client using the descriptive spelling
+        gets a loud rejection instead of a confident empty answer."""
         r = fhir_client.post(
             "/fhir/CodeSystem/$extract",
             json={
@@ -130,12 +133,10 @@ class TestXA2FilterSpellings:
                 ],
             },
         )
-        assert r.status_code == 200
-        # The unknown spelling is a NO-OP: output identical to the
-        # unfiltered request (affirmed-only, total=1) — the family
-        # history the client asked for is silently absent.
-        assert r.json()["total"] == 1
-        assert _codes(r.json()) == ["44054006"]
+        assert r.status_code == 400
+        assert r.headers["content-type"].startswith("application/fhir+json")
+        assert r.json()["resourceType"] == "OperationOutcome"
+        assert param in r.json()["issue"][0]["diagnostics"]
 
     def test_x21_binding_spelling_works(self, fhir_client):
         """Control-within-finding: includeFamily (the binding

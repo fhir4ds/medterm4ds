@@ -2813,6 +2813,54 @@ class TestEv06SkepticVsValidateUnknownParams(_Ev06Client):
         assert resp.json()["resourceType"] == "Parameters"
 
 
+class TestEv10ExplorerVsValidateValuesetParam(_Ev06Client):
+    """EV10-EXPLORER-1 (MEDIUM): the EV06-SKEPTIC-1 body-name check
+    on ValueSet/$validate-code rejected ``valueSet`` — a spec-listed
+    R4 In parameter (0..1 ValueSet, sent as parameter[].resource)
+    that _VS_VALIDATE_KNOWN_PARAMS omitted. A spec-conformant client
+    posting an inline ValueSet got a 400 for a valid request. The
+    param is now in the known set (declared-but-unimplemented, like
+    version/abstract: membership stays the bare existence check per
+    the NOT A BUG registry). Regression pin: conformance
+    test_ts09_vs_validate_membership_20261006.py::test_v12."""
+
+    def test_post_body_valueset_resource_accepted_ev10explorer1(
+        self, fhir_app,
+    ):
+        from starlette.testclient import TestClient
+        with TestClient(fhir_app) as client:
+            resp = client.post(
+                "/fhir/ValueSet/$validate-code",
+                json={"resourceType": "Parameters", "parameter": [
+                    {"name": "system", "valueUri": "http://snomed.info/sct"},
+                    {"name": "code", "valueCode": "44054006"},
+                    {"name": "valueSet", "resource": {
+                        "resourceType": "ValueSet",
+                        "url": "http://example.org/vs",
+                        "compose": {"include": [{
+                            "system": "http://snomed.info/sct",
+                            "concept": [{"code": "44054006"}],
+                        }]},
+                    }},
+                ]},
+            )
+        assert resp.status_code == 200, resp.text
+        assert resp.headers["content-type"].startswith("application/fhir+json")
+        assert resp.json()["resourceType"] == "Parameters"
+        result = next(
+            (p.get("valueBoolean")
+             for p in resp.json()["parameter"]
+             if p.get("name") == "result"),
+            None,
+        )
+        assert result is True
+
+    def test_valueset_in_known_params_registry_ev10explorer1(self):
+        from medterm4ds.apps.fhir_api import _VS_VALIDATE_KNOWN_PARAMS
+
+        assert "valueSet" in _VS_VALIDATE_KNOWN_PARAMS
+
+
 class TestEv06SkepticLookupDateValidation(_Ev06Client):
     """EV06-SKEPTIC-2 (LOW): date shape-validation parity — the
     validate_fhir_date helper (EB/H4 family) was wired to
