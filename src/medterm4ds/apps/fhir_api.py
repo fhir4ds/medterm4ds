@@ -40,6 +40,10 @@ from medterm4ds.engines.fhir import (
     sab_label_to_fhir_uri,
     system_to_fhir_uri,
 )
+
+# Map-identity constants live in responses.py (the conformance surface
+# advertises them); re-exported here as the $translate seam's names.
+from medterm4ds.engines.fhir import responses as _responses
 from medterm4ds.engines.fhir.responses import (
     build_bundle_search,
     build_capability_statement,
@@ -515,12 +519,20 @@ def vs_membership(
 # unversioned). Previously ANY url was silently ignored and the
 # crosswalk answered under the requested map's name (N1) with zero
 # version semantics (N2).
-IMPLICIT_CONCEPT_MAP_URL = "urn:medterm4ds:crosswalk"
+IMPLICIT_CONCEPT_MAP_URL = (
+    _responses.IMPLICIT_CONCEPT_MAP_URL
+)
 # Stage 4b (athena design addendum): the opt-in Athena ConceptMap —
 # source FHIR system+code → target urn:athena:concept-id, selected
 # ONLY by explicit url (the default crosswalk is unchanged); exists
 # solely when athena_* tables are ingested.
-ATHENA_CONCEPT_MAP_URL = "urn:medterm4ds:athena-conceptmap"
+ATHENA_CONCEPT_MAP_URL = _responses.ATHENA_CONCEPT_MAP_URL
+# Associations map (FDD .temp/associations_translate_fdd.md): source
+# FHIR system+code → clinically associated concepts from the fhir4px
+# associations graph, target-domain selected by targetSystem. Opt-in by
+# explicit url exactly like the athena bridge; the graph loads lazily
+# only when this map is selected.
+ASSOCIATIONS_CONCEPT_MAP_URL = _responses.ASSOCIATIONS_CONCEPT_MAP_URL
 
 
 def resolve_concept_map_url(
@@ -548,14 +560,17 @@ def resolve_concept_map_url(
             f"implicit map {IMPLICIT_CONCEPT_MAP_URL!r} is unversioned "
             f"(got {url!r})."
         )
-    if url not in (IMPLICIT_CONCEPT_MAP_URL, ATHENA_CONCEPT_MAP_URL):
+    if url not in (
+        IMPLICIT_CONCEPT_MAP_URL, ATHENA_CONCEPT_MAP_URL,
+        ASSOCIATIONS_CONCEPT_MAP_URL,
+    ):
+        # Composed to fit the 256-char OperationOutcome diagnostics cap
+        # (the listing of all three maps is the load-bearing signal).
         raise ValueError(
-            f"Unknown ConceptMap url: {url!r}. This server serves the "
-            f"implicit map {IMPLICIT_CONCEPT_MAP_URL!r} (UMLS CUI "
-            "crosswalk, any admitted system to any admitted system) "
-            f"and the Athena bridge map {ATHENA_CONCEPT_MAP_URL!r} "
-            "(FHIR system+code → OMOP concept_id; requires ingested "
-            "athena_* tables). Omit url to translate via the crosswalk."
+            f"Unknown ConceptMap url: {url!r}. Served maps: "
+            f"{IMPLICIT_CONCEPT_MAP_URL} (CUI crosswalk; default), "
+            f"{ATHENA_CONCEPT_MAP_URL} (OMOP bridge), "
+            f"{ASSOCIATIONS_CONCEPT_MAP_URL} (fhir4px associations)."
         )
 
 
@@ -2481,10 +2496,14 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
                     batch_ver = batch_p.get("conceptMapVersion")
                 # AS3 fix (athena-batch3): forward the athena map
                 # selection — the direct routes pass map_url since
-                # stage 4b; the batch call site was missed.
+                # stage 4b; the batch call site was missed. The
+                # associations map threads through the same seam
+                # (helper-wiring-to-every-sibling rule).
                 batch_map_url = (
                     batch_url
-                    if batch_url == ATHENA_CONCEPT_MAP_URL
+                    if batch_url in (
+                        ATHENA_CONCEPT_MAP_URL, ASSOCIATIONS_CONCEPT_MAP_URL,
+                    )
                     else None
                 )
                 try:
@@ -3951,7 +3970,9 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
             return _fhir_error_response(request, 400, str(exc))
         # T1 fix: reverse=true consults the map from the target side.
         reverse = request.query_params.get("reverse", "").lower() == "true"
-        map_url = url if url == ATHENA_CONCEPT_MAP_URL else None
+        map_url = url if url in (
+            ATHENA_CONCEPT_MAP_URL, ASSOCIATIONS_CONCEPT_MAP_URL,
+        ) else None
         payload = await _run_db(_executor(request), _do_translate, _engine(request), system, actual_code, effective_target, reverse, map_url)
         return _respond(request, payload)
 
@@ -4010,7 +4031,9 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
             isinstance(reverse_raw, str) and reverse_raw.lower() == "true"
         )
         post_url = post_params.get("url")
-        map_url = post_url if post_url == ATHENA_CONCEPT_MAP_URL else None
+        map_url = post_url if post_url in (
+            ATHENA_CONCEPT_MAP_URL, ASSOCIATIONS_CONCEPT_MAP_URL,
+        ) else None
         payload = await _run_db(_executor(request), _do_translate, _engine(request), system, code, targetsystem, reverse, map_url)
         return _respond(request, payload)
 
@@ -4098,12 +4121,201 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
             source_code=code,
         )
 
+    def _do_translate_associations(
+        engine: LocalDuckDBEngine,
+        source_uri: str,
+        code: str,
+        target_uri: str | None,
+        reverse: bool,
+    ):
+        """Associations map (FDD §5): code → cid → name → graph entry →
+        per-member target-filtered associated concepts.
+
+        Contract: targetSystem must be one of the closed target-URI enum
+        derived from the cid prefix registry (unknown → 400 listing
+        them); reverse is 400 in v1; equivalence is relatedto for every
+        edge; unknown/unassociated source codes are an honest 200
+        result=false empty; displays are engine-canonical-first
+        (get_code_infos — the $lookup path) with the graph's by_cid
+        display as the documented fallback."""
+        from medterm4ds.core.models import CodeMapping
+        from medterm4ds.services.associations import (
+            ENGINE_TO_CANONICAL_SYSTEM,
+            SOURCE_TO_PREFIXES,
+            TARGET_SYSTEM_URIS,
+            AssociationsLayoutError,
+            get_associations_graph,
+        )
+        from medterm4ds.services.lookup import get_code_infos
+        from medterm4ds.services.search import get_search_service
+
+        if reverse:
+            return _fhir_error(
+                400,
+                "reverse is not supported on the associations map in "
+                "this release; the graph is served source→associated-"
+                "targets only.",
+            )
+        if target_uri is None or not target_uri.strip():
+            # The V3/QC-423 gate upstream should make this unreachable;
+            # fail loudly rather than widening if it ever leaks through.
+            return _fhir_error(
+                400,
+                "targetsystem must be a non-empty system URI when "
+                "provided.",
+            )
+        # CR-003: canonicalize the client-supplied targetSystem through
+        # the shared registry path BEFORE the closed-enum gate — the
+        # same resolution _do_translate applies to its targetSystem
+        # (fhir_uri_to_system → system_to_fhir_uri), so alias /
+        # trailing-slash / uppercase-scheme forms every sibling surface
+        # accepts resolve to the enum's canonical URI instead of 400ing
+        # on an exact-string compare. Unresolvable forms stay raw and
+        # still 400 with the full listing below.
+        target_source = fhir_uri_to_system(target_uri)
+        if target_source is not None:
+            target_uri = system_to_fhir_uri(target_source) or target_uri
+        if target_uri not in TARGET_SYSTEM_URIS:
+            served = ", ".join(sorted(TARGET_SYSTEM_URIS))
+            # The full listing is the load-bearing closed-enum signal
+            # (AF3/AS2 doctrine); it is composed to fit the 256-char
+            # diagnostics cap, so no client echo fits alongside it.
+            return _fhir_error(
+                400,
+                "Associations map target systems: " + served,
+            )
+        source = fhir_uri_to_system(source_uri)
+        if source is None:
+            return _fhir_error(
+                400, f"Unrecognized source system URI: {source_uri}"
+            )
+        if not str(code).strip():
+            return _fhir_error(
+                400, f"code must be a non-empty string, got {code!r}"
+            )
+        try:
+            graph = get_associations_graph()
+        except AssociationsLayoutError as exc:
+            return _fhir_error(
+                503,
+                f"Associations artifacts unavailable: {exc} Provision "
+                "with 'medterm4ds data cache-refresh --associations' "
+                "and check network access + HF_TOKEN.",
+            )
+        # Decision F resolution chain: exact alias path via the shared
+        # canonical index FIRST (SearchService accessor — no duplicate
+        # index), then the deterministic derivation fallback.
+        canonical_system = ENGINE_TO_CANONICAL_SYSTEM.get(source, source)
+        cid: str | None = None
+        try:
+            index = get_search_service().code_to_canonical_id()
+        except (RuntimeError, OSError, ImportError) as exc:
+            return _fhir_error(
+                503,
+                "Canonical artifacts unavailable for the associations "
+                f"source-resolution path: {exc} Provision with "
+                "'medterm4ds data cache-refresh' and check network "
+                "access + HF_TOKEN.",
+            )
+        cid = index.get((canonical_system, code))
+        if cid is None:
+            for prefix in SOURCE_TO_PREFIXES.get(source, ()):
+                derived = f"{prefix}-{code}"
+                if derived in graph.by_cid:
+                    cid = derived
+                    logger.info(
+                        "associations $translate: derived cid %s for "
+                        "(%s, %s) via the deterministic fallback (not "
+                        "in the canonical alias index)", derived, source,
+                        code,
+                    )
+                    break
+        if cid is None:
+            return build_parameters_translate(
+                [], source_system_uri=source_uri, source_code=code,
+            )
+        entry = graph.entry_for_cid(cid)
+        if entry is None:
+            # Leaf cid or name-only product entry — honest empty.
+            return build_parameters_translate(
+                [], source_system_uri=source_uri, source_code=code,
+            )
+        try:
+            members = [
+                (bucket, member)
+                for bucket, member in graph.members(entry)
+                # Per-member target filtering on the parsed member cid
+                # system (buckets MIX systems — never filter per-bucket).
+                # parse_cid raises AssociationsLayoutError on an
+                # unregistered prefix (fail-loud closed-set doctrine).
+                if system_to_fhir_uri(
+                    graph.parse_cid(member["cid"])[0]
+                ) == target_uri
+            ]
+        except AssociationsLayoutError as exc:
+            return _fhir_error(
+                503, f"Associations graph contract violation: {exc}"
+            )
+        members.sort(key=lambda bm: graph.sort_key(bm[0], bm[1]))
+        # Decision G displays: engine-canonical-first (the $lookup path),
+        # graph by_cid display as documented fallback (INFO-logged).
+        target_refs: list[CodeRef] = []
+        seen_refs: set[tuple[str, str]] = set()
+        parsed: dict[str, tuple[str, str]] = {}
+        for _bucket, member in members:
+            member_source, member_code = graph.parse_cid(member["cid"])
+            parsed[member["cid"]] = (member_source, member_code)
+            if (member_source, member_code) not in seen_refs:
+                seen_refs.add((member_source, member_code))
+                target_refs.append(
+                    CodeRef(member_source, member_code)
+                )
+        engine_names: dict[tuple[str, str], str] = {}
+        if target_refs:
+            infos = get_code_infos(target_refs, engine=engine)
+            for ref, info in zip(target_refs, infos, strict=True):
+                if info is not None and info.name:
+                    engine_names[(ref.source, ref.code)] = info.name
+        mappings = []
+        for _bucket, member in members:
+            member_source, member_code = parsed[member["cid"]]
+            display = engine_names.get((member_source, member_code))
+            if display is None:
+                display = graph.by_cid.get(member["cid"])
+                if display is not None:
+                    logger.info(
+                        "associations $translate: engine has no atom for "
+                        "(%s, %s); using the graph display %r",
+                        member_source, member_code, display,
+                    )
+            mappings.append(CodeMapping(
+                source=CodeRef(source, code),
+                target=CodeRef(member_source, member_code),
+                target_display=display,
+                relationship="related-to",
+                match_type="associations_bridge",
+            ))
+        canonical_source_uri = canonical_system_uri(
+            source_uri, source=source
+        )
+        return build_parameters_translate(
+            mappings,
+            source_system_uri=canonical_source_uri,
+            source_code=code,
+        )
+
     def _do_translate(engine: LocalDuckDBEngine, source_uri: str, code: str, target_uri: str | None, reverse: bool = False, map_url: str | None = None):
         # Stage 4b (athena design addendum): the opt-in Athena bridge
         # map — selected ONLY by explicit url; the default crosswalk
         # path below is untouched.
         if map_url == ATHENA_CONCEPT_MAP_URL:
             return _do_translate_athena(
+                engine, source_uri, code, target_uri, reverse
+            )
+        # Associations map (FDD): sibling opt-in branch BEFORE the
+        # generic crosswalk path (athena dispatch order).
+        if map_url == ASSOCIATIONS_CONCEPT_MAP_URL:
+            return _do_translate_associations(
                 engine, source_uri, code, target_uri, reverse
             )
         # T1 fix (TS-02/TS-19): reverse=true asks "which codes map TO

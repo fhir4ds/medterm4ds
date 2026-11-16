@@ -385,6 +385,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--terminology", action="store_true",
         help="Refresh the fhir4ds/terminology release layout "
              "(<family>/<release>/; default source for this release).")
+    data_cache_refresh.add_argument(
+        "--associations", action="store_true",
+        help="Refresh the fhir4ds/associations release (standalone "
+             "graph bundle served by the associations ConceptMap; "
+             "release pinned via MEDTERM4DS_ASSOCIATIONS_RELEASE).")
     data_cache_refresh.set_defaults(func=run_data_cache_refresh)
     data_cache_list = data_subparsers.add_parser(
         "cache-list", help="List artifact-repo tags and branches (network call).")
@@ -2145,6 +2150,7 @@ def run_data_cache_refresh(args: argparse.Namespace) -> int:
         split=args.split,
         data_revision=args.data_revision,
         terminology=getattr(args, "terminology", False),
+        associations=getattr(args, "associations", False),
     )
     sys.stdout.write(_json_dumps(report))
     return 0

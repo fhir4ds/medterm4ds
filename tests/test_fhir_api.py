@@ -3647,3 +3647,636 @@ class TestCr001PostSiblingUnknownParamGuards(_Ev06Client):
             r = client.post("/fhir/ValueSet/$expand", json=body)
         assert r.status_code == 400, r.text
         assert "zzz" in r.json()["issue"][0]["diagnostics"]
+
+
+# ---------------------------------------------------------------------------
+# Associations ConceptMap ($translate, FDD .temp/associations_translate_fdd.md)
+# ---------------------------------------------------------------------------
+
+_ASSOC_URL = "urn:medterm4ds:associations-conceptmap"
+_ASSOC_REL = "2099.01.01.9"
+
+_ASSOC_GRAPH = {
+    "format": "fhir4px_associations_v1.4",
+    "version": "2099-01-01.0000",
+    "by_cid": {
+        "VAL-COND-SNOMED-88594005": "herpes simplex infection",
+        "VAL-MED-RXNORM-2034": "acyclovir",
+        "VAL-LAB-LOINC-24321-2": "Basic Metabolic Panel (2000)",
+        "VAL-LAB-LOINC-LP14355-9": "Creatinine",
+        "VAL-COND-SNOMED-33839006": "herpes simplex keratitis",
+        "VAL-MED-RXNORM-2035": "valacyclovir",
+        "VAL-PROC-CPT-99213": "office visit",
+        "VAL-COND-ICD10CM-A00-A09": "intestinal infections",
+    },
+    "by_name": {
+        "herpes simplex infection": "VAL-COND-SNOMED-88594005",
+        "acyclovir": "VAL-MED-RXNORM-2034",
+    },
+    "concepts": {
+        "herpes simplex infection": {
+            "name": "herpes simplex infection",
+            "buckets": {
+                "lab": [
+                    {"cid": "VAL-LAB-LOINC-24321-2", "name": "Basic Metabolic Panel (2000)", "provenance": "monitoring_recommendation", "distance": 1},
+                    {"cid": "VAL-LAB-LOINC-LP14355-9", "name": "Creatinine", "provenance": "monitoring_recommendation", "distance": 0},
+                ],
+                "condition": [
+                    {"cid": "VAL-COND-SNOMED-33839006", "name": "herpes simplex keratitis", "provenance": "disease_context", "distance": 0},
+                    {"cid": "VAL-COND-ICD10CM-A00-A09", "name": "intestinal infections", "provenance": "comorbidity_section", "distance": 1},
+                ],
+                "medication": [
+                    {"cid": "VAL-MED-RXNORM-2035", "name": "valacyclovir", "provenance": "direct_indication", "distance": 0},
+                ],
+            },
+        },
+        "acyclovir": {
+            "name": "acyclovir",
+            "buckets": {
+                "lab": [
+                    {"cid": "VAL-LAB-LOINC-24321-2", "name": "Basic Metabolic Panel (2000)", "provenance": "panel_cooccurrence", "distance": 0},
+                ],
+                "procedure": [
+                    {"cid": "VAL-PROC-CPT-99213", "name": "office visit", "provenance": "dosage_section", "distance": None},
+                ],
+            },
+        },
+    },
+}
+
+
+def _make_assoc_release(base: Path, rel: str = _ASSOC_REL) -> Path:
+    import gzip
+
+    base = base / "associations" / rel
+    gdir = base / "graph" / rel
+    gdir.mkdir(parents=True, exist_ok=True)
+    with gzip.open(gdir / "associations.json.gz", "wt") as fh:
+        json.dump(_ASSOC_GRAPH, fh)
+    (base / "manifest.json").write_text(json.dumps({
+        "release": rel,
+        "bundle_version": "2099-01-01.0000",
+        "format": "fhir4px_associations_v1.4",
+        "counts": {"concepts": 2, "cid_entries": 8, "members": 7},
+        "version_lock": {
+            "graph": "2099-01-01.0000", "naming": "2099-01-01.0000",
+            "locked": True,
+        },
+    }))
+    return base
+
+
+def _make_assoc_canonical(path: Path) -> None:
+    """Synthetic canonical value_sets.json: the alias ALIAS123 resolves to
+    the herpes cid via the alias index (the anchor code 88594005 is NOT
+    listed, so it must resolve via the derivation fallback)."""
+    path.write_text(json.dumps([{
+        "canonical_id": "VAL-COND-SNOMED-88594005",
+        "system": "SNOMEDCT_US",
+        "code": "88594005-UNLISTED",
+        "members": [{"system": "SNOMEDCT_US", "code": "ALIAS123"}],
+        "composite_groups": [],
+        "consumer_synonyms": [],
+        "patient_friendly_name": "herpes",
+        "parent_cids": [],
+    }]))
+
+
+def _make_assoc_fhir_db(path: Path) -> None:
+    """The shared synthetic DB + engine rows for the graph members the
+    canonical-display invariant probes need (LOINC panel/analyte, SNOMED
+    cond, RxNorm med). The ICD-10-CM member is deliberately NOT seeded so
+    the by_cid display fallback path is exercised."""
+    _make_fhir_db(path)
+    con = duckdb.connect(str(path))
+    con.executemany(
+        "INSERT INTO mrconso VALUES (?, ?, ?, ?, ?, ?, ?)",
+        [
+            ("24321-2", "LC", "Basic Metabolic Panel (2000)", "A243212", "N", "LNC", "C00000A"),
+            ("LP14355-9", "LC", "Creatinine", "ALP14355", "N", "LNC", "C00000B"),
+            ("33839006", "PT", "Herpes simplex keratitis", "A33839006", "N", "SNOMEDCT_US", "C00000C"),
+            ("2035", "SCD", "valacyclovir 500 MG Oral Tablet", "A2035", "N", "RXNORM", "C00000D"),
+        ],
+    )
+    con.close()
+
+
+class TestAssocTranslate:
+    @pytest.fixture
+    def assoc_app(self, tmp_path, monkeypatch):
+        from medterm4ds.apps.fhir_api import FhirApiSettings, create_fhir_app
+        from medterm4ds.services import associations as _assoc
+        from medterm4ds.services.search import (
+            reset_search_service as reset_search_service_for_testing,
+        )
+
+        release = _make_assoc_release(tmp_path)
+        canonical = tmp_path / "value_sets.json"
+        _make_assoc_canonical(canonical)
+        db_path = tmp_path / "assoc.duckdb"
+        _make_assoc_fhir_db(db_path)
+        monkeypatch.setenv("MEDTERM4DS_ASSOCIATIONS_DIR", str(release))
+        monkeypatch.setenv("MEDTERM4DS_ASSOCIATIONS_RELEASE", _ASSOC_REL)
+        monkeypatch.setenv("MEDTERM4DS_CANONICAL_PATH", str(canonical))
+        _assoc.reset_associations_graph_for_testing()
+        reset_search_service_for_testing()
+        settings = FhirApiSettings(
+            db_path=db_path,
+            memory_profile="low",
+            search_index_dir=str(tmp_path / "nonexistent"),
+            prepare_cache=False,
+        )
+        yield create_fhir_app(settings)
+        _assoc.reset_associations_graph_for_testing()
+        reset_search_service_for_testing()
+
+    @staticmethod
+    def _matches(body: dict) -> list[dict]:
+        return [p for p in body["parameter"] if p["name"] == "match"]
+
+    @staticmethod
+    def _part(match: dict, name: str) -> dict:
+        return [p for p in match["part"] if p["name"] == name][0]
+
+    def test_get_happy_path_loinc_target(self, assoc_app):
+        from starlette.testclient import TestClient
+        with TestClient(assoc_app) as client:
+            resp = client.get(
+                "/fhir/ConceptMap/$translate",
+                params={
+                    "url": _ASSOC_URL,
+                    "system": "http://snomed.info/sct",
+                    "code": "88594005",
+                    "targetSystem": "http://loinc.org",
+                },
+            )
+        assert resp.status_code == 200, resp.text
+        assert resp.headers["content-type"].startswith("application/fhir+json")
+        body = resp.json()
+        result = [p for p in body["parameter"] if p["name"] == "result"][0]
+        assert result["valueBoolean"] is True
+        matches = self._matches(body)
+        assert len(matches) == 2
+        # ordering: distance 0 (Creatinine) before distance 1 (BMP)
+        concepts = [
+            self._part(m, "concept")["valueCoding"] for m in matches
+        ]
+        assert [c["code"] for c in concepts] == ["LP14355-9", "24321-2"]
+        for coding in concepts:
+            assert coding["system"] == "http://loinc.org"
+            # engine-canonical display (get_code_infos path)
+            assert coding["display"]
+        # 3-part match shape, source without display, relatedto
+        for m in matches:
+            assert len(m["part"]) == 3
+            assert self._part(m, "equivalence")["valueCode"] == "relatedto"
+            assert "display" not in self._part(m, "source")["valueCoding"]
+            assert self._part(m, "source")["valueCoding"] == {
+                "system": "http://snomed.info/sct", "code": "88594005",
+            }
+
+    def test_alias_index_resolution(self, assoc_app):
+        """Decision F step 1: an alias code resolves via the shared
+        canonical index (no derivation possible — not a value-set
+        anchor spelling)."""
+        from starlette.testclient import TestClient
+        with TestClient(assoc_app) as client:
+            resp = client.get(
+                "/fhir/ConceptMap/$translate",
+                params={
+                    "url": _ASSOC_URL,
+                    "system": "http://snomed.info/sct",
+                    "code": "ALIAS123",
+                    "targetSystem": "http://snomed.info/sct",
+                },
+            )
+        assert resp.status_code == 200, resp.text
+        assert self._matches(resp.json())
+
+    def test_per_member_filtering_mixed_bucket(self, assoc_app):
+        """The condition bucket mixes SNOMED + ICD-10-CM members; the
+        targetSystem filter is per member cid, never per bucket."""
+        from starlette.testclient import TestClient
+        with TestClient(assoc_app) as client:
+            snomed = client.get(
+                "/fhir/ConceptMap/$translate",
+                params={
+                    "url": _ASSOC_URL,
+                    "system": "http://snomed.info/sct",
+                    "code": "88594005",
+                    "targetSystem": "http://snomed.info/sct",
+                },
+            )
+            icd = client.get(
+                "/fhir/ConceptMap/$translate",
+                params={
+                    "url": _ASSOC_URL,
+                    "system": "http://snomed.info/sct",
+                    "code": "88594005",
+                    "targetSystem": "http://hl7.org/fhir/sid/icd-10-cm",
+                },
+            )
+        assert [self._part(m, "concept")["valueCoding"]["code"]
+                for m in self._matches(snomed.json())] == ["33839006"]
+        assert [self._part(m, "concept")["valueCoding"]["code"]
+                for m in self._matches(icd.json())] == ["A00-A09"]
+
+    def test_display_fallback_when_engine_unknown(self, assoc_app):
+        """Decision G fallback: a member the engine has no atom for
+        (ICD-10-CM range code not seeded) carries the graph's by_cid
+        display."""
+        from starlette.testclient import TestClient
+        with TestClient(assoc_app) as client:
+            resp = client.get(
+                "/fhir/ConceptMap/$translate",
+                params={
+                    "url": _ASSOC_URL,
+                    "system": "http://snomed.info/sct",
+                    "code": "88594005",
+                    "targetSystem": "http://hl7.org/fhir/sid/icd-10-cm",
+                },
+            )
+        coding = self._part(
+            self._matches(resp.json())[0], "concept",
+        )["valueCoding"]
+        assert coding["display"] == "intestinal infections"
+
+    def test_canonical_display_invariant_vs_lookup(self, assoc_app):
+        """Canonical-DISPLAY META-PATTERN: match.concept.display byte-
+        equals $lookup Out display for the same code."""
+        from starlette.testclient import TestClient
+        with TestClient(assoc_app) as client:
+            translate = client.get(
+                "/fhir/ConceptMap/$translate",
+                params={
+                    "url": _ASSOC_URL,
+                    "system": "http://snomed.info/sct",
+                    "code": "88594005",
+                    "targetSystem": "http://loinc.org",
+                },
+            ).json()
+            lookup = client.get(
+                "/fhir/CodeSystem/$lookup",
+                params={"system": "http://loinc.org", "code": "24321-2"},
+            ).json()
+        display = [p for p in lookup["parameter"]
+                   if p["name"] == "display"][0]["valueString"]
+        codings = [
+            self._part(m, "concept")["valueCoding"]
+            for m in self._matches(translate)
+        ]
+        by_code = {c["code"]: c["display"] for c in codings}
+        assert by_code["24321-2"] == display
+
+    def test_unknown_targetsystem_400_lists_served_uris(self, assoc_app):
+        from starlette.testclient import TestClient
+        with TestClient(assoc_app) as client:
+            resp = client.get(
+                "/fhir/ConceptMap/$translate",
+                params={
+                    "url": _ASSOC_URL,
+                    "system": "http://snomed.info/sct",
+                    "code": "88594005",
+                    "targetSystem": "http://example.org",
+                },
+            )
+        assert resp.status_code == 400
+        assert resp.headers["content-type"].startswith("application/fhir+json")
+        from medterm4ds.services.associations import TARGET_SYSTEM_URIS
+        diag = resp.json()["issue"][0]["diagnostics"]
+        # The full closed-enum listing is the load-bearing signal (it
+        # fills the 256-char diagnostics cap; no client echo fits).
+        for uri in sorted(TARGET_SYSTEM_URIS):
+            assert uri in diag, uri
+
+    def test_targetsystem_alias_forms_accepted(self, assoc_app):
+        """CR-003 pin: alias forms of a served target system — trailing
+        slash, urn:oid, uppercase scheme — canonicalize through the
+        shared registry path (the same resolution every sibling surface
+        applies) instead of exact-matching the closed enum and 400ing."""
+        from starlette.testclient import TestClient
+        with TestClient(assoc_app) as client:
+            for alias in (
+                "http://loinc.org/",
+                "urn:oid:2.16.840.1.113883.6.1",
+                "HTTP://loinc.org",
+            ):
+                resp = client.get(
+                    "/fhir/ConceptMap/$translate",
+                    params={
+                        "url": _ASSOC_URL,
+                        "system": "http://snomed.info/sct",
+                        "code": "88594005",
+                        "targetSystem": alias,
+                    },
+                )
+                assert resp.status_code == 200, (alias, resp.text)
+                concepts = [
+                    self._part(m, "concept")["valueCoding"]
+                    for m in self._matches(resp.json())
+                ]
+                # byte-exact parity with the canonical-URI happy path
+                assert [c["code"] for c in concepts] == [
+                    "LP14355-9", "24321-2",
+                ], alias
+                for coding in concepts:
+                    assert coding["system"] == "http://loinc.org", alias
+
+    def test_targetsystem_unresolvable_alias_still_400_lists(self, assoc_app):
+        """CR-003 counterweight: canonicalization widens only forms the
+        shared registry resolves; an unresolvable URI (unknown urn:oid)
+        still 400s with the full closed-enum listing."""
+        from starlette.testclient import TestClient
+        with TestClient(assoc_app) as client:
+            resp = client.get(
+                "/fhir/ConceptMap/$translate",
+                params={
+                    "url": _ASSOC_URL,
+                    "system": "http://snomed.info/sct",
+                    "code": "88594005",
+                    "targetSystem": "urn:oid:1.2.3.4.5",
+                },
+            )
+        assert resp.status_code == 400
+        from medterm4ds.services.associations import TARGET_SYSTEM_URIS
+        diag = resp.json()["issue"][0]["diagnostics"]
+        for uri in sorted(TARGET_SYSTEM_URIS):
+            assert uri in diag, uri
+
+    def test_reverse_400(self, assoc_app):
+        from starlette.testclient import TestClient
+        with TestClient(assoc_app) as client:
+            resp = client.get(
+                "/fhir/ConceptMap/$translate",
+                params={
+                    "url": _ASSOC_URL,
+                    "system": "http://snomed.info/sct",
+                    "code": "88594005",
+                    "targetSystem": "http://loinc.org",
+                    "reverse": "true",
+                },
+            )
+        assert resp.status_code == 400
+        assert "reverse is not supported" in (
+            resp.json()["issue"][0]["diagnostics"]
+        )
+
+    def test_unknown_code_result_false_empty(self, assoc_app):
+        from starlette.testclient import TestClient
+        with TestClient(assoc_app) as client:
+            resp = client.get(
+                "/fhir/ConceptMap/$translate",
+                params={
+                    "url": _ASSOC_URL,
+                    "system": "http://snomed.info/sct",
+                    "code": "99999999",
+                    "targetSystem": "http://loinc.org",
+                },
+            )
+        assert resp.status_code == 200
+        body = resp.json()
+        assert [p for p in body["parameter"]
+                if p["name"] == "result"][0]["valueBoolean"] is False
+        assert not self._matches(body)
+
+    def test_no_false_match_unrelated_domain(self, assoc_app):
+        """A drug source with no vaccine edges → targetSystem=cvx is an
+        honest result=false (TERMINOLOGIST lens)."""
+        from starlette.testclient import TestClient
+        with TestClient(assoc_app) as client:
+            resp = client.get(
+                "/fhir/ConceptMap/$translate",
+                params={
+                    "url": _ASSOC_URL,
+                    "system": "http://www.nlm.nih.gov/research/umls/rxnorm",
+                    "code": "2034",
+                    "targetSystem": "http://hl7.org/fhir/sid/cvx",
+                },
+            )
+        assert resp.status_code == 200
+        body = resp.json()
+        assert [p for p in body["parameter"]
+                if p["name"] == "result"][0]["valueBoolean"] is False
+
+    def test_post_four_shape_content_type_family(self, assoc_app):
+        """4-shape POST Content-Type probe family (CF-EXPLORER-CS02-01):
+        system+code / coding / codeableConcept / error path."""
+        from starlette.testclient import TestClient
+        base = {  # noqa: F841 — shape documentation for the family below
+            "url": _ASSOC_URL,
+            "targetSystem": "http://loinc.org",
+        }
+        shapes = {
+            "system+code": {
+                "resourceType": "Parameters",
+                "parameter": [
+                    {"name": "url", "valueUri": _ASSOC_URL},
+                    {"name": "system", "valueUri": "http://snomed.info/sct"},
+                    {"name": "code", "valueCode": "88594005"},
+                    {"name": "targetSystem", "valueUri": "http://loinc.org"},
+                ],
+            },
+            "coding": {
+                "resourceType": "Parameters",
+                "parameter": [
+                    {"name": "coding", "valueCoding": {
+                        "system": "http://snomed.info/sct",
+                        "code": "88594005",
+                    }},
+                    {"name": "targetSystem", "valueUri": "http://loinc.org"},
+                    {"name": "url", "valueUri": _ASSOC_URL},
+                ],
+            },
+            "codeableConcept": {
+                "resourceType": "Parameters",
+                "parameter": [
+                    {"name": "codeableConcept", "valueCodeableConcept": {
+                        "coding": [{
+                            "system": "http://snomed.info/sct",
+                            "code": "88594005",
+                        }],
+                    }},
+                    {"name": "targetSystem", "valueUri": "http://loinc.org"},
+                    {"name": "url", "valueUri": _ASSOC_URL},
+                ],
+            },
+        }
+        with TestClient(assoc_app) as client:
+            for name, body in shapes.items():
+                resp = client.post("/fhir/ConceptMap/$translate", json=body)
+                assert resp.status_code == 200, (name, resp.text)
+                assert resp.headers["content-type"].startswith(
+                    "application/fhir+json"
+                ), name
+                assert resp.json()["resourceType"] == "Parameters", name
+                assert self._matches(resp.json()), name
+            # error path: unknown targetSystem in the body
+            err = {
+                "resourceType": "Parameters",
+                "parameter": [
+                    {"name": "url", "valueUri": _ASSOC_URL},
+                    {"name": "system", "valueUri": "http://snomed.info/sct"},
+                    {"name": "code", "valueCode": "88594005"},
+                    {"name": "targetSystem", "valueUri": "http://nope.example"},
+                ],
+            }
+            resp = client.post("/fhir/ConceptMap/$translate", json=err)
+            assert resp.status_code == 400
+            assert resp.headers["content-type"].startswith(
+                "application/fhir+json"
+            )
+            assert resp.json()["resourceType"] == "OperationOutcome"
+
+    def test_get_post_byte_exact_parity(self, assoc_app):
+        from starlette.testclient import TestClient
+        with TestClient(assoc_app) as client:
+            get = client.get(
+                "/fhir/ConceptMap/$translate",
+                params={
+                    "url": _ASSOC_URL,
+                    "system": "http://snomed.info/sct",
+                    "code": "88594005",
+                    "targetSystem": "http://loinc.org",
+                },
+            )
+            post = client.post("/fhir/ConceptMap/$translate", json={
+                "resourceType": "Parameters",
+                "parameter": [
+                    {"name": "url", "valueUri": _ASSOC_URL},
+                    {"name": "system", "valueUri": "http://snomed.info/sct"},
+                    {"name": "code", "valueCode": "88594005"},
+                    {"name": "targetSystem", "valueUri": "http://loinc.org"},
+                ],
+            })
+        assert get.json() == post.json()
+
+    def test_batch_parity_byte_exact(self, assoc_app):
+        """TS-04 doctrine: batch entry clinical content is byte-exact vs
+        the single-entry invocation."""
+        from starlette.testclient import TestClient
+        query = (
+            "ConceptMap/$translate?url=urn%3Amedterm4ds%3Aassociations-"
+            "conceptmap&system=http%3A%2F%2Fsnomed.info%2Fsct"
+            "&code=88594005&targetSystem=http%3A%2F%2Floinc.org"
+        )
+        with TestClient(assoc_app) as client:
+            single = client.get(
+                "/fhir/ConceptMap/$translate",
+                params={
+                    "url": _ASSOC_URL,
+                    "system": "http://snomed.info/sct",
+                    "code": "88594005",
+                    "targetSystem": "http://loinc.org",
+                },
+            )
+            batch = client.post("/fhir", json={
+                "resourceType": "Bundle",
+                "type": "batch",
+                "entry": [{
+                    "request": {"method": "GET", "url": query},
+                }],
+            })
+        assert batch.status_code == 200
+        entry = batch.json()["entry"][0]
+        assert entry["response"]["status"].startswith("200")
+        assert entry["resource"] == single.json()
+
+    def test_determinism_repeat_byte_exact(self, assoc_app):
+        from starlette.testclient import TestClient
+        with TestClient(assoc_app) as client:
+            params = {
+                "url": _ASSOC_URL,
+                "system": "http://snomed.info/sct",
+                "code": "88594005",
+                "targetSystem": "http://loinc.org",
+            }
+            first = client.get("/fhir/ConceptMap/$translate", params=params)
+            second = client.get("/fhir/ConceptMap/$translate", params=params)
+        assert first.content == second.content
+
+    def test_xml_rendering(self, assoc_app):
+        """CR-002/e110 doctrine: booleans lowercase, relatedto renders,
+        no value="True"."""
+        from starlette.testclient import TestClient
+        with TestClient(assoc_app) as client:
+            resp = client.get(
+                "/fhir/ConceptMap/$translate",
+                params={
+                    "url": _ASSOC_URL,
+                    "system": "http://snomed.info/sct",
+                    "code": "88594005",
+                    "targetSystem": "http://loinc.org",
+                    "_format": "xml",
+                },
+            )
+        assert resp.status_code == 200
+        assert resp.headers["content-type"].startswith("application/fhir+xml")
+        text = resp.text
+        assert 'value="true"' in text
+        assert 'value="True"' not in text
+        assert "relatedto" in text
+
+    def test_capability_statement_advertises_map(self, assoc_app):
+        from starlette.testclient import TestClient
+        with TestClient(assoc_app) as client:
+            resp = client.get("/fhir/metadata")
+        assert resp.status_code == 200
+        cs = resp.json()
+        cmap = [
+            r for r in cs["rest"][0]["resource"]
+            if r["type"] == "ConceptMap"
+        ][0]
+        ops = [
+            op for op in cmap["operation"] if op["name"] == "translate"
+        ]
+        assert ops
+        assert ops[0]["definition"] == (
+            "http://hl7.org/fhir/OperationDefinition/ConceptMap-translate"
+        )
+        assert _ASSOC_URL in ops[0].get("documentation", "")
+
+    def test_unknown_url_names_all_three_maps(self, assoc_app):
+        from starlette.testclient import TestClient
+        with TestClient(assoc_app) as client:
+            resp = client.get(
+                "/fhir/ConceptMap/$translate",
+                params={
+                    "url": "urn:example:nope",
+                    "system": "http://snomed.info/sct",
+                    "code": "88594005",
+                    "targetSystem": "http://loinc.org",
+                },
+            )
+        assert resp.status_code == 400
+        diag = resp.json()["issue"][0]["diagnostics"]
+        assert "urn:medterm4ds:crosswalk" in diag
+        assert "urn:medterm4ds:athena-conceptmap" in diag
+        assert _ASSOC_URL in diag
+
+    def test_pinned_but_absent_503(self, assoc_app, tmp_path, monkeypatch):
+        from starlette.testclient import TestClient
+
+        from medterm4ds.services import associations as _assoc
+
+        monkeypatch.setenv(
+            "MEDTERM4DS_ASSOCIATIONS_DIR",
+            str(tmp_path / "associations" / "missing"),
+        )
+        _assoc.reset_associations_graph_for_testing()
+        try:
+            with TestClient(assoc_app) as client:
+                resp = client.get(
+                    "/fhir/ConceptMap/$translate",
+                    params={
+                        "url": _ASSOC_URL,
+                        "system": "http://snomed.info/sct",
+                        "code": "88594005",
+                        "targetSystem": "http://loinc.org",
+                    },
+                )
+        finally:
+            _assoc.reset_associations_graph_for_testing()
+        assert resp.status_code == 503
+        body = resp.json()
+        assert body["resourceType"] == "OperationOutcome"
+        assert "cache-refresh" in body["issue"][0]["diagnostics"]
