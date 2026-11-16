@@ -6,11 +6,17 @@ associations keyed in canonical cid space) as the opt-in ConceptMap
 (FDD .temp/associations_translate_fdd.md). Layout contract::
 
     manifest.json                          # release, bundle_version, format, counts
+                                           # + parquet_mirror block (see below)
     graph/<release>/associations.json.gz   # THE graph (by_cid/by_name/concepts)
     graph/<release>/associations.meta.json
     naming/<release>/display_names.json.gz # consumer naming aid (downloaded
                                            # with the bundle; not read on the
                                            # v1 serving path)
+    parquet/                               # OPTIONAL mirror (decision E), at
+                                           # the REPO ROOT — advertised by the
+                                           # parquet_mirror block in the
+                                           # repo-root manifest.json (never in
+                                           # graph/<rel>/associations.meta.json)
 
 Decision A (FDD §3.3): a STANDALONE pinned repo — not a family under the
 terminology release layout. The repo has its own release cadence, manifest
@@ -253,25 +259,44 @@ class AssociationsGraph:
 
 # -- Parquet-first serving (FDD decision E) ---------------------------
 #
-# The model lane emits the graph as Parquet alongside the JSON: a long
-# members table partitioned by member_system plus by_cid / by_name
-# side tables. When the bundle carries them, ALL existing queries are
-# served through DuckDB against the parquet (lazy, single-flight) —
-# the in-memory graph + its CR-002 cold start retire; the JSON
-# fallback is unchanged when absent.
+# The model lane emits the graph as a Parquet mirror alongside the JSON:
+# a long members table hive-partitioned by member_system plus side
+# tables. When the bundle carries them, ALL existing queries are served
+# through DuckDB against the parquet (lazy, single-flight) — the
+# in-memory graph + its CR-002 cold start retire; the JSON fallback is
+# unchanged when absent (older tags without the mirror keep working).
 #
-# Parquet layout contract (companion-note schema):
-#   graph/<rel>/parquet/members/member_system=<SYS>/*.parquet
-#       columns: cid, bucket, member_cid, member_system, member_code,
-#                member_name, provenance, distance (nullable),
-#                derivations (JSON string)
-#   graph/<rel>/parquet/by_cid.parquet   # cid, name, is_entry
-#   graph/<rel>/parquet/by_name.parquet  # name, cid
+# REAL published layout (live-verified against fhir4ds/associations tag
+# v2026.11.3, 2026-11-16): the mirror lives at the REPO ROOT — NOT under
+# graph/<rel>/ — and is advertised by a ``parquet_mirror`` block in the
+# repo-ROOT ``manifest.json`` (the same manifest that pins the release
+# identity, so detection is inherently at the same resolved revision as
+# the JSON bundle; the per-release associations.meta.json carries no
+# such block):
 #
-# ``is_entry`` mirrors the JSON graph's concepts-keyed-by-name node
-# existence: by_cid carries display rows for members and leaves too
-# (is_entry=0); entry_for_cid must return None for those (honest
-# empty) exactly as the JSON path does.
+#   parquet/members/member_system=<sys>/<uuid>-0.parquet
+#       hive-partitioned (read with hive_partitioning=true); filenames
+#       are UUID-based — the glob is filename-agnostic
+#       columns: cid (ANCHOR NAME — the JSON graph's concepts key,
+#                not a VAL- cid), bucket, member_cid (VAL- cid),
+#                member_name, member_code, provenance, distance
+#                (nullable), age_min, age_max, qualifiers (JSON),
+#                derivations (JSON)
+#   parquet/by_cid.parquet       # cid (VAL-), display — all 304k cids
+#   parquet/by_cid_multi.parquet # cid (RXNORM:code), concepts (JSON
+#                                # names list — multi-name index)
+#   parquet/by_name.parquet      # name, cid (VAL-) — entry index
+#
+# ``parquet_mirror`` manifest facts (validated at load — fail-loud,
+# mirroring the encoder-space convention): members_rows (exact row
+# count), partitions (closed member_system set), side_tables.
+#
+# Entry-hood mirrors the JSON graph's concepts-keyed-by-name node
+# existence: the JSON concepts keys are exactly by_name's names ∪ the
+# members table's anchor names (live-verified: 52575 + 6085 = 58660),
+# so an entry cid is one whose by_cid display name lands in that set;
+# member/leaf cids resolve to None (honest empty) exactly as the JSON
+# path does.
 
 PARQUET_DIRNAME = "parquet"
 _PARQUET_MEMBERS_COLUMNS = frozenset({
@@ -280,15 +305,17 @@ _PARQUET_MEMBERS_COLUMNS = frozenset({
 })
 
 
-def parquet_dir(base: Path, rel: str) -> Path:
-    return base / "graph" / rel / PARQUET_DIRNAME
+def parquet_dir(base: Path) -> Path:
+    """Repo-root parquet mirror dir (``<base>/parquet`` — the published
+    layout; NOT under ``graph/<rel>/``)."""
+    return base / PARQUET_DIRNAME
 
 
 class ParquetAssociationsGraph(AssociationsGraph):
-    """DuckDB-backed serving graph over the bundle's parquet members
-    table + side tables. Same public surface as the JSON graph
-    (by_cid / by_name / entry_for_cid / members / sort_key /
-    parse_cid) — parity pinned by tests/test_assoc_parquet.py."""
+    """DuckDB-backed serving graph over the bundle's repo-root parquet
+    mirror (members table + side tables). Same public surface as the
+    JSON graph (by_cid / by_name / entry_for_cid / members / sort_key
+    / parse_cid) — parity pinned by tests/test_assoc_parquet.py."""
 
     def __init__(
         self,
@@ -296,7 +323,7 @@ class ParquetAssociationsGraph(AssociationsGraph):
         pdir: Path,
         by_cid: dict[str, str],
         by_name: dict[str, str],
-        entry_cids: frozenset[str],
+        entry_names: frozenset[str],
     ):
         # NOTE: intentionally bypasses the dataclass __init__ — this
         # implementation carries a parquet dir + lazy DuckDB handle
@@ -305,7 +332,7 @@ class ParquetAssociationsGraph(AssociationsGraph):
         self._pdir = Path(pdir)
         self.by_cid = by_cid
         self.by_name = by_name
-        self._entry_cids = entry_cids
+        self._entry_names = entry_names
         self._con: Any = None
         self._con_lock = threading.Lock()
 
@@ -343,9 +370,10 @@ class ParquetAssociationsGraph(AssociationsGraph):
 
     def entry_for_cid(self, cid: str) -> dict[str, Any] | None:
         """cid -> entry marker (None for leaf/display-only cids —
-        honest empty, mirroring the JSON path's concepts lookup)."""
+        honest empty, mirroring the JSON path's concepts lookup: the
+        JSON concepts keys are by_name's names ∪ members anchors)."""
         name = self.by_cid.get(cid)
-        if name is None or cid not in self._entry_cids:
+        if name is None or name not in self._entry_names:
             return None
         return {"name": name, "cid": cid}
 
@@ -353,16 +381,17 @@ class ParquetAssociationsGraph(AssociationsGraph):
         """(bucket, member) pairs for one entry, deterministically
         ordered by the published sort contract (bucket rank, distance
         None-last, member cid) — same observable order the JSON path
-        yields after its callers sort."""
-        cid = entry.get("cid")
-        if cid is None:
+        yields after its callers sort. The members table's ``cid``
+        column carries the ANCHOR NAME (the JSON concepts key)."""
+        name = entry.get("name")
+        if name is None:
             # JSON-shaped entry (defensive): delegate to the JSON
             # semantics so a mixed caller never gets a wrong answer.
             return super().members(entry)
         rows = self._duck().execute(
             "SELECT bucket, member_cid, member_name, provenance, "
             "distance FROM assoc_members WHERE cid = ?",
-            [cid],
+            [name],
         ).fetchall()
         out: list[tuple[str, dict[str, Any]]] = []
         for bucket, m_cid, m_name, provenance, distance in rows:
@@ -375,7 +404,7 @@ class ParquetAssociationsGraph(AssociationsGraph):
         unknown = {b for b, _m in out} - set(self.bucket_order)
         if unknown:
             raise AssociationsLayoutError(
-                f"associations parquet members for cid {cid!r} carry "
+                f"associations parquet members for {name!r} carry "
                 f"unknown bucket(s) {sorted(unknown)}; the closed "
                 "order is BUCKET_ORDER."
             )
@@ -470,9 +499,10 @@ def download(cache_root: Path, *, rel: str | None = None) -> Path:
     patterns = [
         "manifest.json",
         f"graph/{rel}/*",
-        # Parquet members/side tables (decision E) — subdirectories
-        # need their own pattern (`*` matches one path segment only).
-        f"graph/{rel}/parquet/**",
+        # Repo-root parquet mirror (decision E) — lives at the repo
+        # ROOT, not under graph/<rel>/; subdirectories need their own
+        # pattern (`*` matches one path segment only).
+        "parquet/**",
         f"naming/{rel}/*",
     ]
     tmp = base.parent / f".tmp-{base.name}-{os.getpid()}"
@@ -533,29 +563,56 @@ def _load_parquet_graph(
     base: Path,
     rel: str,
     pdir: Path,
+    mirror: dict[str, Any],
 ) -> AssociationsGraph:
     """Parquet-first load (FDD decision E): side tables into memory
     (the small index), members served through DuckDB views — the
-    multi-hundred-MB in-memory graph never materializes."""
+    multi-hundred-MB in-memory graph never materializes.
+
+    ``mirror`` is the repo-root manifest's ``parquet_mirror`` block;
+    its facts are validated fail-loud (row count, partitions, side
+    tables) — drift raises ``ManifestError``, mirroring the
+    encoder-space convention."""
     import duckdb
 
-    for name in ("by_cid.parquet", "by_name.parquet"):
+    from medterm4ds.core.artifact_manifest import ManifestError
+
+    side_tables = mirror.get("side_tables") or [
+        "by_cid.parquet", "by_name.parquet",
+    ]
+    for name in side_tables:
         if not (pdir / name).is_file():
             raise AssociationsLayoutError(
                 f"associations parquet layout at {pdir} is missing "
-                f"{name} (contract violation — never silently serve; "
-                "fall back by removing the parquet dir or re-fetch "
-                "the bundle)."
+                f"{name} (parquet_mirror.side_tables contract violation "
+                "— never silently serve; fall back by removing the "
+                "parquet dir or re-fetch the bundle)."
             )
-    if not any((pdir / "members").rglob("*.parquet")):
+    members_dir = pdir / "members"
+    found = sorted(
+        p.name.removeprefix("member_system=")
+        for p in members_dir.glob("member_system=*")
+        if p.is_dir()
+    )
+    if not found:
         raise AssociationsLayoutError(
             f"associations parquet layout at {pdir} carries no "
             "members parquet files (incomplete bundle)."
         )
+    declared = list(mirror.get("partitions") or [])
+    undeclared = set(found) - set(declared)
+    if undeclared:
+        raise ManifestError(
+            f"associations parquet members at {members_dir} carry "
+            f"partition(s) {sorted(undeclared)} absent from the "
+            "parquet_mirror.partitions manifest fact — bundle drift; "
+            "re-fetch with 'medterm4ds data cache-refresh "
+            "--associations'."
+        )
     con = duckdb.connect(":memory:")
     try:
         members_glob = (
-            f"'{str(pdir / 'members').replace(chr(39), chr(39) * 2)}"
+            f"'{str(members_dir).replace(chr(39), chr(39) * 2)}"
             "/**/*.parquet'"
         )
         cols = {
@@ -569,30 +626,55 @@ def _load_parquet_graph(
         if missing:
             raise AssociationsLayoutError(
                 f"associations parquet members table at "
-                f"{pdir / 'members'} is missing column(s) "
+                f"{members_dir} is missing column(s) "
                 f"{sorted(missing)} (contract violation — never "
                 "silently serve)"
             )
-        by_cid_rows = con.execute(
-            f"SELECT cid, name, is_entry FROM read_parquet("
-            f"'{str(pdir / 'by_cid.parquet').replace(chr(39), chr(39) * 2)}')"
-        ).fetchall()
+        expected_rows = mirror.get("members_rows")
+        if isinstance(expected_rows, int):
+            got_rows = con.execute(
+                f"SELECT COUNT(*) FROM read_parquet("
+                f"{members_glob}, hive_partitioning=true)"
+            ).fetchone()[0]
+            if got_rows != expected_rows:
+                raise ManifestError(
+                    f"associations parquet members at {members_dir} "
+                    f"carry {got_rows} rows; the parquet_mirror "
+                    f"manifest declares members_rows={expected_rows} "
+                    "— bundle drift; re-fetch with 'medterm4ds data "
+                    "cache-refresh --associations'."
+                )
+        by_cid = dict(
+            con.execute(
+                f"SELECT cid, display FROM read_parquet("
+                f"'{str(pdir / 'by_cid.parquet').replace(chr(39), chr(39) * 2)}')"
+            ).fetchall()
+        )
         by_name = dict(
             con.execute(
                 f"SELECT name, cid FROM read_parquet("
                 f"'{str(pdir / 'by_name.parquet').replace(chr(39), chr(39) * 2)}')"
             ).fetchall()
         )
+        # The JSON concepts keys are exactly by_name's names ∪ the
+        # members table's anchor names (its ``cid`` column carries
+        # the anchor NAME) — live-verified 52575 + 6085 = 58660.
+        anchor_names = frozenset(
+            r[0]
+            for r in con.execute(
+                f"SELECT DISTINCT cid FROM read_parquet("
+                f"{members_glob}, hive_partitioning=true)"
+            ).fetchall()
+        )
+        entry_names = frozenset(by_name) | anchor_names
     finally:
         con.close()
     graph = ParquetAssociationsGraph(
         release=rel,
         pdir=pdir,
-        by_cid={cid: name for cid, name, _is_entry in by_cid_rows},
+        by_cid=by_cid,
         by_name=by_name,
-        entry_cids=frozenset(
-            cid for cid, _name, is_entry in by_cid_rows if is_entry
-        ),
+        entry_names=entry_names,
     )
     return graph
 
@@ -617,29 +699,47 @@ def _load_graph() -> AssociationsGraph:
         download(root)
     resolved_base, manifest = resolve(root, rel=rel_override)
     resolved_rel = manifest.get("release") or rel
-    # Parquet-first (FDD decision E): when the bundle carries the
-    # parquet members table + side tables, serve EVERYTHING through
-    # DuckDB against them; the JSON graph below is the unchanged
-    # fallback. A manifest advertising parquet without the files is a
-    # drift — fail loud rather than silently degrading to JSON.
-    pdir = parquet_dir(resolved_base, resolved_rel)
-    if pdir.is_dir():
-        graph = _load_parquet_graph(resolved_base, resolved_rel, pdir)
+    # Parquet-first (FDD decision E): the repo-ROOT manifest.json
+    # (fetched at the same resolved revision as the JSON bundle — it
+    # IS the release manifest) advertises the repo-root parquet
+    # mirror via its ``parquet_mirror`` block. When present, serve
+    # EVERYTHING through DuckDB against the root ``parquet/`` tree;
+    # the JSON graph below is the unchanged fallback for older tags.
+    # A manifest advertising the mirror without the files is a drift
+    # — fail loud rather than silently degrading to JSON.
+    mirror = manifest.get("parquet_mirror")
+    if mirror is not None:
+        if not isinstance(mirror, dict):
+            raise AssociationsLayoutError(
+                f"associations manifest at {resolved_base} carries a "
+                "non-dict parquet_mirror block (contract violation)."
+            )
+        pdir = parquet_dir(resolved_base)
+        if not pdir.is_dir():
+            raise AssociationsLayoutError(
+                f"associations manifest at {resolved_base} advertises "
+                "a parquet_mirror but the repo-root parquet layout is "
+                "absent — bundle drift; re-fetch with 'medterm4ds "
+                "data cache-refresh --associations'."
+            )
+        graph = _load_parquet_graph(
+            resolved_base, resolved_rel, pdir, mirror,
+        )
         logger.info(
             "Loaded associations graph %s (parquet-backed; %d cids, "
             "%d entries, %d names) in %.1fs, peak-RSS delta ~%.0f MB "
             "(peak %.0f MB)",
-            resolved_rel, len(graph.by_cid), len(graph._entry_cids),
+            resolved_rel, len(graph.by_cid), len(graph._entry_names),
             len(graph.by_name), time.perf_counter() - t0,
             max(0.0, _peak_rss_mb() - rss0), _peak_rss_mb(),
         )
         return graph
-    if manifest.get("parquet"):
-        raise AssociationsLayoutError(
-            f"associations manifest at {resolved_base} advertises "
-            "parquet but the parquet layout is absent — bundle drift; "
-            "re-fetch with 'medterm4ds data cache-refresh "
-            "--associations'."
+    if parquet_dir(resolved_base).is_dir():
+        logger.warning(
+            "associations release at %s carries a parquet/ tree but "
+            "the manifest has no parquet_mirror block; serving JSON "
+            "(older-tag contract).",
+            resolved_base,
         )
     path = graph_file(resolved_base, resolved_rel)
     with gzip.open(path, "rt", encoding="utf-8") as fh:
