@@ -25,8 +25,10 @@ import os
 import re
 import shutil
 import unicodedata
+from collections.abc import Mapping
 from dataclasses import dataclass, field, replace
 from pathlib import Path
+from types import MappingProxyType
 from typing import Any
 
 from medterm4ds.core import paths as _paths
@@ -1358,6 +1360,17 @@ class SearchService:
         logger.info("Loaded %d Master Canonical Value Sets (%d code pairs, %d group terms, %d aliases)",
                     len(vsets), len(self._code_to_canonical_id), len(self._group_terms),
                     len(self._alias_to_cid))
+
+    def code_to_canonical_id(self) -> Mapping:
+        """Read-only view of the (system, code) -> canonical_id index.
+
+        Single source of truth for consumers resolving alias codes to
+        canonical cids (built at ``_ensure_canonical`` from the canonical
+        value_sets members). The associations $translate path consumes
+        this accessor — no duplicate index (FDD §3.2).
+        """
+        self._ensure_canonical()
+        return MappingProxyType(self._code_to_canonical_id)
 
     def _build_group_dictionary(self, vsets: list[dict]) -> None:
         """Inverted index for the composite-group dictionary pass.
@@ -3121,6 +3134,15 @@ def configure_search_service(
     _service = SearchService(
         search_index_dir=search_index_dir or env_pin("MEDTERM4DS_SEARCH_INDEX_DIR"),
         embedding_model_dir=embedding_model_dir or env_pin("MEDTERM4DS_EMBEDDING_MODEL_DIR"),
+        # Canonical-path pins must survive configure_search_service the
+        # same as get_search_service — the FHIR startup call previously
+        # silently dropped MEDTERM4DS_CANONICAL_PATH, so the canonical
+        # index (consumed by the associations source-resolution accessor)
+        # served the default path in a server that honors the pin
+        # everywhere else (get_search_service parity).
+        canonical_path=os.getenv("MEDTERM4DS_CANONICAL_PATH", DEFAULT_CANONICAL_VALUE_SETS_PATH),
+        canonical_concepts_index=os.getenv("MEDTERM4DS_CANONICAL_INDEX", DEFAULT_CANONICAL_CONCEPTS_INDEX),
+        canonical_concepts_meta=os.getenv("MEDTERM4DS_CANONICAL_META", DEFAULT_CANONICAL_CONCEPTS_META),
     )
     return _service
 

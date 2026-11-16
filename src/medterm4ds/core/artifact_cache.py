@@ -206,6 +206,7 @@ def cache_refresh(
     split: bool = False,
     data_revision: str | None = None,
     terminology: bool | None = None,
+    associations: bool = False,
 ) -> dict[str, Any]:
     """Force-download artifact families for a revision.
 
@@ -236,6 +237,12 @@ def cache_refresh(
             "--split and --terminology are mutually exclusive layouts; "
             "run them separately"
         )
+    if split and associations:
+        # Same conflict class as --split/--terminology (EV07-QA-12).
+        raise RuntimeError(
+            "--split and --associations are mutually exclusive; run "
+            "them separately"
+        )
 
     if not _search._CACHE_REVISION_KEYED and revision is None:
         raise RuntimeError(
@@ -244,6 +251,25 @@ def cache_refresh(
             "that directory with its owning pipeline instead, or unset "
             "MEDTERM4DS_CACHE_DIR to use the revision-keyed cache."
         )
+
+    # Associations stage (FDD §3.3): standalone repo with its own
+    # release pin; download() itself is stages-then-swaps (atomic
+    # tmp+rename, never pre-deletes). Runs BEFORE the other stages so a
+    # failure leaves every existing cache untouched.
+    associations_report: dict[str, Any] | None = None
+    if associations:
+        from medterm4ds.services import associations as _assoc
+
+        _assoc.download(_assoc.associations_root())
+        associations_report = {
+            "repo_id": _assoc.repo_id(),
+            "release": _assoc.release(),
+        }
+        if terminology is None:
+            # An associations-only refresh must not silently also
+            # refresh the terminology layout (surprise multi-GB
+            # download).
+            return {"layout": "associations", **associations_report}
 
     if split:
         return _cache_refresh_split(data_revision=data_revision)
@@ -286,7 +312,7 @@ def cache_refresh(
             raise
         if stale is not None:
             shutil.rmtree(stale, ignore_errors=True)
-        return {
+        report = {
             "layout": "terminology",
             "repo_id": resolved.repo_id,
             "release": resolved.release,
@@ -294,6 +320,9 @@ def cache_refresh(
             "embedding_space_id": resolved.space_id,
             "families": ["canonical", "lexical", "semantic", "model"],
         }
+        if associations_report is not None:
+            report["associations"] = associations_report
+        return report
 
     repo_id = _search._HF_REPO_ID
     rev = revision or _search._HF_REVISION
@@ -362,12 +391,15 @@ def cache_refresh(
         }, indent=2))
     finally:
         shutil.rmtree(staging, ignore_errors=True)
-    return {
+    report = {
         "cache_dir": str(cache_root),
         "revision": rev,
         "repo_id": repo_id,
         "families": list(families),
     }
+    if associations_report is not None:
+        report["associations"] = associations_report
+    return report
 
 
 def _cache_refresh_split(data_revision: str | None = None) -> dict[str, Any]:

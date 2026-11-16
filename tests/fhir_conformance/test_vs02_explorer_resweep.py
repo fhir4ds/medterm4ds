@@ -544,9 +544,11 @@ class TestLens2CrossBuilderMethodologyConsistency:
                 count += 1
         # Per HISTORIAN test_h30 + the athena 4b seam (2026-10-26):
         # 3 sites — _do_translate (crosswalk), _do_translate_athena's
-        # empty + mapping paths.
-        assert count == 3, (
-            f"Expected 3 build_parameters_translate call sites, found {count}"
+        # empty + mapping paths. The associations map (FDD 2026-11-16)
+        # adds 3 sibling sites in _do_translate_associations (empty
+        # resolution chain ×2 + the mapping path) → 6 total.
+        assert count == 6, (
+            f"Expected 6 build_parameters_translate call sites, found {count}"
         )
 
     def test_e24_build_closure_response_call_sites_count(self):
