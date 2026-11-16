@@ -656,13 +656,23 @@ class TestLens3CombinedSpecInParameters:
         assert "displayLanguage" in str(body["issue"][0]["diagnostics"])
 
     def test_e32_inline_valueset_plus_all_in_params(self, fhir_client):
-        """Combined: inline ValueSet (POST) + count + offset + displayLanguage.
+        """Combined: inline ValueSet (POST) + count + offset.
 
         Per FHIR R4 §4.7.5: the POST shape with inline ValueSet body is
-        spec-listed. Multiple In parameters in the query string are
-        accepted alongside the body.
+        spec-listed. Spec-conformant query In parameters (count, offset)
+        are accepted alongside the body. CR-001 flip: the
+        unsupported-but-declared pair (displayLanguage,
+        includeDesignations) previously rode the POST query string
+        silently (200) while the GET twin 400'd — the FA5 query guard
+        now rejects them by name, matching e31's GET contract.
         """
         vs = _make_intensional_snomed_isa()
+        status, body = _post_expand(
+            fhir_client, vs,
+            params={"count": 5, "offset": 0},
+        )
+        assert status == 200, f"status={status}, body={body}"
+        assert body.get("resourceType") == "ValueSet"
         status, body = _post_expand(
             fhir_client, vs,
             params={
@@ -672,8 +682,9 @@ class TestLens3CombinedSpecInParameters:
                 "includeDesignations": "false",
             },
         )
-        assert status == 200, f"status={status}, body={body}"
-        assert body.get("resourceType") == "ValueSet"
+        assert status == 400, f"status={status}, body={body}"
+        assert body.get("resourceType") == "OperationOutcome"
+        assert "displayLanguage" in str(body["issue"][0]["diagnostics"])
 
     def test_e33_all_ignored_in_params_combined(self, fhir_client):
         """Combined: every ignored-by-medterm4ds In param at once.

@@ -3,7 +3,7 @@
 # Build context: THIS DIRECTORY (deploy/hf-spaces/terminology-demo, or the
 # root of the HF Space repo, which contains the same files):
 #   docker build -t terminology-demo deploy/hf-spaces/terminology-demo
-# medterm4ds is pip-installed from the pinned public GitHub commit, so the
+# medterm4ds is pip-installed from PyPI at a pinned release version, so the
 # image needs no repo sources in the build context.
 #
 # Runtime volumes (read-only):
@@ -24,12 +24,11 @@ RUN pip install --no-cache-dir -r /app/requirements.txt \
     && pip install --no-cache-dir \
         https://github.com/explosion/spacy-models/releases/download/en_core_web_sm-3.8.0/en_core_web_sm-3.8.0-py3-none-any.whl
 
-# medterm4ds v0.0.12 from PyPI (post-release hardening build:
-# canonical tie determinism, $extract/$expand robustness, BM25 pinned
-# guard, terminology default release 2026.11.12.2). The interim git-pin
-# (a381503, pre-0.0.12 CR-302 fix) is superseded — PyPI 0.0.12 published
-# 2026-11-13.
-RUN pip install --no-cache-dir "medterm4ds[fhir,search,extraction]==0.0.12"
+# medterm4ds v0.0.13 from PyPI (extraction conjunction parity, source-alias
+# widening on all search modes, patient-friendly resolve modes, FHIR
+# unknown-param/valueSet/compose guards, base-install import fix,
+# terminology default release 2026.11.14.2).
+RUN pip install --no-cache-dir "medterm4ds[fhir,search,extraction]==0.0.13"
 
 # Bake the pinned GLiNER NER weights into the image so /extract needs no
 # runtime download (pinned revision from services/extraction.py).

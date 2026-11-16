@@ -127,14 +127,17 @@ class TestSilentDropFamilyAlive:
         assert r.json()["expansion"]["total"] == 1
 
     def test_s15_dp1_duplicate_last_wins(self, fhir_client):
-        """DP1: two system entries — LAST wins, order-dependent."""
+        """DP1: two system entries — LAST wins, order-dependent.
+        CR-001 flip: ``targetSystem`` is not a CodeSystem/$validate-code
+        In parameter (it belongs to $translate) — it silently rode this
+        body pre-CR-001; the FA4 body-name check now rejects it. The
+        duplicate-system-last-wins contract is unchanged."""
         body = {
             "resourceType": "Parameters",
             "parameter": [
                 {"name": "system", "valueUri": ICD10CM_URI},
                 {"name": "system", "valueUri": SNOMED_URI},
                 {"name": "code", "valueCode": T2DM},
-                {"name": "targetSystem", "valueUri": ICD10CM_URI},
             ],
         }
         r = fhir_client.post(
@@ -147,6 +150,15 @@ class TestSilentDropFamilyAlive:
             if p.get("name") == "result"
         )
         assert result is True  # SNOMED (last) wins
+        # CR-001: the $translate-only param is now rejected by name.
+        body["parameter"].append(
+            {"name": "targetSystem", "valueUri": ICD10CM_URI}
+        )
+        r = fhir_client.post(
+            "/fhir/CodeSystem/$validate-code", json=body
+        )
+        assert r.status_code == 400
+        assert "targetSystem" in r.json()["issue"][0]["diagnostics"]
 
     def test_s16_m1_get_lookup_coding_422(self, fhir_client):
         """M1 (original shape): coding ALONE on GET → 422 (no

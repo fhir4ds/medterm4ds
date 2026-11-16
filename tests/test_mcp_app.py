@@ -584,6 +584,376 @@ def test_mcp_optimize_rejects_uri_source(tmp_path):
 
 
 # =============================================================================
+# EV-08 loop iterations 22-24 (mcp-surface QA: SKEPTIC/HISTORIAN/EXPLORER)
+# =============================================================================
+
+
+class TestEv08SkepticBareStringCodes:
+    """EV08-SKEPTIC-1 (MEDIUM): ``codes="E11.9"`` is a str, and str IS a
+    Sequence — build_code_refs and McpRuntime.optimize silently iterated
+    per-character and constructed one CodeRef per char. Silent-wrong-answer
+    batch; must raise TypeError instead."""
+
+    def test_build_code_refs_rejects_bare_string_codes_ev08skeptic1(self):
+        with pytest.raises(TypeError, match="codes must be a sequence of strings, got str"):
+            build_code_refs("E11.9", ["ICD10CM"])  # type: ignore[arg-type]
+
+    def test_build_code_refs_rejects_bytes_codes_ev08skeptic1(self):
+        with pytest.raises(TypeError, match="codes must be a sequence of strings"):
+            build_code_refs(b"E11.9", ["ICD10CM"])  # type: ignore[arg-type]
+
+    def test_optimize_rejects_bare_string_codes_ev08skeptic1(self, tmp_path):
+        db_path = tmp_path / "umls.duckdb"
+        _make_duckdb(db_path)
+        runtime = McpRuntime(_settings(db_path, prepare_cache=False))
+        with pytest.raises(TypeError, match="codes must be a sequence of strings, got str"):
+            runtime.optimize(codes="E11.9", source="ICD10CM")  # type: ignore[arg-type]
+
+    def test_lookup_codes_rejects_bare_string_codes_ev08skeptic1(self, tmp_path):
+        db_path = tmp_path / "umls.duckdb"
+        _make_duckdb(db_path)
+        runtime = McpRuntime(_settings(db_path, prepare_cache=False))
+        with pytest.raises(TypeError, match="codes must be a sequence of strings, got str"):
+            runtime.lookup_codes(codes="E11.9", sources=["ICD10CM"])  # type: ignore[arg-type]
+
+
+class TestEv08SkepticNonFileDbPath:
+    """EV08-SKEPTIC-2 (LOW): a directory as MEDTERM4DS_DB passed the
+    ``exists()`` check and leaked a raw duckdb.IOException from connect().
+    Must raise the named RuntimeError (BL2/AF2 doctrine)."""
+
+    def test_open_rejects_directory_db_path_ev08skeptic2(self, tmp_path):
+        runtime = McpRuntime(
+            McpSettings(db_path=tmp_path, sources=("ICD10CM",), memory_profile="low", prepare_cache=False)
+        )
+        with pytest.raises(RuntimeError, match="Database not found"):
+            runtime.open()
+
+    def test_open_rejects_missing_db_path_ev08skeptic2(self, tmp_path):
+        runtime = McpRuntime(
+            McpSettings(db_path=tmp_path / "nope.duckdb", sources=("ICD10CM",), memory_profile="low", prepare_cache=False)
+        )
+        with pytest.raises(RuntimeError, match="Database not found"):
+            runtime.open()
+
+
+def test_ev08_skeptic_hostile_matrix_holds(tmp_path):
+    """Hostile matrix that must keep raising clean boundary errors
+    (guards from QC-322/389/324/050/060/052 + service chokepoints):
+    empty/URI/OID/non-string sources, empty/whitespace/wrong-typed codes,
+    resolve_mode fuzzing, negative limits/depths, athena tools on an
+    athena-less db, bogus output formats."""
+    from medterm4ds.apps.mcp import _validate_source_sab
+
+    for bad in ["", "   ", "http://snomed.info/sct", "urn:oid:2.16.840.1.113883.6.90", 123, None]:
+        with pytest.raises((TypeError, ValueError)):
+            _validate_source_sab(bad)
+
+    db_path = tmp_path / "umls.duckdb"
+    _make_duckdb(db_path)
+    runtime = McpRuntime(_settings(db_path, prepare_cache=False))
+    runtime.open()
+    try:
+        with pytest.raises(ValueError, match="codes must not be empty"):
+            runtime.lookup_codes(codes=[], sources=["ICD10CM"])
+        with pytest.raises(ValueError, match="code must be a non-empty string"):
+            runtime.lookup_codes(codes=["  "], sources=["ICD10CM"])
+        with pytest.raises(TypeError, match="each code must be a string"):
+            runtime.lookup_codes(codes=[42], sources=["ICD10CM"])
+        for bogus in ["", "Historical", "resolve-current", "active"]:
+            with pytest.raises(ValueError):
+                runtime.lookup_codes(codes=["E11.9"], sources=["ICD10CM"], resolve_mode=bogus)
+        with pytest.raises(ValueError, match="limit must be at least 1"):
+            runtime.search_names(query="diabetes", limit=-1)
+        with pytest.raises(ValueError, match="limit must be at least 1"):
+            runtime.discover(source_terminology="ICD10CM", limit=-1)
+        with pytest.raises(ValueError, match="depth must be between"):
+            runtime.discover(source_terminology="ICD10CM", depth=-1)
+        with pytest.raises(ValueError, match="max_depth must be non-negative"):
+            runtime.cross_reference(code="E11.9", from_source="ICD10CM", mode="broader", max_depth=-1)
+        with pytest.raises(ValueError, match="max_depth must be at least 1"):
+            runtime.code_relations(codes=["E11.9"], sources=["ICD10CM"], direction="ancestors", max_depth=0)
+        with pytest.raises(ValueError, match="limit must be non-negative"):
+            runtime.descendants(codes=["E11.9"], sources=["ICD10CM"], limit=-1)
+        with pytest.raises(RuntimeError, match="ingest-athena"):
+            runtime.athena_ancestors(concept_id=1)
+        with pytest.raises(RuntimeError, match="ingest-athena"):
+            runtime.athena_subsumes(code_a=1, code_b=1)
+        with pytest.raises(RuntimeError, match="ingest-athena"):
+            runtime.athena_search(query="diabetes")
+        with pytest.raises(ValueError):
+            runtime.lookup_codes(codes=["E11.9"], sources=["ICD10CM"], output_format="bogus")
+        with pytest.raises(ValueError, match="rule_format must be compact or flat"):
+            runtime.optimize(codes=["E11.9"], source="ICD10CM", rule_format="bogus")
+    finally:
+        runtime.close()
+
+
+def test_ev08_skeptic_cross_reference_mode_irrelevant_max_depth_intended(tmp_path):
+    """EV08-SKEPTIC classification (INTENDED): cross_reference in exact
+    mode ignores max_depth (mapping_depth=0) — the mode-irrelevant-arg
+    lenient pass-through doctrine (same as extract ignoring
+    annotation_fields for non-annotated formats). Modes that CONSUME the
+    depth ('broader') forward it to the service which rejects negatives."""
+    db_path = tmp_path / "umls.duckdb"
+    _make_duckdb(db_path)
+    runtime = McpRuntime(_settings(db_path, prepare_cache=False))
+    runtime.open()
+    try:
+        out = runtime.cross_reference(code="E11.9", from_source="ICD10CM", mode="exact", max_depth=-1)
+        assert out["mode"] == "exact"
+        with pytest.raises(ValueError, match="max_depth must be non-negative"):
+            runtime.cross_reference(code="E11.9", from_source="ICD10CM", mode="broader", max_depth=-1)
+    finally:
+        runtime.close()
+
+
+class TestEv08HistorianPriorFamilies:
+    """Iteration 23 contract pins: prior QC families verified holding on
+    the MCP surface (QC-430 alias, QC-323 missing-code shape, QC-416/424
+    empty-filter, QC-417 resolve_mode default)."""
+
+    def test_optimize_output_format_alias_qc430_ev08historian(self, tmp_path):
+        """QC-430: output_format='compact'/'flat' (Python rule-format
+        vocabulary) aliases rule_format; results equal the explicit form."""
+        db_path = tmp_path / "umls.duckdb"
+        _make_duckdb(db_path)
+        runtime = McpRuntime(_settings(db_path, prepare_cache=False))
+        runtime.open()
+        try:
+            via_alias = runtime.optimize(codes=["E11.9"], source="ICD10CM", output_format="compact")
+            explicit = runtime.optimize(codes=["E11.9"], source="ICD10CM", rule_format="compact")
+            assert via_alias == explicit
+            assert isinstance(
+                runtime.optimize(codes=["E11.9"], source="ICD10CM", output_format="flat"),
+                dict,
+            )
+        finally:
+            runtime.close()
+
+    def test_lookup_missing_code_null_field_record_qc323_ev08historian(self, tmp_path):
+        """QC-323: unknown code → CodeInfo(code=ref).to_dict() null-field
+        record, never None and never a dropped row."""
+        db_path = tmp_path / "umls.duckdb"
+        _make_duckdb(db_path)
+        runtime = McpRuntime(_settings(db_path, prepare_cache=False))
+        runtime.open()
+        try:
+            results = runtime.lookup_codes(codes=["NOPE"], sources=["ICD10CM"])["results"]
+        finally:
+            runtime.close()
+        assert len(results) == 1
+        rec = results[0]
+        assert rec is not None
+        assert rec["code"] == "NOPE"
+        assert rec["source"] == "ICD10CM"
+        assert rec["name"] is None
+
+    def test_search_names_rejects_explicit_empty_sources_qc416_ev08historian(self, tmp_path):
+        """QC-416/424: explicit-empty source filter must not widen to
+        all-sources (the () widening trap)."""
+        db_path = tmp_path / "umls.duckdb"
+        _make_duckdb(db_path)
+        runtime = McpRuntime(_settings(db_path, prepare_cache=False))
+        runtime.open()
+        try:
+            with pytest.raises(ValueError):
+                runtime.search_names(query="diabetes", sources=[])
+        finally:
+            runtime.close()
+
+    def test_patient_friendly_resolve_mode_default_qc417_ev08historian(self, tmp_path):
+        """QC-417: MCP default matches the Python facade (active_only),
+        and the mode is per-call overridable to every allowed value."""
+        db_path = tmp_path / "umls.duckdb"
+        _make_duckdb(db_path)
+        runtime = McpRuntime(_settings(db_path, prepare_cache=False))
+        runtime.open()
+        try:
+            default = runtime.patient_friendly_names(codes=["E11.9"], sources=["ICD10CM"])["results"][0]
+            assert default["match_type"] != "" or default["name"]
+            for mode in ("active_only", "historical", "resolve_current"):
+                out = runtime.patient_friendly_names(
+                    codes=["E11.9"], sources=["ICD10CM"], resolve_mode=mode
+                )["results"][0]
+                assert isinstance(out, dict)
+        finally:
+            runtime.close()
+
+
+class TestEv08ExplorerExtractParity:
+    """Iteration 24: extract tool parity with FHIR/CLI post-EV07 — the
+    tool defers min_grade (None) and mode (None) to the service, whose
+    canonical-mode floor is env-or-'probable' (EV05-EXPLORER-1). The
+    EV05-era docstring 'Default: certain' was the last stale surface."""
+
+    def test_extract_docstring_min_grade_accurate_ev08explorer1(self):
+        import inspect
+
+        from medterm4ds.apps.mcp import create_mcp_server
+
+        src = inspect.getsource(create_mcp_server)
+        assert "Default: certain (env-configurable via MEDTERM4DS_EXTRACTION_MIN_GRADE)" not in src
+        assert "service-resolved" in src and "'probable' in canonical mode" in src
+
+    def test_extract_defaults_defer_to_service_ev08explorer1(self, tmp_path, monkeypatch):
+        """min_grade/mode default None and reach the service verbatim —
+        the service (not this surface) resolves the mode-dependent floor."""
+        import asyncio
+
+        db_path = tmp_path / "umls.duckdb"
+        _make_duckdb(db_path)
+        runtime = McpRuntime(_settings(db_path, prepare_cache=False))
+        runtime.open()
+        captured: dict = {}
+
+        def fake_extract(text, *, format="codes", **kwargs):
+            captured.update(kwargs)
+            return []
+
+        monkeypatch.setattr("medterm4ds.services.extraction.extract", fake_extract)
+
+        from fastmcp import Client
+
+        from medterm4ds.apps.mcp import create_mcp_server
+
+        async def run():
+            server = create_mcp_server(runtime=runtime)
+            async with Client(server) as client:
+                return await client.call_tool("extract", {"text": "takes metformin"})
+
+        try:
+            asyncio.run(run())
+        finally:
+            runtime.close()
+        assert captured["min_grade"] is None
+        assert captured["mode"] is None
+
+    def test_extract_combo_params_forwarded_ev08explorer(self, tmp_path, monkeypatch):
+        """annotation_fields + result_types + min_grade + status flags all
+        forwarded together (PR-#19 surface parity with FHIR/CLI)."""
+        import asyncio
+
+        db_path = tmp_path / "umls.duckdb"
+        _make_duckdb(db_path)
+        runtime = McpRuntime(_settings(db_path, prepare_cache=False))
+        runtime.open()
+        captured: dict = {}
+
+        def fake_extract(text, *, format="codes", **kwargs):
+            captured.update(kwargs)
+            if format == "annotated":
+                return {"concepts": [], "annotated_text": "[x]", "spans": []}
+            return []
+
+        monkeypatch.setattr("medterm4ds.services.extraction.extract", fake_extract)
+
+        from fastmcp import Client
+
+        from medterm4ds.apps.mcp import create_mcp_server
+
+        async def run():
+            server = create_mcp_server(runtime=runtime)
+            async with Client(server) as client:
+                return await client.call_tool(
+                    "extract",
+                    {
+                        "text": "CBC and CMP drawn.",
+                        "format": "annotated",
+                        "annotation_fields": ["text", "source_code", "status"],
+                        "result_types": ["lab"],
+                        "min_grade": "probable",
+                        "include_negated": True,
+                    },
+                )
+
+        try:
+            result = asyncio.run(run())
+        finally:
+            runtime.close()
+        payload = result.data if hasattr(result, "data") else result
+        assert payload["annotated_text"] == "[x]"
+        assert captured["annotation_fields"] == ["text", "source_code", "status"]
+        assert captured["result_types"] == ["lab"]
+        assert captured["min_grade"] == "probable"
+        assert captured["include_negated"] is True
+
+
+class TestEv08ExplorerCorners:
+    """Iteration 24 lateral corners: EV-03 alias widening forwards verbatim,
+    optimize table render max_rows=None policy, health terminology pin."""
+
+    def test_search_forwards_sources_verbatim_legacy_mode_ev08explorer(self, tmp_path, monkeypatch):
+        """EV-03 alias widening lives service-side; MCP must forward the
+        caller's source list untouched (e.g. ['SNOMED'] → service widens)."""
+        import asyncio
+
+        db_path = tmp_path / "umls.duckdb"
+        _make_duckdb(db_path)
+        runtime = McpRuntime(_settings(db_path, prepare_cache=False))
+        runtime.open()
+        captured: dict = {}
+
+        def fake_service(query, *, mode=None, sources=None, count=None,
+                         result_types=None, engine=None):
+            captured.update(sources=sources, mode=mode)
+            return []
+
+        monkeypatch.setattr("medterm4ds.services.search.search", fake_service)
+
+        from fastmcp import Client
+
+        from medterm4ds.apps.mcp import create_mcp_server
+
+        async def run():
+            server = create_mcp_server(runtime=runtime)
+            async with Client(server) as client:
+                return await client.call_tool(
+                    "search", {"query": "diabetes", "mode": "lexical", "sources": ["SNOMED"]},
+                )
+
+        try:
+            asyncio.run(run())
+        finally:
+            runtime.close()
+        assert captured["sources"] == ["SNOMED"]
+        assert captured["mode"] == "lexical"
+
+    def test_optimize_table_render_passes_max_rows_none_ev08explorer(self):
+        """QC-203/QC-364 policy: the optimize table branch renders ALL
+        rules (max_rows=None) — source-read contract so a future refactor
+        dropping the kwarg fails loudly."""
+        import ast
+        import inspect
+        import textwrap
+
+        from medterm4ds.apps.mcp import McpRuntime
+
+        src = inspect.getsource(McpRuntime.optimize)
+        tree = ast.parse(textwrap.dedent(src))
+        calls = [
+            n for n in ast.walk(tree)
+            if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)
+            and n.func.id == "render_output"
+        ]
+        table_calls = [
+            c for c in calls
+            if any(k.arg == "max_rows" for k in c.keywords)
+        ]
+        assert table_calls, "optimize table render lost its max_rows kwarg"
+        for c in table_calls:
+            kw = next(k for k in c.keywords if k.arg == "max_rows")
+            assert isinstance(kw.value, ast.Constant) and kw.value.value is None
+
+    def test_health_terminology_pin_reflects_current_release_ev08explorer(self):
+        """The terminology release default advertised by health() is the
+        current canonical release (2026.11.14.2 per repo state)."""
+        from medterm4ds.core.terminology import DEFAULT_TERMINOLOGY_RELEASE
+
+        assert DEFAULT_TERMINOLOGY_RELEASE == "2026.11.14.2"
+
+
+# =============================================================================
 # EV-08 run-2 remediation regressions (mcp-surface QA)
 # =============================================================================
 

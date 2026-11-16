@@ -148,7 +148,15 @@ def preferred_atom_lookup(
     source: str,
     codes: Sequence[str],
 ) -> dict[str, CodeInfo]:
-    """Return rank-1 atom info keyed by code for one source."""
+    """Return active rank-1 atom info keyed by code for one source.
+
+    EV04-EXPLORER-1 (MEDIUM): the ``is_active`` gate mirrors the engine's
+    prepared lookup path (``_LookupOps`` applies ``AND is_active = true``).
+    The ``_prepare_best_atoms`` builder ranks ALL atoms (active first), so a
+    code whose every atom is suppressed carries a rank-1 INACTIVE row —
+    without the gate this primitive returned suppressed atoms as the
+    canonical lookup answer while the engine answered None.
+    """
     if not codes:
         return {}
     deduped = dedupe_values(codes)
@@ -159,6 +167,7 @@ def preferred_atom_lookup(
             FROM mt4ds.best_atoms
             WHERE source = ?
               AND rank = 1
+              AND is_active = true
               AND code IN (SELECT code FROM {temp})
             """,
             [source],

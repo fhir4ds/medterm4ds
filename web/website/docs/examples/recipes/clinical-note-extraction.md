@@ -23,18 +23,18 @@ import medterm4ds as mt
 note = "65yo M with T2DM on metformin, lisinopril, atorvastatin. No evidence of CKD or retinopathy."
 
 # Full pipeline: text → coded concepts
-concepts = mt.extract(note, format="codes", categories=["condition", "medication"])
+concepts = mt.extract(note, format="codes", result_types=["condition", "medication"])
 
 for c in concepts:
     print(f"  {c.source:15s} {c.code:12s} {c.display:35s} matched='{c.matched_text}'")
 ```
 
-Output:
+Output (medterm4ds 0.0.13, release 2026.11.14.2):
 ```
-  SNOMEDCT_US  44054006     Type 2 diabetes mellitus            matched='T2DM'
-  RXNORM       860975       Metformin Oral Product              matched='metformin'
-  RXNORM       197361       Amlodipine Oral Product             matched='lisinopril'
-  RXNORM       153165       Atorvastatin Oral Product           matched='atorvastatin'
+  SNOMEDCT_US  44054006     Type 2 Diabetes                      matched='T2DM'
+  RXNORM       6809         Metformin                            matched='metformin'
+  RXNORM       29046        Lisinopril                           matched='lisinopril'
+  RXNORM       83367        Atorvastatin                         matched='atorvastatin'
   # CKD and retinopathy NOT returned — negated by ConText
 ```
 
@@ -47,9 +47,9 @@ spans = mt.extract(note, format="terms")
 
 for s in spans:
     print(f"  '{s.text}' type={s.entity_type} status={s.status}")
-# → 'T2DM' type=Disease_disorder status=affirmed
-# → 'metformin' type=Medication status=affirmed
-# → 'CKD' type=Disease_disorder status=negated (excluded by default)
+# → 'T2DM' type=disorder status=affirmed
+# → 'metformin' type=therapeutic agent status=affirmed
+# → 'CKD' type=disorder status=negated (excluded by default)
 ```
 
 ## Including negated mentions
@@ -59,10 +59,10 @@ For problem-list extraction where you want everything including negations:
 ```python
 all_concepts = mt.extract(note, format="terms", include_negated=True)
 for s in all_concepts:
-    print(f"  '{s.text}' status={s.status}")
-# → 'T2DM' status=affirmed
-# → 'CKD' status=negated
-# → 'retinopathy' status=negated
+    print(f"  '{s.text}' type={s.entity_type} status={s.status}")
+# → 'T2DM' type=disorder status=affirmed
+# → 'CKD' type=disorder status=negated
+# → 'retinopathy' type=disorder status=negated
 ```
 
 ## CLI

@@ -793,13 +793,30 @@ def test_e33_subsumes_get_post_byte_exact_parity_equivalent(fhir_client):
     )
     assert r_get.status_code == 200
 
-    body = _parameters_body(SNOMED_URI, SNOMED_T2DM, codeA=SNOMED_T2DM, codeB=SNOMED_T2DM)
+    body = _subsumes_body(SNOMED_URI, SNOMED_T2DM, SNOMED_T2DM)
     r_post = fhir_client.post(
         "/fhir/CodeSystem/$subsumes", json=body
     )
     assert r_post.status_code == 200
 
     assert r_get.json() == r_post.json()
+
+
+def _subsumes_body(system: str, code_a: str, code_b: str) -> dict:
+    """Build a Parameters body for POST $subsumes (system+codeA+codeB only).
+
+    CR-001 flip companion: ``code`` is not an $subsumes In parameter (the
+    lookup-style helper emitted it pre-guard and the handler silently
+    ignored it); the FA4 body-name check now rejects it by name.
+    """
+    return {
+        "resourceType": "Parameters",
+        "parameter": [
+            {"name": "system", "valueUri": system},
+            {"name": "codeA", "valueCode": code_a},
+            {"name": "codeB", "valueCode": code_b},
+        ],
+    }
 
 
 def test_e34_subsumes_get_post_byte_exact_parity_subsumes(fhir_client):
@@ -810,10 +827,7 @@ def test_e34_subsumes_get_post_byte_exact_parity_subsumes(fhir_client):
     )
     assert r_get.status_code == 200
 
-    body = _parameters_body(
-        SNOMED_URI, SNOMED_DIABETES_MELLITUS,
-        codeA=SNOMED_DIABETES_MELLITUS, codeB=SNOMED_T2DM,
-    )
+    body = _subsumes_body(SNOMED_URI, SNOMED_DIABETES_MELLITUS, SNOMED_T2DM)
     r_post = fhir_client.post("/fhir/CodeSystem/$subsumes", json=body)
     assert r_post.status_code == 200
 
@@ -828,10 +842,7 @@ def test_e35_subsumes_get_post_byte_exact_parity_subsumed_by(fhir_client):
     )
     assert r_get.status_code == 200
 
-    body = _parameters_body(
-        SNOMED_URI, SNOMED_T2DM,
-        codeA=SNOMED_T2DM, codeB=SNOMED_DIABETES_MELLITUS,
-    )
+    body = _subsumes_body(SNOMED_URI, SNOMED_T2DM, SNOMED_DIABETES_MELLITUS)
     r_post = fhir_client.post("/fhir/CodeSystem/$subsumes", json=body)
     assert r_post.status_code == 200
 

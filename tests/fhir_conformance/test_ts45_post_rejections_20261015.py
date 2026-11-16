@@ -91,14 +91,19 @@ class TestFA4PostBodyTail:
     def test_f40_post_body_unknown_param(
         self, fhir_client, path, body
     ):
-        """zzz parameter entry in the POST body → 200 (the body-side
-        family never reached these ops). Flip when the name-set check
-        lands in their POST handlers."""
+        """zzz parameter entry in the POST body → 400 (CR-001 wired the
+        name-set check into lookup/validate/subsumes POST; flipped from
+        the TS-45 FA4 silent-accept 200 pin when the fix landed)."""
         body["parameter"].append(
             {"name": "zzz", "valueString": "x"}
         )
         r = fhir_client.post(path, json=body)
-        assert r.status_code == 200
+        assert r.status_code == 400
+        assert r.headers["content-type"].startswith(
+            "application/fhir+json"
+        )
+        assert r.json()["resourceType"] == "OperationOutcome"
+        assert "zzz" in r.json()["issue"][0]["diagnostics"]
 
     @pytest.mark.parametrize(
         "path",
@@ -142,39 +147,42 @@ class TestFA5PostRoutesSkipQueryRejections:
     """FA5 — query-side rejections are GET-only."""
 
     def test_f50_bogus_query_on_post(self, fhir_client):
-        """bogusParam in the QUERY STRING of a POST lookup → 200 (the
-        GET twin 400s). Flip when POST handlers run the known-set
-        rejection."""
+        """bogusParam in the QUERY STRING of a POST lookup → 400 (CR-001
+        wired reject_unknown_query_params into the POST siblings; flipped
+        from the TS-45 FA5 silent-accept 200 pin)."""
         r = fhir_client.post(
             "/fhir/CodeSystem/$lookup",
             json=_lookup_body(),
             params={"bogusParam": "1"},
         )
-        assert r.status_code == 200
+        assert r.status_code == 400
+        assert "bogusParam" in r.json()["issue"][0]["diagnostics"]
 
     def test_f51_version_query_on_post(self, fhir_client):
-        """version=9.9 via POST query → 200 (GET twin 400s — H1).
-        Flip with FA5's fix."""
+        """version=9.9 via POST query → 400 (CR-001: query-string version
+        rejected like the GET twin — H1; flipped from FA5's 200 pin)."""
         r = fhir_client.post(
             "/fhir/CodeSystem/$lookup",
             json=_lookup_body(),
             params={"version": "9.9"},
         )
-        assert r.status_code == 200
+        assert r.status_code == 400
 
     def test_f52_systemversion_query_on_post(self, fhir_client):
-        """systemVersion=9.9 via POST query → 200 (GET twin 400s —
-        U4). Flip with FA5's fix."""
+        """systemVersion=9.9 via POST query → 400 (CR-001: query-string
+        systemVersion rejected like the GET twin — U4; flipped from
+        FA5's 200 pin)."""
         r = fhir_client.post(
             "/fhir/CodeSystem/$lookup",
             json=_lookup_body(),
             params={"systemVersion": "9.9"},
         )
-        assert r.status_code == 200
+        assert r.status_code == 400
 
     def test_f53_expand_post_query_unsupported_param(self, fhir_client):
-        """includeDesignations via POST query on $expand → 200 (GET
-        twin 400s — EA). Flip with FA5's fix."""
+        """includeDesignations via POST query on $expand → 400 (CR-001:
+        the GET twin's EA rejection now runs on POST too; flipped from
+        FA5's 200 pin)."""
         body = {
             "resourceType": "Parameters",
             "parameter": [
@@ -186,7 +194,7 @@ class TestFA5PostRoutesSkipQueryRejections:
             json=body,
             params={"includeDesignations": "true"},
         )
-        assert r.status_code == 200
+        assert r.status_code == 400
 
     def test_f54_get_twins_reject_control(self, fhir_client):
         """Premise control: the GET twins of f50-f53 all 400 (the

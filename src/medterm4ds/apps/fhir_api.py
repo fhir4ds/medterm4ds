@@ -60,12 +60,13 @@ from medterm4ds.services.discovery import MAX_DISCOVERY_LIMIT as _SEARCH_NAMES_M
 from medterm4ds.services.discovery import search_names
 
 # Env-configurable $extract defaults (QC-167). Previously the service's
-# env-var support (MEDTERM4DS_EXTRACTION_MODE / _MIN_GRADE) was silently
-# ignored by the FHIR surface, which hardcoded hybrid/certain. Importing the
-# service defaults keeps one source of truth.
-from medterm4ds.services.extraction import (  # noqa: E402
-    DEFAULT_MIN_GRADE as DEFAULT_EXTRACT_MIN_GRADE,
-)
+# env-var support (MEDTERM4DS_EXTRACTION_MODE) was silently ignored by the
+# FHIR surface, which hardcoded hybrid. Importing the service default
+# keeps one source of truth. minGrade is deliberately NOT defaulted here:
+# EV05-EXPLORER-1 — the service's canonical-mode default floor
+# ('probable', env-overridable via MEDTERM4DS_EXTRACTION_MIN_GRADE)
+# differs from DEFAULT_MIN_GRADE ('certain'), so an explicit constant
+# default would silently tighten the floor below every other surface.
 from medterm4ds.services.extraction import (
     DEFAULT_SEARCH_MODE as DEFAULT_EXTRACT_MODE,
 )
@@ -724,7 +725,13 @@ _VS_VALIDATE_KNOWN_PARAMS = frozenset(
      "inferSystem", "abstract", "display", "displayLanguage",
      "coding", "codeableConcept", "property", "url",
      "valueSetVersion", "context", "contextDirection", "filter",
-     "_format"),
+     "_format",
+     # EV10-EXPLORER-1: valueSet is a spec-listed R4 In param
+     # (0..1 ValueSet, https://hl7.org/fhir/R4/valueset-operation-validate-code.html)
+     # sent as parameter[].resource. Declared-but-unimplemented on this
+     # surface (membership is the bare existence check per the NOT A BUG
+     # registry) — accepted like version/abstract, never rejected.
+     "valueSet"),
 )
 
 _SUBSUMES_KNOWN_PARAMS = frozenset(
@@ -1161,7 +1168,13 @@ def expand_intensional_value_set(
     contains: list[dict[str, Any]] = []
     depth_cap_hit = False
 
-    for include in (compose.get("include") or []):
+    # EV06-SKEPTIC-3: non-list ``include`` container guard (10th-PROMOTED
+    # -pattern container boundary — a non-list value raised TypeError at
+    # the for statement itself).
+    compose_includes = compose.get("include")
+    if not isinstance(compose_includes, list):
+        compose_includes = []
+    for include in compose_includes:
         if not isinstance(include, dict):
             continue
         inc_system = include.get("system", "")
@@ -1175,7 +1188,15 @@ def expand_intensional_value_set(
 
         # Explicit concept list
         if "concept" in include:
-            for concept in (include.get("concept") or []):
+            # EV06-SKEPTIC-3: the per-entry isinstance(concept, dict)
+            # guards exist, but the CONTAINER was unguarded — a non-list
+            # ``concept`` value (42, "x") raised TypeError at the for
+            # statement itself (500 + text/plain). 10th-PROMOTED-pattern
+            # container boundary: treat a non-list container as absent.
+            inc_concepts = include.get("concept")
+            if not isinstance(inc_concepts, list):
+                inc_concepts = []
+            for concept in inc_concepts:
                 if not isinstance(concept, dict):
                     continue
                 # QC-246 (MEDIUM): a null/empty code previously became
@@ -1244,7 +1265,12 @@ def expand_intensional_value_set(
                 })
 
         # Intensional filter (is-a, descendent-of)
-        for filt in (include.get("filter") or []):
+        # EV06-SKEPTIC-3: non-list ``filter`` container guard (same
+        # container boundary as the concept list above).
+        inc_filters = include.get("filter")
+        if not isinstance(inc_filters, list):
+            inc_filters = []
+        for filt in inc_filters:
             if not isinstance(filt, dict):
                 continue
             prop = filt.get("property", "")
@@ -1295,7 +1321,12 @@ def expand_intensional_value_set(
     # under-exclusion is the dangerous direction — a capped walk would
     # silently re-include truncated exclusion members. Cost is still bounded
     # by FHIR_VS_MAX_DEPTH.
-    for exclude in (compose.get("exclude") or []):
+    # EV06-SKEPTIC-3: non-list ``exclude`` container guard (mirror of
+    # the include loop above).
+    compose_excludes = compose.get("exclude")
+    if not isinstance(compose_excludes, list):
+        compose_excludes = []
+    for exclude in compose_excludes:
         if not isinstance(exclude, dict):
             continue
         exc_system = exclude.get("system", "")
@@ -1315,7 +1346,12 @@ def expand_intensional_value_set(
                 if raw is None or not str(raw).strip():
                     continue
                 excluded.add((canonical_exc, str(raw)))
-        for filt in (exclude.get("filter") or []):
+        # EV06-SKEPTIC-3: non-list ``filter`` container guard (mirror of
+        # the include loop).
+        exc_filters = exclude.get("filter")
+        if not isinstance(exc_filters, list):
+            exc_filters = []
+        for filt in exc_filters:
             if not isinstance(filt, dict):
                 continue
             prop = filt.get("property", "")
@@ -3007,6 +3043,14 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
                 request, _LOOKUP_KNOWN_PARAMS, "$lookup",
                 known_prefixes=("property.",),
             )
+            # EV06-SKEPTIC-2: date shape-validation parity with the
+            # sibling $validate-code/$expand routes (EB/H4 family — the
+            # validate_fhir_date helper existed but was never wired to
+            # $lookup; garbage dates silently 200'd here while 400ing on
+            # the siblings).
+            date_qp = request.query_params.get("date")
+            if date_qp:
+                validate_fhir_date(date_qp, "date")
         except ValueError as exc:
             return _fhir_error_response(request, 400, str(exc))
         payload = await _run_db(
@@ -3020,6 +3064,30 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
 
     @app.post("/fhir/CodeSystem/$lookup")
     async def lookup_post(request: Request, body: dict[str, Any]):
+        # CR-001 (v0.0.13 review): GET↔POST parity on the unknown-param
+        # guards (TS-45 FA4/FA5 carry-forward — the EV-05/EV-06 wiring
+        # covered $search/$extract/VS-$validate-code but not this POST
+        # sibling). Query side mirrors lookup_get's U3 call (the
+        # ``property.`` prefix admits R4's dotted sub-selectors); body
+        # side mirrors vs_validate_post's name-set check.
+        try:
+            reject_unknown_query_params(
+                request, _LOOKUP_KNOWN_PARAMS, "$lookup",
+                known_prefixes=("property.",),
+            )
+        except ValueError as exc:
+            return _fhir_error_response(request, 400, str(exc))
+        unknown_body = {
+            name
+            for name in _parameter_names_present(body) - _LOOKUP_KNOWN_PARAMS
+            if not name.startswith("property.")
+        }
+        if unknown_body:
+            return _fhir_error_response(
+                request, 400,
+                f"Unsupported $lookup parameter(s): "
+                f"{', '.join(sorted(unknown_body))}.",
+            )
         params = _parse_parameters(body)
         system = params.get("system")
         code = params.get("code")
@@ -3042,6 +3110,19 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
                 version=params.get("version"),
                 system_version=_raw_parameter_value(body, "systemVersion"),
             )
+            # CR-001 (TS-45 FA5): query-string version/systemVersion are
+            # first-class on POST per R4 §3.1.0.1.1 — reject them exactly
+            # as the GET twin does (previously a POST-only bypass of the
+            # H1/U4 family).
+            reject_unsupported_version_params(
+                version=request.query_params.get("version"),
+                system_version=request.query_params.get("systemVersion"),
+            )
+            # EV06-SKEPTIC-2: body-side date parity with validate_post
+            # (EB/H4 family sibling).
+            raw_date = _raw_parameter_value(body, "date")
+            if raw_date:
+                validate_fhir_date(str(raw_date), "date")
         except ValueError as exc:
             return _fhir_error_response(request, 400, str(exc))
         payload = await _run_db(
@@ -3254,6 +3335,29 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
 
     @app.post("/fhir/CodeSystem/$validate-code")
     async def validate_post(request: Request, body: dict[str, Any]):
+        # CR-001 (v0.0.13 review): GET↔POST parity on the unknown-param
+        # guards (TS-45 FA4/FA5 — mirrors lookup_post / vs_validate_post).
+        try:
+            reject_unknown_query_params(
+                request, _CS_VALIDATE_KNOWN_PARAMS, "$validate-code",
+            )
+            # CR-001 (TS-45 FA5): query-string version/systemVersion
+            # rejected like the GET twin (H1/U4 family).
+            reject_unsupported_version_params(
+                version=request.query_params.get("version"),
+                system_version=request.query_params.get("systemVersion"),
+            )
+        except ValueError as exc:
+            return _fhir_error_response(request, 400, str(exc))
+        unknown_body = (
+            _parameter_names_present(body) - _CS_VALIDATE_KNOWN_PARAMS
+        )
+        if unknown_body:
+            return _fhir_error_response(
+                request, 400,
+                f"Unsupported $validate-code parameter(s): "
+                f"{', '.join(sorted(unknown_body))}.",
+            )
         params = _parse_parameters(body)
         system = params.get("system")
         code = params.get("code")
@@ -3462,6 +3566,17 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
             ),
         ),
     ):
+        # EV06-SKEPTIC-1: the TS-17/U3 unknown-param rejection family was
+        # wired to every GET route EXCEPT this one — _VS_VALIDATE_KNOWN_PARAMS
+        # existed but no reject_unknown_query_params call consulted it, so
+        # bogusParam=1 silently 200'd here while 400ing on every sibling
+        # operation's GET (the EA family's last GET gap).
+        try:
+            reject_unknown_query_params(
+                request, _VS_VALIDATE_KNOWN_PARAMS, "$validate-code",
+            )
+        except ValueError as exc:
+            return _fhir_error_response(request, 400, str(exc))
         # c-fixbatch2 (H3): inferSystem is a ValueSet/$validate-code-only
         # parameter; honored here (SCTID-shape inference fills a missing
         # system), rejected on the CodeSystem surface.
@@ -3491,6 +3606,23 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
 
     @app.post("/fhir/ValueSet/$validate-code")
     async def vs_validate_post(request: Request, body: dict[str, Any]):
+        # EV06-SKEPTIC-1 (POST mirror): query-side + body-side unknown-param
+        # rejection, matching the GET route's guard. Body names beyond the
+        # declared set were silently 200'd (same shape as TS-45 FA4's three
+        # open ops — wired here because this chunk owns the surface).
+        try:
+            reject_unknown_query_params(
+                request, _VS_VALIDATE_KNOWN_PARAMS, "$validate-code",
+            )
+        except ValueError as exc:
+            return _fhir_error_response(request, 400, str(exc))
+        unknown_body = _parameter_names_present(body) - _VS_VALIDATE_KNOWN_PARAMS
+        if unknown_body:
+            return _fhir_error_response(
+                request, 400,
+                f"Unsupported $validate-code parameter(s): "
+                f"{', '.join(sorted(unknown_body))}.",
+            )
         params = _parse_parameters(body)
         url = params.get("url")
         code = params.get("code")
@@ -4070,6 +4202,29 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
 
     @app.post("/fhir/CodeSystem/$subsumes")
     async def subsumes_post(request: Request, body: dict[str, Any]):
+        # CR-001 (v0.0.13 review): GET↔POST parity on the unknown-param
+        # guards (TS-45 FA4/FA5 — mirrors lookup_post / vs_validate_post).
+        try:
+            reject_unknown_query_params(
+                request, _SUBSUMES_KNOWN_PARAMS, "$subsumes",
+            )
+            # CR-001 (TS-45 FA5): query-string version/systemVersion
+            # rejected like the GET twin (H1/U4 family).
+            reject_unsupported_version_params(
+                version=request.query_params.get("version"),
+                system_version=request.query_params.get("systemVersion"),
+            )
+        except ValueError as exc:
+            return _fhir_error_response(request, 400, str(exc))
+        unknown_body = (
+            _parameter_names_present(body) - _SUBSUMES_KNOWN_PARAMS
+        )
+        if unknown_body:
+            return _fhir_error_response(
+                request, 400,
+                f"Unsupported $subsumes parameter(s): "
+                f"{', '.join(sorted(unknown_body))}.",
+            )
         params = _parse_parameters(body)
         system = params.get("system")
         code_a = params.get("codeA")
@@ -4477,7 +4632,44 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
         body-overrides-query contract). Default (omitted) is active-only, a
         documented divergence from the R4 default of false.
         """
+        # CR-001 (v0.0.13 review): GET↔POST parity on the unknown-param
+        # guards (TS-45 FA5 — the GET route rejects unknown AND
+        # unsupported-but-declared query params; the POST route previously
+        # silently accepted both). Mirrors the EV-05 search/extract wiring.
+        try:
+            reject_unknown_query_params(
+                request, _EXPAND_KNOWN_PARAMS, "$expand",
+            )
+            unsupported = [
+                p for p in _EXPAND_UNSUPPORTED_PARAMS
+                if request.query_params.get(p) is not None
+            ]
+            if unsupported:
+                raise ValueError(
+                    f"Unsupported $expand parameter(s): "
+                    f"{', '.join(sorted(unsupported))}. This server does "
+                    "not implement them; per FHIR R4 §4.9.2 they are "
+                    "rejected rather than silently ignored."
+                )
+        except ValueError as exc:
+            return _fhir_error_response(request, 400, str(exc))
         resource_type = body.get("resourceType", "")
+        # CR-001 (TS-45 FA4): unknown body-name rejection for EVERY
+        # Parameters-shaped branch (the tail branch already checked; the
+        # inline Parameters-with-valueSet branch silently 200'd unknown
+        # co-located names). Bare ValueSet bodies carry no Parameters
+        # entries, so the check is a no-op there.
+        if resource_type != "ValueSet":
+            unknown_body = (
+                _parameter_names_present(body)
+                - set(_EXPAND_KNOWN_PARAMS) - {"valueSet"}
+            )
+            if unknown_body:
+                return _fhir_error_response(
+                    request, 400,
+                    f"Unknown $expand parameter(s): "
+                    f"{', '.join(sorted(unknown_body))}.",
+                )
         if resource_type == "ValueSet":
             payload = await _run_db(
                 _executor(request), _expand_with_params_echo,
@@ -5247,6 +5439,28 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
         not_ready = _check_ready(request)
         if not_ready is not None:
             return not_ready
+        # EV05-SKEPTIC-1 (2026-11-15): reject unknown params on the POST
+        # sibling too — the GET route rejects them (EV05-QA-04) and the
+        # $closure POST set the precedent (TS-19 W4 + QC-306). FastAPI
+        # silently drops undeclared query params and _parse_parameters
+        # ignores unknown body names, so a typo'd param silently no-ops
+        # while the client believes it applied.
+        try:
+            reject_unknown_query_params(
+                request, _SEARCH_KNOWN_PARAMS, "$search",
+            )
+        except ValueError as exc:
+            return _fhir_error_response(request, 400, str(exc))
+        unknown_body = (
+            _parameter_names_present(body) - _SEARCH_KNOWN_PARAMS - {"_query"}
+        )
+        if unknown_body:
+            return _fhir_error_response(
+                request, 400,
+                f"Unsupported $search parameter(s): "
+                f"{', '.join(sorted(unknown_body))}. This server declares "
+                "query, system, count, searchMode, resultTypes.",
+            )
         # QC-127/QC-136: reject wrong-typed values (e.g. searchMode sent as
         # valueBoolean) instead of silently dropping them to the default —
         # the QC-046 fix removed valueBoolean from _parse_parameters to stop
@@ -5297,7 +5511,13 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
         nerLabels: str | None = Query(None, description="Comma-separated NER labels to detect (default: lab test,vital sign,panel,therapeutic agent,therapeutic class,immunization,medical intervention,disorder,symptom)"),
         resultTypes: str | None = Query(None, description="Comma-separated result types to filter (condition,medication,drug_class,lab,vital,procedure,vaccine,symptom)"),
         mode: str = Query(DEFAULT_EXTRACT_MODE, pattern="^(lexical|semantic|hybrid|canonical)$"),
-        minGrade: str = Query(DEFAULT_EXTRACT_MIN_GRADE, pattern="^(certain|exact|probable|possible|broader)$"),
+        # EV05-EXPLORER-1: default None — the SERVICE resolves the
+        # effective floor (canonical: 'probable' per the v0.0.3 doctrine,
+        # env-overridable via MEDTERM4DS_EXTRACTION_MIN_GRADE). The prior
+        # explicit DEFAULT_MIN_GRADE ('certain') default silently dropped
+        # probable-graded concepts the Python/MCP surfaces return for the
+        # identical default request.
+        minGrade: str | None = Query(None, pattern="^(certain|exact|probable|possible|broader)$"),
         annotationFields: str | None = Query(None, description="Comma-separated annotated-marker fields (format=annotated only; ignored otherwise): text, name, type, source_code, canonical_id, status"),
         includeNegated: bool = Query(False),
         includeUncertain: bool = Query(False),
@@ -5362,6 +5582,28 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
         not_ready = _check_ready(request)
         if not_ready is not None:
             return not_ready
+        # EV05-SKEPTIC-1 (2026-11-15): reject unknown params on the POST
+        # sibling too (extract_get rejects per EV05-QA-04; $closure POST
+        # precedent TS-19 W4). A typo'd include* name or a query-string
+        # param on POST silently no-ops otherwise.
+        try:
+            reject_unknown_query_params(
+                request, _EXTRACT_KNOWN_PARAMS, "$extract",
+            )
+        except ValueError as exc:
+            return _fhir_error_response(request, 400, str(exc))
+        unknown_body = (
+            _parameter_names_present(body) - _EXTRACT_KNOWN_PARAMS
+        )
+        if unknown_body:
+            return _fhir_error_response(
+                request, 400,
+                f"Unsupported $extract parameter(s): "
+                f"{', '.join(sorted(unknown_body))}. This server declares "
+                "text, format, nerLabels, resultTypes, mode, minGrade, "
+                "annotationFields, includeNegated, includeUncertain, "
+                "includeHistorical, includeFamily.",
+            )
         # QC-156: reject wrong-typed values (e.g. includeNegated sent as
         # valueBoolean) instead of silently dropping them to the default —
         # same QC-127/QC-136 fix shape as $search POST. _parse_parameters
@@ -5423,13 +5665,15 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
         # hybrid/certain — the env vars were documented but silently ignored
         # by every wire surface.
         mode = params.get("mode") or DEFAULT_EXTRACT_MODE
-        min_grade = params.get("minGrade") or DEFAULT_EXTRACT_MIN_GRADE
+        # EV05-EXPLORER-1: defer to the service default when the client
+        # omitted minGrade (see extract_get).
+        min_grade = params.get("minGrade")
         for name, value, pattern in (
             ("format", fmt, r"^(codes|terms|annotated)$"),
             ("mode", mode, r"^(lexical|semantic|hybrid|canonical)$"),
             ("minGrade", min_grade, r"^(certain|exact|probable|possible|broader)$"),
         ):
-            if not re.fullmatch(pattern, value):
+            if value is not None and not re.fullmatch(pattern, value):
                 return _fhir_error_response(
                     request, 400,
                     f"Invalid {name} {value!r}: must match {pattern}.",

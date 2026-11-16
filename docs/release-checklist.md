@@ -1,7 +1,7 @@
 # medterm4ds Release Checklist
 
 Use this checklist before publishing `medterm4ds` releases. Current as of
-v0.0.2 (2026-08-16). The legacy `/mnt/d/medterm` parity comparison and its
+v0.0.13 (2026-11-15). The legacy `/mnt/d/medterm` parity comparison and its
 scripts were removed in the Tier C refactor (2026-06-26); the fhir4px
 regression suite (`tests/regression/`, gated by the `realdb` marker) is the
 real-data quality gate.

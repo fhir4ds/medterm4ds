@@ -277,9 +277,11 @@ class TestTransportParityControls:
         assert "system and code are required" in r.text
 
     def test_p13_unknown_post_param_accepted(self, fhir_client):
-        """Unknown body parameter (bogus) is accepted silently —
-        mirrors GET's ignore behavior for unknown query params; R4
-        does not mandate rejection. Pinned as the current contract."""
+        """Unknown body parameter (bogus) is rejected with 400 naming it —
+        CR-001 wired the FA4 body-name check into lookup_post (GET twin has
+        rejected unknown query params since U3/TS-17). Flipped from the
+        pre-CR-001 silent-accept 200 pin; the conformant suffix of the old
+        pin (system+code alone resolves) is re-asserted here too."""
         r = fhir_client.post(
             "/fhir/CodeSystem/$lookup",
             json={
@@ -288,6 +290,19 @@ class TestTransportParityControls:
                     {"name": "system", "valueUri": SNOMED_URI},
                     {"name": "code", "valueCode": T2DM},
                     {"name": "bogus", "valueString": "x"},
+                ],
+            },
+        )
+        assert r.status_code == 400
+        assert r.json()["resourceType"] == "OperationOutcome"
+        assert "bogus" in r.json()["issue"][0]["diagnostics"]
+        r = fhir_client.post(
+            "/fhir/CodeSystem/$lookup",
+            json={
+                "resourceType": "Parameters",
+                "parameter": [
+                    {"name": "system", "valueUri": SNOMED_URI},
+                    {"name": "code", "valueCode": T2DM},
                 ],
             },
         )

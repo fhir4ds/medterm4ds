@@ -4,9 +4,52 @@ title: Releases
 
 This page tracks Medical Terminology for Data Science package releases.
 
+## 0.0.13
+
+Fix release across extraction, search, lookup, FHIR, CLI, MCP, and
+packaging. No breaking API changes; no data rebuild required.
+
+- **Extraction**: conjunction splits survive fused separators
+  ("CBC /CMP" — the tokenizer fuses a space-then-slash into the
+  following word, which previously dropped both concepts);
+  qualifier-preserving conjunction bases — "history of CBC and CMP"
+  keeps its qualifier part instead of resolving the stripped base;
+  comparator-head variants now strip identically on the pipeline and
+  manual-span paths.
+- **Search**: source aliases (SNOMED↔SNOMEDCT_US, RXNORM↔ATC,
+  LNC↔LOINC) now widen on lexical, semantic, and hybrid modes too
+  (previously canonical-only — `sources=['SNOMED']` silently returned
+  nothing); canonical batch counts match single requests when alias
+  metadata shrinks the candidate pool.
+- **Lookup**: patient-friendly lookups honor `resolve_mode` —
+  historical/resolve_current resolve obsolete-brand codes (Vicodin →
+  Acetaminophen / Hydrocodone) while active-only behavior is unchanged;
+  prepared lookups never return suppressed atoms as canonical answers
+  (crosswalk and hierarchy displays no longer surface retired terms).
+- **FHIR**: `$extract` min-grade defaults defer to the service floor,
+  so CLI, MCP, and FHIR agree — borderline conjunctions ("CBC and CMP")
+  resolve both parts everywhere; unknown-parameter guards now cover
+  every terminology operation's GET and POST routes; ValueSet
+  `$validate-code` accepts the spec's `valueSet` parameter; malformed
+  compose bodies (non-list `include`/`concept`/`filter`/`exclude`)
+  return 400 OperationOutcomes instead of server errors; `$lookup`
+  validates date parameters.
+- **CLI**: bulk hierarchy validates max-depth before creating any
+  artifacts; athena ingest failures return clean errors; `extract
+  --min-grade` defers to the service.
+- **MCP**: bare-string code arguments are rejected instead of
+  exploding into per-character codes; a directory passed as the
+  database path fails with a named remedy.
+- **Packaging**: installs without the extraction extra import cleanly
+  (no spaCy requirement on the base/CLI/FHIR paths); the sdist manifest
+  no longer lists content it cannot ship.
+- **Terminology default release 2026.11.14.2** (encoder space
+  unchanged — no model re-download).
+
 ## 0.0.12
 
-Quality-hardening release + terminology 2026.11.12.2. No breaking API changes.
+Quality-hardening release + terminology 2026.11.12.2. No breaking API
+changes.
 
 - **Terminology default release 2026.11.12.2**: supersedes 2026.11.11.1
   (plain-`pain` anchor regression — bare "pain" resolves to the LOINC
@@ -15,28 +58,36 @@ Quality-hardening release + terminology 2026.11.12.2. No breaking API changes.
   inverted ("W/O") anchors on any path; the single-span canonical path
   now honors the tie rule, ConText lab override, and qualifier
   abstention (same span resolves identically alone and in a batch);
-  W/O folding is case-insensitive.
-- **Canonical search**: alias hits return the merged alias+embedding
-  list (single and batch agree — `HLD` returns a full page); the batch
-  path gained the space check and group-dictionary pass; source aliases
-  (SNOMED↔SNOMEDCT_US, RXNORM↔ATC, LNC↔LOINC) are widened via one
-  shared map.
-- **FHIR**: `$extract` failures return OperationOutcomes (was 500
-  text/plain); LOINC SAB spellings from canonical artifacts map to the
-  `http://loinc.org` URI; the space-check latch survives transient
-  failures. Conformance baseline 8124 passed / 0 failed.
-- **CLI safety**: `data cache-refresh` stages-then-swaps (offline
-  failures never delete the cache); `--db` prechecks, bulk numeric
-  validation, athena schema guards, and a `--version` flag.
-- **HF Space**: provisions the `fhir4ds/terminology` release layout on
-  its persistent volume; clean-checkout docker builds work (no
-  gitignored `scripts/` COPY); `rank-bm25` dropped.
-
-### Post-release hardening (2026-11-12)
-
-Follow-up fixes shipped after the initial 0.0.12 publication. No API,
-data, or version changes.
-
+  W/O folding is case-insensitive and Title-case "Without" (LOINC
+  style) triggers the without-qualifier inversion guard; "and/or"
+  conjunctions ("CBC and/or CMP") resolve both parts with no wasted
+  lookups.
+- **Canonical search determinism**: alias hits return the merged
+  alias+embedding list (single and batch agree — `HLD` returns a full
+  page); the batch path gained the space check and group-dictionary
+  pass; single-request canonical no longer depends on index layout when
+  candidates tie exactly at the count boundary (methotrexate resolves
+  to the medication consistently at count=1, matching batch and
+  larger-count results); vaccine-class twin concepts keep their
+  class-anchor priority; tie detection in extraction shares one
+  tolerance across layers, so last-digit float noise can no longer
+  defeat the lab-override rule.
+- **Resolve/lookup validation**: `client.resolve()` and every consumer
+  surface share the same empty/whitespace source and code diagnostics —
+  single calls fail loudly, batches isolate the bad entry with a
+  warning; a batch containing one NDC code no longer flips active-only
+  suppression for other same-source obsolete codes in the same batch;
+  mapping lookups reject null or non-string entries with a clear error.
+- **Terminology cache safety**: `data cache-refresh` stages-then-swaps
+  and a failed download restores the previous good release
+  unconditionally (offline failures never delete the cache; the good
+  release can no longer be left stranded under a staging name);
+  split-layout data downloads swap per unit, so a bad data-revision pin
+  or a partial new-revision download cannot destroy sibling revisions;
+  `--split` + `--terminology` together exit with a clean error;
+  whitespace-only release/dir pins are treated as unset; a symlinked
+  cache base directory fails with a clear error naming the path; the
+  demo Space honors its terminology layout pin from first start.
 - **FHIR API robustness**: `$extract` GET and POST error paths return
   proper FHIR OperationOutcomes instead of failing as internal server
   errors; unknown query parameters on `$search` and `$extract` are
@@ -45,41 +96,18 @@ data, or version changes.
   compose list fields (`include`/`concept`/`filter`/`exclude`) and null
   `coding` arrays in submitted ValueSets without crashing; batch
   `$expand` echoes `expansion.params` like the single-request path; an
-  invented `contextTac` parameter is now classified as unknown while the
-  spec's `contextDirection` is honored.
-- **Canonical search determinism**: single-request canonical search no
-  longer depends on index layout when candidates tie exactly at the
-  count boundary (methotrexate resolves to the medication consistently
-  at count=1, matching batch and larger-count results); vaccine-class
-  twin concepts keep their class-anchor priority; tie detection in
-  extraction shares one tolerance across layers, so last-digit float
-  noise can no longer defeat the lab-override rule.
-- **Extraction (NER) fixes**: Title-case "Without" (LOINC style) now
-  triggers the without-qualifier inversion guard instead of bypassing
-  it; "and/or" conjunctions resolve both parts ("CBC and/or CMP") with
-  no wasted lookups; "w/o" and "w/" abbreviations are folded on both
-  sides of the inversion detector.
-- **Resolve/lookup validation**: `client.resolve()` and every consumer
-  surface now share the same empty/whitespace source and code
-  diagnostics — single calls fail loudly, batches isolate the bad entry
-  with a warning; a batch containing one NDC code no longer flips
-  active-only suppression for other same-source obsolete codes in the
-  same batch; mapping lookups reject null or non-string entries with a
-  clear error.
-- **Terminology cache safety**: a failed `data cache-refresh` download
-  restores the previous good release unconditionally (the good release
-  can no longer be left stranded under a staging name); split-layout
-  data downloads swap per unit, so a bad data-revision pin or a partial
-  new-revision download cannot destroy sibling revisions; `--split` +
-  `--terminology` together exit with a clean error; whitespace-only
-  release/dir pins are treated as unset; a symlinked cache base
-  directory fails with a clear error naming the path; the demo Space
-  honors its terminology layout pin from first start.
-- **CLI hardening**: a corrupt or non-DuckDB `--db` file fails with
-  "is not a valid DuckDB database file" on every read command; queries
-  against a database missing its derived tables now suggest the build
-  command instead of a raw traceback; `--max-results-per-code` rejects
-  zero/negative values before any work starts.
+  invented `contextTac` parameter is now classified as unknown while
+  the spec's `contextDirection` is honored; LOINC SAB spellings from
+  canonical artifacts map to the `http://loinc.org` URI; the
+  space-check latch survives transient failures. Conformance baseline
+  8124 passed / 0 failed.
+- **CLI hardening**: `--db` prechecks — a corrupt or non-DuckDB file
+  fails with "is not a valid DuckDB database file" on every read
+  command, and queries against a database missing its derived tables
+  suggest the build command instead of a raw traceback; bulk numeric
+  validation (`--batch-size 0`, `--max-results-per-code` zero/negative
+  rejected before any work starts); athena schema guards; a
+  `--version` flag.
 - **MCP tools**: `search_athena_concepts` checks that athena vocabulary
   tables exist before probing vocabularies; `health()` no longer runs
   database probes on the caller's thread and reports an athena-less
@@ -88,6 +116,9 @@ data, or version changes.
   work happens for rejected calls); non-string sources (e.g. a list)
   are rejected at the shared validation boundary; `athena_descendants`
   `max_depth` and `discover`'s canonical source are validated loudly.
+- **HF Space**: provisions the `fhir4ds/terminology` release layout on
+  its persistent volume; clean-checkout docker builds work (no
+  gitignored `scripts/` COPY); `rank-bm25` dropped.
 - **Packaging/docs**: README release tag corrected to 2026.11.12.2,
   matching the default terminology release served by the code; package
   version metadata verified consistent; the demo container builds from
@@ -161,7 +192,7 @@ Search quality (the headline change):
   tie-break across all three modes; substring-only matches cap at
   `probable`.
 
-Portability (AMUX-44): machine-specific path defaults are gone — one
+Portability: machine-specific path defaults are gone — one
 acquisition story via `medterm4ds.core.paths`, `~` expands in env pins,
 and unset pins mean first-use auto-provisioning from the terminology
 release (the startup banner says so instead of prescribing a fix for a

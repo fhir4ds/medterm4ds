@@ -17,20 +17,20 @@ import medterm4ds as mt
 concepts = mt.extract(
     "65yo M with T2DM on metformin. No evidence of CKD. Denies chest pain.",
     format="codes",
-    categories=["condition", "medication"],
+    result_types=["condition", "medication"],
 )
 for c in concepts:
     print(f"  {c.code:12s} {c.display:35s} matched='{c.matched_text}' status={c.status}")
-# → 44054006     Type 2 diabetes mellitus            matched='T2DM'      status=affirmed
-# → 860975       Metformin Oral Product              matched='metformin' status=affirmed
+# → 44054006     Type 2 Diabetes                      matched='T2DM'      status=affirmed
+# → 6809         Metformin                            matched='metformin' status=affirmed
 # CKD and chest pain EXCLUDED — negated by ConText
 
 # NLP only: text spans without code resolution (no SapBERT needed)
 spans = mt.extract("Patient has T2DM on metformin. No CKD.", format="terms")
 for s in spans:
     print(f"  '{s.text}' type={s.entity_type} status={s.status}")
-# → 'T2DM' type=disease status=affirmed
-# → 'metformin' type=medication status=affirmed
+# → 'T2DM' type=disorder status=affirmed
+# → 'metformin' type=therapeutic agent status=affirmed
 ```
 
 ## Decomposed architecture
@@ -56,7 +56,7 @@ Returns: `ExtractedConcept` objects — spans resolved to specific codes.
 
 ```python
 concepts = mt.resolve_spans(spans)
-# → [ExtractedConcept(code="44054006", display="Type 2 diabetes mellitus"), ...]
+# → [ExtractedConcept(code="44054006", display="Type 2 Diabetes"), ...]
 ```
 
 ### `extract(text, format=...)` — convenience

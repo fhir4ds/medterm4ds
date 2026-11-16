@@ -130,8 +130,11 @@ class TestAN1OutputFormatBypass:
             ],
         }
         r = extract_client.post("/fhir/CodeSystem/$extract", json=body)
-        assert r.status_code == 200
-        assert "annotated_text" not in r.json()
+        # EV-05 pin flip (EV-10 HISTORIAN stale-pin sweep): the body-name
+        # check (EV05-SKEPTIC-1) closes AN1's bypass loudly — 400 naming
+        # outputFormat (the declared name is format).
+        assert r.status_code == 400
+        assert "outputFormat" in r.json()["issue"][0]["diagnostics"]
 
     def test_an13_format_param_still_guards(self, extract_client):
         """CONTROL: the spec param (format=annotated) still 406s under

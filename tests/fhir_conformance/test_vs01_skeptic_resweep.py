@@ -538,11 +538,8 @@ class TestLens2ParameterCaseFidelity:
         https://hl7.org/fhir/R4/parameters.html §3.3, parameter names are
         case-sensitive. The server SHOULD NOT silently equate.
 
-        Documenting current behavior: ``_parse_parameters`` extracts
-        whichever name appears; the handler consumes ``system`` regardless.
-        The off-case ``systemversion`` is captured into the params dict but
-        never consumed — functionally equivalent to the canonical case
-        (handler ignores version today). Probe asserts no crash + 200.
+        EV-06 pin flip (EV-10 HISTORIAN): the off-case name is now
+        rejected loudly as an unknown body parameter.
         """
         params_body = {
             "resourceType": "Parameters",
@@ -557,9 +554,15 @@ class TestLens2ParameterCaseFidelity:
             json=params_body,
             headers={"Accept": "application/fhir+json"},
         )
-        assert resp.status_code == 200
+        # EV-06 pin flip (EV-10 HISTORIAN stale-pin sweep): parameter
+        # names are case-sensitive per R4 §3.3 — the off-case
+        # ``systemversion`` is an UNKNOWN body name, and the
+        # VS/$validate-code body-name check (EV06-SKEPTIC-1) now
+        # rejects it loudly instead of silently dropping it.
+        assert resp.status_code == 400
         body = resp.json()
-        assert body.get("resourceType") == "Parameters"
+        assert body.get("resourceType") == "OperationOutcome"
+        assert "systemversion" in body["issue"][0]["diagnostics"]
 
     def test_s25_fhir_r4_filter_operators_constant_matches_spec(self):
         """SOURCE-READ contract: ``FHIR_R4_FILTER_OPERATORS`` constant in
@@ -1370,8 +1373,14 @@ class TestLens8SourceReadStructuralContracts:
         for node in ast.walk(tree):
             if isinstance(node, ast.For):
                 # Match either: include.get("concept", []) OR include["concept"]
+                # OR the EV06-SKEPTIC-3 container-guard form where the list is
+                # first extracted into an intermediate (inc_concepts) after
+                # the isinstance(x, list) container check (EV-10 flip).
                 iter_src = ast.get_source_segment(src, node.iter) or ""
-                if "concept" in iter_src and "include" in iter_src:
+                if "concept" in iter_src and (
+                    "include" in iter_src
+                    or iter_src.strip().startswith("inc_")
+                ):
                     body_stmts = node.body[:5]
                     for stmt in body_stmts:
                         stmt_src = ast.get_source_segment(src, stmt) or ""
@@ -1393,9 +1402,14 @@ class TestLens8SourceReadStructuralContracts:
             if isinstance(node, ast.For):
                 # EV06-QA-02: null-safe BoolOp iter — match iter source
                 # (accepts ``include.get("filter", [])`` and
-                # ``(include.get("filter") or [])`` alike).
+                # ``(include.get("filter") or [])`` alike), plus the
+                # EV06-SKEPTIC-3 container-guard intermediate form
+                # (inc_filters) — EV-10 flip.
                 iter_src = ast.get_source_segment(src, node.iter) or ""
-                if "filter" in iter_src and "include" in iter_src:
+                if "filter" in iter_src and (
+                    "include" in iter_src
+                    or iter_src.strip().startswith("inc_")
+                ):
                     body_stmts = node.body[:5]
                     for stmt in body_stmts:
                         stmt_src = ast.get_source_segment(src, stmt) or ""
