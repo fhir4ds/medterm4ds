@@ -4164,6 +4164,17 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
                 "targetsystem must be a non-empty system URI when "
                 "provided.",
             )
+        # CR-003: canonicalize the client-supplied targetSystem through
+        # the shared registry path BEFORE the closed-enum gate — the
+        # same resolution _do_translate applies to its targetSystem
+        # (fhir_uri_to_system → system_to_fhir_uri), so alias /
+        # trailing-slash / uppercase-scheme forms every sibling surface
+        # accepts resolve to the enum's canonical URI instead of 400ing
+        # on an exact-string compare. Unresolvable forms stay raw and
+        # still 400 with the full listing below.
+        target_source = fhir_uri_to_system(target_uri)
+        if target_source is not None:
+            target_uri = system_to_fhir_uri(target_source) or target_uri
         if target_uri not in TARGET_SYSTEM_URIS:
             served = ", ".join(sorted(TARGET_SYSTEM_URIS))
             # The full listing is the load-bearing closed-enum signal

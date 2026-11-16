@@ -3949,6 +3949,60 @@ class TestAssocTranslate:
         for uri in sorted(TARGET_SYSTEM_URIS):
             assert uri in diag, uri
 
+    def test_targetsystem_alias_forms_accepted(self, assoc_app):
+        """CR-003 pin: alias forms of a served target system — trailing
+        slash, urn:oid, uppercase scheme — canonicalize through the
+        shared registry path (the same resolution every sibling surface
+        applies) instead of exact-matching the closed enum and 400ing."""
+        from starlette.testclient import TestClient
+        with TestClient(assoc_app) as client:
+            for alias in (
+                "http://loinc.org/",
+                "urn:oid:2.16.840.1.113883.6.1",
+                "HTTP://loinc.org",
+            ):
+                resp = client.get(
+                    "/fhir/ConceptMap/$translate",
+                    params={
+                        "url": _ASSOC_URL,
+                        "system": "http://snomed.info/sct",
+                        "code": "88594005",
+                        "targetSystem": alias,
+                    },
+                )
+                assert resp.status_code == 200, (alias, resp.text)
+                concepts = [
+                    self._part(m, "concept")["valueCoding"]
+                    for m in self._matches(resp.json())
+                ]
+                # byte-exact parity with the canonical-URI happy path
+                assert [c["code"] for c in concepts] == [
+                    "LP14355-9", "24321-2",
+                ], alias
+                for coding in concepts:
+                    assert coding["system"] == "http://loinc.org", alias
+
+    def test_targetsystem_unresolvable_alias_still_400_lists(self, assoc_app):
+        """CR-003 counterweight: canonicalization widens only forms the
+        shared registry resolves; an unresolvable URI (unknown urn:oid)
+        still 400s with the full closed-enum listing."""
+        from starlette.testclient import TestClient
+        with TestClient(assoc_app) as client:
+            resp = client.get(
+                "/fhir/ConceptMap/$translate",
+                params={
+                    "url": _ASSOC_URL,
+                    "system": "http://snomed.info/sct",
+                    "code": "88594005",
+                    "targetSystem": "urn:oid:1.2.3.4.5",
+                },
+            )
+        assert resp.status_code == 400
+        from medterm4ds.services.associations import TARGET_SYSTEM_URIS
+        diag = resp.json()["issue"][0]["diagnostics"]
+        for uri in sorted(TARGET_SYSTEM_URIS):
+            assert uri in diag, uri
+
     def test_reverse_400(self, assoc_app):
         from starlette.testclient import TestClient
         with TestClient(assoc_app) as client:

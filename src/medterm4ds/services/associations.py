@@ -381,7 +381,14 @@ def download(cache_root: Path, *, rel: str | None = None) -> Path:
     return base
 
 
-def _rss_mb() -> float:
+def _peak_rss_mb() -> float:
+    """Peak resident set size in MB.
+
+    ``ru_maxrss`` is the process's PEAK RSS (monotonic high-water mark),
+    not the current RSS — every caller must word its logging as peak.
+    (CR-004: a previous log line called this an "RSS delta" against a
+    current-RSS reading it never did.)
+    """
     import resource
 
     return resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024.0
@@ -389,7 +396,7 @@ def _rss_mb() -> float:
 
 def _load_graph() -> AssociationsGraph:
     t0 = time.perf_counter()
-    rss0 = _rss_mb()
+    rss0 = _peak_rss_mb()
     root = associations_root()
     rel = release()
     base = base_dir(root, rel)
@@ -433,10 +440,10 @@ def _load_graph() -> AssociationsGraph:
     )
     logger.info(
         "Loaded associations graph %s (%d cids, %d names, %d concepts) "
-        "in %.1fs, RSS delta ~%.0f MB (peak %.0f MB)",
+        "in %.1fs, peak-RSS delta ~%.0f MB (peak %.0f MB)",
         resolved_rel, len(graph.by_cid), len(graph.by_name),
         len(graph.concepts), time.perf_counter() - t0,
-        max(0.0, _rss_mb() - rss0), _rss_mb(),
+        max(0.0, _peak_rss_mb() - rss0), _peak_rss_mb(),
     )
     return graph
 
