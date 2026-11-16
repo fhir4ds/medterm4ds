@@ -265,11 +265,6 @@ def cache_refresh(
             "repo_id": _assoc.repo_id(),
             "release": _assoc.release(),
         }
-        if terminology is None:
-            # An associations-only refresh must not silently also
-            # refresh the terminology layout (surprise multi-GB
-            # download).
-            return {"layout": "associations", **associations_report}
 
     if split:
         return _cache_refresh_split(data_revision=data_revision)
@@ -281,6 +276,14 @@ def cache_refresh(
             _search._LAYOUT_TERMINOLOGY
             and _term.is_present(_term.base_dir(_search._terminology_root()))
         )
+    if associations and not terminology:
+        # An associations-only refresh must not silently also refresh
+        # another layout (surprise multi-GB download). CR-001: keyed on
+        # `not terminology` AFTER auto-resolution — the CLI passes
+        # terminology=False (never None), so the previous `is None`
+        # guard never fired from the CLI and --associations fell
+        # through to the legacy family refresh.
+        return {"layout": "associations", **associations_report}
     if terminology:
         if not _search._LAYOUT_TERMINOLOGY:
             raise RuntimeError(
