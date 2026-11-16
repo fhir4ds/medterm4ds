@@ -251,6 +251,138 @@ class AssociationsGraph:
         )
 
 
+# -- Parquet-first serving (FDD decision E) ---------------------------
+#
+# The model lane emits the graph as Parquet alongside the JSON: a long
+# members table partitioned by member_system plus by_cid / by_name
+# side tables. When the bundle carries them, ALL existing queries are
+# served through DuckDB against the parquet (lazy, single-flight) —
+# the in-memory graph + its CR-002 cold start retire; the JSON
+# fallback is unchanged when absent.
+#
+# Parquet layout contract (companion-note schema):
+#   graph/<rel>/parquet/members/member_system=<SYS>/*.parquet
+#       columns: cid, bucket, member_cid, member_system, member_code,
+#                member_name, provenance, distance (nullable),
+#                derivations (JSON string)
+#   graph/<rel>/parquet/by_cid.parquet   # cid, name, is_entry
+#   graph/<rel>/parquet/by_name.parquet  # name, cid
+#
+# ``is_entry`` mirrors the JSON graph's concepts-keyed-by-name node
+# existence: by_cid carries display rows for members and leaves too
+# (is_entry=0); entry_for_cid must return None for those (honest
+# empty) exactly as the JSON path does.
+
+PARQUET_DIRNAME = "parquet"
+_PARQUET_MEMBERS_COLUMNS = frozenset({
+    "cid", "bucket", "member_cid", "member_name", "provenance",
+    "distance",
+})
+
+
+def parquet_dir(base: Path, rel: str) -> Path:
+    return base / "graph" / rel / PARQUET_DIRNAME
+
+
+class ParquetAssociationsGraph(AssociationsGraph):
+    """DuckDB-backed serving graph over the bundle's parquet members
+    table + side tables. Same public surface as the JSON graph
+    (by_cid / by_name / entry_for_cid / members / sort_key /
+    parse_cid) — parity pinned by tests/test_assoc_parquet.py."""
+
+    def __init__(
+        self,
+        release: str,
+        pdir: Path,
+        by_cid: dict[str, str],
+        by_name: dict[str, str],
+        entry_cids: frozenset[str],
+    ):
+        # NOTE: intentionally bypasses the dataclass __init__ — this
+        # implementation carries a parquet dir + lazy DuckDB handle
+        # instead of an in-memory concepts dict.
+        self.release = release
+        self._pdir = Path(pdir)
+        self.by_cid = by_cid
+        self.by_name = by_name
+        self._entry_cids = entry_cids
+        self._con: Any = None
+        self._con_lock = threading.Lock()
+
+    @property
+    def concepts(self) -> dict[str, Any]:  # pragma: no cover — guard
+        raise AssociationsLayoutError(
+            "the parquet-backed associations graph has no in-memory "
+            "concepts unit (served through DuckDB); use "
+            "entry_for_cid/members"
+        )
+
+    def _duck(self):
+        if self._con is not None:
+            return self._con
+        with self._con_lock:
+            if self._con is not None:
+                return self._con
+            import duckdb
+
+            con = duckdb.connect(":memory:")
+            members_glob = (
+                f"'{str(self._pdir / 'members').replace(chr(39), chr(39) * 2)}"
+                "/**/*.parquet'"
+            )
+            con.execute(
+                f"""
+                CREATE VIEW assoc_members AS
+                SELECT cid, bucket, member_cid, member_name,
+                       provenance, distance
+                FROM read_parquet({members_glob}, hive_partitioning=true)
+                """
+            )
+            self._con = con
+            return self._con
+
+    def entry_for_cid(self, cid: str) -> dict[str, Any] | None:
+        """cid -> entry marker (None for leaf/display-only cids —
+        honest empty, mirroring the JSON path's concepts lookup)."""
+        name = self.by_cid.get(cid)
+        if name is None or cid not in self._entry_cids:
+            return None
+        return {"name": name, "cid": cid}
+
+    def members(self, entry: dict[str, Any]) -> list[tuple[str, dict[str, Any]]]:
+        """(bucket, member) pairs for one entry, deterministically
+        ordered by the published sort contract (bucket rank, distance
+        None-last, member cid) — same observable order the JSON path
+        yields after its callers sort."""
+        cid = entry.get("cid")
+        if cid is None:
+            # JSON-shaped entry (defensive): delegate to the JSON
+            # semantics so a mixed caller never gets a wrong answer.
+            return super().members(entry)
+        rows = self._duck().execute(
+            "SELECT bucket, member_cid, member_name, provenance, "
+            "distance FROM assoc_members WHERE cid = ?",
+            [cid],
+        ).fetchall()
+        out: list[tuple[str, dict[str, Any]]] = []
+        for bucket, m_cid, m_name, provenance, distance in rows:
+            out.append((bucket, {
+                "cid": m_cid,
+                "name": m_name,
+                "provenance": provenance,
+                "distance": distance,
+            }))
+        unknown = {b for b, _m in out} - set(self.bucket_order)
+        if unknown:
+            raise AssociationsLayoutError(
+                f"associations parquet members for cid {cid!r} carry "
+                f"unknown bucket(s) {sorted(unknown)}; the closed "
+                "order is BUCKET_ORDER."
+            )
+        out.sort(key=lambda bm: self.sort_key(bm[0], bm[1]))
+        return out
+
+
 def _read_manifest(base: Path) -> dict:
     try:
         return json.loads((base / "manifest.json").read_text())
@@ -338,6 +470,9 @@ def download(cache_root: Path, *, rel: str | None = None) -> Path:
     patterns = [
         "manifest.json",
         f"graph/{rel}/*",
+        # Parquet members/side tables (decision E) — subdirectories
+        # need their own pattern (`*` matches one path segment only).
+        f"graph/{rel}/parquet/**",
         f"naming/{rel}/*",
     ]
     tmp = base.parent / f".tmp-{base.name}-{os.getpid()}"
@@ -394,6 +529,74 @@ def _peak_rss_mb() -> float:
     return resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024.0
 
 
+def _load_parquet_graph(
+    base: Path,
+    rel: str,
+    pdir: Path,
+) -> AssociationsGraph:
+    """Parquet-first load (FDD decision E): side tables into memory
+    (the small index), members served through DuckDB views — the
+    multi-hundred-MB in-memory graph never materializes."""
+    import duckdb
+
+    for name in ("by_cid.parquet", "by_name.parquet"):
+        if not (pdir / name).is_file():
+            raise AssociationsLayoutError(
+                f"associations parquet layout at {pdir} is missing "
+                f"{name} (contract violation — never silently serve; "
+                "fall back by removing the parquet dir or re-fetch "
+                "the bundle)."
+            )
+    if not any((pdir / "members").rglob("*.parquet")):
+        raise AssociationsLayoutError(
+            f"associations parquet layout at {pdir} carries no "
+            "members parquet files (incomplete bundle)."
+        )
+    con = duckdb.connect(":memory:")
+    try:
+        members_glob = (
+            f"'{str(pdir / 'members').replace(chr(39), chr(39) * 2)}"
+            "/**/*.parquet'"
+        )
+        cols = {
+            r[0]
+            for r in con.execute(
+                f"DESCRIBE SELECT * FROM read_parquet("
+                f"{members_glob}, hive_partitioning=true)"
+            ).fetchall()
+        }
+        missing = _PARQUET_MEMBERS_COLUMNS - cols
+        if missing:
+            raise AssociationsLayoutError(
+                f"associations parquet members table at "
+                f"{pdir / 'members'} is missing column(s) "
+                f"{sorted(missing)} (contract violation — never "
+                "silently serve)"
+            )
+        by_cid_rows = con.execute(
+            f"SELECT cid, name, is_entry FROM read_parquet("
+            f"'{str(pdir / 'by_cid.parquet').replace(chr(39), chr(39) * 2)}')"
+        ).fetchall()
+        by_name = dict(
+            con.execute(
+                f"SELECT name, cid FROM read_parquet("
+                f"'{str(pdir / 'by_name.parquet').replace(chr(39), chr(39) * 2)}')"
+            ).fetchall()
+        )
+    finally:
+        con.close()
+    graph = ParquetAssociationsGraph(
+        release=rel,
+        pdir=pdir,
+        by_cid={cid: name for cid, name, _is_entry in by_cid_rows},
+        by_name=by_name,
+        entry_cids=frozenset(
+            cid for cid, _name, is_entry in by_cid_rows if is_entry
+        ),
+    )
+    return graph
+
+
 def _load_graph() -> AssociationsGraph:
     t0 = time.perf_counter()
     rss0 = _peak_rss_mb()
@@ -414,6 +617,30 @@ def _load_graph() -> AssociationsGraph:
         download(root)
     resolved_base, manifest = resolve(root, rel=rel_override)
     resolved_rel = manifest.get("release") or rel
+    # Parquet-first (FDD decision E): when the bundle carries the
+    # parquet members table + side tables, serve EVERYTHING through
+    # DuckDB against them; the JSON graph below is the unchanged
+    # fallback. A manifest advertising parquet without the files is a
+    # drift — fail loud rather than silently degrading to JSON.
+    pdir = parquet_dir(resolved_base, resolved_rel)
+    if pdir.is_dir():
+        graph = _load_parquet_graph(resolved_base, resolved_rel, pdir)
+        logger.info(
+            "Loaded associations graph %s (parquet-backed; %d cids, "
+            "%d entries, %d names) in %.1fs, peak-RSS delta ~%.0f MB "
+            "(peak %.0f MB)",
+            resolved_rel, len(graph.by_cid), len(graph._entry_cids),
+            len(graph.by_name), time.perf_counter() - t0,
+            max(0.0, _peak_rss_mb() - rss0), _peak_rss_mb(),
+        )
+        return graph
+    if manifest.get("parquet"):
+        raise AssociationsLayoutError(
+            f"associations manifest at {resolved_base} advertises "
+            "parquet but the parquet layout is absent — bundle drift; "
+            "re-fetch with 'medterm4ds data cache-refresh "
+            "--associations'."
+        )
     path = graph_file(resolved_base, resolved_rel)
     with gzip.open(path, "rt", encoding="utf-8") as fh:
         data = json.load(fh)
