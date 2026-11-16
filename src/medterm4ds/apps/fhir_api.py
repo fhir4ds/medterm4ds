@@ -4130,7 +4130,12 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
                 f"AND vocabulary_id IN ({placeholders}) LIMIT 1",
                 [code, *vocabs],
             ).fetchone()
-        except Exception:
+        except duckdb.CatalogException:
+            # Missing relation (athena tables absent in this database) —
+            # the honest remedy 400. Any OTHER query failure (schema drift,
+            # binder error, IO) propagates to the systemic duckdb.Error
+            # handler (503) instead of masquerading as "no data"
+            # (independent-review LOW, 2026-11-16).
             return _fhir_error(
                 400,
                 "No athena_* tables in this database — run "
