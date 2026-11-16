@@ -23,12 +23,16 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 
 # The repo gitignores scripts/ (operator-local tooling — see
 # test_hardening_scripts.py's precedent), so a clean checkout lacks
-# scripts/build_athena_parquet.py. Skip here rather than fail there.
-pytestmark = pytest.mark.skipif(
-    not (REPO_ROOT / "scripts" / "build_athena_parquet.py").is_file(),
-    reason="scripts/build_athena_parquet.py not present (clean "
-    "checkout / sdist)",
-)
+# scripts/build_athena_parquet.py. Skip at MODULE level: the ETL module
+# is loaded by path below, which runs at collection time — a plain
+# pytestmark skipif cannot prevent that (CI collection failure,
+# 2026-11-16).
+if not (REPO_ROOT / "scripts" / "build_athena_parquet.py").is_file():
+    pytest.skip(
+        "scripts/build_athena_parquet.py not present (clean "
+        "checkout / sdist)",
+        allow_module_level=True,
+    )
 
 _spec = importlib.util.spec_from_file_location(
     "build_athena_parquet",
