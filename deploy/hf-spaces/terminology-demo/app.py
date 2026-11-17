@@ -290,8 +290,13 @@ async def origin_allowlist_and_rate_limit(request: Request, call_next):
         # response — it overwrites the header even when the app pins it —
         # so the browser sees the echo. Nothing the app sends can prevent
         # that; the protection is the 403 itself (no data returned).
+        # X-Allowlist-Expected (fhir4px suggestion 2026-11-17): the hf.space
+        # edge echoes ACAO onto this 403, which reads like a CORS misconfig in
+        # integrator devtools. Naming the expected origin count here turns
+        # that into an immediately diagnosable allowlist refusal.
         return JSONResponse(
             status_code=403,
+            headers={"X-Allowlist-Expected": f"{len(ALLOWED_ORIGINS)} origins"},
             content={"detail": f"Origin {origin!r} is not allowed to call this demo API."},
         )
 
