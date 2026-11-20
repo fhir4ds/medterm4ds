@@ -188,8 +188,6 @@ class SemanticSearchEngine:
 
     def _embed(self, text: str) -> Any:
         """Embed query text using SapBERT (768-dim, L2-normalized)."""
-        import torch
-
         with self._infer_lock:
             return self._embed_locked(text)
 
