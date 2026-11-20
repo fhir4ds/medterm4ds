@@ -57,6 +57,13 @@ class SemanticSearchEngine:
         self._device_param = device
         self._device = "cpu"
         self._lock = threading.Lock()
+        # Inference lock (FHIR4-22): the HF fast tokenizer and the torch
+        # forward pass are NOT safe to invoke concurrently on one engine
+        # instance — concurrent calls corrupt native heap state, which
+        # surfaces as transient TypeErrors in unrelated pure-Python frames
+        # ('int' object is not callable) or outright segfaults. Every
+        # tokenizer+forward seam goes through this lock.
+        self._infer_lock = threading.Lock()
         self._model = None
         self._tokenizer = None
         # Terminology layout: the model unit carries no manifest.json —
@@ -183,6 +190,13 @@ class SemanticSearchEngine:
         """Embed query text using SapBERT (768-dim, L2-normalized)."""
         import torch
 
+        with self._infer_lock:
+            return self._embed_locked(text)
+
+    def _embed_locked(self, text: str) -> Any:
+        """Tokenizer + forward pass; caller holds ``_infer_lock``."""
+        import torch
+
         inputs = self._tokenizer(
             text, return_tensors="pt", truncation=True, max_length=512, padding=True
         )
@@ -216,19 +230,20 @@ class SemanticSearchEngine:
         all_embeddings = []
         for i in range(0, len(texts), batch_size):
             batch = texts[i : i + batch_size]
-            inputs = self._tokenizer(
-                batch,
-                return_tensors="pt",
-                truncation=True,
-                max_length=512,
-                padding=True,
-            )
-            inputs = inputs.to(self._model.device)
-            with torch.no_grad():
-                outputs = self._model(**inputs)
-                emb = outputs.last_hidden_state.mean(dim=1)
-                emb = torch.nn.functional.normalize(emb, p=2, dim=1)
-                all_embeddings.append(emb.cpu().numpy().astype("float32"))
+            with self._infer_lock:
+                inputs = self._tokenizer(
+                    batch,
+                    return_tensors="pt",
+                    truncation=True,
+                    max_length=512,
+                    padding=True,
+                )
+                inputs = inputs.to(self._model.device)
+                with torch.no_grad():
+                    outputs = self._model(**inputs)
+                    emb = outputs.last_hidden_state.mean(dim=1)
+                    emb = torch.nn.functional.normalize(emb, p=2, dim=1)
+                    all_embeddings.append(emb.cpu().numpy().astype("float32"))
         return np.vstack(all_embeddings)
 
     def search(

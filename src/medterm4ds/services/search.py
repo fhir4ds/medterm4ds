@@ -24,6 +24,7 @@ import logging
 import os
 import re
 import shutil
+import threading
 import unicodedata
 from collections.abc import Mapping
 from dataclasses import dataclass, field, replace
@@ -1042,6 +1043,9 @@ class SearchService:
         self._bm25_indexes: dict[str, dict] = {}
         self._semantic_engine = None
         self._bm25_loaded = False
+        # Lazy-load lock (FHIR4-22): the check-then-load lazy init must not
+        # race across threads (double BM25 load / dict swap under readers).
+        self._ensure_lock = threading.Lock()
         self._canonical_loaded = False
         self._canonical_by_id: dict[str, dict] = {}
         self._group_terms: dict[str, dict] = {}
@@ -1130,6 +1134,12 @@ class SearchService:
         return (self._model_dir / "model.safetensors").exists()
 
     def _ensure_bm25(self) -> None:
+        if self._bm25_loaded:
+            return
+        with self._ensure_lock:
+            self._ensure_bm25_locked()
+
+    def _ensure_bm25_locked(self) -> None:
         if self._bm25_loaded:
             return
         # Terminology layout: <family>/<release>/<category>.json — resolved
