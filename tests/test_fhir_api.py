@@ -4287,9 +4287,10 @@ class TestAssocTranslate:
         from AssociationsLayoutError); the serving path must convert it to
         the fail-loud 503 with the cache-refresh remedy, not an unhandled
         500."""
+        from starlette.testclient import TestClient
+
         from medterm4ds.core.artifact_manifest import ManifestError
         from medterm4ds.services import associations as _assoc
-        from starlette.testclient import TestClient
 
         def _drift(*a, **k):
             raise ManifestError(
