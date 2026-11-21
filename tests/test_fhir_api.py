@@ -3182,7 +3182,19 @@ class TestEv06HistorianBatchParity(_Ev06HistorianFixture):
                 direct = client.get(f"/fhir/{path}", params=dict(
                     kv.split("=", 1) for kv in q.split("&")))
                 assert entry["response"]["status"] == "200", entry
-                assert entry["resource"] == direct.json(), path
+                # expansion.timestamp is server wall-clock at build time
+                # (FHIR-mandated per-expansion field) — the batch entry
+                # and the direct call can straddle a second boundary.
+                # Byte-parity holds for every other field. (QC-10 rerun
+                # methodology note, 2026-11-21; flake seen on CI duckdb
+                # 2.0.0 leg run 44873179334.)
+                def _strip_ts(payload):
+                    exp = payload.get("expansion")
+                    if isinstance(exp, dict):
+                        exp = {k: v for k, v in exp.items()
+                               if k != "timestamp"}
+                    return {**payload, "expansion": exp}
+                assert _strip_ts(entry["resource"]) == _strip_ts(direct.json()), path
             # $closure POST parity (direct POST vs batch POST)
             direct_closure = client.post(
                 "/fhir/CodeSystem/$closure",
