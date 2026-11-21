@@ -7,6 +7,49 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.14] - 2026-11-21
+
+### Added
+
+- **Athena serving (OMOP vocabulary)**: `$translate` on
+  `urn:medterm4ds:athena-conceptmap` now answers from a pinned local
+  Parquet snapshot of the Athena CDM vocabulary (no ingest step) when
+  the engine DB carries no `athena_*` tables; table-backed DBs keep
+  working unchanged. CPT content is excluded from snapshots by
+  default (licensing); build via `scripts/build_athena_parquet.py`.
+- **Associations `$translate`**:
+  `urn:medterm4ds:associations-conceptmap` — condition ↔
+  medication/lab/procedure associations from the published graph,
+  `relatedto` equivalence, engine-canonical displays; Parquet-mirror
+  bundles load through DuckDB when the release advertises
+  `parquet_mirror` (JSON fallback for older tags).
+- **Thread safety (FHIR4-22/FHIR4-23)**: native inference
+  (SapBERT/GLiNER forward passes) and lazy index builds are
+  lock-serialized; concurrent `$search`/`$extract` fan-out and
+  caller-thread library bursts are safe in one process. Torch +
+  DuckDB co-load in one process is a supported pattern (one thread
+  per DuckDB connection).
+
+### Fixed
+
+- **Athena `$translate` source aliases (EV1404)**: the OID and
+  trailing-slash spellings of the source system are accepted like
+  every other operation (previously a 400).
+- **Associations 503 handling (CR2-002)**: a drifted Parquet bundle
+  reports a fail-loud 503 with the cache-refresh remedy instead of an
+  unhandled 500.
+- **Canonical index lazy init (CR2-001)**: double-checked locking —
+  concurrent first consumers can no longer observe a partially-built
+  canonical index (previously a transient result=false empty).
+
+### Notes
+
+- POST `$translate` expects a JSON Parameters body (or use GET /
+  batch Bundles); form-encoded POST bodies are rejected on every map,
+  as in prior releases.
+- Demo Space: origin refusals now carry an `X-Allowlist-Expected`
+  diagnostic header; the default allowlist adds localhost:46201 dev
+  origins.
 ## [0.0.13] - 2026-11-15
 
 ### Changed
