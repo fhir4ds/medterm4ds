@@ -222,6 +222,29 @@ class TestStage4bSeam:
         )
         assert r.status_code == 400
 
+    def test_4b12a_source_alias_forms_translate_ev1404(self, seam_client):
+        """EV1404/QC-02: the source system's OID and trailing-slash alias
+        forms are accepted server-wide (FHIR_URI_ALIASES; $lookup resolves
+        them) — the athena vocab correspondence check must canonicalize
+        before comparing, not reject the alias spellings."""
+        r = seam_client.get(
+            "/fhir/ConceptMap/$translate",
+            params={
+                "url": self.ACM,
+                "system": "urn:oid:2.16.840.1.113883.6.96",
+                "code": "44054006", "targetSystem": self.TGT,
+            },
+        )
+        assert r.status_code == 200, r.text
+        r2 = seam_client.get(
+            "/fhir/ConceptMap/$translate",
+            params={
+                "url": self.ACM, "system": self.SNOMED + "/",
+                "code": "44054006", "targetSystem": self.TGT,
+            },
+        )
+        assert r2.status_code == 200, r2.text
+
     def test_4b13_reverse_400(self, seam_client):
         r = seam_client.get(
             "/fhir/ConceptMap/$translate",
