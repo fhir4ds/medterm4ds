@@ -4282,6 +4282,38 @@ class TestAssocTranslate:
         assert "cache-refresh" in body["issue"][0]["diagnostics"]
 
 
+    def test_manifest_drift_is_503_not_500_cr2002(self, assoc_app, monkeypatch):
+        """CR2-002: a drifted Parquet bundle raises ManifestError (separate
+        from AssociationsLayoutError); the serving path must convert it to
+        the fail-loud 503 with the cache-refresh remedy, not an unhandled
+        500."""
+        from medterm4ds.core.artifact_manifest import ManifestError
+        from medterm4ds.services import associations as _assoc
+        from starlette.testclient import TestClient
+
+        def _drift(*a, **k):
+            raise ManifestError(
+                "members_rows drift: parquet mirror does not match manifest"
+            )
+
+        monkeypatch.setattr(_assoc, "get_associations_graph", _drift)
+        app = assoc_app
+        with TestClient(app, raise_server_exceptions=False) as client:
+            r = client.get(
+                "/fhir/ConceptMap/$translate",
+                params={
+                    "url": "urn:medterm4ds:associations-conceptmap",
+                    "system": "http://snomed.info/sct",
+                    "code": "195967001",
+                    "targetsystem": "http://snomed.info/sct",
+                },
+            )
+            assert r.status_code == 503, r.text
+            body = r.json()
+            assert body["resourceType"] == "OperationOutcome"
+            diag = body["issue"][0]["diagnostics"]
+            assert "cache-refresh" in diag and "drift" in diag
+
     def test_binder_error_propagates_as_503_not_no_data_400(self, assoc_app):
         """Independent-review LOW fix: only CatalogException maps to the
         'no athena tables' 400; real query failures reach the systemic

@@ -4190,6 +4190,7 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
         (get_code_infos — the $lookup path) with the graph's by_cid
         display as the documented fallback."""
         from medterm4ds.core.models import CodeMapping
+        from medterm4ds.core.artifact_manifest import ManifestError
         from medterm4ds.services.associations import (
             ENGINE_TO_CANONICAL_SYSTEM,
             SOURCE_TO_PREFIXES,
@@ -4246,7 +4247,7 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
             )
         try:
             graph = get_associations_graph()
-        except AssociationsLayoutError as exc:
+        except (AssociationsLayoutError, ManifestError) as exc:
             return _fhir_error(
                 503,
                 f"Associations artifacts unavailable: {exc} Provision "
@@ -4257,7 +4258,6 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
         # canonical index FIRST (SearchService accessor — no duplicate
         # index), then the deterministic derivation fallback.
         canonical_system = ENGINE_TO_CANONICAL_SYSTEM.get(source, source)
-        cid: str | None = None
         try:
             index = get_search_service().code_to_canonical_id()
         except (RuntimeError, OSError, ImportError) as exc:

@@ -1331,6 +1331,12 @@ class SearchService:
     def _ensure_canonical(self) -> None:
         if self._canonical_loaded:
             return
+        with self._ensure_lock:
+            self._ensure_canonical_locked()
+
+    def _ensure_canonical_locked(self) -> None:
+        if self._canonical_loaded:
+            return
         path = self._canonical_path
         if not self._paths_pinned:
             term = _resolve_terminology()
