@@ -207,6 +207,7 @@ def cache_refresh(
     data_revision: str | None = None,
     terminology: bool | None = None,
     associations: bool = False,
+    athena: bool = False,
 ) -> dict[str, Any]:
     """Force-download artifact families for a revision.
 
@@ -243,6 +244,12 @@ def cache_refresh(
             "--split and --associations are mutually exclusive; run "
             "them separately"
         )
+    if split and athena:
+        # Same conflict class as --split/--terminology (EV07-QA-12).
+        raise RuntimeError(
+            "--split and --athena are mutually exclusive; run them "
+            "separately"
+        )
 
     if not _search._CACHE_REVISION_KEYED and revision is None:
         raise RuntimeError(
@@ -266,6 +273,20 @@ def cache_refresh(
             "release": _assoc.release(),
         }
 
+    # Athena snapshot stage (athena FDD decision C): standalone repo
+    # with its own release pin; download() itself is stages-then-swaps
+    # (atomic tmp+rename, never pre-deletes). Runs BEFORE the other
+    # stages so a failure leaves every existing cache untouched.
+    athena_report: dict[str, Any] | None = None
+    if athena:
+        from medterm4ds.services import athena_snapshot as _snap
+
+        _snap.download(_snap.athena_root())
+        athena_report = {
+            "repo_id": _snap.repo_id(),
+            "release": _snap.release(),
+        }
+
     if split:
         return _cache_refresh_split(data_revision=data_revision)
 
@@ -276,14 +297,26 @@ def cache_refresh(
             _search._LAYOUT_TERMINOLOGY
             and _term.is_present(_term.base_dir(_search._terminology_root()))
         )
-    if associations and not terminology:
-        # An associations-only refresh must not silently also refresh
-        # another layout (surprise multi-GB download). CR-001: keyed on
-        # `not terminology` AFTER auto-resolution — the CLI passes
-        # terminology=False (never None), so the previous `is None`
-        # guard never fired from the CLI and --associations fell
-        # through to the legacy family refresh.
-        return {"layout": "associations", **associations_report}
+    if (associations or athena) and not terminology:
+        # An associations/athena-only refresh must not silently also
+        # refresh another layout (surprise multi-GB download). CR-001:
+        # keyed on `not terminology` AFTER auto-resolution — the CLI
+        # passes terminology=False (never None), so the previous `is
+        # None` guard never fired from the CLI and --associations fell
+        # through to the legacy family refresh. --athena shares the
+        # exact trap and this guard.
+        layouts = "+".join(
+            name for name, on in (
+                ("associations", associations),
+                ("athena", athena),
+            ) if on
+        )
+        report: dict[str, Any] = {"layout": layouts}
+        if associations_report is not None:
+            report["associations"] = associations_report
+        if athena_report is not None:
+            report["athena"] = athena_report
+        return report
     if terminology:
         if not _search._LAYOUT_TERMINOLOGY:
             raise RuntimeError(
@@ -325,6 +358,8 @@ def cache_refresh(
         }
         if associations_report is not None:
             report["associations"] = associations_report
+        if athena_report is not None:
+            report["athena"] = athena_report
         return report
 
     repo_id = _search._HF_REPO_ID
@@ -402,6 +437,8 @@ def cache_refresh(
     }
     if associations_report is not None:
         report["associations"] = associations_report
+    if athena_report is not None:
+        report["athena"] = athena_report
     return report
 
 

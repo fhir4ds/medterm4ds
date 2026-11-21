@@ -4037,6 +4037,29 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
         payload = await _run_db(_executor(request), _do_translate, _engine(request), system, code, targetsystem, reverse, map_url)
         return _respond(request, payload)
 
+    def _athena_provider_con(engine: LocalDuckDBEngine):
+        """Provider seam (athena FDD decision C): table-backed engine
+        DBs win when present (ingest-athena DBs keep working
+        UNCHANGED); else the LOCAL Parquet snapshot attaches lazily
+        (single-flight, read-only DuckDB views over the snapshot's
+        parquet files — no table copies, no download on the request
+        path); else None → the caller's unchanged 400 remedy. A
+        present-but-invalid snapshot raises AthenaSnapshotError loud
+        (503 upstream) — never a silent fallback to "no data"."""
+        from medterm4ds.services.athena import _athena_tables_present
+
+        if _athena_tables_present(engine.con):
+            return engine.con
+        from medterm4ds.services.athena_snapshot import (
+            AthenaSnapshotAbsentError,
+            get_athena_snapshot,
+        )
+
+        try:
+            return get_athena_snapshot().con
+        except AthenaSnapshotAbsentError:
+            return None
+
     def _do_translate_athena(
         engine: LocalDuckDBEngine,
         source_uri: str,
@@ -4044,12 +4067,14 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
         target_uri: str | None,
         reverse: bool,
     ):
-        """Stage 4b: code → OMOP concept_id via the ingested bridge.
+        """Stage 4b: code → OMOP concept_id via the athena bridge.
 
         Per the design addendum: target must be urn:athena:concept-id;
         reverse unsupported (the bridge is code→id only); equivalence
         classes mirror the converter's (NATIVE_IDENTITY equal /
-        deprecated-unmatched / relatedto)."""
+        deprecated-unmatched / relatedto). The query runs identically
+        over either provider (engine tables or parquet snapshot views
+        — same athena_concept schema, pinned by parity probes)."""
         from medterm4ds.services.athena import ATHENA_VOCAB_TO_FHIR
 
         if target_uri != "urn:athena:concept-id":
@@ -4076,15 +4101,41 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
                 "vocabulary correspondence.",
             )
         try:
+            con = _athena_provider_con(engine)
+        except Exception:
+            # Present-but-invalid snapshot: loud 503, not the absent
+            # remedy (silent-fallback prohibition — a corrupted
+            # snapshot must never masquerade as "no athena data").
+            logger.warning(
+                "athena snapshot attach failed for $translate", exc_info=True,
+            )
+            return _fhir_error(
+                503,
+                "The pinned athena snapshot is present but invalid — "
+                "re-run 'medterm4ds data cache-refresh --athena'.",
+            )
+        if con is None:
+            return _fhir_error(
+                400,
+                "No athena_* tables in this database — run "
+                "'medterm4ds data ingest-athena' to use the athena "
+                "ConceptMap.",
+            )
+        try:
             placeholders = ",".join("?" * len(vocabs))
-            row = engine.con.execute(
+            row = con.execute(
                 "SELECT concept_id, concept_name, standard_concept, "
                 "invalid_reason, vocabulary_id FROM athena_concept "
                 "WHERE concept_code = ? "
                 f"AND vocabulary_id IN ({placeholders}) LIMIT 1",
                 [code, *vocabs],
             ).fetchone()
-        except Exception:
+        except duckdb.CatalogException:
+            # Missing relation (athena tables absent in this database) —
+            # the honest remedy 400. Any OTHER query failure (schema drift,
+            # binder error, IO) propagates to the systemic duckdb.Error
+            # handler (503) instead of masquerading as "no data"
+            # (independent-review LOW, 2026-11-16).
             return _fhir_error(
                 400,
                 "No athena_* tables in this database — run "

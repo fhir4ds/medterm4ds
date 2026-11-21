@@ -4280,3 +4280,45 @@ class TestAssocTranslate:
         body = resp.json()
         assert body["resourceType"] == "OperationOutcome"
         assert "cache-refresh" in body["issue"][0]["diagnostics"]
+
+
+    def test_binder_error_propagates_as_503_not_no_data_400(self, assoc_app):
+        """Independent-review LOW fix: only CatalogException maps to the
+        'no athena tables' 400; real query failures reach the systemic
+        duckdb.Error handler (503), never masquerade as 'no data'."""
+        import duckdb as _duckdb
+        from starlette.testclient import TestClient
+
+        app = assoc_app
+
+        with TestClient(app) as client:
+            import types
+
+            engine = app.state.engine
+            orig_con = engine.con
+
+            def _raise(sql, params=None):
+                raise _duckdb.BinderException(
+                    "schema drift: no column concept_id"
+                )
+
+            engine.con = types.SimpleNamespace(execute=_raise)
+            try:
+                r = client.get(
+                    "/fhir/ConceptMap/$translate",
+                    params={
+                        "url": "urn:medterm4ds:athena-conceptmap",
+                        "system": "http://loinc.org",
+                        "code": "1963-8",
+                        "targetsystem": "urn:athena:concept-id",
+                    },
+                )
+            finally:
+                engine.con = orig_con
+            assert r.status_code == 503, (
+                f"real query errors must surface as 503, got "
+                f"{r.status_code}: {r.text[:200]}"
+            )
+            assert r.headers["content-type"].startswith("application/fhir+")
+            assert "OperationOutcome" in r.text
+            assert "No athena_* tables" not in r.text

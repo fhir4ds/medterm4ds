@@ -63,6 +63,27 @@ def ensure_terminology_release() -> None:
         raise RuntimeError(f"terminology download finished but {base} incomplete")
 
 
+def ensure_athena_snapshot() -> None:
+    """Athena parquet snapshot (athena FDD decision D): the dataset
+    stays private — token-scoped read at provision time, snapshot
+    served from the volume thereafter. Env pins
+    (MEDTERM4DS_ATHENA_RELEASE / _DIR) are honored inside
+    base_dir/download; provision-once on the volume, no secrets
+    logged."""
+    from medterm4ds.services.athena_snapshot import base_dir, download, is_present
+
+    base = base_dir(CACHE_DIR)
+    if is_present(base):
+        logger.info("athena snapshot present at %s (volume mount)", base)
+        return
+    token = os.getenv("DEMO_HF_TOKEN") or os.getenv("HF_TOKEN")
+    logger.info("fetching athena snapshot into %s (private repo)", base)
+    download(CACHE_DIR, token=token)
+    if not is_present(base):
+        raise RuntimeError(f"athena download finished but {base} incomplete")
+
+
 def ensure_data() -> None:
     ensure_lookup_db()
     ensure_terminology_release()
+    ensure_athena_snapshot()
