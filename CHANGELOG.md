@@ -42,6 +42,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   concurrent first consumers can no longer observe a partially-built
   canonical index (previously a transient result=false empty).
 
+### Changed
+
+- **DuckDB dependency ceiling widened to `<3`** (was `<2`): DuckDB 2.x
+  is verified by the CI `duckdb-versions` matrix (full suite on 1.5.5,
+  1.5.6, 2.0.0). Unblocks consumers that default to duckdb>=2.0.0
+  (fhir4ds `v2[terminology]`/`[ner]` on py3.11+).
+
 ### Notes
 
 - POST `$translate` expects a JSON Parameters body (or use GET /
