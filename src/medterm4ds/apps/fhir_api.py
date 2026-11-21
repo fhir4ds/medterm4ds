@@ -4077,6 +4077,14 @@ def create_fhir_app(settings: FhirApiSettings | None = None) -> Any:
         — same athena_concept schema, pinned by parity probes)."""
         from medterm4ds.services.athena import ATHENA_VOCAB_TO_FHIR
 
+        # Canonicalize the client's source spelling BEFORE the vocab
+        # correspondence check (EV1404/QC-02: the OID and trailing-slash
+        # alias forms are accepted server-wide — $lookup resolves
+        # urn:oid:2.16.840.1.113883.6.96 — but the raw comparison here
+        # rejected them, a QC-006-class cross-surface divergence).
+        from medterm4ds.engines.fhir import canonical_system_uri
+
+        source_uri = canonical_system_uri(source_uri) or source_uri
         if target_uri != "urn:athena:concept-id":
             return _fhir_error(
                 400,
