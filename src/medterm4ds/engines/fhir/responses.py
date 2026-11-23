@@ -469,6 +469,15 @@ OPDEF_EXPAND = "http://hl7.org/fhir/OperationDefinition/ValueSet-expand"
 OPDEF_VS_VALIDATE_CODE = "http://hl7.org/fhir/OperationDefinition/ValueSet-validate-code"
 OPDEF_TRANSLATE = "http://hl7.org/fhir/OperationDefinition/ConceptMap-translate"
 
+# The three ConceptMaps served by $translate (advertised in the
+# operation's documentation text). Mirrors the constants in
+# apps/fhir_api.py (which cannot be imported here — dependency
+# direction: apps → engines). apps/fhir_api imports these to keep a
+# single definition (see its module constants).
+IMPLICIT_CONCEPT_MAP_URL = "urn:medterm4ds:crosswalk"
+ATHENA_CONCEPT_MAP_URL = "urn:medterm4ds:athena-conceptmap"
+ASSOCIATIONS_CONCEPT_MAP_URL = "urn:medterm4ds:associations-conceptmap"
+
 # The custom $search and $extract operations have no canonical HL7
 # OperationDefinition. Use medterm4ds-local URIs and document this in the
 # operation's `documentation` field so clients can distinguish them.
@@ -612,7 +621,27 @@ def build_capability_statement(base_url: str = "http://127.0.0.1:8001") -> dict[
                             {"name": "status", "type": "token"},
                         ],
                         "operation": [
-                            {"name": "translate", "definition": OPDEF_TRANSLATE},
+                            {
+                                "name": "translate",
+                                "definition": OPDEF_TRANSLATE,
+                                "documentation": (
+                                    "Serves three maps, selected by the "
+                                    "url parameter: the default implicit "
+                                    "crosswalk "
+                                    f"{IMPLICIT_CONCEPT_MAP_URL} (UMLS CUI "
+                                    "crosswalk; omit url), the Athena "
+                                    f"bridge {ATHENA_CONCEPT_MAP_URL} "
+                                    "(system+code → OMOP concept_id; "
+                                    "requires ingested athena_* tables), "
+                                    f"and the associations map "
+                                    f"{ASSOCIATIONS_CONCEPT_MAP_URL} "
+                                    "(system+code → clinically associated "
+                                    "concepts from the fhir4px "
+                                    "associations graph; targetSystem "
+                                    "selects the target domain; "
+                                    "equivalence is relatedto)."
+                                ),
+                            },
                         ],
                     },
                 ],

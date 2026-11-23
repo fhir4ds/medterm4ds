@@ -4,6 +4,26 @@ title: Releases
 
 This page tracks Medical Terminology for Data Science package releases.
 
+## 0.0.14
+
+Athena-serving and associations release: OMOP concept_id translation
+from a Parquet snapshot, the associations ConceptMap, and hardened
+native-inference thread safety. No breaking API changes.
+
+- **Athena `$translate`**: `urn:medterm4ds:athena-conceptmap` answers
+  code → OMOP concept_id from a pinned Parquet snapshot with no ingest
+  step (table-backed DBs unchanged; CPT excluded by default).
+- **Associations `$translate`**:
+  `urn:medterm4ds:associations-conceptmap` maps conditions to
+  medications, labs, and procedures (`relatedto`), with
+  Parquet-mirror loading for new graph releases.
+- **Thread safety**: concurrent search/extract in one process is now
+  safe (native inference serialized); in-process torch+DuckDB is a
+  supported pattern.
+- **Fixes**: athena `$translate` accepts source-system OID/slash
+  aliases; associations bundle drift reports 503 (not 500); canonical
+  index build is lock-protected.
+
 ## 0.0.13
 
 Fix release across extraction, search, lookup, FHIR, CLI, MCP, and

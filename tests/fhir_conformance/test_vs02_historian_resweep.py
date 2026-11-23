@@ -601,9 +601,12 @@ class TestLens3MethodologyReuseBuilderCallSiteAudit:
         # (crosswalk) + _do_translate_athena's empty + mapping paths.
         # All audited for client-input-as-canonical drift (the 4b
         # paths pass source_uri via the same canonical-system pattern).
-        assert call_count == 3, (
+        # Associations map (FDD 2026-11-16): 3 sibling sites in
+        # _do_translate_associations (empty ×2 + mapping path), audited
+        # for the same canonical-system pattern → 6 total.
+        assert call_count == 6, (
             f"build_parameters_translate has {call_count} call sites at lines "
-            f"{call_nodes}; expected exactly 3. New call sites MUST be audited "
+            f"{call_nodes}; expected exactly 6. New call sites MUST be audited "
             f"for client-input-as-canonical drift (count=8 PROMOTED pattern)."
         )
 

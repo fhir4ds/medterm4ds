@@ -24,9 +24,12 @@ import logging
 import os
 import re
 import shutil
+import threading
 import unicodedata
+from collections.abc import Mapping
 from dataclasses import dataclass, field, replace
 from pathlib import Path
+from types import MappingProxyType
 from typing import Any
 
 from medterm4ds.core import paths as _paths
@@ -1040,6 +1043,9 @@ class SearchService:
         self._bm25_indexes: dict[str, dict] = {}
         self._semantic_engine = None
         self._bm25_loaded = False
+        # Lazy-load lock (FHIR4-22): the check-then-load lazy init must not
+        # race across threads (double BM25 load / dict swap under readers).
+        self._ensure_lock = threading.Lock()
         self._canonical_loaded = False
         self._canonical_by_id: dict[str, dict] = {}
         self._group_terms: dict[str, dict] = {}
@@ -1128,6 +1134,12 @@ class SearchService:
         return (self._model_dir / "model.safetensors").exists()
 
     def _ensure_bm25(self) -> None:
+        if self._bm25_loaded:
+            return
+        with self._ensure_lock:
+            self._ensure_bm25_locked()
+
+    def _ensure_bm25_locked(self) -> None:
         if self._bm25_loaded:
             return
         # Terminology layout: <family>/<release>/<category>.json — resolved
@@ -1319,6 +1331,12 @@ class SearchService:
     def _ensure_canonical(self) -> None:
         if self._canonical_loaded:
             return
+        with self._ensure_lock:
+            self._ensure_canonical_locked()
+
+    def _ensure_canonical_locked(self) -> None:
+        if self._canonical_loaded:
+            return
         path = self._canonical_path
         if not self._paths_pinned:
             term = _resolve_terminology()
@@ -1358,6 +1376,17 @@ class SearchService:
         logger.info("Loaded %d Master Canonical Value Sets (%d code pairs, %d group terms, %d aliases)",
                     len(vsets), len(self._code_to_canonical_id), len(self._group_terms),
                     len(self._alias_to_cid))
+
+    def code_to_canonical_id(self) -> Mapping:
+        """Read-only view of the (system, code) -> canonical_id index.
+
+        Single source of truth for consumers resolving alias codes to
+        canonical cids (built at ``_ensure_canonical`` from the canonical
+        value_sets members). The associations $translate path consumes
+        this accessor — no duplicate index (FDD §3.2).
+        """
+        self._ensure_canonical()
+        return MappingProxyType(self._code_to_canonical_id)
 
     def _build_group_dictionary(self, vsets: list[dict]) -> None:
         """Inverted index for the composite-group dictionary pass.
@@ -3121,6 +3150,15 @@ def configure_search_service(
     _service = SearchService(
         search_index_dir=search_index_dir or env_pin("MEDTERM4DS_SEARCH_INDEX_DIR"),
         embedding_model_dir=embedding_model_dir or env_pin("MEDTERM4DS_EMBEDDING_MODEL_DIR"),
+        # Canonical-path pins must survive configure_search_service the
+        # same as get_search_service — the FHIR startup call previously
+        # silently dropped MEDTERM4DS_CANONICAL_PATH, so the canonical
+        # index (consumed by the associations source-resolution accessor)
+        # served the default path in a server that honors the pin
+        # everywhere else (get_search_service parity).
+        canonical_path=os.getenv("MEDTERM4DS_CANONICAL_PATH", DEFAULT_CANONICAL_VALUE_SETS_PATH),
+        canonical_concepts_index=os.getenv("MEDTERM4DS_CANONICAL_INDEX", DEFAULT_CANONICAL_CONCEPTS_INDEX),
+        canonical_concepts_meta=os.getenv("MEDTERM4DS_CANONICAL_META", DEFAULT_CANONICAL_CONCEPTS_META),
     )
     return _service
 

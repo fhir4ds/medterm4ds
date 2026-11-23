@@ -245,6 +245,40 @@ class TestProvenanceAndRefresh:
         prov = json.loads((root / ac.PROVENANCE_FILENAME).read_text())
         assert prov["revision"] == "old"
 
+    def test_associations_only_refresh_does_not_fall_through(
+        self, monkeypatch, tmp_path,
+    ):
+        """CR-001 (HIGH): the CLI passes terminology=False (never None —
+        argparse store_true), so the associations-only early return keyed
+        on ``terminology is None`` never fired from the CLI and
+        ``data cache-refresh --associations`` fell through to the legacy
+        family refresh (cache delete + multi-GB re-download)."""
+        import medterm4ds.core.artifact_cache as ac
+        import medterm4ds.services.associations as assoc_mod
+        import medterm4ds.services.search as search_mod
+
+        monkeypatch.setattr(search_mod, "_CACHE_REVISION_KEYED", True)
+        downloaded = []
+        monkeypatch.setattr(
+            assoc_mod, "download",
+            lambda root: downloaded.append(root) or tmp_path,
+        )
+
+        def _no_legacy(*args, **kwargs):
+            raise AssertionError(
+                "associations-only refresh must not run the legacy "
+                "family refresh"
+            )
+
+        import huggingface_hub
+
+        monkeypatch.setattr(huggingface_hub, "snapshot_download", _no_legacy)
+
+        report = ac.cache_refresh(associations=True, terminology=False)
+        assert downloaded, "associations download stage must run"
+        assert report["layout"] == "associations"
+        assert "cache_dir" not in report and "families" not in report
+
     def test_refresh_rejects_split_with_terminology(self, monkeypatch, tmp_path):
         """EV07-QA-12: --split + --terminology is a flag conflict — the
         split branch previously returned before consulting the flag,
