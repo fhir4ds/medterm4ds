@@ -51,7 +51,7 @@ ENV MEDTERM4DS_DB=/data/lookup.duckdb \
     DEMO_DB_THREADS=2 \
     DEMO_PROVISION_DATA=true
 
-COPY app.py /app/app.py
+COPY demo_app.py /app/demo_app.py
 COPY startup_data.py /app/startup_data.py
 
 EXPOSE 7860
@@ -59,4 +59,4 @@ EXPOSE 7860
 HEALTHCHECK --interval=30s --timeout=10s --start-period=120s --retries=5 \
     CMD curl -sf http://localhost:7860/health || exit 1
 
-CMD ["python", "app.py"]
+CMD ["python", "demo_app.py"]
