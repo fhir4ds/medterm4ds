@@ -24,11 +24,11 @@ RUN pip install --no-cache-dir -r /app/requirements.txt \
     && pip install --no-cache-dir \
         https://github.com/explosion/spacy-models/releases/download/en_core_web_sm-3.8.0/en_core_web_sm-3.8.0-py3-none-any.whl
 
-# medterm4ds v0.0.13 from PyPI (extraction conjunction parity, source-alias
+# medterm4ds v0.0.14 from PyPI (athena Parquet serving, associations
 # widening on all search modes, patient-friendly resolve modes, FHIR
 # unknown-param/valueSet/compose guards, base-install import fix,
 # terminology default release 2026.11.14.2).
-RUN pip install --no-cache-dir "medterm4ds[fhir,search,extraction]==0.0.13"
+RUN pip install --no-cache-dir "medterm4ds[fhir,search,extraction]==0.0.14"
 
 # Bake the pinned GLiNER NER weights into the image so /extract needs no
 # runtime download (pinned revision from services/extraction.py).
