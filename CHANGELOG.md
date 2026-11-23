@@ -44,10 +44,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- **DuckDB dependency ceiling widened to `<3`** (was `<2`): DuckDB 2.x
-  is verified by the CI `duckdb-versions` matrix (full suite on 1.5.5,
-  1.5.6, 2.0.0). Unblocks consumers that default to duckdb>=2.0.0
-  (fhir4ds `v2[terminology]`/`[ner]` on py3.11+).
+- **DuckDB dependency range widened to `>=0.9.0,<2.0.1`** (was `<2`):
+  DuckDB 2.0.0 is verified by the CI `duckdb-versions` matrix (full
+  suite on 1.5.5, 1.5.6, 2.0.0). Unblocks consumers that default to
+  duckdb>=2.0.0 (fhir4ds `v2[terminology]`/`[ner]` on py3.11+). The
+  `<2.0.1` cap mirrors fhir4ds's temporary pin (DuckDB 2.0.1 enforces
+  exact-version extension loading) for default-version parity across
+  the two projects; lift once 2.0.1 lands in the CI matrix and
+  fhir4ds ships per-patch 2.0.x extension slots.
 
 ### Notes
 
