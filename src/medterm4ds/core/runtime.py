@@ -43,6 +43,38 @@ _FORWARDED_VARS = ("OMP_NUM_THREADS", "MKL_NUM_THREADS", "OPENBLAS_NUM_THREADS")
 _applied: int | None = None
 
 
+def native_thread_count() -> int | None:
+    """Resolve the pinned thread count WITHOUT importing torch/faiss.
+
+    Pure env parsing, so DuckDB-only paths (``mt.connect()``) can size
+    their connections without dragging the ML stack into the process.
+    Returns None when pinning is disabled
+    (``MEDTERM4DS_NATIVE_THREADS=0``).
+    """
+    explicit = env_int("MEDTERM4DS_NATIVE_THREADS", minimum=0)
+    if explicit == 0:
+        return None
+    return explicit if explicit is not None else 1
+
+
+def duckdb_thread_config() -> dict[str, int] | None:
+    """DuckDB connect ``config=`` for connections the LIBRARY opens.
+
+    FHIR4-51 round 2: the ancestor-fallback path on the hybrid search
+    opened a fresh DuckDB connection with no config, inheriting the
+    ambient default (32 threads on the reporting host). Those C++
+    worker threads are invisible to faulthandler, so a crash stack
+    showing only the Python thread does NOT mean single-threaded — this
+    pool churning connect/teardown inside the hybrid loop is a prime
+    corruption suspect. Connections the HOST opens remain the host's
+    responsibility.
+    """
+    threads = native_thread_count()
+    if threads is None:
+        return None
+    return {"threads": threads}
+
+
 def apply_thread_pinning() -> int | None:
     """Pin torch/faiss thread pools; safe to call repeatedly.
 
@@ -55,9 +87,8 @@ def apply_thread_pinning() -> int | None:
     if _applied is not None:
         return _applied
 
-    explicit = env_int("MEDTERM4DS_NATIVE_THREADS", minimum=0)
-    threads = explicit if explicit is not None else 1
-    if threads == 0:
+    threads = native_thread_count()
+    if threads is None:
         logger.info(
             "Native thread-pool pinning disabled (MEDTERM4DS_NATIVE_THREADS=0) "
             "— host is responsible for OMP/MKL/OPENBLAS pool sizing"
@@ -65,7 +96,7 @@ def apply_thread_pinning() -> int | None:
         _applied = 0
         return None
 
-    if explicit is not None:
+    if env_int("MEDTERM4DS_NATIVE_THREADS", minimum=0) is not None:
         for var in _FORWARDED_VARS:
             os.environ[var] = str(threads)
 
@@ -73,6 +104,17 @@ def apply_thread_pinning() -> int | None:
         import torch
 
         torch.set_num_threads(threads)
+        # Interop pool (default = all cores, observed unpinned at 16 on
+        # the reporting host). Must run before interop work starts;
+        # "already initialized" is benign — the pin came too late but
+        # nothing is corrupted by skipping it.
+        try:
+            torch.set_num_interop_threads(threads)
+        except RuntimeError:
+            logger.info(
+                "torch interop pool already initialized — "
+                "set_num_interop_threads skipped"
+            )
     except ImportError:
         pass
     try:

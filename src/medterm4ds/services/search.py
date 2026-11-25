@@ -2085,7 +2085,13 @@ class SearchService:
             )
             return []
         try:
-            con = duckdb.connect(db_path, read_only=True)
+            # FHIR4-51: size the pool this library opens — an ambient
+            # default (all cores) races the pinned ML pools.
+            from medterm4ds.core.runtime import duckdb_thread_config
+
+            con = duckdb.connect(
+                db_path, read_only=True, config=duckdb_thread_config()
+            )
         except Exception as exc:
             logger.warning(
                 "Ancestor fallback disabled: cannot open UMLS DB at %s "

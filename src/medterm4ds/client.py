@@ -734,6 +734,18 @@ def open_duckdb_engine(
 
     if config is None:
         config = local_duckdb_config("balanced")
+    # FHIR4-51: the library's default profile is threads=None (all
+    # cores). When the caller did not choose a thread count, honor the
+    # native pin so mt.connect()'s engine does not race the pinned ML
+    # pools; an explicit config.threads stays authoritative.
+    if config.threads is None:
+        from dataclasses import replace
+
+        from medterm4ds.core.runtime import native_thread_count
+
+        pinned = native_thread_count()
+        if pinned is not None:
+            config = replace(config, threads=pinned)
     con = duckdb.connect(str(path), read_only=read_only)
     engine = LocalDuckDBEngine(con, config=config, progress=progress)
     return con, engine
