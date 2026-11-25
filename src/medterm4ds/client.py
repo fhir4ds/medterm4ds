@@ -746,7 +746,17 @@ def open_duckdb_engine(
         pinned = native_thread_count()
         if pinned is not None:
             config = replace(config, threads=pinned)
-    con = duckdb.connect(str(path), read_only=read_only)
+    # FHIR4-51 round 3: hand the thread count to duckdb.connect itself,
+    # not only the post-connect PRAGMA the engine mixin issues. The
+    # PRAGMA does pin the pool, but the connection briefly spins up at
+    # DuckDB's ambient default (all cores) before it lands — host-side
+    # instrumentation of duckdb.connect sees config=None, and the
+    # strongest form of the corruption test never materializes an
+    # oversized C++ pool at all.
+    connect_kwargs: dict[str, Any] = {"read_only": read_only}
+    if config.threads is not None:
+        connect_kwargs["config"] = {"threads": int(config.threads)}
+    con = duckdb.connect(str(path), **connect_kwargs)
     engine = LocalDuckDBEngine(con, config=config, progress=progress)
     return con, engine
 

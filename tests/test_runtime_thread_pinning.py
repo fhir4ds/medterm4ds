@@ -156,3 +156,33 @@ def test_client_connect_pins_default_threads(tmp_path, monkeypatch):
             "SELECT current_setting('threads')"
         ).fetchone()[0]
         assert int(threads) == 1
+
+
+def test_open_duckdb_engine_passes_threads_at_connect(tmp_path, monkeypatch):
+    """The connect kwarg itself must carry the pin (FHIR4-51 r3).
+
+    The post-connect PRAGMA pins the pool but lets duckdb.connect()
+    briefly spin it at the ambient default; host instrumentation of
+    duckdb.connect saw config=None. The pin must be visible at the
+    duckdb.connect call site.
+    """
+    import duckdb
+
+    from medterm4ds.client import open_duckdb_engine
+
+    db = tmp_path / "kw.duckdb"
+    con = duckdb.connect(str(db))
+    con.execute("CREATE TABLE t AS SELECT 1 AS x")
+    con.close()
+
+    captured: dict = {}
+    real_connect = duckdb.connect
+
+    def spy_connect(path, **kwargs):
+        captured.update(kwargs)
+        return real_connect(path, **kwargs)
+
+    monkeypatch.setattr("duckdb.connect", spy_connect)
+    monkeypatch.delenv("MEDTERM4DS_NATIVE_THREADS", raising=False)
+    open_duckdb_engine(str(db), read_only=True)
+    assert captured.get("config") == {"threads": 1}
