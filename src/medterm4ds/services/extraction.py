@@ -1268,6 +1268,10 @@ class NlpPipeline:
         # extraction recall; None (explicit constructor override or empty
         # env var) loads the repo head / local path unpinned.
         from gliner import GLiNER
+        # FHIR4-51: pin native thread pools before GLiNER drags in torch.
+        from medterm4ds.core.runtime import apply_thread_pinning
+
+        apply_thread_pinning()
         self._ner_model = GLiNER.from_pretrained(
             self._ner_model_name, revision=self._ner_model_revision,
         )

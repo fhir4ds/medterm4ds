@@ -1733,6 +1733,11 @@ class SearchService:
         if not index_path.exists() or not meta_path.exists():
             self._concepts_loaded = True  # mark as checked; concept search unavailable
             return
+        # FHIR4-51: pin faiss OpenMP pool before faiss loads (no-op if the
+        # semantic engine already pinned it — once-latched).
+        from medterm4ds.core.runtime import apply_thread_pinning
+
+        apply_thread_pinning()
         import faiss
         self._concepts_faiss = faiss.read_index(str(index_path))
         with meta_path.open() as f:
