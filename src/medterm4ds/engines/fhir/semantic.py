@@ -154,9 +154,6 @@ class SemanticSearchEngine:
                 # legacy operator dirs without a manifest remain None.
                 pass
 
-        with self._load_lock:
-            if self._loaded:
-                return
             # FHIR4-51: pin torch/faiss OpenMP pools before the native
             # libs load — default pools race DuckDB workers and corrupt
             # the process (see core/runtime.py).
@@ -164,7 +161,6 @@ class SemanticSearchEngine:
 
             apply_thread_pinning()
             from transformers import AutoModel, AutoTokenizer
-
             self._tokenizer = AutoTokenizer.from_pretrained(str(self._model_dir))
             self._model = AutoModel.from_pretrained(str(self._model_dir))
             self._model.eval()

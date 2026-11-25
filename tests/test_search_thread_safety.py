@@ -120,6 +120,21 @@ def test_embed_serializes_concurrent_tokenizer_and_forward() -> None:
     )
 
 
+def test_ensure_loaded_raises_named_error_not_attribute_error() -> None:
+    """_ensure_loaded must fail with its documented RuntimeError.
+
+    FHIR4-51 round 1: a bad edit made _ensure_loaded acquire
+    ``self._load_lock`` — an attribute that does not exist — so every
+    semantic/hybrid search raised AttributeError, which adapters
+    swallowed into empty results (a benchmark 'clean' that coded
+    nothing). The guard failures must be the named RuntimeError about
+    the missing model dir, never an AttributeError on the engine.
+    """
+    engine = SemanticSearchEngine(model_dir="/nonexistent")
+    with pytest.raises(RuntimeError, match="SapBERT model"):
+        engine._ensure_loaded()  # noqa: SLF001 — the seam under contract
+
+
 def test_embed_batch_serializes_concurrent_batches() -> None:
     """Concurrent embed_batch calls must not overlap in tokenizer/forward."""
     engine, probe = _loaded_engine()
