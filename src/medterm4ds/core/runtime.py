@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 
 from medterm4ds.core.env import env_int
 
@@ -73,6 +74,50 @@ def duckdb_thread_config() -> dict[str, int] | None:
     if threads is None:
         return None
     return {"threads": threads}
+
+
+def detect_duplicate_omp_runtimes() -> list[str]:
+    """List distinct OpenMP runtime instances loaded in this process.
+
+    FHIR4-51 round 4: 1/10 SIGSEGV + impossible-type errors survived
+    every thread pin. Cause found structurally: the pip stack loads
+    TWO separate GOMP runtimes — torch's ``torch/lib/libgomp.so.1`` and
+    faiss's auditwheel-renamed ``faiss_cpu.libs/libgomp-*.so.1`` —
+    independent pools and barrier state in one process, a known source
+    of null-call segfaults in unrelated code. Returns the distinct
+    runtime file paths (empty when healthy/unavailable).
+    """
+    try:
+        with open("/proc/self/maps") as f:
+            maps = f.read()
+    except OSError:
+        return []  # not Linux — no diagnostic available
+    runtimes = {
+        m.group(0)
+        for m in re.finditer(r"/\S*lib(gomp|omp|iomp)[^/\s]*\.so\S*", maps)
+    }
+    return sorted(runtimes)
+
+
+def warn_duplicate_omp_runtimes() -> None:
+    """Log LOUDLY when more than one OpenMP runtime is resident.
+
+    Thread pinning cannot fix duplicate runtimes; the operator needs to
+    know the process is structurally crash-prone, not mysteriously
+    flaky. Called from apply_thread_pinning so every engine load
+    reports it.
+    """
+    runtimes = detect_duplicate_omp_runtimes()
+    if len(runtimes) > 1:
+        logger.warning(
+            "DUPLICATE OpenMP RUNTIMES in this process (%d instances): %s. "
+            "Thread pinning CANNOT make this safe — independent OMP pools "
+            "and barrier state in one process corrupt memory (FHIR4-51: "
+            "null-call SIGSEGV in unrelated pure-Python frames). Isolate "
+            "faiss/torch into separate processes, or use a build where they "
+            "share one OpenMP runtime.",
+            len(runtimes), ", ".join(runtimes),
+        )
 
 
 def apply_thread_pinning() -> int | None:
@@ -125,5 +170,6 @@ def apply_thread_pinning() -> int | None:
         pass
 
     logger.info("Native thread pools pinned to %d thread(s)", threads)
+    warn_duplicate_omp_runtimes()
     _applied = threads
     return threads

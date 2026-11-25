@@ -73,6 +73,27 @@ def test_module_reimport_does_not_crash():
     importlib.reload(runtime)
 
 
+def test_duplicate_omp_detection_finds_both_when_present():
+    """After loading torch+faiss (the ML stack), >=2 runtimes -> detected.
+
+    Skips silently on hosts without both libs; on the standard pip
+    install (torch libgomp + faiss renamed libgomp) it must fire — this
+    is the structural FHIR4-51 round-4 finding.
+    """
+    try:
+        import faiss  # noqa: F401
+        import torch  # noqa: F401
+    except ImportError:
+        pytest.skip("torch/faiss not installed")
+    runtimes = runtime.detect_duplicate_omp_runtimes()
+    assert len(runtimes) >= 2, f"expected duplicate OMP runtimes, got {runtimes}"
+
+
+def test_warn_duplicate_omp_runtimes(caplog):
+    runtime.warn_duplicate_omp_runtimes()  # must never raise
+    assert True
+
+
 def test_native_thread_count_no_ml_import(monkeypatch):
     """DuckDB-only paths must resolve the pin without importing torch."""
     monkeypatch.setenv("MEDTERM4DS_NATIVE_THREADS", "3")
