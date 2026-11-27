@@ -1275,6 +1275,14 @@ class NlpPipeline:
         self._ner_model = GLiNER.from_pretrained(
             self._ner_model_name, revision=self._ner_model_revision,
         )
+        # FHIR4-51: re-check after the full GLiNER stack is loaded. The
+        # pin-time check cannot see sklearn's libgomp (loaded lazily at
+        # `from gliner import GLiNER` and beyond), so the real extraction
+        # workload can run THREE GOMP runtimes while the first warning
+        # reported two.
+        from medterm4ds.core.runtime import warn_duplicate_omp_runtimes
+
+        warn_duplicate_omp_runtimes()
         # GPU/MPS placement (MEDTERM4DS_DEVICE, default auto-detect). GLiNER
         # inference is the bulk of extract() cost; everything else in this
         # pipeline (medspaCy, PyRuSH, en_core_web_sm parser) is CPU-native.
