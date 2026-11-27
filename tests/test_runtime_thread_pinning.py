@@ -95,13 +95,42 @@ def test_warn_duplicate_omp_runtimes(caplog):
 
 
 def test_native_thread_count_no_ml_import(monkeypatch):
-    """DuckDB-only paths must resolve the pin without importing torch."""
+    """DuckDB-only paths must resolve the pin without importing torch.
+
+    The eviction must be undone afterwards: torch's C extensions stay
+    initialised, so a later re-import re-runs ``torch/__init__.py`` over
+    them and fails — every later test that touches torch would break.
+    """
     monkeypatch.setenv("MEDTERM4DS_NATIVE_THREADS", "3")
     import sys
 
-    sys.modules.pop("torch", None)
+    monkeypatch.delitem(sys.modules, "torch", raising=False)
     assert runtime.native_thread_count() == 3
     assert "torch" not in sys.modules
+
+
+def test_no_ml_import_check_leaves_torch_module_cache_intact():
+    """The no-import check must not evict a live torch for the rest of the run.
+
+    FHIR4-51: a bare ``sys.modules.pop("torch")`` removed an
+    already-initialised torch from the module cache. The next
+    ``import torch`` then re-ran ``torch/__init__.py`` over its loaded C
+    extensions and died at ``torch.library.Library("triton", "DEF")``
+    ("Only a single TORCH_LIBRARY can be used to register the namespace
+    triton"), so test_search_thread_safety.py failed whenever pytest ran
+    it after this file.
+    """
+    try:
+        import torch
+    except ImportError:
+        pytest.skip("torch not installed")
+    import sys
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setenv("MEDTERM4DS_NATIVE_THREADS", "3")
+        test_native_thread_count_no_ml_import(mp)
+    assert sys.modules.get("torch") is torch
+    assert importlib.import_module("torch") is torch
 
 
 def test_duckdb_thread_config_default_and_disabled(monkeypatch):
