@@ -190,6 +190,12 @@ class SemanticSearchEngine:
 
             self._loaded = True
             logger.info("Semantic search engine ready")
+            # FHIR4-51: report once the stack is resident. The transformers
+            # import above maps scikit-learn's libgomp — a third GOMP
+            # runtime the pin-time check can never see.
+            from medterm4ds.core.runtime import warn_duplicate_omp_runtimes
+
+            warn_duplicate_omp_runtimes()
 
     def _embed(self, text: str) -> Any:
         """Embed query text using SapBERT (768-dim, L2-normalized)."""

@@ -9,6 +9,7 @@ to, via MEDTERM4DS_NATIVE_THREADS.
 from __future__ import annotations
 
 import importlib
+import logging
 
 import pytest
 
@@ -18,8 +19,10 @@ import medterm4ds.core.runtime as runtime
 @pytest.fixture(autouse=True)
 def _reset_latch():
     runtime._applied = None
+    runtime._warned_runtimes = None
     yield
     runtime._applied = None
+    runtime._warned_runtimes = None
 
 
 def test_default_pins_to_one(monkeypatch):
@@ -92,6 +95,74 @@ def test_duplicate_omp_detection_finds_both_when_present():
 def test_warn_duplicate_omp_runtimes(caplog):
     runtime.warn_duplicate_omp_runtimes()  # must never raise
     assert True
+
+
+def test_warn_duplicate_omp_runtimes_repeats_only_on_new_set(monkeypatch, caplog):
+    """One warning per distinct runtime set, however many sites call it."""
+    torch_gomp = "/torch/lib/libgomp.so.1"
+    faiss_gomp = "/faiss_cpu.libs/libgomp-f.so.1.0.0"
+    sklearn_gomp = "/scikit_learn.libs/libgomp-s.so.1.0.0"
+    resident = iter([[torch_gomp, faiss_gomp], [torch_gomp, faiss_gomp],
+                     [faiss_gomp, sklearn_gomp, torch_gomp], [faiss_gomp, sklearn_gomp, torch_gomp]])
+    monkeypatch.setattr(runtime, "detect_duplicate_omp_runtimes", lambda: next(resident))
+    caplog.set_level(logging.WARNING, logger="medterm4ds.core.runtime")
+
+    for _ in range(4):
+        runtime.warn_duplicate_omp_runtimes()
+
+    warnings = [r.getMessage() for r in caplog.records
+                if "DUPLICATE OpenMP RUNTIMES" in r.getMessage()]
+    assert len(warnings) == 2, warnings  # {torch, faiss}, then {torch, faiss, sklearn}
+    assert "(2 instances)" in warnings[0] and "(3 instances)" in warnings[1]
+
+
+def test_semantic_load_warns_with_post_load_runtime_set(monkeypatch, caplog, tmp_path):
+    """The warning must count runtimes mapped DURING the semantic load.
+
+    FHIR4-51: apply_thread_pinning() runs before
+    ``from transformers import ...``, and that import maps scikit-learn's
+    libgomp — a THIRD GOMP runtime. A warning emitted at pin time
+    under-reports (2) in every search process; it has to be emitted
+    once the stack is actually resident. The heavy stack is stubbed so
+    the test needs no model weights.
+    """
+    import sys
+    from types import ModuleType, SimpleNamespace
+
+    from medterm4ds.engines.fhir.semantic import SemanticSearchEngine
+
+    torch_gomp = "/torch/lib/libgomp.so.1"
+    faiss_gomp = "/faiss_cpu.libs/libgomp-f.so.1.0.0"
+    sklearn_gomp = "/scikit_learn.libs/libgomp-s.so.1.0.0"
+    resident = [torch_gomp, faiss_gomp]
+    monkeypatch.setattr(runtime, "detect_duplicate_omp_runtimes", lambda: list(resident))
+    monkeypatch.setattr(runtime, "apply_thread_pinning", lambda: 1)
+    caplog.set_level(logging.WARNING, logger="medterm4ds.core.runtime")
+
+    def load_model(path):  # the transformers import maps sklearn's libgomp
+        resident.append(sklearn_gomp)
+        return SimpleNamespace(eval=lambda: None, to=lambda device: None)
+
+    transformers = ModuleType("transformers")
+    transformers.AutoTokenizer = SimpleNamespace(from_pretrained=lambda path: object())
+    transformers.AutoModel = SimpleNamespace(from_pretrained=load_model)
+    monkeypatch.setitem(sys.modules, "transformers", transformers)
+    monkeypatch.setitem(sys.modules, "faiss", ModuleType("faiss"))
+
+    model_dir = tmp_path / "sapbert"
+    model_dir.mkdir()
+    (model_dir / "model.safetensors").touch()
+    (model_dir / "config.json").touch()
+    engine = SemanticSearchEngine(model_dir=model_dir, device="cpu")
+
+    engine._ensure_loaded()  # noqa: SLF001 — the seam under test
+
+    assert engine._loaded  # noqa: SLF001
+    warnings = [r.getMessage() for r in caplog.records
+                if "DUPLICATE OpenMP RUNTIMES" in r.getMessage()]
+    assert len(warnings) == 1, warnings
+    assert "(3 instances)" in warnings[0], warnings[0]
+    assert sklearn_gomp in warnings[0], warnings[0]
 
 
 def test_native_thread_count_no_ml_import(monkeypatch):

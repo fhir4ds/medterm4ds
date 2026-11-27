@@ -42,6 +42,7 @@ logger = logging.getLogger(__name__)
 _FORWARDED_VARS = ("OMP_NUM_THREADS", "MKL_NUM_THREADS", "OPENBLAS_NUM_THREADS")
 
 _applied: int | None = None
+_warned_runtimes: tuple[str, ...] | None = None
 
 
 def native_thread_count() -> int | None:
@@ -80,11 +81,13 @@ def detect_duplicate_omp_runtimes() -> list[str]:
     """List distinct OpenMP runtime instances loaded in this process.
 
     FHIR4-51 round 4: 1/10 SIGSEGV + impossible-type errors survived
-    every thread pin. Cause found structurally: the pip stack loads
-    TWO separate GOMP runtimes — torch's ``torch/lib/libgomp.so.1`` and
-    faiss's auditwheel-renamed ``faiss_cpu.libs/libgomp-*.so.1`` —
-    independent pools and barrier state in one process, a known source
-    of null-call segfaults in unrelated code. Returns the distinct
+    every thread pin. Structural finding: the pip stack maps several
+    separate GOMP runtimes into one process — torch's
+    ``torch/lib/libgomp.so.1``, faiss's auditwheel-renamed
+    ``faiss_cpu.libs/libgomp-*.so.1.0.0``, and scikit-learn's
+    ``scikit_learn.libs/libgomp-*.so.1.0.0`` as soon as ``transformers``
+    is imported (it imports scikit-learn). Only the torch and faiss
+    pools are known to run work for medterm4ds. Returns the distinct
     runtime file paths (empty when healthy/unavailable).
     """
     try:
@@ -104,20 +107,30 @@ def warn_duplicate_omp_runtimes() -> None:
 
     Thread pinning cannot fix duplicate runtimes; the operator needs to
     know the process is structurally crash-prone, not mysteriously
-    flaky. Called from apply_thread_pinning so every engine load
-    reports it.
+    flaky. Call it AFTER a native stack has finished loading: detection
+    only sees runtimes that are already mapped, and the load itself maps
+    more (``import transformers`` brings in scikit-learn's libgomp), so
+    a call made before the load under-reports. Each distinct runtime set
+    is reported once per process, so later load sites stay quiet.
     """
+    global _warned_runtimes
     runtimes = detect_duplicate_omp_runtimes()
-    if len(runtimes) > 1:
-        logger.warning(
-            "DUPLICATE OpenMP RUNTIMES in this process (%d instances): %s. "
-            "Thread pinning CANNOT make this safe — independent OMP pools "
-            "and barrier state in one process corrupt memory (FHIR4-51: "
-            "null-call SIGSEGV in unrelated pure-Python frames). Isolate "
-            "faiss/torch into separate processes, or use a build where they "
-            "share one OpenMP runtime.",
-            len(runtimes), ", ".join(runtimes),
-        )
+    if len(runtimes) <= 1:
+        return
+    current = tuple(runtimes)
+    if current == _warned_runtimes:
+        return
+    _warned_runtimes = current
+    logger.warning(
+        "DUPLICATE OpenMP RUNTIMES in this process (%d instances): %s. "
+        "Thread pinning does not remove them — separate OpenMP runtimes "
+        "in one process can crash or corrupt it, and they are the leading "
+        "(unproven) suspect for FHIR4-51's null-call SIGSEGV in unrelated "
+        "pure-Python frames. Isolate faiss from torch/transformers into "
+        "separate processes, or use a build where they share one OpenMP "
+        "runtime.",
+        len(runtimes), ", ".join(runtimes),
+    )
 
 
 def apply_thread_pinning() -> int | None:
@@ -170,6 +183,5 @@ def apply_thread_pinning() -> int | None:
         pass
 
     logger.info("Native thread pools pinned to %d thread(s)", threads)
-    warn_duplicate_omp_runtimes()
     _applied = threads
     return threads

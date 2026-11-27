@@ -1276,11 +1276,9 @@ class NlpPipeline:
         self._ner_model = GLiNER.from_pretrained(
             self._ner_model_name, revision=self._ner_model_revision,
         )
-        # FHIR4-51: re-check after the full GLiNER stack is loaded. The
-        # pin-time check cannot see sklearn's libgomp (loaded lazily at
-        # `from gliner import GLiNER` and beyond), so the real extraction
-        # workload can run THREE GOMP runtimes while the first warning
-        # reported two.
+        # FHIR4-51: report once the stack is resident. `import gliner`
+        # pulls in transformers, which maps scikit-learn's libgomp on top
+        # of torch's and faiss's.
         from medterm4ds.core.runtime import warn_duplicate_omp_runtimes
 
         warn_duplicate_omp_runtimes()

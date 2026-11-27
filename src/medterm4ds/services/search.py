@@ -1744,6 +1744,11 @@ class SearchService:
             self._concepts_meta = json.load(f)
         self._concepts_loaded = True
         logger.info("Loaded canonical concept index: %d vectors", self._concepts_faiss.ntotal)
+        # FHIR4-51: report once faiss is resident (quiet when an earlier
+        # load already reported this runtime set).
+        from medterm4ds.core.runtime import warn_duplicate_omp_runtimes
+
+        warn_duplicate_omp_runtimes()
 
     def _check_concepts_space(self, engine) -> None:
         """Hard space cross-check once the serving engine is loaded.
